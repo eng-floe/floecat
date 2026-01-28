@@ -30,6 +30,12 @@ Semantics fields (best-effort):
 - eq/lt/gt operator oids via pg_amop (btree strategies 3/1/5)
 - btree_cmp_proc_oid via pg_amproc (proc #1)
 - hash_proc_oid via pg_amproc (proc #1)
+
+pg_type completeness:
+This generator also attempts to emit additional pg_type fields that are often
+required downstream, including typinput/typoutput/typreceive/typsend and
+typmodin/typmodout. Exporters sometimes emit these as numeric OIDs or as regproc
+names; we resolve names against pg_proc (system-only) in a deterministic way.
 """
 
 from __future__ import annotations
@@ -42,11 +48,14 @@ from utils import (
     AmRow,
     AmopRow,
     AmprocRow,
+    NamespaceRow,
     OpclassRow,
+    ProcRow,
     TypeRow,
     is_array_type,
     is_system_oid,
     is_table_row_type,
+    normalize_regproc,
     pb_escape,
     read_am,
     read_amop,
@@ -158,6 +167,96 @@ def _build_element_to_array_oid_map(
     return mapping
 
 
+# -----------------------------------------------------------------------------
+# pg_type function OID resolution (typinput/typoutput/typreceive/typsend/typmodin/typmodout)
+# -----------------------------------------------------------------------------
+
+def _normalize_regproc_key(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    s = raw.strip()
+    if s == "" or s.lower() == "null" or s == "-":
+        return None
+    return s
+
+
+def _resolve_proc_ref_to_oid(
+    *,
+    raw: Optional[str],
+    proc_name_to_oid: Dict[str, int],
+    procs_by_oid: Dict[int, ProcRow],
+    namespaces_by_oid: Dict[int, NamespaceRow],
+) -> Optional[int]:
+    """
+    Resolve pg_proc references that may appear in pg_type exports.
+
+    Exporters may emit:
+      - numeric OID (e.g. "1247")
+      - regproc name (e.g. "boolin", "pg_catalog.boolin", "\"pg_catalog\".\"boolin\"")
+      - "-" / empty / null
+
+    Strategy:
+      1) numeric OID -> accept if system oid
+      2) try proc_name_to_oid map (already prefers pg_catalog, then lowest oid)
+      3) last resort: deterministic scan of system procs for a bare name
+         (prefer pg_catalog, then lowest oid)
+    """
+    s = _normalize_regproc_key(raw)
+    if s is None:
+        return None
+
+    # Fast path: numeric OID
+    try:
+        oid_val = int(float(s)) if "." in s else int(s)
+        return oid_val if is_system_oid(oid_val) else None
+    except ValueError:
+        pass
+
+    # Map path (keys are lowercased/normalized by build_proc_name_to_oid_map)
+    best: Optional[int] = None
+    for k in normalize_regproc(s):
+        oid_val = proc_name_to_oid.get(k.strip().lower())
+        if oid_val is not None and is_system_oid(oid_val):
+            if best is None or oid_val < best:
+                best = oid_val
+    if best is not None:
+        return best
+
+    # Last resort: scan by bare name (stable)
+    bare_keys = normalize_regproc(s)
+    bare = None
+    for k in bare_keys:
+        if "." not in k and not k.startswith('"'):
+            bare = k
+            break
+    if not bare:
+        # maybe it only came as schema-qualified; nothing else to do
+        return None
+
+    candidates_pg: List[int] = []
+    candidates_other: List[int] = []
+    for oid, p in procs_by_oid.items():
+        if not is_system_oid(p.oid):
+            continue
+        if (p.proname or "").strip().lower() != bare:
+            continue
+        schema = resolve_namespace_name(namespaces_by_oid, p.pronamespace or 0).lower()
+        if schema == "pg_catalog":
+            candidates_pg.append(oid)
+        else:
+            candidates_other.append(oid)
+
+    if candidates_pg:
+        return min(candidates_pg)
+    if candidates_other:
+        return min(candidates_other)
+    return None
+
+
+# -----------------------------------------------------------------------------
+# Emission
+# -----------------------------------------------------------------------------
+
 def _emit_type_block(
     *,
     t: TypeRow,
@@ -165,6 +264,9 @@ def _emit_type_block(
     type_name_by_oid: Dict[int, str],
     element_to_array_oid: Dict[int, int],
     planning: Optional[dict],
+    proc_name_to_oid: Dict[str, int],
+    procs_by_oid: Dict[int, ProcRow],
+    namespaces_by_oid: Dict[int, NamespaceRow],
 ) -> str:
     type_name = t.typname
     category = type_category_code(t)
@@ -181,7 +283,9 @@ def _emit_type_block(
     if is_arr:
         out.append("  is_array: true")
         if element_name:
-            out.append(f'  element_type {{ name: "{pb_escape(element_name)}" path: "{pb_escape(namespace_name)}" }}')
+            out.append(
+                f'  element_type {{ name: "{pb_escape(element_name)}" path: "{pb_escape(namespace_name)}" }}'
+            )
 
     # Engine-specific: raw pg_type
     out.append("  engine_specific {")
@@ -199,6 +303,8 @@ def _emit_type_block(
         out.append(f'      typdelim: "{pb_escape(t.typdelim)}"')
     if t.typalign is not None:
         out.append(f'      typalign: "{pb_escape(t.typalign)}"')
+
+    # Array linkage
     if is_arr and t.typelem is not None and t.typelem != 0:
         out.append(f"      typelem: {t.typelem}")
     if not is_arr:
@@ -207,8 +313,26 @@ def _emit_type_block(
             typarray_oid = element_to_array_oid.get(t.oid) or 0
         if typarray_oid and is_system_oid(typarray_oid):
             out.append(f"      typarray: {typarray_oid}")
+
     if t.typcollation is not None and t.typcollation != 0:
         out.append(f"      typcollation: {t.typcollation}")
+
+    def emit_proc_oid(field_name: str, raw_value: Optional[str]) -> None:
+        oid_val = _resolve_proc_ref_to_oid(
+            raw=raw_value,
+            proc_name_to_oid=proc_name_to_oid,
+            procs_by_oid=procs_by_oid,
+            namespaces_by_oid=namespaces_by_oid,
+        )
+        if oid_val is not None:
+            out.append(f"      {field_name}: {oid_val}")
+
+    emit_proc_oid("typinput", getattr(t, "typinput_raw", None))
+    emit_proc_oid("typoutput", getattr(t, "typoutput_raw", None))
+    emit_proc_oid("typreceive", getattr(t, "typreceive_raw", None))
+    emit_proc_oid("typsend", getattr(t, "typsend_raw", None))
+    emit_proc_oid("typmodin", getattr(t, "typmodin_raw", None))
+    emit_proc_oid("typmodout", getattr(t, "typmodout_raw", None))
 
     out.append("    }")
     out.append("  }")
@@ -220,7 +344,6 @@ def _emit_type_block(
         out.append("    [floe.ext.floe_type_planning_semantics] {")
         out.append(f"      type_oid: {t.oid}")
 
-        # optional fields
         if planning.get("eq_op_oid"):
             out.append(f"      eq_op_oid: {planning['eq_op_oid']}")
         if planning.get("btree_cmp_proc_oid"):
@@ -264,7 +387,6 @@ def _pick_default_opclass(
     am_oid: int,
     type_oid: int,
 ) -> Optional[OpclassRow]:
-    # Prefer opcdefault=true, else first matching.
     candidates: List[OpclassRow] = []
     defaults: List[OpclassRow] = []
     for oid in sorted(opclasses_by_oid.keys()):
@@ -291,7 +413,6 @@ def _find_amop_operator(
     type_oid: int,
     require_purpose: Optional[str] = "s",
 ) -> Optional[int]:
-    # btree strategies: 1 <, 3 =, 5 >
     for r in amops:
         if r.amopfamily != family_oid:
             continue
@@ -329,23 +450,17 @@ def _find_amproc_function(
             continue
         if (r.amprocnum or 0) != procnum:
             continue
-
-        # Often both left/right are the same for btree cmp procs.
-        # We match either side to be tolerant.
         if (r.amproclefttype or 0) != type_oid and (r.amprocrighttype or 0) != type_oid:
             continue
 
         func_oid: Optional[int] = None
 
-        # Back-compat: older utils used `amproc` directly
         if hasattr(r, "amproc"):
             func_oid = getattr(r, "amproc")
 
-        # New utils: numeric OID if available
         if func_oid is None:
             func_oid = getattr(r, "amproc_oid", None)
 
-        # New utils: name fallback
         if func_oid is None:
             amproc_name = getattr(r, "amproc_name", None)
             if amproc_name:
@@ -366,7 +481,6 @@ def _compute_planning_semantics(
     amprocs: List[AmprocRow],
     proc_name_to_oid: Dict[str, int],
 ) -> Optional[dict]:
-    # Basic semantics are meaningless for pseudo-types; keep best-effort and allow empty
     out: dict = {}
 
     if t.typcollation and t.typcollation != 0:
@@ -375,7 +489,6 @@ def _compute_planning_semantics(
     btree_oid = _find_am_oid(am_by_oid, "btree")
     hash_oid = _find_am_oid(am_by_oid, "hash")
 
-    # BTree
     if btree_oid:
         btree_oc = _pick_default_opclass(opclass_by_oid, am_oid=btree_oid, type_oid=t.oid)
         if btree_oc:
@@ -402,7 +515,6 @@ def _compute_planning_semantics(
             if cmp_fn:
                 out["btree_cmp_proc_oid"] = cmp_fn
 
-    # Hash
     if hash_oid:
         hash_oc = _pick_default_opclass(opclass_by_oid, am_oid=hash_oid, type_oid=t.oid)
         if hash_oc:
@@ -435,13 +547,11 @@ def generate_types_pbtxt(
     procs_by_oid = read_procs(csv_dir)
     proc_name_to_oid = build_proc_name_to_oid_map(procs_by_oid, namespaces)
 
-    # planning inputs
     am_by_oid = read_am(csv_dir)
     opclass_by_oid = read_opclass(csv_dir)
     amops = read_amop(csv_dir)
     amprocs = read_amproc(csv_dir)
 
-    # Precompute OID -> typname for element lookups
     type_name_by_oid: Dict[int, str] = {oid: t.typname for oid, t in types.items() if t.typname}
 
     required_type_oids = _collect_required_type_oids(procs_by_oid)
@@ -494,6 +604,9 @@ def generate_types_pbtxt(
                 type_name_by_oid=type_name_by_oid,
                 element_to_array_oid=element_to_array_oid,
                 planning=planning,
+                proc_name_to_oid=proc_name_to_oid,
+                procs_by_oid=procs_by_oid,
+                namespaces_by_oid=namespaces,
             )
         )
         stats.record_emitted()

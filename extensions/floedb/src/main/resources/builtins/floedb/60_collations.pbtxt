@@ -15,22 +15,6 @@
 collations {
   name {
     path: "pg_catalog"
-    name: "default"
-  }
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 100
-      collname: "default"
-      collnamespace: 11
-      collencoding: -1
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
     name: "C"
   }
   locale: "C"
@@ -71,15 +55,15 @@ collations {
     path: "pg_catalog"
     name: "aa_DJ"
   }
-  locale: "aa_DJ.utf8"
+  locale: "aa_DJ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12000
+      oid: 12001
       collname: "aa_DJ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "aa_DJ.utf8"
-      collctype: "aa_DJ.utf8"
+      collencoding: 8
+      collcollate: "aa_DJ"
+      collctype: "aa_DJ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -90,15 +74,15 @@ collations {
     path: "pg_catalog"
     name: "aa_DJ"
   }
-  locale: "aa_DJ"
+  locale: "aa_DJ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12001
+      oid: 12000
       collname: "aa_DJ"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "aa_DJ"
-      collctype: "aa_DJ"
+      collencoding: 6
+      collcollate: "aa_DJ.utf8"
+      collctype: "aa_DJ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -261,15 +245,15 @@ collations {
     path: "pg_catalog"
     name: "af_ZA"
   }
-  locale: "af_ZA.utf8"
+  locale: "af_ZA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12010
+      oid: 12011
       collname: "af_ZA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "af_ZA.utf8"
-      collctype: "af_ZA.utf8"
+      collencoding: 8
+      collcollate: "af_ZA"
+      collctype: "af_ZA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -280,15 +264,15 @@ collations {
     path: "pg_catalog"
     name: "af_ZA"
   }
-  locale: "af_ZA"
+  locale: "af_ZA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12011
+      oid: 12010
       collname: "af_ZA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "af_ZA"
-      collctype: "af_ZA"
+      collencoding: 6
+      collcollate: "af_ZA.utf8"
+      collctype: "af_ZA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -375,15 +359,15 @@ collations {
     path: "pg_catalog"
     name: "an_ES"
   }
-  locale: "an_ES.utf8"
+  locale: "an_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12016
+      oid: 12017
       collname: "an_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "an_ES.utf8"
-      collctype: "an_ES.utf8"
+      collencoding: 16
+      collcollate: "an_ES"
+      collctype: "an_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -394,15 +378,15 @@ collations {
     path: "pg_catalog"
     name: "an_ES"
   }
-  locale: "an_ES"
+  locale: "an_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12017
+      oid: 12016
       collname: "an_ES"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "an_ES"
-      collctype: "an_ES"
+      collencoding: 6
+      collcollate: "an_ES.utf8"
+      collctype: "an_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -451,15 +435,15 @@ collations {
     path: "pg_catalog"
     name: "ar_AE"
   }
-  locale: "ar_AE.utf8"
+  locale: "ar_AE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12020
+      oid: 12021
       collname: "ar_AE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_AE.utf8"
-      collctype: "ar_AE.utf8"
+      collencoding: 26
+      collcollate: "ar_AE"
+      collctype: "ar_AE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -470,15 +454,15 @@ collations {
     path: "pg_catalog"
     name: "ar_AE"
   }
-  locale: "ar_AE"
+  locale: "ar_AE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12021
+      oid: 12020
       collname: "ar_AE"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_AE"
-      collctype: "ar_AE"
+      collencoding: 6
+      collcollate: "ar_AE.utf8"
+      collctype: "ar_AE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -527,15 +511,15 @@ collations {
     path: "pg_catalog"
     name: "ar_BH"
   }
-  locale: "ar_BH.utf8"
+  locale: "ar_BH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12024
+      oid: 12025
       collname: "ar_BH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_BH.utf8"
-      collctype: "ar_BH.utf8"
+      collencoding: 26
+      collcollate: "ar_BH"
+      collctype: "ar_BH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -546,15 +530,15 @@ collations {
     path: "pg_catalog"
     name: "ar_BH"
   }
-  locale: "ar_BH"
+  locale: "ar_BH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12025
+      oid: 12024
       collname: "ar_BH"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_BH"
-      collctype: "ar_BH"
+      collencoding: 6
+      collcollate: "ar_BH.utf8"
+      collctype: "ar_BH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -603,15 +587,15 @@ collations {
     path: "pg_catalog"
     name: "ar_DZ"
   }
-  locale: "ar_DZ.utf8"
+  locale: "ar_DZ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12028
+      oid: 12029
       collname: "ar_DZ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_DZ.utf8"
-      collctype: "ar_DZ.utf8"
+      collencoding: 26
+      collcollate: "ar_DZ"
+      collctype: "ar_DZ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -622,15 +606,15 @@ collations {
     path: "pg_catalog"
     name: "ar_DZ"
   }
-  locale: "ar_DZ"
+  locale: "ar_DZ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12029
+      oid: 12028
       collname: "ar_DZ"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_DZ"
-      collctype: "ar_DZ"
+      collencoding: 6
+      collcollate: "ar_DZ.utf8"
+      collctype: "ar_DZ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -679,15 +663,15 @@ collations {
     path: "pg_catalog"
     name: "ar_EG"
   }
-  locale: "ar_EG.utf8"
+  locale: "ar_EG"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12032
+      oid: 12033
       collname: "ar_EG"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_EG.utf8"
-      collctype: "ar_EG.utf8"
+      collencoding: 26
+      collcollate: "ar_EG"
+      collctype: "ar_EG"
     }
     payload_type: "floe.collation+proto"
   }
@@ -698,15 +682,15 @@ collations {
     path: "pg_catalog"
     name: "ar_EG"
   }
-  locale: "ar_EG"
+  locale: "ar_EG.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12033
+      oid: 12032
       collname: "ar_EG"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_EG"
-      collctype: "ar_EG"
+      collencoding: 6
+      collcollate: "ar_EG.utf8"
+      collctype: "ar_EG.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -793,15 +777,15 @@ collations {
     path: "pg_catalog"
     name: "ar_IQ"
   }
-  locale: "ar_IQ.utf8"
+  locale: "ar_IQ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12038
+      oid: 12039
       collname: "ar_IQ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_IQ.utf8"
-      collctype: "ar_IQ.utf8"
+      collencoding: 26
+      collcollate: "ar_IQ"
+      collctype: "ar_IQ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -812,15 +796,15 @@ collations {
     path: "pg_catalog"
     name: "ar_IQ"
   }
-  locale: "ar_IQ"
+  locale: "ar_IQ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12039
+      oid: 12038
       collname: "ar_IQ"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_IQ"
-      collctype: "ar_IQ"
+      collencoding: 6
+      collcollate: "ar_IQ.utf8"
+      collctype: "ar_IQ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -869,15 +853,15 @@ collations {
     path: "pg_catalog"
     name: "ar_JO"
   }
-  locale: "ar_JO.utf8"
+  locale: "ar_JO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12042
+      oid: 12043
       collname: "ar_JO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_JO.utf8"
-      collctype: "ar_JO.utf8"
+      collencoding: 26
+      collcollate: "ar_JO"
+      collctype: "ar_JO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -888,15 +872,15 @@ collations {
     path: "pg_catalog"
     name: "ar_JO"
   }
-  locale: "ar_JO"
+  locale: "ar_JO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12043
+      oid: 12042
       collname: "ar_JO"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_JO"
-      collctype: "ar_JO"
+      collencoding: 6
+      collcollate: "ar_JO.utf8"
+      collctype: "ar_JO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -945,15 +929,15 @@ collations {
     path: "pg_catalog"
     name: "ar_KW"
   }
-  locale: "ar_KW.utf8"
+  locale: "ar_KW"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12046
+      oid: 12047
       collname: "ar_KW"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_KW.utf8"
-      collctype: "ar_KW.utf8"
+      collencoding: 26
+      collcollate: "ar_KW"
+      collctype: "ar_KW"
     }
     payload_type: "floe.collation+proto"
   }
@@ -964,15 +948,15 @@ collations {
     path: "pg_catalog"
     name: "ar_KW"
   }
-  locale: "ar_KW"
+  locale: "ar_KW.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12047
+      oid: 12046
       collname: "ar_KW"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_KW"
-      collctype: "ar_KW"
+      collencoding: 6
+      collcollate: "ar_KW.utf8"
+      collctype: "ar_KW.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1021,15 +1005,15 @@ collations {
     path: "pg_catalog"
     name: "ar_LB"
   }
-  locale: "ar_LB.utf8"
+  locale: "ar_LB"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12050
+      oid: 12051
       collname: "ar_LB"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_LB.utf8"
-      collctype: "ar_LB.utf8"
+      collencoding: 26
+      collcollate: "ar_LB"
+      collctype: "ar_LB"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1040,15 +1024,15 @@ collations {
     path: "pg_catalog"
     name: "ar_LB"
   }
-  locale: "ar_LB"
+  locale: "ar_LB.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12051
+      oid: 12050
       collname: "ar_LB"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_LB"
-      collctype: "ar_LB"
+      collencoding: 6
+      collcollate: "ar_LB.utf8"
+      collctype: "ar_LB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1097,15 +1081,15 @@ collations {
     path: "pg_catalog"
     name: "ar_LY"
   }
-  locale: "ar_LY.utf8"
+  locale: "ar_LY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12054
+      oid: 12055
       collname: "ar_LY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_LY.utf8"
-      collctype: "ar_LY.utf8"
+      collencoding: 26
+      collcollate: "ar_LY"
+      collctype: "ar_LY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1116,15 +1100,15 @@ collations {
     path: "pg_catalog"
     name: "ar_LY"
   }
-  locale: "ar_LY"
+  locale: "ar_LY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12055
+      oid: 12054
       collname: "ar_LY"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_LY"
-      collctype: "ar_LY"
+      collencoding: 6
+      collcollate: "ar_LY.utf8"
+      collctype: "ar_LY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1173,15 +1157,15 @@ collations {
     path: "pg_catalog"
     name: "ar_MA"
   }
-  locale: "ar_MA.utf8"
+  locale: "ar_MA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12058
+      oid: 12059
       collname: "ar_MA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_MA.utf8"
-      collctype: "ar_MA.utf8"
+      collencoding: 26
+      collcollate: "ar_MA"
+      collctype: "ar_MA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1192,15 +1176,15 @@ collations {
     path: "pg_catalog"
     name: "ar_MA"
   }
-  locale: "ar_MA"
+  locale: "ar_MA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12059
+      oid: 12058
       collname: "ar_MA"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_MA"
-      collctype: "ar_MA"
+      collencoding: 6
+      collcollate: "ar_MA.utf8"
+      collctype: "ar_MA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1249,15 +1233,15 @@ collations {
     path: "pg_catalog"
     name: "ar_OM"
   }
-  locale: "ar_OM.utf8"
+  locale: "ar_OM"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12062
+      oid: 12063
       collname: "ar_OM"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_OM.utf8"
-      collctype: "ar_OM.utf8"
+      collencoding: 26
+      collcollate: "ar_OM"
+      collctype: "ar_OM"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1268,15 +1252,15 @@ collations {
     path: "pg_catalog"
     name: "ar_OM"
   }
-  locale: "ar_OM"
+  locale: "ar_OM.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12063
+      oid: 12062
       collname: "ar_OM"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_OM"
-      collctype: "ar_OM"
+      collencoding: 6
+      collcollate: "ar_OM.utf8"
+      collctype: "ar_OM.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1325,15 +1309,15 @@ collations {
     path: "pg_catalog"
     name: "ar_QA"
   }
-  locale: "ar_QA.utf8"
+  locale: "ar_QA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12066
+      oid: 12067
       collname: "ar_QA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_QA.utf8"
-      collctype: "ar_QA.utf8"
+      collencoding: 26
+      collcollate: "ar_QA"
+      collctype: "ar_QA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1344,15 +1328,15 @@ collations {
     path: "pg_catalog"
     name: "ar_QA"
   }
-  locale: "ar_QA"
+  locale: "ar_QA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12067
+      oid: 12066
       collname: "ar_QA"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_QA"
-      collctype: "ar_QA"
+      collencoding: 6
+      collcollate: "ar_QA.utf8"
+      collctype: "ar_QA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1401,15 +1385,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SA"
   }
-  locale: "ar_SA.utf8"
+  locale: "ar_SA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12070
+      oid: 12071
       collname: "ar_SA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_SA.utf8"
-      collctype: "ar_SA.utf8"
+      collencoding: 26
+      collcollate: "ar_SA"
+      collctype: "ar_SA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1420,15 +1404,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SA"
   }
-  locale: "ar_SA"
+  locale: "ar_SA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12071
+      oid: 12070
       collname: "ar_SA"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_SA"
-      collctype: "ar_SA"
+      collencoding: 6
+      collcollate: "ar_SA.utf8"
+      collctype: "ar_SA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1477,15 +1461,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SD"
   }
-  locale: "ar_SD.utf8"
+  locale: "ar_SD"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12074
+      oid: 12075
       collname: "ar_SD"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_SD.utf8"
-      collctype: "ar_SD.utf8"
+      collencoding: 26
+      collcollate: "ar_SD"
+      collctype: "ar_SD"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1496,15 +1480,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SD"
   }
-  locale: "ar_SD"
+  locale: "ar_SD.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12075
+      oid: 12074
       collname: "ar_SD"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_SD"
-      collctype: "ar_SD"
+      collencoding: 6
+      collcollate: "ar_SD.utf8"
+      collctype: "ar_SD.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1553,15 +1537,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SY"
   }
-  locale: "ar_SY.utf8"
+  locale: "ar_SY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12078
+      oid: 12079
       collname: "ar_SY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_SY.utf8"
-      collctype: "ar_SY.utf8"
+      collencoding: 26
+      collcollate: "ar_SY"
+      collctype: "ar_SY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1572,15 +1556,15 @@ collations {
     path: "pg_catalog"
     name: "ar_SY"
   }
-  locale: "ar_SY"
+  locale: "ar_SY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12079
+      oid: 12078
       collname: "ar_SY"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_SY"
-      collctype: "ar_SY"
+      collencoding: 6
+      collcollate: "ar_SY.utf8"
+      collctype: "ar_SY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1629,15 +1613,15 @@ collations {
     path: "pg_catalog"
     name: "ar_TN"
   }
-  locale: "ar_TN.utf8"
+  locale: "ar_TN"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12082
+      oid: 12083
       collname: "ar_TN"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_TN.utf8"
-      collctype: "ar_TN.utf8"
+      collencoding: 26
+      collcollate: "ar_TN"
+      collctype: "ar_TN"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1648,15 +1632,15 @@ collations {
     path: "pg_catalog"
     name: "ar_TN"
   }
-  locale: "ar_TN"
+  locale: "ar_TN.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12083
+      oid: 12082
       collname: "ar_TN"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_TN"
-      collctype: "ar_TN"
+      collencoding: 6
+      collcollate: "ar_TN.utf8"
+      collctype: "ar_TN.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1705,15 +1689,15 @@ collations {
     path: "pg_catalog"
     name: "ar_YE"
   }
-  locale: "ar_YE.utf8"
+  locale: "ar_YE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12086
+      oid: 12087
       collname: "ar_YE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ar_YE.utf8"
-      collctype: "ar_YE.utf8"
+      collencoding: 26
+      collcollate: "ar_YE"
+      collctype: "ar_YE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1724,15 +1708,15 @@ collations {
     path: "pg_catalog"
     name: "ar_YE"
   }
-  locale: "ar_YE"
+  locale: "ar_YE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12087
+      oid: 12086
       collname: "ar_YE"
       collnamespace: 11
-      collencoding: 26
-      collcollate: "ar_YE"
-      collctype: "ar_YE"
+      collencoding: 6
+      collcollate: "ar_YE.utf8"
+      collctype: "ar_YE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1819,15 +1803,15 @@ collations {
     path: "pg_catalog"
     name: "ast_ES"
   }
-  locale: "ast_ES.utf8"
+  locale: "ast_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12092
+      oid: 12093
       collname: "ast_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ast_ES.utf8"
-      collctype: "ast_ES.utf8"
+      collencoding: 16
+      collcollate: "ast_ES"
+      collctype: "ast_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1838,15 +1822,15 @@ collations {
     path: "pg_catalog"
     name: "ast_ES"
   }
-  locale: "ast_ES"
+  locale: "ast_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12093
+      oid: 12092
       collname: "ast_ES"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "ast_ES"
-      collctype: "ast_ES"
+      collencoding: 6
+      collcollate: "ast_ES.utf8"
+      collctype: "ast_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1971,15 +1955,15 @@ collations {
     path: "pg_catalog"
     name: "be_BY"
   }
-  locale: "be_BY.utf8"
+  locale: "be_BY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12100
+      oid: 12101
       collname: "be_BY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "be_BY.utf8"
-      collctype: "be_BY.utf8"
+      collencoding: 23
+      collcollate: "be_BY"
+      collctype: "be_BY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -1990,15 +1974,15 @@ collations {
     path: "pg_catalog"
     name: "be_BY"
   }
-  locale: "be_BY"
+  locale: "be_BY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12101
+      oid: 12100
       collname: "be_BY"
       collnamespace: 11
-      collencoding: 23
-      collcollate: "be_BY"
-      collctype: "be_BY"
+      collencoding: 6
+      collcollate: "be_BY.utf8"
+      collctype: "be_BY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2199,15 +2183,15 @@ collations {
     path: "pg_catalog"
     name: "bg_BG"
   }
-  locale: "bg_BG.utf8"
+  locale: "bg_BG"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12112
+      oid: 12113
       collname: "bg_BG"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "bg_BG.utf8"
-      collctype: "bg_BG.utf8"
+      collencoding: 23
+      collcollate: "bg_BG"
+      collctype: "bg_BG"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2218,15 +2202,15 @@ collations {
     path: "pg_catalog"
     name: "bg_BG"
   }
-  locale: "bg_BG"
+  locale: "bg_BG.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12113
+      oid: 12112
       collname: "bg_BG"
       collnamespace: 11
-      collencoding: 23
-      collcollate: "bg_BG"
-      collctype: "bg_BG"
+      collencoding: 6
+      collcollate: "bg_BG.utf8"
+      collctype: "bg_BG.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2484,15 +2468,15 @@ collations {
     path: "pg_catalog"
     name: "br_FR"
   }
-  locale: "br_FR.utf8"
+  locale: "br_FR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12127
+      oid: 12128
       collname: "br_FR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "br_FR.utf8"
-      collctype: "br_FR.utf8"
+      collencoding: 8
+      collcollate: "br_FR"
+      collctype: "br_FR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2503,15 +2487,15 @@ collations {
     path: "pg_catalog"
     name: "br_FR"
   }
-  locale: "br_FR"
+  locale: "br_FR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12128
+      oid: 12127
       collname: "br_FR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "br_FR"
-      collctype: "br_FR"
+      collencoding: 6
+      collcollate: "br_FR.utf8"
+      collctype: "br_FR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2636,15 +2620,15 @@ collations {
     path: "pg_catalog"
     name: "bs_BA"
   }
-  locale: "bs_BA.utf8"
+  locale: "bs_BA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12135
+      oid: 12136
       collname: "bs_BA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "bs_BA.utf8"
-      collctype: "bs_BA.utf8"
+      collencoding: 9
+      collcollate: "bs_BA"
+      collctype: "bs_BA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2655,15 +2639,15 @@ collations {
     path: "pg_catalog"
     name: "bs_BA"
   }
-  locale: "bs_BA"
+  locale: "bs_BA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12136
+      oid: 12135
       collname: "bs_BA"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "bs_BA"
-      collctype: "bs_BA"
+      collencoding: 6
+      collcollate: "bs_BA.utf8"
+      collctype: "bs_BA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2750,15 +2734,15 @@ collations {
     path: "pg_catalog"
     name: "ca_AD"
   }
-  locale: "ca_AD.utf8"
+  locale: "ca_AD"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12141
+      oid: 12142
       collname: "ca_AD"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ca_AD.utf8"
-      collctype: "ca_AD.utf8"
+      collencoding: 16
+      collcollate: "ca_AD"
+      collctype: "ca_AD"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2769,15 +2753,15 @@ collations {
     path: "pg_catalog"
     name: "ca_AD"
   }
-  locale: "ca_AD"
+  locale: "ca_AD.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12142
+      oid: 12141
       collname: "ca_AD"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "ca_AD"
-      collctype: "ca_AD"
+      collencoding: 6
+      collcollate: "ca_AD.utf8"
+      collctype: "ca_AD.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2826,15 +2810,15 @@ collations {
     path: "pg_catalog"
     name: "ca_ES"
   }
-  locale: "ca_ES.utf8"
+  locale: "ca_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12145
+      oid: 12146
       collname: "ca_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ca_ES.utf8"
-      collctype: "ca_ES.utf8"
+      collencoding: 8
+      collcollate: "ca_ES"
+      collctype: "ca_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2845,15 +2829,15 @@ collations {
     path: "pg_catalog"
     name: "ca_ES"
   }
-  locale: "ca_ES"
+  locale: "ca_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12146
+      oid: 12145
       collname: "ca_ES"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "ca_ES"
-      collctype: "ca_ES"
+      collencoding: 6
+      collcollate: "ca_ES.utf8"
+      collctype: "ca_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2940,15 +2924,15 @@ collations {
     path: "pg_catalog"
     name: "ca_FR"
   }
-  locale: "ca_FR.utf8"
+  locale: "ca_FR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12151
+      oid: 12152
       collname: "ca_FR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ca_FR.utf8"
-      collctype: "ca_FR.utf8"
+      collencoding: 16
+      collcollate: "ca_FR"
+      collctype: "ca_FR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -2959,15 +2943,15 @@ collations {
     path: "pg_catalog"
     name: "ca_FR"
   }
-  locale: "ca_FR"
+  locale: "ca_FR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12152
+      oid: 12151
       collname: "ca_FR"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "ca_FR"
-      collctype: "ca_FR"
+      collencoding: 6
+      collcollate: "ca_FR.utf8"
+      collctype: "ca_FR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3016,15 +3000,15 @@ collations {
     path: "pg_catalog"
     name: "ca_IT"
   }
-  locale: "ca_IT.utf8"
+  locale: "ca_IT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12155
+      oid: 12156
       collname: "ca_IT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ca_IT.utf8"
-      collctype: "ca_IT.utf8"
+      collencoding: 16
+      collcollate: "ca_IT"
+      collctype: "ca_IT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3035,15 +3019,15 @@ collations {
     path: "pg_catalog"
     name: "ca_IT"
   }
-  locale: "ca_IT"
+  locale: "ca_IT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12156
+      oid: 12155
       collname: "ca_IT"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "ca_IT"
-      collctype: "ca_IT"
+      collencoding: 6
+      collcollate: "ca_IT.utf8"
+      collctype: "ca_IT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3168,15 +3152,15 @@ collations {
     path: "pg_catalog"
     name: "cs_CZ"
   }
-  locale: "cs_CZ.utf8"
+  locale: "cs_CZ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12163
+      oid: 12164
       collname: "cs_CZ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "cs_CZ.utf8"
-      collctype: "cs_CZ.utf8"
+      collencoding: 9
+      collcollate: "cs_CZ"
+      collctype: "cs_CZ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3187,15 +3171,15 @@ collations {
     path: "pg_catalog"
     name: "cs_CZ"
   }
-  locale: "cs_CZ"
+  locale: "cs_CZ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12164
+      oid: 12163
       collname: "cs_CZ"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "cs_CZ"
-      collctype: "cs_CZ"
+      collencoding: 6
+      collcollate: "cs_CZ.utf8"
+      collctype: "cs_CZ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3320,15 +3304,15 @@ collations {
     path: "pg_catalog"
     name: "cy_GB"
   }
-  locale: "cy_GB.utf8"
+  locale: "cy_GB"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12171
+      oid: 12172
       collname: "cy_GB"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "cy_GB.utf8"
-      collctype: "cy_GB.utf8"
+      collencoding: 15
+      collcollate: "cy_GB"
+      collctype: "cy_GB"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3339,15 +3323,15 @@ collations {
     path: "pg_catalog"
     name: "cy_GB"
   }
-  locale: "cy_GB"
+  locale: "cy_GB.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12172
+      oid: 12171
       collname: "cy_GB"
       collnamespace: 11
-      collencoding: 15
-      collcollate: "cy_GB"
-      collctype: "cy_GB"
+      collencoding: 6
+      collcollate: "cy_GB.utf8"
+      collctype: "cy_GB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3415,25 +3399,6 @@ collations {
     path: "pg_catalog"
     name: "da_DK"
   }
-  locale: "da_DK.utf8"
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 12176
-      collname: "da_DK"
-      collnamespace: 11
-      collencoding: 6
-      collcollate: "da_DK.utf8"
-      collctype: "da_DK.utf8"
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
-    name: "da_DK"
-  }
   locale: "da_DK"
   engine_specific {
     [floe.ext.floe_collation] {
@@ -3462,6 +3427,25 @@ collations {
       collencoding: 16
       collcollate: "da_DK.iso885915"
       collctype: "da_DK.iso885915"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "da_DK"
+  }
+  locale: "da_DK.utf8"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 12176
+      collname: "da_DK"
+      collnamespace: 11
+      collencoding: 6
+      collcollate: "da_DK.utf8"
+      collctype: "da_DK.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3567,15 +3551,15 @@ collations {
     path: "pg_catalog"
     name: "de_AT"
   }
-  locale: "de_AT.utf8"
+  locale: "de_AT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12184
+      oid: 12185
       collname: "de_AT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "de_AT.utf8"
-      collctype: "de_AT.utf8"
+      collencoding: 8
+      collcollate: "de_AT"
+      collctype: "de_AT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3586,15 +3570,15 @@ collations {
     path: "pg_catalog"
     name: "de_AT"
   }
-  locale: "de_AT"
+  locale: "de_AT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12185
+      oid: 12184
       collname: "de_AT"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "de_AT"
-      collctype: "de_AT"
+      collencoding: 6
+      collcollate: "de_AT.utf8"
+      collctype: "de_AT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3681,15 +3665,15 @@ collations {
     path: "pg_catalog"
     name: "de_BE"
   }
-  locale: "de_BE.utf8"
+  locale: "de_BE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12190
+      oid: 12191
       collname: "de_BE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "de_BE.utf8"
-      collctype: "de_BE.utf8"
+      collencoding: 8
+      collcollate: "de_BE"
+      collctype: "de_BE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3700,15 +3684,15 @@ collations {
     path: "pg_catalog"
     name: "de_BE"
   }
-  locale: "de_BE"
+  locale: "de_BE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12191
+      oid: 12190
       collname: "de_BE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "de_BE"
-      collctype: "de_BE"
+      collencoding: 6
+      collcollate: "de_BE.utf8"
+      collctype: "de_BE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3795,15 +3779,15 @@ collations {
     path: "pg_catalog"
     name: "de_CH"
   }
-  locale: "de_CH.utf8"
+  locale: "de_CH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12196
+      oid: 12197
       collname: "de_CH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "de_CH.utf8"
-      collctype: "de_CH.utf8"
+      collencoding: 8
+      collcollate: "de_CH"
+      collctype: "de_CH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3814,15 +3798,15 @@ collations {
     path: "pg_catalog"
     name: "de_CH"
   }
-  locale: "de_CH"
+  locale: "de_CH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12197
+      oid: 12196
       collname: "de_CH"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "de_CH"
-      collctype: "de_CH"
+      collencoding: 6
+      collcollate: "de_CH.utf8"
+      collctype: "de_CH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3871,15 +3855,15 @@ collations {
     path: "pg_catalog"
     name: "de_DE"
   }
-  locale: "de_DE.utf8"
+  locale: "de_DE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12200
+      oid: 12201
       collname: "de_DE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "de_DE.utf8"
-      collctype: "de_DE.utf8"
+      collencoding: 8
+      collcollate: "de_DE"
+      collctype: "de_DE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3890,15 +3874,15 @@ collations {
     path: "pg_catalog"
     name: "de_DE"
   }
-  locale: "de_DE"
+  locale: "de_DE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12201
+      oid: 12200
       collname: "de_DE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "de_DE"
-      collctype: "de_DE"
+      collencoding: 6
+      collcollate: "de_DE.utf8"
+      collctype: "de_DE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -3985,15 +3969,15 @@ collations {
     path: "pg_catalog"
     name: "de_LU"
   }
-  locale: "de_LU.utf8"
+  locale: "de_LU"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12206
+      oid: 12207
       collname: "de_LU"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "de_LU.utf8"
-      collctype: "de_LU.utf8"
+      collencoding: 8
+      collcollate: "de_LU"
+      collctype: "de_LU"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4004,15 +3988,15 @@ collations {
     path: "pg_catalog"
     name: "de_LU"
   }
-  locale: "de_LU"
+  locale: "de_LU.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12207
+      oid: 12206
       collname: "de_LU"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "de_LU"
-      collctype: "de_LU"
+      collencoding: 6
+      collcollate: "de_LU.utf8"
+      collctype: "de_LU.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4089,6 +4073,23 @@ collations {
       collencoding: 16
       collcollate: "de_LU.iso885915@euro"
       collctype: "de_LU.iso885915@euro"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "default"
+  }
+  locale: "C"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 100
+      collname: "default"
+      collnamespace: 11
+      collencoding: -1
     }
     payload_type: "floe.collation+proto"
   }
@@ -4270,15 +4271,15 @@ collations {
     path: "pg_catalog"
     name: "el_CY"
   }
-  locale: "el_CY.utf8"
+  locale: "el_CY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12221
+      oid: 12222
       collname: "el_CY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "el_CY.utf8"
-      collctype: "el_CY.utf8"
+      collencoding: 27
+      collcollate: "el_CY"
+      collctype: "el_CY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4289,15 +4290,15 @@ collations {
     path: "pg_catalog"
     name: "el_CY"
   }
-  locale: "el_CY"
+  locale: "el_CY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12222
+      oid: 12221
       collname: "el_CY"
       collnamespace: 11
-      collencoding: 27
-      collcollate: "el_CY"
-      collctype: "el_CY"
+      collencoding: 6
+      collcollate: "el_CY.utf8"
+      collctype: "el_CY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4346,15 +4347,15 @@ collations {
     path: "pg_catalog"
     name: "el_GR"
   }
-  locale: "el_GR.utf8"
+  locale: "el_GR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12225
+      oid: 12226
       collname: "el_GR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "el_GR.utf8"
-      collctype: "el_GR.utf8"
+      collencoding: 27
+      collcollate: "el_GR"
+      collctype: "el_GR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4365,15 +4366,15 @@ collations {
     path: "pg_catalog"
     name: "el_GR"
   }
-  locale: "el_GR"
+  locale: "el_GR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12226
+      oid: 12225
       collname: "el_GR"
       collnamespace: 11
-      collencoding: 27
-      collcollate: "el_GR"
-      collctype: "el_GR"
+      collencoding: 6
+      collcollate: "el_GR.utf8"
+      collctype: "el_GR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4460,15 +4461,15 @@ collations {
     path: "pg_catalog"
     name: "en_AU"
   }
-  locale: "en_AU.utf8"
+  locale: "en_AU"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12231
+      oid: 12232
       collname: "en_AU"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_AU.utf8"
-      collctype: "en_AU.utf8"
+      collencoding: 8
+      collcollate: "en_AU"
+      collctype: "en_AU"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4479,15 +4480,15 @@ collations {
     path: "pg_catalog"
     name: "en_AU"
   }
-  locale: "en_AU"
+  locale: "en_AU.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12232
+      oid: 12231
       collname: "en_AU"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_AU"
-      collctype: "en_AU"
+      collencoding: 6
+      collcollate: "en_AU.utf8"
+      collctype: "en_AU.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4536,15 +4537,15 @@ collations {
     path: "pg_catalog"
     name: "en_BW"
   }
-  locale: "en_BW.utf8"
+  locale: "en_BW"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12235
+      oid: 12236
       collname: "en_BW"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_BW.utf8"
-      collctype: "en_BW.utf8"
+      collencoding: 8
+      collcollate: "en_BW"
+      collctype: "en_BW"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4555,15 +4556,15 @@ collations {
     path: "pg_catalog"
     name: "en_BW"
   }
-  locale: "en_BW"
+  locale: "en_BW.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12236
+      oid: 12235
       collname: "en_BW"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_BW"
-      collctype: "en_BW"
+      collencoding: 6
+      collcollate: "en_BW.utf8"
+      collctype: "en_BW.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4612,15 +4613,15 @@ collations {
     path: "pg_catalog"
     name: "en_CA"
   }
-  locale: "en_CA.utf8"
+  locale: "en_CA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12239
+      oid: 12240
       collname: "en_CA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_CA.utf8"
-      collctype: "en_CA.utf8"
+      collencoding: 8
+      collcollate: "en_CA"
+      collctype: "en_CA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4631,15 +4632,15 @@ collations {
     path: "pg_catalog"
     name: "en_CA"
   }
-  locale: "en_CA"
+  locale: "en_CA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12240
+      oid: 12239
       collname: "en_CA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_CA"
-      collctype: "en_CA"
+      collencoding: 6
+      collcollate: "en_CA.utf8"
+      collctype: "en_CA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4688,15 +4689,15 @@ collations {
     path: "pg_catalog"
     name: "en_DK"
   }
-  locale: "en_DK.utf8"
+  locale: "en_DK"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12243
+      oid: 12244
       collname: "en_DK"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_DK.utf8"
-      collctype: "en_DK.utf8"
+      collencoding: 8
+      collcollate: "en_DK"
+      collctype: "en_DK"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4707,15 +4708,15 @@ collations {
     path: "pg_catalog"
     name: "en_DK"
   }
-  locale: "en_DK"
+  locale: "en_DK.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12244
+      oid: 12243
       collname: "en_DK"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_DK"
-      collctype: "en_DK"
+      collencoding: 6
+      collcollate: "en_DK.utf8"
+      collctype: "en_DK.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4764,25 +4765,6 @@ collations {
     path: "pg_catalog"
     name: "en_GB"
   }
-  locale: "en_GB.utf8"
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 12247
-      collname: "en_GB"
-      collnamespace: 11
-      collencoding: 6
-      collcollate: "en_GB.utf8"
-      collctype: "en_GB.utf8"
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
-    name: "en_GB"
-  }
   locale: "en_GB"
   engine_specific {
     [floe.ext.floe_collation] {
@@ -4811,6 +4793,25 @@ collations {
       collencoding: 16
       collcollate: "en_GB.iso885915"
       collctype: "en_GB.iso885915"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "en_GB"
+  }
+  locale: "en_GB.utf8"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 12247
+      collname: "en_GB"
+      collnamespace: 11
+      collencoding: 6
+      collcollate: "en_GB.utf8"
+      collctype: "en_GB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4878,15 +4879,15 @@ collations {
     path: "pg_catalog"
     name: "en_HK"
   }
-  locale: "en_HK.utf8"
+  locale: "en_HK"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12253
+      oid: 12254
       collname: "en_HK"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_HK.utf8"
-      collctype: "en_HK.utf8"
+      collencoding: 8
+      collcollate: "en_HK"
+      collctype: "en_HK"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4897,15 +4898,15 @@ collations {
     path: "pg_catalog"
     name: "en_HK"
   }
-  locale: "en_HK"
+  locale: "en_HK.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12254
+      oid: 12253
       collname: "en_HK"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_HK"
-      collctype: "en_HK"
+      collencoding: 6
+      collcollate: "en_HK.utf8"
+      collctype: "en_HK.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4954,15 +4955,15 @@ collations {
     path: "pg_catalog"
     name: "en_IE"
   }
-  locale: "en_IE.utf8"
+  locale: "en_IE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12257
+      oid: 12258
       collname: "en_IE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_IE.utf8"
-      collctype: "en_IE.utf8"
+      collencoding: 8
+      collcollate: "en_IE"
+      collctype: "en_IE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -4973,15 +4974,15 @@ collations {
     path: "pg_catalog"
     name: "en_IE"
   }
-  locale: "en_IE"
+  locale: "en_IE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12258
+      oid: 12257
       collname: "en_IE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_IE"
-      collctype: "en_IE"
+      collencoding: 6
+      collcollate: "en_IE.utf8"
+      collctype: "en_IE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5144,15 +5145,15 @@ collations {
     path: "pg_catalog"
     name: "en_NZ"
   }
-  locale: "en_NZ.utf8"
+  locale: "en_NZ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12267
+      oid: 12268
       collname: "en_NZ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_NZ.utf8"
-      collctype: "en_NZ.utf8"
+      collencoding: 8
+      collcollate: "en_NZ"
+      collctype: "en_NZ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5163,15 +5164,15 @@ collations {
     path: "pg_catalog"
     name: "en_NZ"
   }
-  locale: "en_NZ"
+  locale: "en_NZ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12268
+      oid: 12267
       collname: "en_NZ"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_NZ"
-      collctype: "en_NZ"
+      collencoding: 6
+      collcollate: "en_NZ.utf8"
+      collctype: "en_NZ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5220,15 +5221,15 @@ collations {
     path: "pg_catalog"
     name: "en_PH"
   }
-  locale: "en_PH.utf8"
+  locale: "en_PH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12271
+      oid: 12272
       collname: "en_PH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_PH.utf8"
-      collctype: "en_PH.utf8"
+      collencoding: 8
+      collcollate: "en_PH"
+      collctype: "en_PH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5239,15 +5240,15 @@ collations {
     path: "pg_catalog"
     name: "en_PH"
   }
-  locale: "en_PH"
+  locale: "en_PH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12272
+      oid: 12271
       collname: "en_PH"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_PH"
-      collctype: "en_PH"
+      collencoding: 6
+      collcollate: "en_PH.utf8"
+      collctype: "en_PH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5296,15 +5297,15 @@ collations {
     path: "pg_catalog"
     name: "en_SG"
   }
-  locale: "en_SG.utf8"
+  locale: "en_SG"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12275
+      oid: 12276
       collname: "en_SG"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_SG.utf8"
-      collctype: "en_SG.utf8"
+      collencoding: 8
+      collcollate: "en_SG"
+      collctype: "en_SG"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5315,15 +5316,15 @@ collations {
     path: "pg_catalog"
     name: "en_SG"
   }
-  locale: "en_SG"
+  locale: "en_SG.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12276
+      oid: 12275
       collname: "en_SG"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_SG"
-      collctype: "en_SG"
+      collencoding: 6
+      collcollate: "en_SG.utf8"
+      collctype: "en_SG.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5372,25 +5373,6 @@ collations {
     path: "pg_catalog"
     name: "en_US"
   }
-  locale: "en_US.utf8"
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 12279
-      collname: "en_US"
-      collnamespace: 11
-      collencoding: 6
-      collcollate: "en_US.utf8"
-      collctype: "en_US.utf8"
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
-    name: "en_US"
-  }
   locale: "en_US"
   engine_specific {
     [floe.ext.floe_collation] {
@@ -5419,6 +5401,25 @@ collations {
       collencoding: 16
       collcollate: "en_US.iso885915"
       collctype: "en_US.iso885915"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "en_US"
+  }
+  locale: "en_US.utf8"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 12279
+      collname: "en_US"
+      collnamespace: 11
+      collencoding: 6
+      collcollate: "en_US.utf8"
+      collctype: "en_US.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5486,15 +5487,15 @@ collations {
     path: "pg_catalog"
     name: "en_ZA"
   }
-  locale: "en_ZA.utf8"
+  locale: "en_ZA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12285
+      oid: 12286
       collname: "en_ZA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_ZA.utf8"
-      collctype: "en_ZA.utf8"
+      collencoding: 8
+      collcollate: "en_ZA"
+      collctype: "en_ZA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5505,15 +5506,15 @@ collations {
     path: "pg_catalog"
     name: "en_ZA"
   }
-  locale: "en_ZA"
+  locale: "en_ZA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12286
+      oid: 12285
       collname: "en_ZA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_ZA"
-      collctype: "en_ZA"
+      collencoding: 6
+      collcollate: "en_ZA.utf8"
+      collctype: "en_ZA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5600,15 +5601,15 @@ collations {
     path: "pg_catalog"
     name: "en_ZW"
   }
-  locale: "en_ZW.utf8"
+  locale: "en_ZW"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12291
+      oid: 12292
       collname: "en_ZW"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "en_ZW.utf8"
-      collctype: "en_ZW.utf8"
+      collencoding: 8
+      collcollate: "en_ZW"
+      collctype: "en_ZW"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5619,15 +5620,15 @@ collations {
     path: "pg_catalog"
     name: "en_ZW"
   }
-  locale: "en_ZW"
+  locale: "en_ZW.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12292
+      oid: 12291
       collname: "en_ZW"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "en_ZW"
-      collctype: "en_ZW"
+      collencoding: 6
+      collcollate: "en_ZW.utf8"
+      collctype: "en_ZW.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5676,15 +5677,15 @@ collations {
     path: "pg_catalog"
     name: "es_AR"
   }
-  locale: "es_AR.utf8"
+  locale: "es_AR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12295
+      oid: 12296
       collname: "es_AR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_AR.utf8"
-      collctype: "es_AR.utf8"
+      collencoding: 8
+      collcollate: "es_AR"
+      collctype: "es_AR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5695,15 +5696,15 @@ collations {
     path: "pg_catalog"
     name: "es_AR"
   }
-  locale: "es_AR"
+  locale: "es_AR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12296
+      oid: 12295
       collname: "es_AR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_AR"
-      collctype: "es_AR"
+      collencoding: 6
+      collcollate: "es_AR.utf8"
+      collctype: "es_AR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5752,15 +5753,15 @@ collations {
     path: "pg_catalog"
     name: "es_BO"
   }
-  locale: "es_BO.utf8"
+  locale: "es_BO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12299
+      oid: 12300
       collname: "es_BO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_BO.utf8"
-      collctype: "es_BO.utf8"
+      collencoding: 8
+      collcollate: "es_BO"
+      collctype: "es_BO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5771,15 +5772,15 @@ collations {
     path: "pg_catalog"
     name: "es_BO"
   }
-  locale: "es_BO"
+  locale: "es_BO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12300
+      oid: 12299
       collname: "es_BO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_BO"
-      collctype: "es_BO"
+      collencoding: 6
+      collcollate: "es_BO.utf8"
+      collctype: "es_BO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5828,15 +5829,15 @@ collations {
     path: "pg_catalog"
     name: "es_CL"
   }
-  locale: "es_CL.utf8"
+  locale: "es_CL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12303
+      oid: 12304
       collname: "es_CL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_CL.utf8"
-      collctype: "es_CL.utf8"
+      collencoding: 8
+      collcollate: "es_CL"
+      collctype: "es_CL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5847,15 +5848,15 @@ collations {
     path: "pg_catalog"
     name: "es_CL"
   }
-  locale: "es_CL"
+  locale: "es_CL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12304
+      oid: 12303
       collname: "es_CL"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_CL"
-      collctype: "es_CL"
+      collencoding: 6
+      collcollate: "es_CL.utf8"
+      collctype: "es_CL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5904,15 +5905,15 @@ collations {
     path: "pg_catalog"
     name: "es_CO"
   }
-  locale: "es_CO.utf8"
+  locale: "es_CO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12307
+      oid: 12308
       collname: "es_CO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_CO.utf8"
-      collctype: "es_CO.utf8"
+      collencoding: 8
+      collcollate: "es_CO"
+      collctype: "es_CO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5923,15 +5924,15 @@ collations {
     path: "pg_catalog"
     name: "es_CO"
   }
-  locale: "es_CO"
+  locale: "es_CO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12308
+      oid: 12307
       collname: "es_CO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_CO"
-      collctype: "es_CO"
+      collencoding: 6
+      collcollate: "es_CO.utf8"
+      collctype: "es_CO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5980,15 +5981,15 @@ collations {
     path: "pg_catalog"
     name: "es_CR"
   }
-  locale: "es_CR.utf8"
+  locale: "es_CR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12311
+      oid: 12312
       collname: "es_CR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_CR.utf8"
-      collctype: "es_CR.utf8"
+      collencoding: 8
+      collcollate: "es_CR"
+      collctype: "es_CR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -5999,15 +6000,15 @@ collations {
     path: "pg_catalog"
     name: "es_CR"
   }
-  locale: "es_CR"
+  locale: "es_CR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12312
+      oid: 12311
       collname: "es_CR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_CR"
-      collctype: "es_CR"
+      collencoding: 6
+      collcollate: "es_CR.utf8"
+      collctype: "es_CR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6094,15 +6095,15 @@ collations {
     path: "pg_catalog"
     name: "es_DO"
   }
-  locale: "es_DO.utf8"
+  locale: "es_DO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12317
+      oid: 12318
       collname: "es_DO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_DO.utf8"
-      collctype: "es_DO.utf8"
+      collencoding: 8
+      collcollate: "es_DO"
+      collctype: "es_DO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6113,15 +6114,15 @@ collations {
     path: "pg_catalog"
     name: "es_DO"
   }
-  locale: "es_DO"
+  locale: "es_DO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12318
+      oid: 12317
       collname: "es_DO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_DO"
-      collctype: "es_DO"
+      collencoding: 6
+      collcollate: "es_DO.utf8"
+      collctype: "es_DO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6170,15 +6171,15 @@ collations {
     path: "pg_catalog"
     name: "es_EC"
   }
-  locale: "es_EC.utf8"
+  locale: "es_EC"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12321
+      oid: 12322
       collname: "es_EC"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_EC.utf8"
-      collctype: "es_EC.utf8"
+      collencoding: 8
+      collcollate: "es_EC"
+      collctype: "es_EC"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6189,15 +6190,15 @@ collations {
     path: "pg_catalog"
     name: "es_EC"
   }
-  locale: "es_EC"
+  locale: "es_EC.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12322
+      oid: 12321
       collname: "es_EC"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_EC"
-      collctype: "es_EC"
+      collencoding: 6
+      collcollate: "es_EC.utf8"
+      collctype: "es_EC.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6246,15 +6247,15 @@ collations {
     path: "pg_catalog"
     name: "es_ES"
   }
-  locale: "es_ES.utf8"
+  locale: "es_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12325
+      oid: 12326
       collname: "es_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_ES.utf8"
-      collctype: "es_ES.utf8"
+      collencoding: 8
+      collcollate: "es_ES"
+      collctype: "es_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6265,15 +6266,15 @@ collations {
     path: "pg_catalog"
     name: "es_ES"
   }
-  locale: "es_ES"
+  locale: "es_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12326
+      oid: 12325
       collname: "es_ES"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_ES"
-      collctype: "es_ES"
+      collencoding: 6
+      collcollate: "es_ES.utf8"
+      collctype: "es_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6360,15 +6361,15 @@ collations {
     path: "pg_catalog"
     name: "es_GT"
   }
-  locale: "es_GT.utf8"
+  locale: "es_GT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12331
+      oid: 12332
       collname: "es_GT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_GT.utf8"
-      collctype: "es_GT.utf8"
+      collencoding: 8
+      collcollate: "es_GT"
+      collctype: "es_GT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6379,15 +6380,15 @@ collations {
     path: "pg_catalog"
     name: "es_GT"
   }
-  locale: "es_GT"
+  locale: "es_GT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12332
+      oid: 12331
       collname: "es_GT"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_GT"
-      collctype: "es_GT"
+      collencoding: 6
+      collcollate: "es_GT.utf8"
+      collctype: "es_GT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6436,15 +6437,15 @@ collations {
     path: "pg_catalog"
     name: "es_HN"
   }
-  locale: "es_HN.utf8"
+  locale: "es_HN"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12335
+      oid: 12336
       collname: "es_HN"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_HN.utf8"
-      collctype: "es_HN.utf8"
+      collencoding: 8
+      collcollate: "es_HN"
+      collctype: "es_HN"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6455,15 +6456,15 @@ collations {
     path: "pg_catalog"
     name: "es_HN"
   }
-  locale: "es_HN"
+  locale: "es_HN.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12336
+      oid: 12335
       collname: "es_HN"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_HN"
-      collctype: "es_HN"
+      collencoding: 6
+      collcollate: "es_HN.utf8"
+      collctype: "es_HN.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6512,15 +6513,15 @@ collations {
     path: "pg_catalog"
     name: "es_MX"
   }
-  locale: "es_MX.utf8"
+  locale: "es_MX"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12339
+      oid: 12340
       collname: "es_MX"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_MX.utf8"
-      collctype: "es_MX.utf8"
+      collencoding: 8
+      collcollate: "es_MX"
+      collctype: "es_MX"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6531,15 +6532,15 @@ collations {
     path: "pg_catalog"
     name: "es_MX"
   }
-  locale: "es_MX"
+  locale: "es_MX.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12340
+      oid: 12339
       collname: "es_MX"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_MX"
-      collctype: "es_MX"
+      collencoding: 6
+      collcollate: "es_MX.utf8"
+      collctype: "es_MX.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6588,15 +6589,15 @@ collations {
     path: "pg_catalog"
     name: "es_NI"
   }
-  locale: "es_NI.utf8"
+  locale: "es_NI"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12343
+      oid: 12344
       collname: "es_NI"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_NI.utf8"
-      collctype: "es_NI.utf8"
+      collencoding: 8
+      collcollate: "es_NI"
+      collctype: "es_NI"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6607,15 +6608,15 @@ collations {
     path: "pg_catalog"
     name: "es_NI"
   }
-  locale: "es_NI"
+  locale: "es_NI.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12344
+      oid: 12343
       collname: "es_NI"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_NI"
-      collctype: "es_NI"
+      collencoding: 6
+      collcollate: "es_NI.utf8"
+      collctype: "es_NI.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6664,15 +6665,15 @@ collations {
     path: "pg_catalog"
     name: "es_PA"
   }
-  locale: "es_PA.utf8"
+  locale: "es_PA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12347
+      oid: 12348
       collname: "es_PA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_PA.utf8"
-      collctype: "es_PA.utf8"
+      collencoding: 8
+      collcollate: "es_PA"
+      collctype: "es_PA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6683,15 +6684,15 @@ collations {
     path: "pg_catalog"
     name: "es_PA"
   }
-  locale: "es_PA"
+  locale: "es_PA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12348
+      oid: 12347
       collname: "es_PA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_PA"
-      collctype: "es_PA"
+      collencoding: 6
+      collcollate: "es_PA.utf8"
+      collctype: "es_PA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6740,15 +6741,15 @@ collations {
     path: "pg_catalog"
     name: "es_PE"
   }
-  locale: "es_PE.utf8"
+  locale: "es_PE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12351
+      oid: 12352
       collname: "es_PE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_PE.utf8"
-      collctype: "es_PE.utf8"
+      collencoding: 8
+      collcollate: "es_PE"
+      collctype: "es_PE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6759,15 +6760,15 @@ collations {
     path: "pg_catalog"
     name: "es_PE"
   }
-  locale: "es_PE"
+  locale: "es_PE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12352
+      oid: 12351
       collname: "es_PE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_PE"
-      collctype: "es_PE"
+      collencoding: 6
+      collcollate: "es_PE.utf8"
+      collctype: "es_PE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6816,15 +6817,15 @@ collations {
     path: "pg_catalog"
     name: "es_PR"
   }
-  locale: "es_PR.utf8"
+  locale: "es_PR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12355
+      oid: 12356
       collname: "es_PR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_PR.utf8"
-      collctype: "es_PR.utf8"
+      collencoding: 8
+      collcollate: "es_PR"
+      collctype: "es_PR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6835,15 +6836,15 @@ collations {
     path: "pg_catalog"
     name: "es_PR"
   }
-  locale: "es_PR"
+  locale: "es_PR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12356
+      oid: 12355
       collname: "es_PR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_PR"
-      collctype: "es_PR"
+      collencoding: 6
+      collcollate: "es_PR.utf8"
+      collctype: "es_PR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6892,15 +6893,15 @@ collations {
     path: "pg_catalog"
     name: "es_PY"
   }
-  locale: "es_PY.utf8"
+  locale: "es_PY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12359
+      oid: 12360
       collname: "es_PY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_PY.utf8"
-      collctype: "es_PY.utf8"
+      collencoding: 8
+      collcollate: "es_PY"
+      collctype: "es_PY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6911,15 +6912,15 @@ collations {
     path: "pg_catalog"
     name: "es_PY"
   }
-  locale: "es_PY"
+  locale: "es_PY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12360
+      oid: 12359
       collname: "es_PY"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_PY"
-      collctype: "es_PY"
+      collencoding: 6
+      collcollate: "es_PY.utf8"
+      collctype: "es_PY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6968,15 +6969,15 @@ collations {
     path: "pg_catalog"
     name: "es_SV"
   }
-  locale: "es_SV.utf8"
+  locale: "es_SV"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12363
+      oid: 12364
       collname: "es_SV"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_SV.utf8"
-      collctype: "es_SV.utf8"
+      collencoding: 8
+      collcollate: "es_SV"
+      collctype: "es_SV"
     }
     payload_type: "floe.collation+proto"
   }
@@ -6987,15 +6988,15 @@ collations {
     path: "pg_catalog"
     name: "es_SV"
   }
-  locale: "es_SV"
+  locale: "es_SV.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12364
+      oid: 12363
       collname: "es_SV"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_SV"
-      collctype: "es_SV"
+      collencoding: 6
+      collcollate: "es_SV.utf8"
+      collctype: "es_SV.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7044,15 +7045,15 @@ collations {
     path: "pg_catalog"
     name: "es_US"
   }
-  locale: "es_US.utf8"
+  locale: "es_US"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12367
+      oid: 12368
       collname: "es_US"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_US.utf8"
-      collctype: "es_US.utf8"
+      collencoding: 8
+      collcollate: "es_US"
+      collctype: "es_US"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7063,15 +7064,15 @@ collations {
     path: "pg_catalog"
     name: "es_US"
   }
-  locale: "es_US"
+  locale: "es_US.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12368
+      oid: 12367
       collname: "es_US"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_US"
-      collctype: "es_US"
+      collencoding: 6
+      collcollate: "es_US.utf8"
+      collctype: "es_US.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7120,15 +7121,15 @@ collations {
     path: "pg_catalog"
     name: "es_UY"
   }
-  locale: "es_UY.utf8"
+  locale: "es_UY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12371
+      oid: 12372
       collname: "es_UY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_UY.utf8"
-      collctype: "es_UY.utf8"
+      collencoding: 8
+      collcollate: "es_UY"
+      collctype: "es_UY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7139,15 +7140,15 @@ collations {
     path: "pg_catalog"
     name: "es_UY"
   }
-  locale: "es_UY"
+  locale: "es_UY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12372
+      oid: 12371
       collname: "es_UY"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_UY"
-      collctype: "es_UY"
+      collencoding: 6
+      collcollate: "es_UY.utf8"
+      collctype: "es_UY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7196,15 +7197,15 @@ collations {
     path: "pg_catalog"
     name: "es_VE"
   }
-  locale: "es_VE.utf8"
+  locale: "es_VE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12375
+      oid: 12376
       collname: "es_VE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "es_VE.utf8"
-      collctype: "es_VE.utf8"
+      collencoding: 8
+      collcollate: "es_VE"
+      collctype: "es_VE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7215,15 +7216,15 @@ collations {
     path: "pg_catalog"
     name: "es_VE"
   }
-  locale: "es_VE"
+  locale: "es_VE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12376
+      oid: 12375
       collname: "es_VE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "es_VE"
-      collctype: "es_VE"
+      collencoding: 6
+      collcollate: "es_VE.utf8"
+      collctype: "es_VE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7291,25 +7292,6 @@ collations {
     path: "pg_catalog"
     name: "et_EE"
   }
-  locale: "et_EE.utf8"
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 12380
-      collname: "et_EE"
-      collnamespace: 11
-      collencoding: 6
-      collcollate: "et_EE.utf8"
-      collctype: "et_EE.utf8"
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
-    name: "et_EE"
-  }
   locale: "et_EE"
   engine_specific {
     [floe.ext.floe_collation] {
@@ -7338,6 +7320,25 @@ collations {
       collencoding: 16
       collcollate: "et_EE.iso885915"
       collctype: "et_EE.iso885915"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "et_EE"
+  }
+  locale: "et_EE.utf8"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 12380
+      collname: "et_EE"
+      collnamespace: 11
+      collencoding: 6
+      collcollate: "et_EE.utf8"
+      collctype: "et_EE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7405,15 +7406,15 @@ collations {
     path: "pg_catalog"
     name: "eu_ES"
   }
-  locale: "eu_ES.utf8"
+  locale: "eu_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12386
+      oid: 12387
       collname: "eu_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "eu_ES.utf8"
-      collctype: "eu_ES.utf8"
+      collencoding: 8
+      collcollate: "eu_ES"
+      collctype: "eu_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7424,15 +7425,15 @@ collations {
     path: "pg_catalog"
     name: "eu_ES"
   }
-  locale: "eu_ES"
+  locale: "eu_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12387
+      oid: 12386
       collname: "eu_ES"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "eu_ES"
-      collctype: "eu_ES"
+      collencoding: 6
+      collcollate: "eu_ES.utf8"
+      collctype: "eu_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7595,15 +7596,15 @@ collations {
     path: "pg_catalog"
     name: "fi_FI"
   }
-  locale: "fi_FI.utf8"
+  locale: "fi_FI"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12396
+      oid: 12397
       collname: "fi_FI"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fi_FI.utf8"
-      collctype: "fi_FI.utf8"
+      collencoding: 8
+      collcollate: "fi_FI"
+      collctype: "fi_FI"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7614,15 +7615,15 @@ collations {
     path: "pg_catalog"
     name: "fi_FI"
   }
-  locale: "fi_FI"
+  locale: "fi_FI.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12397
+      oid: 12396
       collname: "fi_FI"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fi_FI"
-      collctype: "fi_FI"
+      collencoding: 6
+      collcollate: "fi_FI.utf8"
+      collctype: "fi_FI.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7766,15 +7767,15 @@ collations {
     path: "pg_catalog"
     name: "fo_FO"
   }
-  locale: "fo_FO.utf8"
+  locale: "fo_FO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12405
+      oid: 12406
       collname: "fo_FO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fo_FO.utf8"
-      collctype: "fo_FO.utf8"
+      collencoding: 8
+      collcollate: "fo_FO"
+      collctype: "fo_FO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7785,15 +7786,15 @@ collations {
     path: "pg_catalog"
     name: "fo_FO"
   }
-  locale: "fo_FO"
+  locale: "fo_FO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12406
+      oid: 12405
       collname: "fo_FO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fo_FO"
-      collctype: "fo_FO"
+      collencoding: 6
+      collcollate: "fo_FO.utf8"
+      collctype: "fo_FO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7842,15 +7843,15 @@ collations {
     path: "pg_catalog"
     name: "fr_BE"
   }
-  locale: "fr_BE.utf8"
+  locale: "fr_BE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12409
+      oid: 12410
       collname: "fr_BE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fr_BE.utf8"
-      collctype: "fr_BE.utf8"
+      collencoding: 8
+      collcollate: "fr_BE"
+      collctype: "fr_BE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7861,15 +7862,15 @@ collations {
     path: "pg_catalog"
     name: "fr_BE"
   }
-  locale: "fr_BE"
+  locale: "fr_BE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12410
+      oid: 12409
       collname: "fr_BE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fr_BE"
-      collctype: "fr_BE"
+      collencoding: 6
+      collcollate: "fr_BE.utf8"
+      collctype: "fr_BE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7956,15 +7957,15 @@ collations {
     path: "pg_catalog"
     name: "fr_CA"
   }
-  locale: "fr_CA.utf8"
+  locale: "fr_CA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12415
+      oid: 12416
       collname: "fr_CA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fr_CA.utf8"
-      collctype: "fr_CA.utf8"
+      collencoding: 8
+      collcollate: "fr_CA"
+      collctype: "fr_CA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -7975,15 +7976,15 @@ collations {
     path: "pg_catalog"
     name: "fr_CA"
   }
-  locale: "fr_CA"
+  locale: "fr_CA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12416
+      oid: 12415
       collname: "fr_CA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fr_CA"
-      collctype: "fr_CA"
+      collencoding: 6
+      collcollate: "fr_CA.utf8"
+      collctype: "fr_CA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8032,15 +8033,15 @@ collations {
     path: "pg_catalog"
     name: "fr_CH"
   }
-  locale: "fr_CH.utf8"
+  locale: "fr_CH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12419
+      oid: 12420
       collname: "fr_CH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fr_CH.utf8"
-      collctype: "fr_CH.utf8"
+      collencoding: 8
+      collcollate: "fr_CH"
+      collctype: "fr_CH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8051,15 +8052,15 @@ collations {
     path: "pg_catalog"
     name: "fr_CH"
   }
-  locale: "fr_CH"
+  locale: "fr_CH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12420
+      oid: 12419
       collname: "fr_CH"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fr_CH"
-      collctype: "fr_CH"
+      collencoding: 6
+      collcollate: "fr_CH.utf8"
+      collctype: "fr_CH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8108,15 +8109,15 @@ collations {
     path: "pg_catalog"
     name: "fr_FR"
   }
-  locale: "fr_FR.utf8"
+  locale: "fr_FR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12423
+      oid: 12424
       collname: "fr_FR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fr_FR.utf8"
-      collctype: "fr_FR.utf8"
+      collencoding: 8
+      collcollate: "fr_FR"
+      collctype: "fr_FR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8127,15 +8128,15 @@ collations {
     path: "pg_catalog"
     name: "fr_FR"
   }
-  locale: "fr_FR"
+  locale: "fr_FR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12424
+      oid: 12423
       collname: "fr_FR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fr_FR"
-      collctype: "fr_FR"
+      collencoding: 6
+      collcollate: "fr_FR.utf8"
+      collctype: "fr_FR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8222,15 +8223,15 @@ collations {
     path: "pg_catalog"
     name: "fr_LU"
   }
-  locale: "fr_LU.utf8"
+  locale: "fr_LU"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12429
+      oid: 12430
       collname: "fr_LU"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "fr_LU.utf8"
-      collctype: "fr_LU.utf8"
+      collencoding: 8
+      collcollate: "fr_LU"
+      collctype: "fr_LU"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8241,15 +8242,15 @@ collations {
     path: "pg_catalog"
     name: "fr_LU"
   }
-  locale: "fr_LU"
+  locale: "fr_LU.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12430
+      oid: 12429
       collname: "fr_LU"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "fr_LU"
-      collctype: "fr_LU"
+      collencoding: 6
+      collcollate: "fr_LU.utf8"
+      collctype: "fr_LU.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8469,15 +8470,15 @@ collations {
     path: "pg_catalog"
     name: "ga_IE"
   }
-  locale: "ga_IE.utf8"
+  locale: "ga_IE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12442
+      oid: 12443
       collname: "ga_IE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ga_IE.utf8"
-      collctype: "ga_IE.utf8"
+      collencoding: 8
+      collcollate: "ga_IE"
+      collctype: "ga_IE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8488,15 +8489,15 @@ collations {
     path: "pg_catalog"
     name: "ga_IE"
   }
-  locale: "ga_IE"
+  locale: "ga_IE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12443
+      oid: 12442
       collname: "ga_IE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "ga_IE"
-      collctype: "ga_IE"
+      collencoding: 6
+      collcollate: "ga_IE.utf8"
+      collctype: "ga_IE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8621,15 +8622,15 @@ collations {
     path: "pg_catalog"
     name: "gd_GB"
   }
-  locale: "gd_GB.utf8"
+  locale: "gd_GB"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12450
+      oid: 12451
       collname: "gd_GB"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "gd_GB.utf8"
-      collctype: "gd_GB.utf8"
+      collencoding: 16
+      collcollate: "gd_GB"
+      collctype: "gd_GB"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8640,15 +8641,15 @@ collations {
     path: "pg_catalog"
     name: "gd_GB"
   }
-  locale: "gd_GB"
+  locale: "gd_GB.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12451
+      oid: 12450
       collname: "gd_GB"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "gd_GB"
-      collctype: "gd_GB"
+      collencoding: 6
+      collcollate: "gd_GB.utf8"
+      collctype: "gd_GB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8868,15 +8869,15 @@ collations {
     path: "pg_catalog"
     name: "gl_ES"
   }
-  locale: "gl_ES.utf8"
+  locale: "gl_ES"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12463
+      oid: 12464
       collname: "gl_ES"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "gl_ES.utf8"
-      collctype: "gl_ES.utf8"
+      collencoding: 8
+      collcollate: "gl_ES"
+      collctype: "gl_ES"
     }
     payload_type: "floe.collation+proto"
   }
@@ -8887,15 +8888,15 @@ collations {
     path: "pg_catalog"
     name: "gl_ES"
   }
-  locale: "gl_ES"
+  locale: "gl_ES.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12464
+      oid: 12463
       collname: "gl_ES"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "gl_ES"
-      collctype: "gl_ES"
+      collencoding: 6
+      collcollate: "gl_ES.utf8"
+      collctype: "gl_ES.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9039,15 +9040,15 @@ collations {
     path: "pg_catalog"
     name: "gv_GB"
   }
-  locale: "gv_GB.utf8"
+  locale: "gv_GB"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12472
+      oid: 12473
       collname: "gv_GB"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "gv_GB.utf8"
-      collctype: "gv_GB.utf8"
+      collencoding: 8
+      collcollate: "gv_GB"
+      collctype: "gv_GB"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9058,15 +9059,15 @@ collations {
     path: "pg_catalog"
     name: "gv_GB"
   }
-  locale: "gv_GB"
+  locale: "gv_GB.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12473
+      oid: 12472
       collname: "gv_GB"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "gv_GB"
-      collctype: "gv_GB"
+      collencoding: 6
+      collcollate: "gv_GB.utf8"
+      collctype: "gv_GB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9153,15 +9154,15 @@ collations {
     path: "pg_catalog"
     name: "he_IL"
   }
-  locale: "he_IL.utf8"
+  locale: "he_IL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12478
+      oid: 12479
       collname: "he_IL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "he_IL.utf8"
-      collctype: "he_IL.utf8"
+      collencoding: 28
+      collcollate: "he_IL"
+      collctype: "he_IL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9172,15 +9173,15 @@ collations {
     path: "pg_catalog"
     name: "he_IL"
   }
-  locale: "he_IL"
+  locale: "he_IL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12479
+      oid: 12478
       collname: "he_IL"
       collnamespace: 11
-      collencoding: 28
-      collcollate: "he_IL"
-      collctype: "he_IL"
+      collencoding: 6
+      collcollate: "he_IL.utf8"
+      collctype: "he_IL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9324,15 +9325,15 @@ collations {
     path: "pg_catalog"
     name: "hr_HR"
   }
-  locale: "hr_HR.utf8"
+  locale: "hr_HR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12487
+      oid: 12488
       collname: "hr_HR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "hr_HR.utf8"
-      collctype: "hr_HR.utf8"
+      collencoding: 9
+      collcollate: "hr_HR"
+      collctype: "hr_HR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9343,15 +9344,15 @@ collations {
     path: "pg_catalog"
     name: "hr_HR"
   }
-  locale: "hr_HR"
+  locale: "hr_HR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12488
+      oid: 12487
       collname: "hr_HR"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "hr_HR"
-      collctype: "hr_HR"
+      collencoding: 6
+      collcollate: "hr_HR.utf8"
+      collctype: "hr_HR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9419,15 +9420,15 @@ collations {
     path: "pg_catalog"
     name: "hsb_DE"
   }
-  locale: "hsb_DE.utf8"
+  locale: "hsb_DE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12492
+      oid: 12493
       collname: "hsb_DE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "hsb_DE.utf8"
-      collctype: "hsb_DE.utf8"
+      collencoding: 9
+      collcollate: "hsb_DE"
+      collctype: "hsb_DE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9438,15 +9439,15 @@ collations {
     path: "pg_catalog"
     name: "hsb_DE"
   }
-  locale: "hsb_DE"
+  locale: "hsb_DE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12493
+      oid: 12492
       collname: "hsb_DE"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "hsb_DE"
-      collctype: "hsb_DE"
+      collencoding: 6
+      collcollate: "hsb_DE.utf8"
+      collctype: "hsb_DE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9533,15 +9534,15 @@ collations {
     path: "pg_catalog"
     name: "hu_HU"
   }
-  locale: "hu_HU.utf8"
+  locale: "hu_HU"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12498
+      oid: 12499
       collname: "hu_HU"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "hu_HU.utf8"
-      collctype: "hu_HU.utf8"
+      collencoding: 9
+      collcollate: "hu_HU"
+      collctype: "hu_HU"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9552,15 +9553,15 @@ collations {
     path: "pg_catalog"
     name: "hu_HU"
   }
-  locale: "hu_HU"
+  locale: "hu_HU.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12499
+      oid: 12498
       collname: "hu_HU"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "hu_HU"
-      collctype: "hu_HU"
+      collencoding: 6
+      collcollate: "hu_HU.utf8"
+      collctype: "hu_HU.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9723,15 +9724,15 @@ collations {
     path: "pg_catalog"
     name: "id_ID"
   }
-  locale: "id_ID.utf8"
+  locale: "id_ID"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12508
+      oid: 12509
       collname: "id_ID"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "id_ID.utf8"
-      collctype: "id_ID.utf8"
+      collencoding: 8
+      collcollate: "id_ID"
+      collctype: "id_ID"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9742,15 +9743,15 @@ collations {
     path: "pg_catalog"
     name: "id_ID"
   }
-  locale: "id_ID"
+  locale: "id_ID.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12509
+      oid: 12508
       collname: "id_ID"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "id_ID"
-      collctype: "id_ID"
+      collencoding: 6
+      collcollate: "id_ID.utf8"
+      collctype: "id_ID.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9875,15 +9876,15 @@ collations {
     path: "pg_catalog"
     name: "is_IS"
   }
-  locale: "is_IS.utf8"
+  locale: "is_IS"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12516
+      oid: 12517
       collname: "is_IS"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "is_IS.utf8"
-      collctype: "is_IS.utf8"
+      collencoding: 8
+      collcollate: "is_IS"
+      collctype: "is_IS"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9894,15 +9895,15 @@ collations {
     path: "pg_catalog"
     name: "is_IS"
   }
-  locale: "is_IS"
+  locale: "is_IS.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12517
+      oid: 12516
       collname: "is_IS"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "is_IS"
-      collctype: "is_IS"
+      collencoding: 6
+      collcollate: "is_IS.utf8"
+      collctype: "is_IS.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9951,15 +9952,15 @@ collations {
     path: "pg_catalog"
     name: "it_CH"
   }
-  locale: "it_CH.utf8"
+  locale: "it_CH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12520
+      oid: 12521
       collname: "it_CH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "it_CH.utf8"
-      collctype: "it_CH.utf8"
+      collencoding: 8
+      collcollate: "it_CH"
+      collctype: "it_CH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -9970,15 +9971,15 @@ collations {
     path: "pg_catalog"
     name: "it_CH"
   }
-  locale: "it_CH"
+  locale: "it_CH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12521
+      oid: 12520
       collname: "it_CH"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "it_CH"
-      collctype: "it_CH"
+      collencoding: 6
+      collcollate: "it_CH.utf8"
+      collctype: "it_CH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10027,15 +10028,15 @@ collations {
     path: "pg_catalog"
     name: "it_IT"
   }
-  locale: "it_IT.utf8"
+  locale: "it_IT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12524
+      oid: 12525
       collname: "it_IT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "it_IT.utf8"
-      collctype: "it_IT.utf8"
+      collencoding: 8
+      collcollate: "it_IT"
+      collctype: "it_IT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10046,15 +10047,15 @@ collations {
     path: "pg_catalog"
     name: "it_IT"
   }
-  locale: "it_IT"
+  locale: "it_IT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12525
+      oid: 12524
       collname: "it_IT"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "it_IT"
-      collctype: "it_IT"
+      collencoding: 6
+      collcollate: "it_IT.utf8"
+      collctype: "it_IT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10198,15 +10199,15 @@ collations {
     path: "pg_catalog"
     name: "iw_IL"
   }
-  locale: "iw_IL.utf8"
+  locale: "iw_IL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12533
+      oid: 12534
       collname: "iw_IL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "iw_IL.utf8"
-      collctype: "iw_IL.utf8"
+      collencoding: 28
+      collcollate: "iw_IL"
+      collctype: "iw_IL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10217,15 +10218,15 @@ collations {
     path: "pg_catalog"
     name: "iw_IL"
   }
-  locale: "iw_IL"
+  locale: "iw_IL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12534
+      oid: 12533
       collname: "iw_IL"
       collnamespace: 11
-      collencoding: 28
-      collcollate: "iw_IL"
-      collctype: "iw_IL"
+      collencoding: 6
+      collcollate: "iw_IL.utf8"
+      collctype: "iw_IL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10483,15 +10484,15 @@ collations {
     path: "pg_catalog"
     name: "kl_GL"
   }
-  locale: "kl_GL.utf8"
+  locale: "kl_GL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12548
+      oid: 12549
       collname: "kl_GL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "kl_GL.utf8"
-      collctype: "kl_GL.utf8"
+      collencoding: 8
+      collcollate: "kl_GL"
+      collctype: "kl_GL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10502,15 +10503,15 @@ collations {
     path: "pg_catalog"
     name: "kl_GL"
   }
-  locale: "kl_GL"
+  locale: "kl_GL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12549
+      oid: 12548
       collname: "kl_GL"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "kl_GL"
-      collctype: "kl_GL"
+      collencoding: 6
+      collcollate: "kl_GL.utf8"
+      collctype: "kl_GL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10863,15 +10864,15 @@ collations {
     path: "pg_catalog"
     name: "ku_TR"
   }
-  locale: "ku_TR.utf8"
+  locale: "ku_TR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12568
+      oid: 12569
       collname: "ku_TR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ku_TR.utf8"
-      collctype: "ku_TR.utf8"
+      collencoding: 12
+      collcollate: "ku_TR"
+      collctype: "ku_TR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10882,15 +10883,15 @@ collations {
     path: "pg_catalog"
     name: "ku_TR"
   }
-  locale: "ku_TR"
+  locale: "ku_TR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12569
+      oid: 12568
       collname: "ku_TR"
       collnamespace: 11
-      collencoding: 12
-      collcollate: "ku_TR"
-      collctype: "ku_TR"
+      collencoding: 6
+      collcollate: "ku_TR.utf8"
+      collctype: "ku_TR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10939,15 +10940,15 @@ collations {
     path: "pg_catalog"
     name: "kw_GB"
   }
-  locale: "kw_GB.utf8"
+  locale: "kw_GB"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12572
+      oid: 12573
       collname: "kw_GB"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "kw_GB.utf8"
-      collctype: "kw_GB.utf8"
+      collencoding: 8
+      collcollate: "kw_GB"
+      collctype: "kw_GB"
     }
     payload_type: "floe.collation+proto"
   }
@@ -10958,15 +10959,15 @@ collations {
     path: "pg_catalog"
     name: "kw_GB"
   }
-  locale: "kw_GB"
+  locale: "kw_GB.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12573
+      oid: 12572
       collname: "kw_GB"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "kw_GB"
-      collctype: "kw_GB"
+      collencoding: 6
+      collcollate: "kw_GB.utf8"
+      collctype: "kw_GB.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11091,15 +11092,15 @@ collations {
     path: "pg_catalog"
     name: "lg_UG"
   }
-  locale: "lg_UG.utf8"
+  locale: "lg_UG"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12580
+      oid: 12581
       collname: "lg_UG"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "lg_UG.utf8"
-      collctype: "lg_UG.utf8"
+      collencoding: 13
+      collcollate: "lg_UG"
+      collctype: "lg_UG"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11110,15 +11111,15 @@ collations {
     path: "pg_catalog"
     name: "lg_UG"
   }
-  locale: "lg_UG"
+  locale: "lg_UG.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12581
+      oid: 12580
       collname: "lg_UG"
       collnamespace: 11
-      collencoding: 13
-      collcollate: "lg_UG"
-      collctype: "lg_UG"
+      collencoding: 6
+      collcollate: "lg_UG.utf8"
+      collctype: "lg_UG.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11338,15 +11339,15 @@ collations {
     path: "pg_catalog"
     name: "lt_LT"
   }
-  locale: "lt_LT.utf8"
+  locale: "lt_LT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12593
+      oid: 12594
       collname: "lt_LT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "lt_LT.utf8"
-      collctype: "lt_LT.utf8"
+      collencoding: 14
+      collcollate: "lt_LT"
+      collctype: "lt_LT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11357,15 +11358,15 @@ collations {
     path: "pg_catalog"
     name: "lt_LT"
   }
-  locale: "lt_LT"
+  locale: "lt_LT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12594
+      oid: 12593
       collname: "lt_LT"
       collnamespace: 11
-      collencoding: 14
-      collcollate: "lt_LT"
-      collctype: "lt_LT"
+      collencoding: 6
+      collcollate: "lt_LT.utf8"
+      collctype: "lt_LT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11414,15 +11415,15 @@ collations {
     path: "pg_catalog"
     name: "lv_LV"
   }
-  locale: "lv_LV.utf8"
+  locale: "lv_LV"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12597
+      oid: 12598
       collname: "lv_LV"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "lv_LV.utf8"
-      collctype: "lv_LV.utf8"
+      collencoding: 14
+      collcollate: "lv_LV"
+      collctype: "lv_LV"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11433,15 +11434,15 @@ collations {
     path: "pg_catalog"
     name: "lv_LV"
   }
-  locale: "lv_LV"
+  locale: "lv_LV.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12598
+      oid: 12597
       collname: "lv_LV"
       collnamespace: 11
-      collencoding: 14
-      collcollate: "lv_LV"
-      collctype: "lv_LV"
+      collencoding: 6
+      collcollate: "lv_LV.utf8"
+      collctype: "lv_LV.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11566,15 +11567,15 @@ collations {
     path: "pg_catalog"
     name: "mg_MG"
   }
-  locale: "mg_MG.utf8"
+  locale: "mg_MG"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12605
+      oid: 12606
       collname: "mg_MG"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "mg_MG.utf8"
-      collctype: "mg_MG.utf8"
+      collencoding: 16
+      collcollate: "mg_MG"
+      collctype: "mg_MG"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11585,15 +11586,15 @@ collations {
     path: "pg_catalog"
     name: "mg_MG"
   }
-  locale: "mg_MG"
+  locale: "mg_MG.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12606
+      oid: 12605
       collname: "mg_MG"
       collnamespace: 11
-      collencoding: 16
-      collcollate: "mg_MG"
-      collctype: "mg_MG"
+      collencoding: 6
+      collcollate: "mg_MG.utf8"
+      collctype: "mg_MG.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11680,15 +11681,15 @@ collations {
     path: "pg_catalog"
     name: "mi_NZ"
   }
-  locale: "mi_NZ.utf8"
+  locale: "mi_NZ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12611
+      oid: 12612
       collname: "mi_NZ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "mi_NZ.utf8"
-      collctype: "mi_NZ.utf8"
+      collencoding: 14
+      collcollate: "mi_NZ"
+      collctype: "mi_NZ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11699,15 +11700,15 @@ collations {
     path: "pg_catalog"
     name: "mi_NZ"
   }
-  locale: "mi_NZ"
+  locale: "mi_NZ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12612
+      oid: 12611
       collname: "mi_NZ"
       collnamespace: 11
-      collencoding: 14
-      collcollate: "mi_NZ"
-      collctype: "mi_NZ"
+      collencoding: 6
+      collcollate: "mi_NZ.utf8"
+      collctype: "mi_NZ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11756,15 +11757,15 @@ collations {
     path: "pg_catalog"
     name: "mk_MK"
   }
-  locale: "mk_MK.utf8"
+  locale: "mk_MK"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12615
+      oid: 12616
       collname: "mk_MK"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "mk_MK.utf8"
-      collctype: "mk_MK.utf8"
+      collencoding: 25
+      collcollate: "mk_MK"
+      collctype: "mk_MK"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11775,15 +11776,15 @@ collations {
     path: "pg_catalog"
     name: "mk_MK"
   }
-  locale: "mk_MK"
+  locale: "mk_MK.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12616
+      oid: 12615
       collname: "mk_MK"
       collnamespace: 11
-      collencoding: 25
-      collcollate: "mk_MK"
-      collctype: "mk_MK"
+      collencoding: 6
+      collcollate: "mk_MK.utf8"
+      collctype: "mk_MK.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -11984,15 +11985,15 @@ collations {
     path: "pg_catalog"
     name: "ms_MY"
   }
-  locale: "ms_MY.utf8"
+  locale: "ms_MY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12627
+      oid: 12628
       collname: "ms_MY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ms_MY.utf8"
-      collctype: "ms_MY.utf8"
+      collencoding: 8
+      collcollate: "ms_MY"
+      collctype: "ms_MY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12003,15 +12004,15 @@ collations {
     path: "pg_catalog"
     name: "ms_MY"
   }
-  locale: "ms_MY"
+  locale: "ms_MY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12628
+      oid: 12627
       collname: "ms_MY"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "ms_MY"
-      collctype: "ms_MY"
+      collencoding: 6
+      collcollate: "ms_MY.utf8"
+      collctype: "ms_MY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12060,15 +12061,15 @@ collations {
     path: "pg_catalog"
     name: "mt_MT"
   }
-  locale: "mt_MT.utf8"
+  locale: "mt_MT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12631
+      oid: 12632
       collname: "mt_MT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "mt_MT.utf8"
-      collctype: "mt_MT.utf8"
+      collencoding: 10
+      collcollate: "mt_MT"
+      collctype: "mt_MT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12079,15 +12080,15 @@ collations {
     path: "pg_catalog"
     name: "mt_MT"
   }
-  locale: "mt_MT"
+  locale: "mt_MT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12632
+      oid: 12631
       collname: "mt_MT"
       collnamespace: 11
-      collencoding: 10
-      collcollate: "mt_MT"
-      collctype: "mt_MT"
+      collencoding: 6
+      collcollate: "mt_MT.utf8"
+      collctype: "mt_MT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12212,15 +12213,15 @@ collations {
     path: "pg_catalog"
     name: "nb_NO"
   }
-  locale: "nb_NO.utf8"
+  locale: "nb_NO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12639
+      oid: 12640
       collname: "nb_NO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "nb_NO.utf8"
-      collctype: "nb_NO.utf8"
+      collencoding: 8
+      collcollate: "nb_NO"
+      collctype: "nb_NO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12231,15 +12232,15 @@ collations {
     path: "pg_catalog"
     name: "nb_NO"
   }
-  locale: "nb_NO"
+  locale: "nb_NO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12640
+      oid: 12639
       collname: "nb_NO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "nb_NO"
-      collctype: "nb_NO"
+      collencoding: 6
+      collcollate: "nb_NO.utf8"
+      collctype: "nb_NO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12554,15 +12555,15 @@ collations {
     path: "pg_catalog"
     name: "nl_BE"
   }
-  locale: "nl_BE.utf8"
+  locale: "nl_BE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12657
+      oid: 12658
       collname: "nl_BE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "nl_BE.utf8"
-      collctype: "nl_BE.utf8"
+      collencoding: 8
+      collcollate: "nl_BE"
+      collctype: "nl_BE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12573,15 +12574,15 @@ collations {
     path: "pg_catalog"
     name: "nl_BE"
   }
-  locale: "nl_BE"
+  locale: "nl_BE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12658
+      oid: 12657
       collname: "nl_BE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "nl_BE"
-      collctype: "nl_BE"
+      collencoding: 6
+      collcollate: "nl_BE.utf8"
+      collctype: "nl_BE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12668,15 +12669,15 @@ collations {
     path: "pg_catalog"
     name: "nl_NL"
   }
-  locale: "nl_NL.utf8"
+  locale: "nl_NL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12663
+      oid: 12664
       collname: "nl_NL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "nl_NL.utf8"
-      collctype: "nl_NL.utf8"
+      collencoding: 8
+      collcollate: "nl_NL"
+      collctype: "nl_NL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12687,15 +12688,15 @@ collations {
     path: "pg_catalog"
     name: "nl_NL"
   }
-  locale: "nl_NL"
+  locale: "nl_NL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12664
+      oid: 12663
       collname: "nl_NL"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "nl_NL"
-      collctype: "nl_NL"
+      collencoding: 6
+      collcollate: "nl_NL.utf8"
+      collctype: "nl_NL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12782,15 +12783,15 @@ collations {
     path: "pg_catalog"
     name: "nn_NO"
   }
-  locale: "nn_NO.utf8"
+  locale: "nn_NO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12669
+      oid: 12670
       collname: "nn_NO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "nn_NO.utf8"
-      collctype: "nn_NO.utf8"
+      collencoding: 8
+      collcollate: "nn_NO"
+      collctype: "nn_NO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12801,15 +12802,15 @@ collations {
     path: "pg_catalog"
     name: "nn_NO"
   }
-  locale: "nn_NO"
+  locale: "nn_NO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12670
+      oid: 12669
       collname: "nn_NO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "nn_NO"
-      collctype: "nn_NO"
+      collencoding: 6
+      collcollate: "nn_NO.utf8"
+      collctype: "nn_NO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -12991,15 +12992,15 @@ collations {
     path: "pg_catalog"
     name: "oc_FR"
   }
-  locale: "oc_FR.utf8"
+  locale: "oc_FR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12680
+      oid: 12681
       collname: "oc_FR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "oc_FR.utf8"
-      collctype: "oc_FR.utf8"
+      collencoding: 8
+      collcollate: "oc_FR"
+      collctype: "oc_FR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13010,15 +13011,15 @@ collations {
     path: "pg_catalog"
     name: "oc_FR"
   }
-  locale: "oc_FR"
+  locale: "oc_FR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12681
+      oid: 12680
       collname: "oc_FR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "oc_FR"
-      collctype: "oc_FR"
+      collencoding: 6
+      collcollate: "oc_FR.utf8"
+      collctype: "oc_FR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13105,15 +13106,15 @@ collations {
     path: "pg_catalog"
     name: "om_KE"
   }
-  locale: "om_KE.utf8"
+  locale: "om_KE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12686
+      oid: 12687
       collname: "om_KE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "om_KE.utf8"
-      collctype: "om_KE.utf8"
+      collencoding: 8
+      collcollate: "om_KE"
+      collctype: "om_KE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13124,15 +13125,15 @@ collations {
     path: "pg_catalog"
     name: "om_KE"
   }
-  locale: "om_KE"
+  locale: "om_KE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12687
+      oid: 12686
       collname: "om_KE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "om_KE"
-      collctype: "om_KE"
+      collencoding: 6
+      collcollate: "om_KE.utf8"
+      collctype: "om_KE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13371,15 +13372,15 @@ collations {
     path: "pg_catalog"
     name: "pl_PL"
   }
-  locale: "pl_PL.utf8"
+  locale: "pl_PL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12700
+      oid: 12701
       collname: "pl_PL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "pl_PL.utf8"
-      collctype: "pl_PL.utf8"
+      collencoding: 9
+      collcollate: "pl_PL"
+      collctype: "pl_PL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13390,15 +13391,15 @@ collations {
     path: "pg_catalog"
     name: "pl_PL"
   }
-  locale: "pl_PL"
+  locale: "pl_PL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12701
+      oid: 12700
       collname: "pl_PL"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "pl_PL"
-      collctype: "pl_PL"
+      collencoding: 6
+      collcollate: "pl_PL.utf8"
+      collctype: "pl_PL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13523,15 +13524,15 @@ collations {
     path: "pg_catalog"
     name: "pt_BR"
   }
-  locale: "pt_BR.utf8"
+  locale: "pt_BR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12708
+      oid: 12709
       collname: "pt_BR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "pt_BR.utf8"
-      collctype: "pt_BR.utf8"
+      collencoding: 8
+      collcollate: "pt_BR"
+      collctype: "pt_BR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13542,15 +13543,15 @@ collations {
     path: "pg_catalog"
     name: "pt_BR"
   }
-  locale: "pt_BR"
+  locale: "pt_BR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12709
+      oid: 12708
       collname: "pt_BR"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "pt_BR"
-      collctype: "pt_BR"
+      collencoding: 6
+      collcollate: "pt_BR.utf8"
+      collctype: "pt_BR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13599,15 +13600,15 @@ collations {
     path: "pg_catalog"
     name: "pt_PT"
   }
-  locale: "pt_PT.utf8"
+  locale: "pt_PT"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12712
+      oid: 12713
       collname: "pt_PT"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "pt_PT.utf8"
-      collctype: "pt_PT.utf8"
+      collencoding: 8
+      collcollate: "pt_PT"
+      collctype: "pt_PT"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13618,15 +13619,15 @@ collations {
     path: "pg_catalog"
     name: "pt_PT"
   }
-  locale: "pt_PT"
+  locale: "pt_PT.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12713
+      oid: 12712
       collname: "pt_PT"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "pt_PT"
-      collctype: "pt_PT"
+      collencoding: 6
+      collcollate: "pt_PT.utf8"
+      collctype: "pt_PT.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13713,15 +13714,15 @@ collations {
     path: "pg_catalog"
     name: "ro_RO"
   }
-  locale: "ro_RO.utf8"
+  locale: "ro_RO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12718
+      oid: 12719
       collname: "ro_RO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ro_RO.utf8"
-      collctype: "ro_RO.utf8"
+      collencoding: 9
+      collcollate: "ro_RO"
+      collctype: "ro_RO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13732,15 +13733,15 @@ collations {
     path: "pg_catalog"
     name: "ro_RO"
   }
-  locale: "ro_RO"
+  locale: "ro_RO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12719
+      oid: 12718
       collname: "ro_RO"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "ro_RO"
-      collctype: "ro_RO"
+      collencoding: 6
+      collcollate: "ro_RO.utf8"
+      collctype: "ro_RO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13808,15 +13809,15 @@ collations {
     path: "pg_catalog"
     name: "ru_RU"
   }
-  locale: "ru_RU.utf8"
+  locale: "ru_RU"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12723
+      oid: 12725
       collname: "ru_RU"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ru_RU.utf8"
-      collctype: "ru_RU.utf8"
+      collencoding: 25
+      collcollate: "ru_RU"
+      collctype: "ru_RU"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13846,15 +13847,15 @@ collations {
     path: "pg_catalog"
     name: "ru_RU"
   }
-  locale: "ru_RU"
+  locale: "ru_RU.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12725
+      oid: 12723
       collname: "ru_RU"
       collnamespace: 11
-      collencoding: 25
-      collcollate: "ru_RU"
-      collctype: "ru_RU"
+      collencoding: 6
+      collcollate: "ru_RU.utf8"
+      collctype: "ru_RU.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13922,15 +13923,15 @@ collations {
     path: "pg_catalog"
     name: "ru_UA"
   }
-  locale: "ru_UA.utf8"
+  locale: "ru_UA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12729
+      oid: 12730
       collname: "ru_UA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "ru_UA.utf8"
-      collctype: "ru_UA.utf8"
+      collencoding: 34
+      collcollate: "ru_UA"
+      collctype: "ru_UA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -13941,15 +13942,15 @@ collations {
     path: "pg_catalog"
     name: "ru_UA"
   }
-  locale: "ru_UA"
+  locale: "ru_UA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12730
+      oid: 12729
       collname: "ru_UA"
       collnamespace: 11
-      collencoding: 34
-      collcollate: "ru_UA"
-      collctype: "ru_UA"
+      collencoding: 6
+      collcollate: "ru_UA.utf8"
+      collctype: "ru_UA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14397,15 +14398,15 @@ collations {
     path: "pg_catalog"
     name: "sk_SK"
   }
-  locale: "sk_SK.utf8"
+  locale: "sk_SK"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12754
+      oid: 12755
       collname: "sk_SK"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "sk_SK.utf8"
-      collctype: "sk_SK.utf8"
+      collencoding: 9
+      collcollate: "sk_SK"
+      collctype: "sk_SK"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14416,15 +14417,15 @@ collations {
     path: "pg_catalog"
     name: "sk_SK"
   }
-  locale: "sk_SK"
+  locale: "sk_SK.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12755
+      oid: 12754
       collname: "sk_SK"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "sk_SK"
-      collctype: "sk_SK"
+      collencoding: 6
+      collcollate: "sk_SK.utf8"
+      collctype: "sk_SK.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14473,15 +14474,15 @@ collations {
     path: "pg_catalog"
     name: "sl_SI"
   }
-  locale: "sl_SI.utf8"
+  locale: "sl_SI"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12758
+      oid: 12759
       collname: "sl_SI"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "sl_SI.utf8"
-      collctype: "sl_SI.utf8"
+      collencoding: 9
+      collcollate: "sl_SI"
+      collctype: "sl_SI"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14492,15 +14493,15 @@ collations {
     path: "pg_catalog"
     name: "sl_SI"
   }
-  locale: "sl_SI"
+  locale: "sl_SI.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12759
+      oid: 12758
       collname: "sl_SI"
       collnamespace: 11
-      collencoding: 9
-      collcollate: "sl_SI"
-      collctype: "sl_SI"
+      collencoding: 6
+      collcollate: "sl_SI.utf8"
+      collctype: "sl_SI.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14606,15 +14607,15 @@ collations {
     path: "pg_catalog"
     name: "so_DJ"
   }
-  locale: "so_DJ.utf8"
+  locale: "so_DJ"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12765
+      oid: 12766
       collname: "so_DJ"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "so_DJ.utf8"
-      collctype: "so_DJ.utf8"
+      collencoding: 8
+      collcollate: "so_DJ"
+      collctype: "so_DJ"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14625,15 +14626,15 @@ collations {
     path: "pg_catalog"
     name: "so_DJ"
   }
-  locale: "so_DJ"
+  locale: "so_DJ.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12766
+      oid: 12765
       collname: "so_DJ"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "so_DJ"
-      collctype: "so_DJ"
+      collencoding: 6
+      collcollate: "so_DJ.utf8"
+      collctype: "so_DJ.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14720,15 +14721,15 @@ collations {
     path: "pg_catalog"
     name: "so_KE"
   }
-  locale: "so_KE.utf8"
+  locale: "so_KE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12771
+      oid: 12772
       collname: "so_KE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "so_KE.utf8"
-      collctype: "so_KE.utf8"
+      collencoding: 8
+      collcollate: "so_KE"
+      collctype: "so_KE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14739,15 +14740,15 @@ collations {
     path: "pg_catalog"
     name: "so_KE"
   }
-  locale: "so_KE"
+  locale: "so_KE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12772
+      oid: 12771
       collname: "so_KE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "so_KE"
-      collctype: "so_KE"
+      collencoding: 6
+      collcollate: "so_KE.utf8"
+      collctype: "so_KE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14796,15 +14797,15 @@ collations {
     path: "pg_catalog"
     name: "so_SO"
   }
-  locale: "so_SO.utf8"
+  locale: "so_SO"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12775
+      oid: 12776
       collname: "so_SO"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "so_SO.utf8"
-      collctype: "so_SO.utf8"
+      collencoding: 8
+      collcollate: "so_SO"
+      collctype: "so_SO"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14815,15 +14816,15 @@ collations {
     path: "pg_catalog"
     name: "so_SO"
   }
-  locale: "so_SO"
+  locale: "so_SO.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12776
+      oid: 12775
       collname: "so_SO"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "so_SO"
-      collctype: "so_SO"
+      collencoding: 6
+      collcollate: "so_SO.utf8"
+      collctype: "so_SO.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14891,15 +14892,15 @@ collations {
     path: "pg_catalog"
     name: "sq_AL"
   }
-  locale: "sq_AL.utf8"
+  locale: "sq_AL"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12780
+      oid: 12781
       collname: "sq_AL"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "sq_AL.utf8"
-      collctype: "sq_AL.utf8"
+      collencoding: 8
+      collcollate: "sq_AL"
+      collctype: "sq_AL"
     }
     payload_type: "floe.collation+proto"
   }
@@ -14910,15 +14911,15 @@ collations {
     path: "pg_catalog"
     name: "sq_AL"
   }
-  locale: "sq_AL"
+  locale: "sq_AL.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12781
+      oid: 12780
       collname: "sq_AL"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "sq_AL"
-      collctype: "sq_AL"
+      collencoding: 6
+      collcollate: "sq_AL.utf8"
+      collctype: "sq_AL.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15157,15 +15158,15 @@ collations {
     path: "pg_catalog"
     name: "st_ZA"
   }
-  locale: "st_ZA.utf8"
+  locale: "st_ZA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12794
+      oid: 12795
       collname: "st_ZA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "st_ZA.utf8"
-      collctype: "st_ZA.utf8"
+      collencoding: 8
+      collcollate: "st_ZA"
+      collctype: "st_ZA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15176,15 +15177,15 @@ collations {
     path: "pg_catalog"
     name: "st_ZA"
   }
-  locale: "st_ZA"
+  locale: "st_ZA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12795
+      oid: 12794
       collname: "st_ZA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "st_ZA"
-      collctype: "st_ZA"
+      collencoding: 6
+      collcollate: "st_ZA.utf8"
+      collctype: "st_ZA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15233,15 +15234,15 @@ collations {
     path: "pg_catalog"
     name: "sv_FI"
   }
-  locale: "sv_FI.utf8"
+  locale: "sv_FI"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12798
+      oid: 12799
       collname: "sv_FI"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "sv_FI.utf8"
-      collctype: "sv_FI.utf8"
+      collencoding: 8
+      collcollate: "sv_FI"
+      collctype: "sv_FI"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15252,15 +15253,15 @@ collations {
     path: "pg_catalog"
     name: "sv_FI"
   }
-  locale: "sv_FI"
+  locale: "sv_FI.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12799
+      oid: 12798
       collname: "sv_FI"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "sv_FI"
-      collctype: "sv_FI"
+      collencoding: 6
+      collcollate: "sv_FI.utf8"
+      collctype: "sv_FI.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15347,25 +15348,6 @@ collations {
     path: "pg_catalog"
     name: "sv_SE"
   }
-  locale: "sv_SE.utf8"
-  engine_specific {
-    [floe.ext.floe_collation] {
-      oid: 12804
-      collname: "sv_SE"
-      collnamespace: 11
-      collencoding: 6
-      collcollate: "sv_SE.utf8"
-      collctype: "sv_SE.utf8"
-    }
-    payload_type: "floe.collation+proto"
-  }
-}
-
-collations {
-  name {
-    path: "pg_catalog"
-    name: "sv_SE"
-  }
   locale: "sv_SE"
   engine_specific {
     [floe.ext.floe_collation] {
@@ -15394,6 +15376,25 @@ collations {
       collencoding: 16
       collcollate: "sv_SE.iso885915"
       collctype: "sv_SE.iso885915"
+    }
+    payload_type: "floe.collation+proto"
+  }
+}
+
+collations {
+  name {
+    path: "pg_catalog"
+    name: "sv_SE"
+  }
+  locale: "sv_SE.utf8"
+  engine_specific {
+    [floe.ext.floe_collation] {
+      oid: 12804
+      collname: "sv_SE"
+      collnamespace: 11
+      collencoding: 6
+      collcollate: "sv_SE.utf8"
+      collctype: "sv_SE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15936,15 +15937,15 @@ collations {
     path: "pg_catalog"
     name: "tl_PH"
   }
-  locale: "tl_PH.utf8"
+  locale: "tl_PH"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12835
+      oid: 12836
       collname: "tl_PH"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "tl_PH.utf8"
-      collctype: "tl_PH.utf8"
+      collencoding: 8
+      collcollate: "tl_PH"
+      collctype: "tl_PH"
     }
     payload_type: "floe.collation+proto"
   }
@@ -15955,15 +15956,15 @@ collations {
     path: "pg_catalog"
     name: "tl_PH"
   }
-  locale: "tl_PH"
+  locale: "tl_PH.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12836
+      oid: 12835
       collname: "tl_PH"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "tl_PH"
-      collctype: "tl_PH"
+      collencoding: 6
+      collcollate: "tl_PH.utf8"
+      collctype: "tl_PH.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16050,15 +16051,15 @@ collations {
     path: "pg_catalog"
     name: "tr_CY"
   }
-  locale: "tr_CY.utf8"
+  locale: "tr_CY"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12841
+      oid: 12842
       collname: "tr_CY"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "tr_CY.utf8"
-      collctype: "tr_CY.utf8"
+      collencoding: 12
+      collcollate: "tr_CY"
+      collctype: "tr_CY"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16069,15 +16070,15 @@ collations {
     path: "pg_catalog"
     name: "tr_CY"
   }
-  locale: "tr_CY"
+  locale: "tr_CY.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12842
+      oid: 12841
       collname: "tr_CY"
       collnamespace: 11
-      collencoding: 12
-      collcollate: "tr_CY"
-      collctype: "tr_CY"
+      collencoding: 6
+      collcollate: "tr_CY.utf8"
+      collctype: "tr_CY.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16126,15 +16127,15 @@ collations {
     path: "pg_catalog"
     name: "tr_TR"
   }
-  locale: "tr_TR.utf8"
+  locale: "tr_TR"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12845
+      oid: 12846
       collname: "tr_TR"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "tr_TR.utf8"
-      collctype: "tr_TR.utf8"
+      collencoding: 12
+      collcollate: "tr_TR"
+      collctype: "tr_TR"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16145,15 +16146,15 @@ collations {
     path: "pg_catalog"
     name: "tr_TR"
   }
-  locale: "tr_TR"
+  locale: "tr_TR.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12846
+      oid: 12845
       collname: "tr_TR"
       collnamespace: 11
-      collencoding: 12
-      collcollate: "tr_TR"
-      collctype: "tr_TR"
+      collencoding: 6
+      collcollate: "tr_TR.utf8"
+      collctype: "tr_TR.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16392,15 +16393,15 @@ collations {
     path: "pg_catalog"
     name: "uk_UA"
   }
-  locale: "uk_UA.utf8"
+  locale: "uk_UA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12859
+      oid: 12860
       collname: "uk_UA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "uk_UA.utf8"
-      collctype: "uk_UA.utf8"
+      collencoding: 34
+      collcollate: "uk_UA"
+      collctype: "uk_UA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16411,15 +16412,15 @@ collations {
     path: "pg_catalog"
     name: "uk_UA"
   }
-  locale: "uk_UA"
+  locale: "uk_UA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12860
+      oid: 12859
       collname: "uk_UA"
       collnamespace: 11
-      collencoding: 34
-      collcollate: "uk_UA"
-      collctype: "uk_UA"
+      collencoding: 6
+      collcollate: "uk_UA.utf8"
+      collctype: "uk_UA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16734,15 +16735,15 @@ collations {
     path: "pg_catalog"
     name: "wa_BE"
   }
-  locale: "wa_BE.utf8"
+  locale: "wa_BE"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12877
+      oid: 12878
       collname: "wa_BE"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "wa_BE.utf8"
-      collctype: "wa_BE.utf8"
+      collencoding: 8
+      collcollate: "wa_BE"
+      collctype: "wa_BE"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16753,15 +16754,15 @@ collations {
     path: "pg_catalog"
     name: "wa_BE"
   }
-  locale: "wa_BE"
+  locale: "wa_BE.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12878
+      oid: 12877
       collname: "wa_BE"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "wa_BE"
-      collctype: "wa_BE"
+      collencoding: 6
+      collcollate: "wa_BE.utf8"
+      collctype: "wa_BE.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16962,15 +16963,15 @@ collations {
     path: "pg_catalog"
     name: "xh_ZA"
   }
-  locale: "xh_ZA.utf8"
+  locale: "xh_ZA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12889
+      oid: 12890
       collname: "xh_ZA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "xh_ZA.utf8"
-      collctype: "xh_ZA.utf8"
+      collencoding: 8
+      collcollate: "xh_ZA"
+      collctype: "xh_ZA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -16981,15 +16982,15 @@ collations {
     path: "pg_catalog"
     name: "xh_ZA"
   }
-  locale: "xh_ZA"
+  locale: "xh_ZA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12890
+      oid: 12889
       collname: "xh_ZA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "xh_ZA"
-      collctype: "xh_ZA"
+      collencoding: 6
+      collcollate: "xh_ZA.utf8"
+      collctype: "xh_ZA.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -17038,15 +17039,15 @@ collations {
     path: "pg_catalog"
     name: "yi_US"
   }
-  locale: "yi_US.utf8"
+  locale: "yi_US"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12893
+      oid: 12894
       collname: "yi_US"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "yi_US.utf8"
-      collctype: "yi_US.utf8"
+      collencoding: 32
+      collcollate: "yi_US"
+      collctype: "yi_US"
     }
     payload_type: "floe.collation+proto"
   }
@@ -17057,15 +17058,15 @@ collations {
     path: "pg_catalog"
     name: "yi_US"
   }
-  locale: "yi_US"
+  locale: "yi_US.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12894
+      oid: 12893
       collname: "yi_US"
       collnamespace: 11
-      collencoding: 32
-      collcollate: "yi_US"
-      collctype: "yi_US"
+      collencoding: 6
+      collcollate: "yi_US.utf8"
+      collctype: "yi_US.utf8"
     }
     payload_type: "floe.collation+proto"
   }
@@ -17456,15 +17457,15 @@ collations {
     path: "pg_catalog"
     name: "zu_ZA"
   }
-  locale: "zu_ZA.utf8"
+  locale: "zu_ZA"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12915
+      oid: 12916
       collname: "zu_ZA"
       collnamespace: 11
-      collencoding: 6
-      collcollate: "zu_ZA.utf8"
-      collctype: "zu_ZA.utf8"
+      collencoding: 8
+      collcollate: "zu_ZA"
+      collctype: "zu_ZA"
     }
     payload_type: "floe.collation+proto"
   }
@@ -17475,15 +17476,15 @@ collations {
     path: "pg_catalog"
     name: "zu_ZA"
   }
-  locale: "zu_ZA"
+  locale: "zu_ZA.utf8"
   engine_specific {
     [floe.ext.floe_collation] {
-      oid: 12916
+      oid: 12915
       collname: "zu_ZA"
       collnamespace: 11
-      collencoding: 8
-      collcollate: "zu_ZA"
-      collctype: "zu_ZA"
+      collencoding: 6
+      collcollate: "zu_ZA.utf8"
+      collctype: "zu_ZA.utf8"
     }
     payload_type: "floe.collation+proto"
   }

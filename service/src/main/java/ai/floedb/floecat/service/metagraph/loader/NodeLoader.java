@@ -148,7 +148,6 @@ public class NodeLoader {
         namespace.getDisplayName(),
         GraphNodeOrigin.USER,
         namespace.getPropertiesMap(),
-        Optional.empty(),
         NO_ENGINE_HINTS);
   }
 

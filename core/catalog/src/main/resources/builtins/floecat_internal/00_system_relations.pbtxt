@@ -1,0 +1,128 @@
+# Copyright 2026 Yellowbrick Data, Inc
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+system_namespaces {
+  name {
+    name: "information_schema"
+  }
+  display_name: "information_schema"
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "tables"
+  }
+  display_name: "tables"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "tables_scanner"
+  }
+  columns {
+    name: "table_catalog"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 1
+  }
+  columns {
+    name: "table_schema"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 2
+  }
+  columns {
+    name: "table_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 3
+  }
+  columns {
+    name: "table_type"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 4
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "columns"
+  }
+  display_name: "columns"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "columns_scanner"
+  }
+  columns {
+    name: "table_catalog"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 1
+  }
+  columns {
+    name: "table_schema"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 2
+  }
+  columns {
+    name: "table_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 3
+  }
+  columns {
+    name: "column_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 4
+  }
+  columns {
+    name: "data_type"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 5
+  }
+  columns {
+    name: "ordinal_position"
+    type { name: "INT" }
+    nullable: false
+    ordinal: 6
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "schemata"
+  }
+  display_name: "schemata"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "schemata_scanner"
+  }
+  columns {
+    name: "catalog_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 1
+  }
+  columns {
+    name: "schema_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 2
+  }
+}

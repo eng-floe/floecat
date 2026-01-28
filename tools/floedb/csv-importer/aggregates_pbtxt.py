@@ -96,7 +96,6 @@ def _type_name_ref(
 
 
 def _emit_aggregate_block(
-    ,
     a: AggRow,
     p: ProcRow,
     namespaces: Dict[int, NamespaceRow],
@@ -166,7 +165,6 @@ def _emit_aggregate_block(
 
 
 def generate_aggregates_pbtxt(
-    ,
     csv_dir: Path,
     config: AggregatesConfig,
     diagnostics: Diagnostics | None = None,
@@ -236,7 +234,6 @@ def generate_aggregates_pbtxt(
 
 
 def write_aggregates_pbtxt(
-    ,
     csv_dir: Path,
     out_path: Path,
     config: AggregatesConfig,

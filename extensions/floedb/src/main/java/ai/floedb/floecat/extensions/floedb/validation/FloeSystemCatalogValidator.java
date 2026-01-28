@@ -83,6 +83,10 @@ public final class FloeSystemCatalogValidator {
                 effectiveScope, runContext, typeIntervals, functionIntervals, operatorIntervals)
             .validate(catalog)
             .errors());
+    issues.addAll(new NamespaceValidator(effectiveScope, runContext).validate(catalog).errors());
+    issues.addAll(new RelationValidator(effectiveScope, runContext).validate(catalog).errors());
+    issues.addAll(
+        new ColumnValidator(effectiveScope, runContext, lookup).validate(catalog).errors());
     issues.addAll(new GlobalOidValidator(effectiveScope, runContext).validate(catalog).errors());
 
     return List.copyOf(issues);

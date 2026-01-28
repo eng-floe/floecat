@@ -27,6 +27,7 @@ public record FunctionNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
+    ResourceId namespaceId,
     String displayName,
     List<ResourceId> argumentTypes,
     ResourceId returnType,

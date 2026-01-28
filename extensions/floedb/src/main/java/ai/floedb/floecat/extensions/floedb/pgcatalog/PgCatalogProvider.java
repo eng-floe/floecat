@@ -18,16 +18,10 @@ package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
-import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.metagraph.model.TableBackendKind;
-import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,57 +52,7 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
 
   @Override
   public List<SystemObjectDef> definitions() {
-    return List.of(
-        // pg_catalog namespace
-        new SystemNamespaceDef(
-            NameRefUtil.name("pg_catalog"),
-            "pg_catalog",
-            List.of(pgCatalogRule("floedb"), pgCatalogRule("floe-demo"))),
-
-        // pg_namespace
-        new SystemTableDef(
-            NameRefUtil.name("pg_catalog", "pg_namespace"),
-            "pg_namespace",
-            PgNamespaceScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "pg_namespace_scanner",
-            List.of()),
-
-        // // pg_class
-        new SystemTableDef(
-            NameRefUtil.name("pg_catalog", "pg_class"),
-            "pg_class",
-            PgClassScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "pg_class_scanner",
-            List.of()),
-
-        // // pg_attribute
-        new SystemTableDef(
-            NameRefUtil.name("pg_catalog", "pg_attribute"),
-            "pg_attribute",
-            PgAttributeScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "pg_attribute_scanner",
-            List.of()),
-
-        // pg_type
-        new SystemTableDef(
-            NameRefUtil.name("pg_catalog", "pg_type"),
-            "pg_type",
-            PgTypeScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "pg_type_scanner",
-            List.of()),
-
-        // pg_proc
-        new SystemTableDef(
-            NameRefUtil.name("pg_catalog", "pg_proc"),
-            "pg_proc",
-            PgProcScanner.SCHEMA,
-            TableBackendKind.FLOECAT,
-            "pg_proc_scanner",
-            List.of()));
+    return List.of();
   }
 
   @Override
@@ -140,19 +84,5 @@ public final class PgCatalogProvider implements SystemObjectScannerProvider {
     }
 
     return Optional.ofNullable(scanners.get(scannerId.toLowerCase()));
-  }
-
-  private static EngineSpecificRule pgCatalogRule(String engineKind) {
-    return new EngineSpecificRule(
-        engineKind,
-        "",
-        "",
-        "floe.namespace+proto",
-        FloeNamespaceSpecific.newBuilder()
-            .setOid(PG_CATALOG_OID)
-            .setNspname("pg_catalog")
-            .build()
-            .toByteArray(),
-        Map.of());
   }
 }

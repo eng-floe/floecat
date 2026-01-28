@@ -18,18 +18,20 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.TableBackendKind;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public record SystemTableDef(
     NameRef name,
     String displayName,
-    List<SchemaColumn> columns,
+    List<SystemColumnDef> columns,
     TableBackendKind backendKind,
     String scannerId,
+    String storagePath,
     List<EngineSpecificRule> engineSpecific)
     implements SystemObjectDef {
 
@@ -39,7 +41,31 @@ public record SystemTableDef(
     backendKind = Objects.requireNonNull(backendKind, "backendKind");
     scannerId = Objects.requireNonNull(scannerId, "scannerId");
     displayName = displayName == null ? "" : displayName;
+    storagePath = storagePath == null ? "" : storagePath;
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    Set<String> columnNames = new HashSet<>();
+    for (SystemColumnDef column : columns) {
+      if (!columnNames.add(column.name())) {
+        throw new IllegalArgumentException(
+            "duplicate column name '" + column.name() + "' in table " + name);
+      }
+    }
+    if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_FLOECAT && scannerId.isBlank()) {
+      throw new IllegalArgumentException("scannerId is required for TABLE_BACKEND_KIND_FLOECAT");
+    }
+    if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_STORAGE && storagePath.isBlank()) {
+      throw new IllegalArgumentException("storagePath is required for TABLE_BACKEND_KIND_STORAGE");
+    }
+  }
+
+  public SystemTableDef(
+      NameRef name,
+      String displayName,
+      List<SystemColumnDef> columns,
+      TableBackendKind backendKind,
+      String scannerId,
+      List<EngineSpecificRule> engineSpecific) {
+    this(name, displayName, columns, backendKind, scannerId, "", engineSpecific);
   }
 
   @Override

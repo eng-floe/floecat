@@ -22,18 +22,12 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
-import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
-import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
-import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -423,7 +417,6 @@ public final class SystemGraph {
       return GraphSnapshot.empty();
     }
 
-    SystemCatalogData catalog = nodes.toCatalogData();
     long version = versionFromFingerprint(nodes.fingerprint());
     ResourceId catalogId = systemCatalogId(normalizedKind);
 
@@ -441,119 +434,29 @@ public final class SystemGraph {
 
     Map<ResourceId, GraphNode> nodesById = new ConcurrentHashMap<>(nodesById(nodes));
     nodesById.put(catalogId, catalogNode);
-    Map<ResourceId, List<TableNode>> tablesByNamespace = new ConcurrentHashMap<>();
-    Map<ResourceId, List<ViewNode>> viewsByNamespace = new ConcurrentHashMap<>();
-    Map<ResourceId, List<ResourceId>> relationIdsByNamespace = new ConcurrentHashMap<>();
-    List<NamespaceNode> namespaceNodes = new ArrayList<>();
+
+    List<NamespaceNode> namespaceNodes = nodes.namespaceNodes();
+    Map<ResourceId, List<TableNode>> tablesByNamespace =
+        new ConcurrentHashMap<>(nodes.tablesByNamespace());
+    Map<ResourceId, List<ViewNode>> viewsByNamespace =
+        new ConcurrentHashMap<>(nodes.viewsByNamespace());
+    Map<String, ResourceId> tableNames = new ConcurrentHashMap<>(nodes.tableNames());
+    Map<String, ResourceId> viewNames = new ConcurrentHashMap<>(nodes.viewNames());
+    Map<String, ResourceId> namespaceNames = new ConcurrentHashMap<>(nodes.namespaceNames());
+
+    namespaceNodes.forEach(
+        ns -> {
+          tablesByNamespace.computeIfAbsent(ns.id(), ignored -> List.of());
+          viewsByNamespace.computeIfAbsent(ns.id(), ignored -> List.of());
+        });
+
     Map<ResourceId, List<FunctionNode>> functionsByNamespace = new ConcurrentHashMap<>();
-    Map<String, ResourceId> tableNames = new ConcurrentHashMap<>();
-    Map<String, ResourceId> viewNames = new ConcurrentHashMap<>();
-    Map<String, ResourceId> namespaceNames = new ConcurrentHashMap<>();
 
-    Map<String, ResourceId> namespaceIds =
-        catalog.namespaces().stream()
-            .collect(
-                Collectors.toUnmodifiableMap(
-                    ns -> NameRefUtil.canonical(ns.name()),
-                    ns ->
-                        SystemNodeRegistry.resourceId(
-                            normalizedKind, ResourceKind.RK_NAMESPACE, ns.name())));
-
-    // Build table nodes and map them to namespaces
-    for (SystemTableDef table : catalog.tables()) {
-      Optional<ResourceId> namespaceId = findNamespaceId(table.name(), namespaceIds);
-      if (namespaceId.isEmpty()) {
-        continue;
-      }
-      ResourceId tableId =
-          SystemNodeRegistry.resourceId(normalizedKind, ResourceKind.RK_TABLE, table.name());
-      SystemTableNode node =
-          new SystemTableNode(
-              tableId,
-              version,
-              createdAt,
-              normalizedVersion,
-              table.displayName(),
-              namespaceId.get(),
-              table.columns(),
-              table.scannerId(),
-              Map.of());
-      nodesById.put(tableId, node);
-      tablesByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-      relationIdsByNamespace
-          .computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>())
-          .add(tableId);
-      tableNames.put(NameRefUtil.canonical(table.name()), tableId);
-    }
-
-    // Build view nodes and map them to namespaces
-    for (SystemViewDef view : catalog.views()) {
-      Optional<ResourceId> namespaceId = findNamespaceId(view.name(), namespaceIds);
-      if (namespaceId.isEmpty()) {
-        continue;
-      }
-
-      ResourceId viewId =
-          SystemNodeRegistry.resourceId(normalizedKind, ResourceKind.RK_VIEW, view.name());
-
-      ViewNode node =
-          new ViewNode(
-              viewId,
-              version,
-              createdAt,
-              catalogId,
-              namespaceId.get(),
-              view.displayName(),
-              view.sql(),
-              view.dialect(),
-              view.columns(),
-              List.of(), // baseRelations (can be wired later)
-              List.of(), // creationSearchPath
-              Map.of(),
-              Optional.empty(),
-              Map.of());
-
-      nodesById.put(viewId, node);
-
-      viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-
-      relationIdsByNamespace
-          .computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>())
-          .add(viewId);
-      viewNames.put(NameRefUtil.canonical(view.name()), viewId);
-    }
-
-    // Build namespace nodes with relation ids attached
-    for (SystemNamespaceDef ns : catalog.namespaces()) {
-      ResourceId namespaceId =
-          SystemNodeRegistry.resourceId(normalizedKind, ResourceKind.RK_NAMESPACE, ns.name());
-      List<ResourceId> relations = relationIdsByNamespace.getOrDefault(namespaceId, List.of());
-      NamespaceNode node =
-          new NamespaceNode(
-              namespaceId,
-              version,
-              createdAt,
-              catalogId,
-              List.copyOf(ns.name().getPathList()),
-              ns.displayName(),
-              GraphNodeOrigin.SYSTEM,
-              Map.of(),
-              relations.isEmpty() ? Optional.empty() : Optional.of(List.copyOf(relations)),
-              Map.of());
-      nodesById.put(namespaceId, node);
-      namespaceNodes.add(node);
-      tablesByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
-      viewsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
-      namespaceNames.put(NameRefUtil.canonical(ns.name()), namespaceId);
-    }
-
-    // Build function nodes and map them to namespaces
     for (FunctionNode fn : nodes.functions()) {
-      Optional<ResourceId> nsId =
-          findNamespaceId(
-              fn.displayName() != null ? NameRefUtil.name(fn.displayName()) : null, namespaceIds);
-      nsId.ifPresent(
-          id -> functionsByNamespace.computeIfAbsent(id, ignored -> new ArrayList<>()).add(fn));
+      ResourceId nsId = fn.namespaceId();
+      if (nsId != null) {
+        functionsByNamespace.computeIfAbsent(nsId, ignored -> new ArrayList<>()).add(fn);
+      }
     }
 
     return new GraphSnapshot(
@@ -581,6 +484,9 @@ public final class SystemGraph {
     entries.putAll(entriesFromList(nodes.casts()));
     entries.putAll(entriesFromList(nodes.collations()));
     entries.putAll(entriesFromList(nodes.aggregates()));
+    entries.putAll(entriesFromList(nodes.namespaceNodes()));
+    entries.putAll(entriesFromList(nodes.tableNodes()));
+    entries.putAll(entriesFromList(nodes.viewNodes()));
     return entries;
   }
 

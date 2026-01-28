@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-00_registry.pbtxt
-10_types.pbtxt
-20_functions.pbtxt
-30_operators.pbtxt
-40_casts.pbtxt
-50_collations.pbtxt
-60_aggregates.pbtxt
+00_system_namespaces.pbtxt
+10_registry.pbtxt
+20_types.pbtxt
+30_functions.pbtxt
+40_operators.pbtxt
+50_casts.pbtxt
+60_collations.pbtxt
+70_aggregates.pbtxt
+80_system_relations.pbtxt

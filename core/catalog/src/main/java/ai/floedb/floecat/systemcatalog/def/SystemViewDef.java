@@ -18,7 +18,6 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
 import java.util.Objects;
@@ -28,7 +27,7 @@ public record SystemViewDef(
     String displayName,
     String sql,
     String dialect,
-    List<SchemaColumn> outputColumns,
+    List<SystemColumnDef> outputColumns,
     List<EngineSpecificRule> engineSpecific)
     implements SystemObjectDef {
 
@@ -41,7 +40,7 @@ public record SystemViewDef(
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
   }
 
-  public List<SchemaColumn> columns() {
+  public List<SystemColumnDef> columns() {
     return outputColumns;
   }
 

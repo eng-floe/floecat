@@ -16,6 +16,11 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
+import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
+import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
@@ -24,10 +29,12 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProv
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -152,7 +159,8 @@ public final class ServiceLoaderSystemCatalogProvider
                 + effectiveKind
                 + " (ctx="
                 + canonical.engineKind()
-                + "), defaulting to floecat_internal-only catalog");
+                + "), defaulting to floecat_internal-only content scoped as "
+                + effectiveKind);
       }
       catalog = SystemCatalogData.empty();
     } else {
@@ -170,8 +178,11 @@ public final class ServiceLoaderSystemCatalogProvider
       }
     }
 
+    catalog = mergeWithInternalCatalog(catalog);
+
     String resolvedEngineKind =
-        ext == null ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG : effectiveKind;
+        canonical.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }
 
@@ -223,5 +234,45 @@ public final class ServiceLoaderSystemCatalogProvider
         .limit(5)
         .forEach(
             entry -> LOG.warnf("Engine validation count: %s=%d", entry.getKey(), entry.getValue()));
+  }
+
+  private static SystemCatalogData mergeWithInternalCatalog(SystemCatalogData baseCatalog) {
+    SystemCatalogData internalCatalog = FloecatInternalProvider.catalogData();
+
+    Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
+    Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
+    Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
+
+    overlayDefinitions(internalCatalog.namespaces(), namespaceByName);
+    overlayDefinitions(baseCatalog.namespaces(), namespaceByName);
+    overlayDefinitions(internalCatalog.tables(), tableByName);
+    overlayDefinitions(baseCatalog.tables(), tableByName);
+    overlayDefinitions(internalCatalog.views(), viewByName);
+    overlayDefinitions(baseCatalog.views(), viewByName);
+
+    List<EngineSpecificRule> registryRules =
+        Stream.concat(
+                internalCatalog.registryEngineSpecific().stream(),
+                baseCatalog.registryEngineSpecific().stream())
+            .toList();
+
+    return new SystemCatalogData(
+        baseCatalog.functions(),
+        baseCatalog.operators(),
+        baseCatalog.types(),
+        baseCatalog.casts(),
+        baseCatalog.collations(),
+        baseCatalog.aggregates(),
+        List.copyOf(namespaceByName.values()),
+        List.copyOf(tableByName.values()),
+        List.copyOf(viewByName.values()),
+        registryRules);
+  }
+
+  private static <T extends SystemObjectDef> void overlayDefinitions(
+      List<T> definitions, Map<String, T> target) {
+    for (T def : definitions) {
+      target.put(NameRefUtil.canonical(def.name()), def);
+    }
   }
 }

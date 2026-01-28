@@ -33,7 +33,6 @@ import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -127,7 +126,6 @@ final class PgNamespaceScannerTest {
         name,
         GraphNodeOrigin.SYSTEM,
         Map.of(),
-        Optional.empty(),
         engineHints);
   }
 

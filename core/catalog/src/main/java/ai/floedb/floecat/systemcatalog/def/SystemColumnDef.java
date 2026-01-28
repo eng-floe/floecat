@@ -1,0 +1,51 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.systemcatalog.def;
+
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import java.util.List;
+import java.util.Objects;
+
+/** Declarative metadata for a column inside a builtin relation. */
+public record SystemColumnDef(
+    String name,
+    NameRef type,
+    boolean nullable,
+    int ordinal,
+    Long id,
+    List<EngineSpecificRule> engineSpecific) {
+
+  public SystemColumnDef {
+    name = Objects.requireNonNull(name, "name").trim();
+    type = Objects.requireNonNull(type, "type");
+    if (name.isBlank()) {
+      throw new IllegalArgumentException("name must not be blank");
+    }
+    if (ordinal <= 0) {
+      throw new IllegalArgumentException("ordinal must be 1-based and positive");
+    }
+    if (id != null && id <= 0) {
+      throw new IllegalArgumentException("id must be positive when provided");
+    }
+    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+  }
+
+  public boolean hasId() {
+    return id != null;
+  }
+}

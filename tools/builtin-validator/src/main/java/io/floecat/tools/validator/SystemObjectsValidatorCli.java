@@ -19,12 +19,11 @@ package io.floecat.tools.validator;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidationFormatter;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.validation.Severity;
+import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -39,9 +38,10 @@ import java.util.List;
 import java.util.ServiceLoader;
 
 /**
- * Standalone command line validator for builtin catalog protobuf files. The CLI intentionally
- * depends only on the shared builtin catalog module so it can run without the rest of the Floecat
- * runtime.
+ * Standalone command line validator for builtin catalog protobuf files.
+ *
+ * <p>The CLI intentionally depends only on the shared builtin catalog module so it can run without
+ * the rest of the Floecat runtime.
  */
 public final class SystemObjectsValidatorCli {
 
@@ -117,8 +117,10 @@ public final class SystemObjectsValidatorCli {
       return 1;
     }
 
-    var errors = SystemCatalogValidator.validate(catalog);
-    var warnings = List.<String>of();
+    // Core validation (structural)
+    List<ValidationIssue> coreIssues = SystemCatalogValidator.validate(catalog);
+
+    // Engine validation (optional)
     List<ValidationIssue> engineIssues = List.of();
     if (options.engineKind() != null && !options.engineKind().isBlank()) {
       try {
@@ -128,27 +130,20 @@ public final class SystemObjectsValidatorCli {
         return 1;
       }
     }
-    var stats = CatalogStats.from(catalog);
-    int engineErrorCount =
-        (int)
-            engineIssues.stream().filter(i -> i != null && i.severity() == Severity.ERROR).count();
-    int engineWarningCount =
-        (int)
-            engineIssues.stream()
-                .filter(i -> i != null && i.severity() == Severity.WARNING)
-                .count();
-    int engineInfoCount =
-        (int) engineIssues.stream().filter(i -> i != null && i.severity() == Severity.INFO).count();
+
+    IssueCounts coreCounts = tallyIssues(coreIssues);
+    IssueCounts engineCounts = tallyIssues(engineIssues);
 
     boolean valid =
-        errors.isEmpty()
-            && engineErrorCount == 0
-            && (warnings.isEmpty() || !options.strict())
-            && (engineWarningCount == 0 || !options.strict());
+        coreCounts.errorCount == 0
+            && engineCounts.errorCount == 0
+            && (!options.strict()
+                || (coreCounts.warningCount == 0 && engineCounts.warningCount == 0));
+
     boolean shouldFail =
-        !errors.isEmpty()
-            || engineErrorCount > 0
-            || (options.strict() && (!warnings.isEmpty() || engineWarningCount > 0));
+        coreCounts.errorCount > 0
+            || engineCounts.errorCount > 0
+            || (options.strict() && (coreCounts.warningCount > 0 || engineCounts.warningCount > 0));
 
     String catalogLabel =
         options.catalogPath() != null
@@ -157,10 +152,13 @@ public final class SystemObjectsValidatorCli {
                 + EngineContextNormalizer.normalizeEngineKind(options.engineKind())
                 + ">");
 
+    CatalogStats stats = CatalogStats.from(catalog);
+
     if (options.json()) {
-      emitJson(out, catalogLabel, stats, errors, warnings, engineIssues, valid);
+      emitJson(out, catalogLabel, stats, coreIssues, engineIssues, valid, coreCounts, engineCounts);
     } else {
-      emitHumanReadable(out, catalogLabel, stats, errors, warnings, engineIssues, valid);
+      emitHumanReadable(
+          out, catalogLabel, stats, coreIssues, engineIssues, valid, coreCounts, engineCounts);
     }
 
     return shouldFail ? 1 : 0;
@@ -171,10 +169,12 @@ public final class SystemObjectsValidatorCli {
       PrintStream out,
       String catalogLabel,
       CatalogStats stats,
-      List<String> errors,
-      List<String> warnings,
+      List<ValidationIssue> coreIssues,
       List<ValidationIssue> engineIssues,
-      boolean valid) {
+      boolean valid,
+      IssueCounts coreCounts,
+      IssueCounts engineCounts) {
+
     if (valid) {
       out.printf("%sLoaded builtin catalog: %s%n", successPrefix, catalogLabel);
       out.printf("%sTypes: %d OK%n", successPrefix, stats.types());
@@ -191,43 +191,50 @@ public final class SystemObjectsValidatorCli {
       return;
     }
 
-    errors.stream()
-        .map(SystemCatalogValidationFormatter::describeError)
-        .forEach(err -> out.println(errorPrefix + colored(err, AnsiColor.RED_BOLD)));
+    // Core issues
+    for (ValidationIssue issue : coreIssues) {
+      if (issue == null) {
+        continue;
+      }
+      printIssue(out, issue);
+    }
+
+    // Engine issues
     if (engineIssues != null && !engineIssues.isEmpty()) {
       for (ValidationIssue issue : engineIssues) {
         if (issue == null) {
           continue;
         }
-        String rendered = ValidationIssueFormatter.format(issue);
-        if (issue.severity() == Severity.ERROR) {
-          out.println(errorPrefix + colored(rendered, AnsiColor.RED_BOLD));
-        } else if (issue.severity() == Severity.WARNING) {
-          out.println(colored("WARN: " + rendered, AnsiColor.YELLOW));
-        } else {
-          out.println("INFO: " + rendered);
-        }
+        printIssue(out, issue);
       }
     }
-    warnings.stream()
-        .map(SystemObjectsValidatorCli::describeWarning)
-        .forEach(warning -> out.println(colored("WARN: " + warning, AnsiColor.YELLOW)));
+
     out.println();
     StringBuilder summary = new StringBuilder();
     summary.append("VALIDATION FAILED (");
-    summary.append(errors.size()).append(" core errors");
-    if (!warnings.isEmpty()) {
-      summary.append(" + ").append(warnings.size()).append(" core warnings");
+    summary.append(coreCounts.errorCount).append(" core errors");
+    if (coreCounts.warningCount > 0) {
+      summary.append(" + ").append(coreCounts.warningCount).append(" core warnings");
     }
-    EngineIssueCounts counts = tallyEngineIssues(engineIssues);
-    if (counts.errorCount > 0) {
-      summary.append(" + ").append(counts.errorCount).append(" engine errors");
+    if (engineCounts.errorCount > 0) {
+      summary.append(" + ").append(engineCounts.errorCount).append(" engine errors");
     }
-    if (counts.warningCount > 0) {
-      summary.append(" + ").append(counts.warningCount).append(" engine warnings");
+    if (engineCounts.warningCount > 0) {
+      summary.append(" + ").append(engineCounts.warningCount).append(" engine warnings");
     }
     summary.append(")");
     out.println(colored(summary.toString(), AnsiColor.RED_BOLD));
+  }
+
+  private void printIssue(PrintStream out, ValidationIssue issue) {
+    String rendered = ValidationIssueFormatter.format(issue);
+    if (issue.severity() == Severity.ERROR) {
+      out.println(errorPrefix + colored(rendered, AnsiColor.RED_BOLD));
+    } else if (issue.severity() == Severity.WARNING) {
+      out.println(colored("WARN: " + rendered, AnsiColor.YELLOW));
+    } else {
+      out.println("INFO: " + rendered);
+    }
   }
 
   /** Emits machine readable JSON output for automation. */
@@ -235,43 +242,28 @@ public final class SystemObjectsValidatorCli {
       PrintStream out,
       String catalogLabel,
       CatalogStats stats,
-      List<String> errors,
-      List<String> warnings,
+      List<ValidationIssue> coreIssues,
       List<ValidationIssue> engineIssues,
-      boolean valid) {
-    EngineIssueCounts counts = tallyEngineIssues(engineIssues);
+      boolean valid,
+      IssueCounts coreCounts,
+      IssueCounts engineCounts) {
+
     var builder = new StringBuilder();
     builder.append("{\n");
     builder.append("  \"catalog\": \"").append(escapeJson(catalogLabel)).append("\",\n");
     builder.append("  \"valid\": ").append(valid).append(",\n");
-    builder
-        .append("  \"errors\": ")
-        .append(asJsonArray(errors, SystemCatalogValidationFormatter::describeError))
-        .append(",\n");
-    builder
-        .append("  \"warnings\": ")
-        .append(asJsonArray(warnings, SystemObjectsValidatorCli::describeWarning))
-        .append(",\n");
-    builder
-        .append("  \"engine_issues\": ")
-        .append(asJsonArrayEngineIssues(engineIssues))
-        .append(",\n");
-    builder.append("  \"engine_error_count\": ").append(counts.errorCount).append(",\n");
-    builder.append("  \"engine_warning_count\": ").append(counts.warningCount).append(",\n");
-    builder.append("  \"engine_info_count\": ").append(counts.infoCount).append(",\n");
-    int engineErrorCount =
-        (int)
-            engineIssues.stream().filter(i -> i != null && i.severity() == Severity.ERROR).count();
-    int engineWarningCount =
-        (int)
-            engineIssues.stream()
-                .filter(i -> i != null && i.severity() == Severity.WARNING)
-                .count();
-    int engineInfoCount =
-        (int) engineIssues.stream().filter(i -> i != null && i.severity() == Severity.INFO).count();
-    builder.append("  \"engine_error_count\": ").append(engineErrorCount).append(",\n");
-    builder.append("  \"engine_warning_count\": ").append(engineWarningCount).append(",\n");
-    builder.append("  \"engine_info_count\": ").append(engineInfoCount).append(",\n");
+
+    builder.append("  \"core_issues\": ").append(asJsonArrayIssues(coreIssues)).append(",\n");
+    builder.append("  \"engine_issues\": ").append(asJsonArrayIssues(engineIssues)).append(",\n");
+
+    builder.append("  \"core_error_count\": ").append(coreCounts.errorCount).append(",\n");
+    builder.append("  \"core_warning_count\": ").append(coreCounts.warningCount).append(",\n");
+    builder.append("  \"core_info_count\": ").append(coreCounts.infoCount).append(",\n");
+
+    builder.append("  \"engine_error_count\": ").append(engineCounts.errorCount).append(",\n");
+    builder.append("  \"engine_warning_count\": ").append(engineCounts.warningCount).append(",\n");
+    builder.append("  \"engine_info_count\": ").append(engineCounts.infoCount).append(",\n");
+
     builder.append("  \"stats\": {\n");
     builder.append("    \"types\": ").append(stats.types()).append(",\n");
     builder.append("    \"functions\": ").append(stats.functions()).append(",\n");
@@ -284,16 +276,7 @@ public final class SystemObjectsValidatorCli {
     out.print(builder);
   }
 
-  private static String asJsonArray(
-      List<String> values, java.util.function.Function<String, String> mapper) {
-    var mapped = new ArrayList<String>(values.size());
-    for (String value : values) {
-      mapped.add("\"" + escapeJson(mapper.apply(value)) + "\"");
-    }
-    return "[" + String.join(", ", mapped) + "]";
-  }
-
-  private static String asJsonArrayEngineIssues(List<ValidationIssue> issues) {
+  private static String asJsonArrayIssues(List<ValidationIssue> issues) {
     if (issues == null || issues.isEmpty()) {
       return "[]";
     }
@@ -307,9 +290,11 @@ public final class SystemObjectsValidatorCli {
     return "[" + String.join(", ", mapped) + "]";
   }
 
-  private static EngineIssueCounts tallyEngineIssues(List<ValidationIssue> issues) {
+  private record IssueCounts(int errorCount, int warningCount, int infoCount) {}
+
+  private static IssueCounts tallyIssues(List<ValidationIssue> issues) {
     if (issues == null || issues.isEmpty()) {
-      return new EngineIssueCounts(0, 0, 0);
+      return new IssueCounts(0, 0, 0);
     }
     int errors = 0;
     int warnings = 0;
@@ -324,10 +309,8 @@ public final class SystemObjectsValidatorCli {
         case INFO -> infos++;
       }
     }
-    return new EngineIssueCounts(errors, warnings, infos);
+    return new IssueCounts(errors, warnings, infos);
   }
-
-  private record EngineIssueCounts(int errorCount, int warningCount, int infoCount) {}
 
   private static String escapeJson(String value) {
     if (value == null) {
@@ -345,14 +328,6 @@ public final class SystemObjectsValidatorCli {
       }
     }
     return builder.toString();
-  }
-
-  private static String describeError(String code) {
-    return SystemCatalogValidationFormatter.describeError(code);
-  }
-
-  private static String describeWarning(String code) {
-    return SystemCatalogValidationFormatter.describeWarning(code);
   }
 
   /** Loads either a catalog directory or a single protobuf file. */
@@ -423,7 +398,7 @@ public final class SystemObjectsValidatorCli {
         throw new IOException("Failed to parse catalog fragment: " + fragmentPath, parseFailure);
       }
 
-      SystemObjectsRegistryMerger.append(builder, fragmentBuilder.build());
+      SystemObjectsRegistryMerger.append(builder, fragmentBuilder);
     }
 
     return SystemCatalogProtoMapper.fromProto(builder.build(), inferEngineKindFromDirectory(dir));

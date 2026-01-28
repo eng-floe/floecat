@@ -54,7 +54,7 @@ def to_int(v: Any) -> Optional[int]:
     if v is None:
         return None
     s = str(v).strip()
-    if s == "" or s.lower() == "null":
+    if s == "" or s.lower() == "null" or s == "-":
         return None
     try:
         if "." in s:
@@ -68,7 +68,7 @@ def _to_float(v: Any) -> Optional[float]:
     if v is None:
         return None
     s = str(v).strip()
-    if s == "" or s.lower() == "null":
+    if s == "" or s.lower() == "null" or s == "-":
         return None
     try:
         return float(s)
@@ -80,7 +80,7 @@ def to_bool_pg(v: Any) -> Optional[bool]:
     if v is None:
         return None
     s = str(v).strip()
-    if s == "" or s.lower() == "null":
+    if s == "" or s.lower() == "null" or s == "-":
         return None
     if s in ("t", "true", "True", "1"):
         return True
@@ -93,10 +93,18 @@ def to_str(v: Any) -> Optional[str]:
     if v is None:
         return None
     s = str(v)
-    if s.strip() == "" or s.strip().lower() == "null":
+    if s.strip() == "" or s.strip().lower() == "null" or s.strip() == "-":
         return None
     return s
 
+def to_symbol_str(v: Any) -> Optional[str]:
+    """Like to_str, but '-' is a legitimate value (e.g. operator name)."""
+    if v is None:
+        return None
+    s = str(v)
+    if s.strip() == "" or s.strip().lower() == "null":
+        return None
+    return s
 
 def pb_escape(s: str) -> str:
     return (
@@ -193,13 +201,22 @@ class TypeRow:
     typbyval: Optional[bool]
     typdelim: Optional[str]
     typalign: Optional[str]
+
     typelem: Optional[int]
     typarray: Optional[int]
 
     typtype: Optional[str]
     typrelid: Optional[int]
 
-    typcollation: Optional[int]  # NEW
+    typcollation: Optional[int]
+
+    # NEW: keep raw pg_type proc refs as exported (OID or regproc name or '-')
+    typinput_raw: Optional[str]
+    typoutput_raw: Optional[str]
+    typreceive_raw: Optional[str]
+    typsend_raw: Optional[str]
+    typmodin_raw: Optional[str]
+    typmodout_raw: Optional[str]
 
 
 def read_types(csv_dir: Path) -> Dict[int, TypeRow]:
@@ -224,6 +241,14 @@ def read_types(csv_dir: Path) -> Dict[int, TypeRow]:
             typtype=to_str(r.get("typtype")),
             typrelid=to_int(r.get("typrelid")),
             typcollation=to_int(r.get("typcollation")),
+
+            # NEW: raw proc refs
+            typinput_raw=to_str(r.get("typinput")),
+            typoutput_raw=to_str(r.get("typoutput")),
+            typreceive_raw=to_str(r.get("typreceive")),
+            typsend_raw=to_str(r.get("typsend")),
+            typmodin_raw=to_str(r.get("typmodin")),
+            typmodout_raw=to_str(r.get("typmodout")),
         )
     return out
 
@@ -255,7 +280,6 @@ def type_category_code(t: TypeRow) -> str:
 # =============================================================================
 # pg_proc loader
 # =============================================================================
-
 @dataclass(frozen=True)
 class ProcRow:
     oid: int
@@ -269,6 +293,7 @@ class ProcRow:
     prorows: Optional[float]
 
     provariadic: Optional[int]
+    protransform: Optional[int]
 
     proisagg: bool
     proiswindow: bool
@@ -279,9 +304,12 @@ class ProcRow:
     provolatile: Optional[str]
 
     pronargs: Optional[int]
+    pronargdefaults: Optional[int]
 
     prorettype: int
     proargtypes: List[int]
+
+    proybcost: Optional[int]
 
     prosrc: Optional[str]
 
@@ -311,6 +339,7 @@ def read_procs(csv_dir: Path) -> Dict[int, ProcRow]:
             procost=_to_float(r.get("procost")),
             prorows=_to_float(r.get("prorows")),
             provariadic=to_int(r.get("provariadic")),
+            protransform=to_int(r.get("protransform")),
             proisagg=proisagg,
             proiswindow=proiswindow,
             prosecdef=to_bool_pg(r.get("prosecdef")),
@@ -319,8 +348,10 @@ def read_procs(csv_dir: Path) -> Dict[int, ProcRow]:
             proretset=to_bool_pg(r.get("proretset")),
             provolatile=to_str(r.get("provolatile")),
             pronargs=to_int(r.get("pronargs")),
+            pronargdefaults=to_int(r.get("pronargdefaults")),
             prorettype=to_int(r.get("prorettype")) or 0,
             proargtypes=parse_oidvector(r.get("proargtypes")),
+            proybcost=to_int(r.get("proybcost")),
             prosrc=to_str(r.get("prosrc")),
         )
 
@@ -417,17 +448,24 @@ class OperatorRow:
     oid: int
     oprname: str
     oprnamespace: Optional[int]
+
     oprkind: Optional[str]
     oprcanmerge: Optional[bool]
     oprcanhash: Optional[bool]
+
     oprleft: Optional[int]
     oprright: Optional[int]
     oprresult: Optional[int]
     oprcom: Optional[int]
     oprnegate: Optional[int]
-    oprcode: Optional[int]
-    oprrest: Optional[int]
-    oprjoin: Optional[int]
+
+    oprcode_oid: Optional[int]
+    oprrest_oid: Optional[int]
+    oprjoin_oid: Optional[int]
+
+    oprcode_raw: Optional[str]
+    oprrest_raw: Optional[str]
+    oprjoin_raw: Optional[str]
 
 
 def read_operators(csv_dir: Path) -> Dict[int, OperatorRow]:
@@ -441,9 +479,18 @@ def read_operators(csv_dir: Path) -> Dict[int, OperatorRow]:
         if oid is None:
             continue
 
+        # These three are regproc-like in PG; exporters may emit numeric OIDs or names.
+        oprcode_raw = to_str(r.get("oprcode"))
+        oprrest_raw = to_str(r.get("oprrest"))
+        oprjoin_raw = to_str(r.get("oprjoin"))
+
+        oprcode_oid = to_int(oprcode_raw) if oprcode_raw is not None else None
+        oprrest_oid = to_int(oprrest_raw) if oprrest_raw is not None else None
+        oprjoin_oid = to_int(oprjoin_raw) if oprjoin_raw is not None else None
+
         out[oid] = OperatorRow(
             oid=oid,
-            oprname=to_str(r.get("oprname")) or "",
+            oprname=to_symbol_str(r.get("oprname")) or "",
             oprnamespace=to_int(r.get("oprnamespace")),
             oprkind=to_str(r.get("oprkind")),
             oprcanmerge=to_bool_pg(r.get("oprcanmerge")),
@@ -453,9 +500,12 @@ def read_operators(csv_dir: Path) -> Dict[int, OperatorRow]:
             oprresult=to_int(r.get("oprresult")),
             oprcom=to_int(r.get("oprcom")),
             oprnegate=to_int(r.get("oprnegate")),
-            oprcode=to_int(r.get("oprcode")),
-            oprrest=to_int(r.get("oprrest")),
-            oprjoin=to_int(r.get("oprjoin")),
+            oprcode_oid=oprcode_oid,
+            oprrest_oid=oprrest_oid,
+            oprjoin_oid=oprjoin_oid,
+            oprcode_raw=None if oprcode_oid is not None else oprcode_raw,
+            oprrest_raw=None if oprrest_oid is not None else oprrest_raw,
+            oprjoin_raw=None if oprjoin_oid is not None else oprjoin_raw,
         )
 
     return out

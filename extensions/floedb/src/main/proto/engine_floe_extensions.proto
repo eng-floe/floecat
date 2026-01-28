@@ -65,7 +65,10 @@ extend ai.floedb.floecat.query.EngineSpecific {
 
   // FloeDB-specific relation attributes (pg_class).
   optional ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific floe_relation = 8;
-
+  
+  // FloeDB-specific column attributes (pg_attribute).
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific floe_column = 9;
+  
   // Registry-level payloads (SystemObjectsRegistry.engine_specific)
 
   // Registry-level index access method dictionary (pg_am).

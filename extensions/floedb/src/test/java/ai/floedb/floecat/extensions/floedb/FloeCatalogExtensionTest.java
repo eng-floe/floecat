@@ -20,7 +20,7 @@ import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogValidator;
+import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;

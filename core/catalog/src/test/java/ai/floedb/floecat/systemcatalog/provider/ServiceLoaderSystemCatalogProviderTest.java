@@ -18,9 +18,11 @@ package ai.floedb.floecat.systemcatalog.provider;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,7 +48,7 @@ class ServiceLoaderSystemCatalogProviderTest {
 
     assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
     assertThat(catalog.functions()).isEmpty();
-    assertThat(catalog.tables()).isEmpty();
+    assertInfoSchemaTablesPresent(catalog);
   }
 
   @Test
@@ -56,16 +58,16 @@ class ServiceLoaderSystemCatalogProviderTest {
     SystemEngineCatalog catalog = provider.load(EngineContext.of("   ", null));
 
     assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertThat(catalog.tables()).isEmpty();
+    assertInfoSchemaTablesPresent(catalog);
   }
 
   @Test
-  void load_unknownEngineFallsBackToFloecatInternal() {
+  void load_unknownHeaderReturnsFloecatInternalContentUnderUnknownHeader() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
     SystemEngineCatalog catalog = provider.load(EngineContext.of("unknown-engine", ""));
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertThat(catalog.tables()).isEmpty();
+    assertThat(catalog.engineKind()).isEqualTo("unknown-engine");
+    assertInfoSchemaTablesPresent(catalog);
   }
 
   @Test
@@ -75,7 +77,7 @@ class ServiceLoaderSystemCatalogProviderTest {
     SystemEngineCatalog catalog = provider.load(EngineContext.empty());
 
     assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertThat(catalog.tables()).isEmpty();
+    assertInfoSchemaTablesPresent(catalog);
   }
 
   @Test
@@ -94,5 +96,15 @@ class ServiceLoaderSystemCatalogProviderTest {
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
+  }
+
+  private static void assertInfoSchemaTablesPresent(SystemEngineCatalog catalog) {
+    assertThat(catalog.tables()).isNotEmpty();
+    assertThat(catalog.tables())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains(
+            "information_schema.tables",
+            "information_schema.columns",
+            "information_schema.schemata");
   }
 }

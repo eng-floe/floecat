@@ -22,43 +22,165 @@ import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Virtual system object node (information_schema, floecat.*, engine plugin system tables).
- *
- * <p>Unlike tables/views, system objects are not stored in the pointer/blob repositories. They are
- * instead sourced from the SystemObjectRegistry and lifted into the metagraph so resolution is
- * unified and downstream planners do not need a separate codepath.
- *
- * <p>Nodes are immutable and behave exactly like any GraphNode: - stable ResourceId - version = 0
- * (static definition) - metadataUpdatedAt = service startup instant
- *
- * <p>Row generation logic is NOT stored inside the node. It is looked up in SystemObjectRegistry
- * using the node's scannerId.
- */
-public record SystemTableNode(
-    ResourceId id,
-    long version,
-    Instant metadataUpdatedAt,
-    String engineVersion,
-    String displayName,
-    ResourceId namespaceId,
-    List<SchemaColumn> columns,
-    String scannerId,
-    Map<EngineHintKey, EngineHint> engineHints)
-    implements TableNode {
+/** Planner-facing contract for builtin system tables. */
+public sealed interface SystemTableNode extends TableNode
+    permits SystemTableNode.FloeCatSystemTableNode,
+        SystemTableNode.StorageSystemTableNode,
+        SystemTableNode.EngineSystemTableNode,
+        SystemTableNode.GenericSystemTableNode {
 
-  public SystemTableNode {
-    columns = List.copyOf(columns);
-    displayName = displayName == null ? "" : displayName;
-    engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+  List<SchemaColumn> columns();
+
+  Map<String, Map<EngineHintKey, EngineHint>> columnHints();
+
+  Map<EngineHintKey, EngineHint> engineHints();
+
+  TableBackendKind backendKind();
+
+  record FloeCatSystemTableNode(
+      ResourceId id,
+      long version,
+      Instant metadataUpdatedAt,
+      String engineVersion,
+      String displayName,
+      ResourceId namespaceId,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> engineHints,
+      String scannerId)
+      implements SystemTableNode {
+
+    public FloeCatSystemTableNode {
+      columns = List.copyOf(columns);
+      columnHints = normalizeColumnHints(columnHints);
+      engineHints = normalizeEngineHints(engineHints);
+      displayName = displayName == null ? "" : displayName;
+      scannerId = scannerId == null ? "" : scannerId;
+    }
+
+    @Override
+    public TableBackendKind backendKind() {
+      return TableBackendKind.TABLE_BACKEND_KIND_FLOECAT;
+    }
+
+    @Override
+    public GraphNodeOrigin origin() {
+      return GraphNodeOrigin.SYSTEM;
+    }
   }
 
-  @Override
-  public GraphNodeOrigin origin() {
-    return GraphNodeOrigin.SYSTEM;
+  record StorageSystemTableNode(
+      ResourceId id,
+      long version,
+      Instant metadataUpdatedAt,
+      String engineVersion,
+      String displayName,
+      ResourceId namespaceId,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> engineHints,
+      String storagePath)
+      implements SystemTableNode {
+
+    public StorageSystemTableNode {
+      columns = List.copyOf(columns);
+      columnHints = normalizeColumnHints(columnHints);
+      engineHints = normalizeEngineHints(engineHints);
+      displayName = displayName == null ? "" : displayName;
+      storagePath = storagePath == null ? "" : storagePath;
+    }
+
+    @Override
+    public TableBackendKind backendKind() {
+      return TableBackendKind.TABLE_BACKEND_KIND_STORAGE;
+    }
+
+    @Override
+    public GraphNodeOrigin origin() {
+      return GraphNodeOrigin.SYSTEM;
+    }
+  }
+
+  record EngineSystemTableNode(
+      ResourceId id,
+      long version,
+      Instant metadataUpdatedAt,
+      String engineVersion,
+      String displayName,
+      ResourceId namespaceId,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> engineHints)
+      implements SystemTableNode {
+
+    public EngineSystemTableNode {
+      columns = List.copyOf(columns);
+      columnHints = normalizeColumnHints(columnHints);
+      engineHints = normalizeEngineHints(engineHints);
+      displayName = displayName == null ? "" : displayName;
+    }
+
+    @Override
+    public TableBackendKind backendKind() {
+      return TableBackendKind.TABLE_BACKEND_KIND_ENGINE;
+    }
+
+    @Override
+    public GraphNodeOrigin origin() {
+      return GraphNodeOrigin.SYSTEM;
+    }
+  }
+
+  record GenericSystemTableNode(
+      ResourceId id,
+      long version,
+      Instant metadataUpdatedAt,
+      String engineVersion,
+      String displayName,
+      ResourceId namespaceId,
+      List<SchemaColumn> columns,
+      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<EngineHintKey, EngineHint> engineHints,
+      TableBackendKind backendKind)
+      implements SystemTableNode {
+
+    public GenericSystemTableNode {
+      columns = List.copyOf(columns);
+      columnHints = normalizeColumnHints(columnHints);
+      engineHints = normalizeEngineHints(engineHints);
+      displayName = displayName == null ? "" : displayName;
+    }
+
+    @Override
+    public GraphNodeOrigin origin() {
+      return GraphNodeOrigin.SYSTEM;
+    }
+  }
+
+  static Map<String, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
+      Map<String, Map<EngineHintKey, EngineHint>> hints) {
+    if (hints == null || hints.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
+      Map<EngineHintKey, EngineHint> value =
+          entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
+      normalized.put(entry.getKey(), value);
+    }
+    return Map.copyOf(normalized);
+  }
+
+  static Map<EngineHintKey, EngineHint> normalizeEngineHints(Map<EngineHintKey, EngineHint> hints) {
+    if (hints == null || hints.isEmpty()) {
+      return Map.of();
+    }
+    return Map.copyOf(hints);
   }
 }

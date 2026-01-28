@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.systemcatalog.registry;
+package ai.floedb.floecat.systemcatalog.validation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -39,14 +40,25 @@ final class SystemCatalogValidatorTest {
     return new SystemTypeDef(name(name), "S", false, null, List.of());
   }
 
+  private static List<String> codes(List<ValidationIssue> issues) {
+    return issues.stream().map(ValidationIssue::code).toList();
+  }
+
+  private static ValidationIssue findFirst(List<ValidationIssue> issues, String code) {
+    return issues.stream().filter(i -> code.equals(i.code())).findFirst().orElse(null);
+  }
+
   // ---------------------------------------------------------------------------
   // Null / empty catalog
   // ---------------------------------------------------------------------------
 
   @Test
   void validate_nullCatalog() {
-    List<String> errors = SystemCatalogValidator.validate(null);
-    assertThat(errors).containsExactly("catalog.null");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(null);
+    assertThat(codes(issues)).containsExactly("catalog.null");
+
+    ValidationIssue issue = issues.get(0);
+    assertThat(issue.ctx()).isEqualTo("catalog");
   }
 
   @Test
@@ -61,12 +73,12 @@ final class SystemCatalogValidatorTest {
             List.of(), // aggregates
             List.of(), // namespaces
             List.of(), // tables
-            List.of() // views
-            ,
-            List.of());
+            List.of(), // views
+            List.of() // registry engineSpecific
+            );
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("types.empty");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("types.empty");
   }
 
   // ---------------------------------------------------------------------------
@@ -88,8 +100,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("type.duplicate:int");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("type.duplicate");
+
+    ValidationIssue dup = findFirst(issues, "type.duplicate");
+    assertThat(dup).isNotNull();
+    assertThat(dup.ctx()).isEqualTo("type:int");
+    assertThat(dup.args()).containsExactly("int");
   }
 
   // ---------------------------------------------------------------------------
@@ -113,8 +130,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("function.return:f.type.unknown:missing");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("function.return.type.unknown");
+
+    ValidationIssue issue = findFirst(issues, "function.return.type.unknown");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("function:f.returnType");
+    assertThat(issue.args()).containsExactly("missing");
   }
 
   @Test
@@ -134,8 +156,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("function.arg:f.type.unknown:missing");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("function.arg.type.unknown");
+
+    ValidationIssue issue = findFirst(issues, "function.arg.type.unknown");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("function:f.argTypes[0]");
+    assertThat(issue.args()).containsExactly("missing");
   }
 
   @Test
@@ -160,8 +187,8 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).isEmpty();
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(issues).isEmpty();
   }
 
   @Test
@@ -183,8 +210,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("function.duplicate:f(int)->int");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("function.duplicate");
+
+    ValidationIssue dup = findFirst(issues, "function.duplicate");
+    assertThat(dup).isNotNull();
+    assertThat(dup.ctx()).isEqualTo("function:f");
+    assertThat(dup.args()).containsExactly("f(int)->int");
   }
 
   // ---------------------------------------------------------------------------
@@ -208,8 +240,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("operator.right:+.type.unknown:missing");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("operator.right.type.unknown");
+
+    ValidationIssue issue = findFirst(issues, "operator.right.type.unknown");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("operator:+.rightType");
+    assertThat(issue.args()).containsExactly("missing");
   }
 
   // ---------------------------------------------------------------------------
@@ -235,8 +272,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("cast.name.duplicate:c");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("cast.name.duplicate");
+
+    ValidationIssue dup = findFirst(issues, "cast.name.duplicate");
+    assertThat(dup).isNotNull();
+    assertThat(dup.ctx()).isEqualTo("cast:c");
+    assertThat(dup.args()).containsExactly("c");
   }
 
   @Test
@@ -256,8 +298,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("cast.source.type.unknown:missing");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("cast.source.type.unknown");
+
+    ValidationIssue issue = findFirst(issues, "cast.source.type.unknown");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("cast:c.sourceType");
+    assertThat(issue.args()).containsExactly("missing");
   }
 
   // ---------------------------------------------------------------------------
@@ -281,8 +328,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("collation.duplicate:c");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("collation.duplicate");
+
+    ValidationIssue dup = findFirst(issues, "collation.duplicate");
+    assertThat(dup).isNotNull();
+    assertThat(dup.ctx()).isEqualTo("collation:c");
+    assertThat(dup.args()).containsExactly("c:en_US");
   }
 
   // ---------------------------------------------------------------------------
@@ -306,8 +358,13 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("agg.arg:sum.type.unknown:missing");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("agg.arg.type.unknown");
+
+    ValidationIssue issue = findFirst(issues, "agg.arg.type.unknown");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("aggregate:sum.argTypes[0]");
+    assertThat(issue.args()).containsExactly("missing");
   }
 
   @Test
@@ -329,8 +386,12 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).contains("function.f.engineSpecific[0].payloadType.required");
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("engine_specific.payload_type.required");
+
+    ValidationIssue issue = findFirst(issues, "engine_specific.payload_type.required");
+    assertThat(issue).isNotNull();
+    assertThat(issue.ctx()).isEqualTo("function:f.engineSpecific[0]");
   }
 
   // ---------------------------------------------------------------------------
@@ -354,7 +415,7 @@ final class SystemCatalogValidatorTest {
             List.of(),
             List.of());
 
-    List<String> errors = SystemCatalogValidator.validate(catalog);
-    assertThat(errors).isEmpty();
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(issues).isEmpty();
   }
 }

@@ -17,11 +17,34 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.*;
-import ai.floedb.floecat.systemcatalog.def.*;
+import ai.floedb.floecat.query.rpc.EngineSpecific;
+import ai.floedb.floecat.query.rpc.FloeCatTableDetails;
+import ai.floedb.floecat.query.rpc.Origin;
+import ai.floedb.floecat.query.rpc.SqlAggregate;
+import ai.floedb.floecat.query.rpc.SqlCast;
+import ai.floedb.floecat.query.rpc.SqlCollation;
+import ai.floedb.floecat.query.rpc.SqlFunction;
+import ai.floedb.floecat.query.rpc.SqlOperator;
+import ai.floedb.floecat.query.rpc.SqlType;
+import ai.floedb.floecat.query.rpc.StorageTableDetails;
+import ai.floedb.floecat.query.rpc.SystemColumn;
+import ai.floedb.floecat.query.rpc.SystemNamespace;
+import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import ai.floedb.floecat.query.rpc.SystemTable;
+import ai.floedb.floecat.query.rpc.SystemView;
+import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
+import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
+import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
+import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
+import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
+import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
+import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
+import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import com.google.protobuf.ByteString;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -46,6 +69,9 @@ public final class SystemCatalogProtoMapper {
     catalog.casts().forEach(c -> builder.addCasts(toProtoCast(c)));
     catalog.collations().forEach(c -> builder.addCollations(toProtoCollation(c)));
     catalog.aggregates().forEach(a -> builder.addAggregates(toProtoAggregate(a)));
+    catalog.namespaces().forEach(ns -> builder.addSystemNamespaces(toProtoNamespace(ns)));
+    catalog.tables().forEach(tbl -> builder.addSystemTables(toProtoTable(tbl)));
+    catalog.views().forEach(view -> builder.addSystemViews(toProtoView(view)));
     catalog.registryEngineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
 
     return builder.build();
@@ -65,9 +91,15 @@ public final class SystemCatalogProtoMapper {
         proto.getCastsList().stream().map(c -> fromProtoCast(c, defaultEngine)).toList(),
         proto.getCollationsList().stream().map(c -> fromProtoCollation(c, defaultEngine)).toList(),
         proto.getAggregatesList().stream().map(a -> fromProtoAggregate(a, defaultEngine)).toList(),
-        List.of(),
-        List.of(),
-        List.of(),
+        proto.getSystemNamespacesList().stream()
+            .map(ns -> fromProtoNamespace(ns, defaultEngine))
+            .toList(),
+        proto.getSystemTablesList().stream()
+            .map(tbl -> fromProtoTable(tbl, defaultEngine))
+            .toList(),
+        proto.getSystemViewsList().stream()
+            .map(view -> fromProtoView(view, defaultEngine))
+            .toList(),
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
@@ -248,6 +280,112 @@ public final class SystemCatalogProtoMapper {
         proto.getReturnType(),
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
+            .toList());
+  }
+
+  // =========================================================================
+  //  Relation mapping
+  // =========================================================================
+
+  private static SystemNamespace toProtoNamespace(SystemNamespaceDef def) {
+    var builder =
+        SystemNamespace.newBuilder().setName(def.name()).setDisplayName(def.displayName());
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static SystemNamespaceDef fromProtoNamespace(
+      SystemNamespace proto, String defaultEngineKind) {
+    return new SystemNamespaceDef(
+        proto.getName(),
+        proto.getDisplayName(),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngineKind))
+            .toList());
+  }
+
+  private static SystemTable toProtoTable(SystemTableDef def) {
+    var builder =
+        SystemTable.newBuilder()
+            .setName(def.name())
+            .setDisplayName(def.displayName())
+            .setBackendKind(def.backendKind());
+    switch (def.backendKind()) {
+      case TABLE_BACKEND_KIND_FLOECAT ->
+          builder.setFloecat(FloeCatTableDetails.newBuilder().setScannerId(def.scannerId()));
+      case TABLE_BACKEND_KIND_STORAGE ->
+          builder.setStorage(StorageTableDetails.newBuilder().setPath(def.storagePath()));
+      default -> {}
+    }
+    def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static SystemTableDef fromProtoTable(SystemTable proto, String defaultEngineKind) {
+    return new SystemTableDef(
+        proto.getName(),
+        proto.getDisplayName(),
+        proto.getColumnsList().stream()
+            .map(col -> fromProtoColumn(col, defaultEngineKind))
+            .toList(),
+        proto.getBackendKind(),
+        proto.hasFloecat() ? proto.getFloecat().getScannerId() : "",
+        proto.hasStorage() ? proto.getStorage().getPath() : "",
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngineKind))
+            .toList());
+  }
+
+  private static SystemView toProtoView(SystemViewDef def) {
+    var builder =
+        SystemView.newBuilder()
+            .setName(def.name())
+            .setDisplayName(def.displayName())
+            .setSql(def.sql())
+            .setDialect(def.dialect());
+    def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static SystemViewDef fromProtoView(SystemView proto, String defaultEngineKind) {
+    return new SystemViewDef(
+        proto.getName(),
+        proto.getDisplayName(),
+        proto.getSql(),
+        proto.getDialect(),
+        proto.getColumnsList().stream()
+            .map(col -> fromProtoColumn(col, defaultEngineKind))
+            .toList(),
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngineKind))
+            .toList());
+  }
+
+  private static SystemColumn toProtoColumn(SystemColumnDef def) {
+    var builder =
+        SystemColumn.newBuilder()
+            .setName(def.name())
+            .setType(def.type())
+            .setNullable(def.nullable())
+            .setOrdinal(def.ordinal());
+    if (def.hasId()) {
+      builder.setId(def.id());
+    }
+    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    return builder.build();
+  }
+
+  private static SystemColumnDef fromProtoColumn(SystemColumn proto, String defaultEngineKind) {
+    return new SystemColumnDef(
+        proto.getName(),
+        proto.getType(),
+        proto.getNullable(),
+        proto.getOrdinal(),
+        proto.getId() != 0 ? proto.getId() : null,
+        proto.getEngineSpecificList().stream()
+            .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList());
   }
 
