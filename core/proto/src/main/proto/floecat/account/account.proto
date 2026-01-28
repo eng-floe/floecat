@@ -50,6 +50,8 @@ message ListAccountsResponse {
 
 message CreateAccountRequest {
   AccountSpec spec = 1;
+  // Optional resource id for external account synchronization.
+  optional ai.floedb.floecat.common.ResourceId account_id = 2;
   ai.floedb.floecat.common.IdempotencyKey idempotency = 98;
 }
 

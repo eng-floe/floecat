@@ -157,13 +157,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   final var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
                   final byte[] fingerprint = canonicalFingerprint(normalizedSpec);
 
-                  final String accountUuid = AccountIds.deterministicAccountId(normName);
-                  final var resourceId =
-                      ResourceId.newBuilder()
-                          .setAccountId(accountId)
-                          .setId(accountUuid)
-                          .setKind(ResourceKind.RK_ACCOUNT)
-                          .build();
+                  final var resourceId = resolveAccountId(request, accountId, normName, corr);
 
                   final var desiredAccount =
                       Account.newBuilder()
@@ -234,6 +228,34 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private ResourceId resolveAccountId(
+      CreateAccountRequest request, String principalAccountId, String displayName, String corr) {
+    if (request.hasAccountId()) {
+      var candidate = ResourceId.newBuilder(request.getAccountId());
+      if (candidate.getId().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, "account_id.id.required", Map.of());
+      }
+      if (candidate.getKind() == ResourceKind.RK_UNSPECIFIED) {
+        candidate.setKind(ResourceKind.RK_ACCOUNT);
+      }
+      if (candidate.getKind() != ResourceKind.RK_ACCOUNT) {
+        throw GrpcErrors.invalidArgument(
+            corr, "account_id.kind.invalid", Map.of("kind", candidate.getKind().name()));
+      }
+      if (candidate.getAccountId().isBlank()) {
+        candidate.setAccountId(principalAccountId);
+      }
+      return candidate.build();
+    }
+
+    final String accountUuid = AccountIds.deterministicAccountId(displayName);
+    return ResourceId.newBuilder()
+        .setAccountId(principalAccountId)
+        .setId(accountUuid)
+        .setKind(ResourceKind.RK_ACCOUNT)
+        .build();
   }
 
   @Override
