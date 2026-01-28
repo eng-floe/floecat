@@ -29,7 +29,9 @@ import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.Precondition;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -302,5 +304,77 @@ class AccountMutationIT {
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  @Test
+  void accountCreateWithExplicitIdUsesProvidedId() throws Exception {
+    var spec =
+        AccountSpec.newBuilder()
+            .setDisplayName(accountPrefix + "explicit-id")
+            .setDescription("explicit")
+            .build();
+    String principalId =
+        AccountIds.deterministicAccountId("/account:" + TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId =
+        ResourceId.newBuilder()
+            .setAccountId(principalId)
+            .setId("acct-explicit-1")
+            .setKind(ResourceKind.RK_ACCOUNT)
+            .build();
+
+    var created =
+        tenancy.createAccount(
+            CreateAccountRequest.newBuilder().setSpec(spec).setAccountId(accountId).build());
+
+    assertEquals("acct-explicit-1", created.getAccount().getResourceId().getId());
+    assertEquals(principalId, created.getAccount().getResourceId().getAccountId());
+
+    var fetched =
+        tenancy.getAccount(GetAccountRequest.newBuilder().setAccountId(accountId).build());
+    assertEquals("acct-explicit-1", fetched.getAccount().getResourceId().getId());
+    assertEquals(principalId, fetched.getAccount().getResourceId().getAccountId());
+    assertEquals(accountPrefix + "explicit-id", fetched.getAccount().getDisplayName());
+    assertEquals("explicit", fetched.getAccount().getDescription());
+  }
+
+  @Test
+  void accountCreateWithExplicitIdMissingIdFails() throws Exception {
+    var spec =
+        AccountSpec.newBuilder()
+            .setDisplayName(accountPrefix + "explicit-missing")
+            .setDescription("explicit")
+            .build();
+    var accountId = ResourceId.newBuilder().setKind(ResourceKind.RK_ACCOUNT).build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                tenancy.createAccount(
+                    CreateAccountRequest.newBuilder().setSpec(spec).setAccountId(accountId).build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Account id is required");
+  }
+
+  @Test
+  void accountCreateWithExplicitIdWrongKindFails() throws Exception {
+    var spec =
+        AccountSpec.newBuilder()
+            .setDisplayName(accountPrefix + "explicit-wrong-kind")
+            .setDescription("explicit")
+            .build();
+    var accountId =
+        ResourceId.newBuilder().setId("acct-wrong-kind").setKind(ResourceKind.RK_CATALOG).build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                tenancy.createAccount(
+                    CreateAccountRequest.newBuilder().setSpec(spec).setAccountId(accountId).build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "RK_ACCOUNT");
   }
 }
