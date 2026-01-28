@@ -90,14 +90,16 @@ final class OperatorValidator implements SectionValidator<OperatorValidationResu
           spec.getOprleft(),
           row.op().leftType(),
           row.decoded().interval(),
-          errors);
+          errors,
+          true);
       checkOperatorType(
           ruleCtx,
           "right",
           spec.getOprright(),
           row.op().rightType(),
           row.decoded().interval(),
-          errors);
+          errors,
+          false);
 
       int resultOid = spec.getOprresult();
       if (resultOid > 0 && !typeIntervals.covers(resultOid, row.decoded().interval())) {
@@ -157,17 +159,20 @@ final class OperatorValidator implements SectionValidator<OperatorValidationResu
       int oid,
       NameRef ref,
       VersionIntervals.VersionInterval interval,
-      List<ValidationIssue> errors) {
+      List<ValidationIssue> errors,
+      boolean optional) {
     if (oid <= 0) {
       return;
     }
 
-    if (ref == null || ValidationSupport.isBlank(NameRefUtil.canonical(ref))) {
-      ValidationSupport.err(errors, "floe.operator.type.missing", ctx, lane, oid);
+    String canonical = canonicalName(ref, oid, interval);
+    if (ValidationSupport.isBlank(canonical)) {
+      if (!optional) {
+        ValidationSupport.err(errors, "floe.operator.type.missing", ctx, lane, oid);
+      }
       return;
     }
 
-    String canonical = NameRefUtil.canonical(ref);
     TypeInfo info = lookup.find(canonical, interval);
     if (info == null) {
       ValidationSupport.err(errors, "floe.operator.type.unknown", ctx, lane, canonical);
@@ -189,6 +194,22 @@ final class OperatorValidator implements SectionValidator<OperatorValidationResu
       String ctx,
       SystemOperatorDef op,
       ValidationSupport.DecodedRule<FloeOperatorSpecific> decoded) {}
+
+  private String canonicalName(NameRef ref, int oid, VersionIntervals.VersionInterval interval) {
+    String canonical = ref == null ? "" : ValidationSupport.canonicalOrBlank(ref);
+    if (!ValidationSupport.isBlank(canonical)) {
+      return canonical;
+    }
+    for (TypeInfo info : lookup.byOid(oid)) {
+      if (interval == null || VersionIntervals.covers(List.of(info.interval()), interval)) {
+        String fallback = ValidationSupport.canonicalOrBlank(info.type().name());
+        if (!ValidationSupport.isBlank(fallback)) {
+          return fallback;
+        }
+      }
+    }
+    return "";
+  }
 
   private static String buildSignature(SystemOperatorDef operator, FloeOperatorSpecific spec) {
     String canonicalName =

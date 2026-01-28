@@ -297,8 +297,7 @@ public class SystemNodeRegistry {
                     namespaceId.get(),
                     tableColumns,
                     columnHints,
-                    tableHints,
-                    table.engineLabel());
+                    tableHints);
         default ->
             node =
                 new SystemTableNode.GenericSystemTableNode(
@@ -592,7 +591,6 @@ public class SystemNodeRegistry {
         def.backendKind(),
         def.scannerId(),
         def.storagePath(),
-        def.engineLabel(),
         matched);
   }
 

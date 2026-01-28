@@ -116,8 +116,7 @@ public sealed interface SystemTableNode extends TableNode
       ResourceId namespaceId,
       List<SchemaColumn> columns,
       Map<String, Map<EngineHintKey, EngineHint>> columnHints,
-      Map<EngineHintKey, EngineHint> engineHints,
-      String engineSpecificLabel)
+      Map<EngineHintKey, EngineHint> engineHints)
       implements SystemTableNode {
 
     public EngineSystemTableNode {
@@ -125,7 +124,6 @@ public sealed interface SystemTableNode extends TableNode
       columnHints = normalizeColumnHints(columnHints);
       engineHints = normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
-      engineSpecificLabel = engineSpecificLabel == null ? "" : engineSpecificLabel;
     }
 
     @Override

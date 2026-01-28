@@ -257,8 +257,6 @@ class SystemObjectsValidatorCliTest {
                 new String[] {"--engine", "floe-demo"},
                 new PrintStream(stdout),
                 new PrintStream(stderr));
-    System.out.println(stdout.toString(StandardCharsets.UTF_8));
-    System.out.println(stderr.toString(StandardCharsets.UTF_8));
     assertEquals(0, exit);
     String out = stdout.toString(StandardCharsets.UTF_8);
     assertTrue(out.contains("ALL CHECKS PASSED."));

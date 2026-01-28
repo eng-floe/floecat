@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
 # Copyright 2026 Yellowbrick Data, Inc.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,6 +36,7 @@ functions {
       provolatile: "i"
       prosrc: "int4_abs"
       pronargs: 1
+      pronargdefaults: 0
       prorettype: 23
       proargtypes: 23
       proargtypelen: 1
@@ -90,32 +91,37 @@ def _emit_function_block(
     namespaces: Dict[int, NamespaceRow],
     config: FunctionsConfig,
 ) -> Optional[str]:
+    # Require resolvable return type for the unified model.
     ret_type = type_by_oid.get(p.prorettype)
     if not ret_type or not ret_type.typname:
         return None
-
     ret_ns = resolve_namespace_name(namespaces, ret_type.typnamespace)
 
-    # Resolve arg types (already parsed as List[int] by read_procs())
-    arg_types: List[TypeRow] = []
+    # Resolve arg types for the unified model (best-effort).
+    arg_type_rows: List[TypeRow] = []
     for oid in p.proargtypes:
         t = type_by_oid.get(oid)
         if t and t.typname:
-            arg_types.append(t)
+            arg_type_rows.append(t)
 
-    # Optional variadic element type
+    # Optional: include the variadic *element* type in unified signature (if requested),
+    # but always preserve provariadic in engine_specific.
+    variadic_type_row: Optional[TypeRow] = None
     if config.include_variadic and (p.provariadic or 0) != 0:
         t = type_by_oid.get(p.provariadic or 0)
         if t and t.typname:
-            arg_types.append(t)
+            variadic_type_row = t
 
     out: List[str] = []
     out.append("functions {")
     out.append(f"  name {_name_ref(p.proname, proc_namespace_name)}")
 
-    for t in arg_types:
+    for t in arg_type_rows:
         ns = resolve_namespace_name(namespaces, t.typnamespace)
         out.append(f"  argument_types {_name_ref(t.typname, ns)}")
+    if variadic_type_row is not None:
+        ns = resolve_namespace_name(namespaces, variadic_type_row.typnamespace)
+        out.append(f"  argument_types {_name_ref(variadic_type_row.typname, ns)}")
 
     out.append(f"  return_type {_name_ref(ret_type.typname, ret_ns)}")
 
@@ -127,6 +133,8 @@ def _emit_function_block(
     out.append("  engine_specific {")
     out.append('    payload_type: "floe.function+proto"')
     out.append("    [floe.ext.floe_function] {")
+
+    # ---- FloeFunctionSpecific: emit all proto fields when present ----
     out.append(f"      oid: {p.oid}")
     out.append(f'      proname: "{pb_escape(p.proname)}"')
 
@@ -140,9 +148,13 @@ def _emit_function_block(
         out.append(f"      procost: {p.procost}")
     if p.prorows is not None:
         out.append(f"      prorows: {p.prorows}")
+
     if p.provariadic is not None and p.provariadic != 0:
         out.append(f"      provariadic: {p.provariadic}")
+    if p.protransform is not None and p.protransform != 0:
+        out.append(f"      protransform: {p.protransform}")
 
+    # required-ish booleans for fidelity (proto fields exist; CSV may or may not)
     out.append(f"      proisagg: {'true' if p.proisagg else 'false'}")
     out.append(f"      proiswindow: {'true' if p.proiswindow else 'false'}")
 
@@ -158,17 +170,20 @@ def _emit_function_block(
     if p.provolatile is not None:
         out.append(f'      provolatile: "{pb_escape(p.provolatile)}"')
 
-    if config.include_prosrc and p.prosrc is not None:
-        out.append(f'      prosrc: "{pb_escape(p.prosrc)}"')
-
     if p.pronargs is not None:
         out.append(f"      pronargs: {p.pronargs}")
+    if p.pronargdefaults is not None:
+        out.append(f"      pronargdefaults: {p.pronargdefaults}")
 
     out.append(f"      prorettype: {p.prorettype}")
 
-    for t in arg_types:
-        out.append(f"      proargtypes: {t.oid}")
-    out.append(f"      proargtypelen: {len(arg_types)}")
+    if p.proybcost is not None:
+        out.append(f"      proybcost: {p.proybcost}")
+
+    # Emit raw pg_proc.proargtypes (full fidelity, independent of type resolution)
+    for oid in p.proargtypes:
+        out.append(f"      proargtypes: {oid}")
+    out.append(f"      proargtypelen: {len(p.proargtypes)}")
 
     out.append("    }")
     out.append("  }")
@@ -188,12 +203,14 @@ def generate_functions_pbtxt(
     namespaces = read_namespaces(csv_dir)
     types = read_types(csv_dir)
     procs = read_procs(csv_dir)
-    seen_signatures: Set[Tuple[str, str, int, Tuple[int, ...]]] = set()
+
+    seen_signatures: Set[Tuple[str, str, int, Tuple[int, ...], int]] = set()
 
     blocks: List[str] = []
     for oid in sorted(procs.keys()):
         p = procs[oid]
         stats.record_read()
+
         if not is_system_oid(p.oid):
             stats.record_drop(DropReason.DROP_NOT_SYSTEM_OID, f"proc={p.oid}")
             continue
@@ -207,8 +224,9 @@ def generate_functions_pbtxt(
             )
             continue
 
+        # Include provariadic in signature key so we don't collapse overloads that differ only there.
         normalized_ns = proc_ns or ""
-        signature = (normalized_ns, p.proname, p.prorettype, tuple(p.proargtypes))
+        signature = (normalized_ns, p.proname, p.prorettype, tuple(p.proargtypes), p.provariadic or 0)
         if signature in seen_signatures:
             stats.record_drop(
                 DropReason.DROP_DUPLICATE_SIGNATURE,

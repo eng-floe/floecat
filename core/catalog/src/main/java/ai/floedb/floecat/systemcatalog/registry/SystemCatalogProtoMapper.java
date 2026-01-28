@@ -18,7 +18,6 @@ package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
-import ai.floedb.floecat.query.rpc.EngineTableDetails;
 import ai.floedb.floecat.query.rpc.FloeCatTableDetails;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SqlAggregate;
@@ -316,8 +315,6 @@ public final class SystemCatalogProtoMapper {
           builder.setFloecat(FloeCatTableDetails.newBuilder().setScannerId(def.scannerId()));
       case TABLE_BACKEND_KIND_STORAGE ->
           builder.setStorage(StorageTableDetails.newBuilder().setPath(def.storagePath()));
-      case TABLE_BACKEND_KIND_ENGINE ->
-          builder.setEngine(EngineTableDetails.newBuilder().setLabel(def.engineLabel()));
       default -> {}
     }
     def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
@@ -335,7 +332,6 @@ public final class SystemCatalogProtoMapper {
         proto.getBackendKind(),
         proto.hasFloecat() ? proto.getFloecat().getScannerId() : "",
         proto.hasStorage() ? proto.getStorage().getPath() : "",
-        proto.hasEngine() ? proto.getEngine().getLabel() : "",
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList());

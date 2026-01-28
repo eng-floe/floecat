@@ -34,6 +34,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.Message;
@@ -250,6 +251,52 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
       out.addAggregates(ab);
     }
 
+    // System namespaces
+    out.clearSystemNamespaces();
+    for (SystemNamespace ns : in.getSystemNamespacesList()) {
+      SystemNamespace.Builder nb = ns.toBuilder().clearEngineSpecific();
+      for (EngineSpecific es : ns.getEngineSpecificList()) {
+        nb.addEngineSpecific(convertRule(es));
+      }
+      out.addSystemNamespaces(nb);
+    }
+
+    // System tables (including column payloads)
+    out.clearSystemTables();
+    for (SystemTable tbl : in.getSystemTablesList()) {
+      SystemTable.Builder tb = tbl.toBuilder().clearEngineSpecific();
+      for (EngineSpecific es : tbl.getEngineSpecificList()) {
+        tb.addEngineSpecific(convertRule(es));
+      }
+      tb.clearColumns();
+      for (SystemColumn col : tbl.getColumnsList()) {
+        SystemColumn.Builder cb = col.toBuilder().clearEngineSpecific();
+        for (EngineSpecific es : col.getEngineSpecificList()) {
+          cb.addEngineSpecific(convertRule(es));
+        }
+        tb.addColumns(cb);
+      }
+      out.addSystemTables(tb);
+    }
+
+    // System views (including column payloads)
+    out.clearSystemViews();
+    for (SystemView view : in.getSystemViewsList()) {
+      SystemView.Builder vb = view.toBuilder().clearEngineSpecific();
+      for (EngineSpecific es : view.getEngineSpecificList()) {
+        vb.addEngineSpecific(convertRule(es));
+      }
+      vb.clearColumns();
+      for (SystemColumn col : view.getColumnsList()) {
+        SystemColumn.Builder cb = col.toBuilder().clearEngineSpecific();
+        for (EngineSpecific es : col.getEngineSpecificList()) {
+          cb.addEngineSpecific(convertRule(es));
+        }
+        vb.addColumns(cb);
+      }
+      out.addSystemViews(vb);
+    }
+
     // Registry-level engine-specific hints
     out.clearEngineSpecific();
     for (EngineSpecific es : in.getEngineSpecificList()) {
@@ -269,6 +316,9 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
         new ExtensionInfo<>(EngineFloeExtensions.floeType, TYPE),
         new ExtensionInfo<>(EngineFloeExtensions.floeAggregate, AGGREGATE),
         new ExtensionInfo<>(EngineFloeExtensions.floeCollation, COLLATION),
+        new ExtensionInfo<>(EngineFloeExtensions.floeNamespace, NAMESPACE),
+        new ExtensionInfo<>(EngineFloeExtensions.floeRelation, RELATION),
+        new ExtensionInfo<>(EngineFloeExtensions.floeColumn, COLUMN),
         new ExtensionInfo<>(EngineFloeExtensions.floeCast, CAST),
         new ExtensionInfo<>(
             EngineFloeExtensions.floeTypePlanningSemantics, TYPE_PLANNING_SEMANTICS),
@@ -373,7 +423,19 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public List<ValidationIssue> validate(SystemCatalogData catalog) {
-    return FloeSystemCatalogValidator.validate(catalog, new ValidationScope(engineKind()));
+    if (catalog == null) {
+      return List.of();
+    }
+
+    List<ValidationIssue> out = new ArrayList<>();
+
+    // 1) core/shared catalog validation
+    out.addAll(SystemCatalogValidator.validate(catalog));
+
+    // 2) floe engine-specific validation
+    out.addAll(FloeSystemCatalogValidator.validate(catalog, new ValidationScope(engineKind())));
+
+    return out;
   }
 
   /** Concrete implementation for the main FloeDB engine. */

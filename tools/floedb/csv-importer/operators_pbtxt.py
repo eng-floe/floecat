@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
 # Copyright 2026 Yellowbrick Data, Inc.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #    http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,39 +17,15 @@
 """
 Generate FloeCat PBtxt for SQL operators from pg_operator.csv (system only).
 
-Emits blocks like:
-
-operators {
-  name { name: "=" path: "pg_catalog" }
-  left_type  { name: "int4" path: "pg_catalog" }
-  right_type { name: "int4" path: "pg_catalog" }
-  return_type { name: "bool" path: "pg_catalog" }
-  engine_specific {
-    payload_type: "floe.operator+proto"
-    [floe.ext.floe_operator] {
-      oid: 65
-      oprname: "="
-      oprnamespace: 11
-      oprkind: "b"
-      oprcanmerge: true
-      oprcanhash: true
-      oprleft: 23
-      oprright: 23
-      oprresult: 16
-      oprcom: 65
-      oprnegate: 144
-      oprcode: 65
-      oprrest: 0
-      oprjoin: 0
-    }
-  }
-}
+Important:
+- pg_operator.oprcode/oprrest/oprjoin are regproc in Postgres; exporters may emit
+  either numeric OIDs or function names. We preserve fidelity by resolving names
+  via pg_proc (best-effort).
 
 Policy:
 - system-only filter: oid < 16384
 - default: include all system namespaces; --pg-catalog-only restricts to pg_catalog only
 - resolves operand/result types via pg_type OID -> typname, and uses the type's namespace
-- leaves is_commutative/is_associative unset (default false in proto3) unless you want heuristics later
 """
 
 from __future__ import annotations
@@ -61,11 +37,14 @@ from typing import Dict, List, Optional
 from utils import (
     NamespaceRow,
     OperatorRow,
+    ProcRow,
     TypeRow,
+    build_proc_name_to_oid_map,
     is_system_oid,
     pb_escape,
     read_namespaces,
     read_operators,
+    read_procs,
     read_types,
     resolve_namespace_name,
     write_text,
@@ -83,20 +62,48 @@ def _name_ref(obj_name: str, namespace_name: str) -> str:
     return f'{{ name: "{pb_escape(obj_name)}" path: "{pb_escape(namespace_name)}" }}'
 
 
+def _resolve_regproc_to_oid(
+    *,
+    raw: Optional[str],
+    proc_name_to_oid: Dict[str, int],
+) -> Optional[int]:
+    if raw is None:
+        return None
+    key = raw.strip().lower()
+    if not key:
+        return None
+    # proc_name_to_oid already normalizes multiple forms (schema-qualified too)
+    return proc_name_to_oid.get(key)
+
+
 def _emit_operator_block(
     *,
     o: OperatorRow,
     op_namespace_name: str,
     types: Dict[int, TypeRow],
     namespaces: Dict[int, NamespaceRow],
+    proc_name_to_oid: Dict[str, int],
 ) -> Optional[str]:
-    # Resolve types (left/right can be 0 for unary operators; in PG, unary uses oprleft=0 or oprright=0)
+    # Resolve types (left/right can be 0 for unary operators)
     left_t = types.get(o.oprleft) if (o.oprleft or 0) != 0 else None
     right_t = types.get(o.oprright) if (o.oprright or 0) != 0 else None
     result_t = types.get(o.oprresult) if (o.oprresult or 0) != 0 else None
 
     if not result_t or not result_t.typname:
         return None
+
+    # Resolve regproc-like fields to OIDs (best-effort)
+    oprcode = o.oprcode_oid
+    if oprcode is None and o.oprcode_raw is not None:
+        oprcode = _resolve_regproc_to_oid(raw=o.oprcode_raw, proc_name_to_oid=proc_name_to_oid)
+
+    oprrest = o.oprrest_oid
+    if oprrest is None and o.oprrest_raw is not None:
+        oprrest = _resolve_regproc_to_oid(raw=o.oprrest_raw, proc_name_to_oid=proc_name_to_oid)
+
+    oprjoin = o.oprjoin_oid
+    if oprjoin is None and o.oprjoin_raw is not None:
+        oprjoin = _resolve_regproc_to_oid(raw=o.oprjoin_raw, proc_name_to_oid=proc_name_to_oid)
 
     out: List[str] = []
     out.append("operators {")
@@ -117,8 +124,10 @@ def _emit_operator_block(
     out.append('    payload_type: "floe.operator+proto"')
     out.append("    [floe.ext.floe_operator] {")
 
+    # ---- FloeOperatorSpecific: emit all proto fields when present ----
     out.append(f"      oid: {o.oid}")
     out.append(f'      oprname: "{pb_escape(o.oprname)}"')
+
     if o.oprnamespace is not None:
         out.append(f"      oprnamespace: {o.oprnamespace}")
     if o.oprkind is not None:
@@ -140,17 +149,16 @@ def _emit_operator_block(
     if (o.oprnegate or 0) != 0:
         out.append(f"      oprnegate: {o.oprnegate}")
 
-    if (o.oprcode or 0) != 0:
-        out.append(f"      oprcode: {o.oprcode}")
-    if (o.oprrest or 0) != 0:
-        out.append(f"      oprrest: {o.oprrest}")
-    if (o.oprjoin or 0) != 0:
-        out.append(f"      oprjoin: {o.oprjoin}")
+    if oprcode is not None and is_system_oid(oprcode):
+        out.append(f"      oprcode: {oprcode}")
+    if oprrest is not None and is_system_oid(oprrest):
+        out.append(f"      oprrest: {oprrest}")
+    if oprjoin is not None and is_system_oid(oprjoin):
+        out.append(f"      oprjoin: {oprjoin}")
 
     out.append("    }")
     out.append("  }")
     out.append("}")
-
     return "\n".join(out)
 
 
@@ -167,11 +175,16 @@ def generate_operators_pbtxt(
     types = read_types(csv_dir)
     ops = read_operators(csv_dir)
 
+    # Needed to resolve regproc-like oprcode/oprrest/oprjoin values.
+    procs = read_procs(csv_dir)
+    proc_name_to_oid = build_proc_name_to_oid_map(procs, namespaces)
+
     blocks: List[str] = []
 
     for oid in sorted(ops.keys()):
         o = ops[oid]
         stats.record_read()
+
         if not is_system_oid(o.oid):
             stats.record_drop(DropReason.DROP_NOT_SYSTEM_OID, f"opr={o.oid}")
             continue
@@ -190,6 +203,7 @@ def generate_operators_pbtxt(
             op_namespace_name=op_ns,
             types=types,
             namespaces=namespaces,
+            proc_name_to_oid=proc_name_to_oid,
         )
         if b:
             blocks.append(b)

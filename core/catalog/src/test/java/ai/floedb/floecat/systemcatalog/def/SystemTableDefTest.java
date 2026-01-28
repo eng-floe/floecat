@@ -38,27 +38,9 @@ class SystemTableDefTest {
                     TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
                     "scanner",
                     "",
-                    "",
                     List.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("storagePath");
-  }
-
-  @Test
-  void engineWithoutLabelFails() {
-    assertThatThrownBy(
-            () ->
-                new SystemTableDef(
-                    NameRefUtil.name("namespace", "t"),
-                    "t",
-                    COLUMNS,
-                    TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
-                    "scanner",
-                    "",
-                    "",
-                    List.of()))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("engineLabel");
   }
 
   @Test
@@ -70,7 +52,6 @@ class SystemTableDefTest {
                     "t",
                     COLUMNS,
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-                    "",
                     "",
                     "",
                     List.of()))

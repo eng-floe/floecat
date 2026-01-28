@@ -32,7 +32,6 @@ public record SystemTableDef(
     TableBackendKind backendKind,
     String scannerId,
     String storagePath,
-    String engineLabel,
     List<EngineSpecificRule> engineSpecific)
     implements SystemObjectDef {
 
@@ -43,7 +42,6 @@ public record SystemTableDef(
     scannerId = Objects.requireNonNull(scannerId, "scannerId");
     displayName = displayName == null ? "" : displayName;
     storagePath = storagePath == null ? "" : storagePath;
-    engineLabel = engineLabel == null ? "" : engineLabel;
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
     Set<String> columnNames = new HashSet<>();
     for (SystemColumnDef column : columns) {
@@ -58,9 +56,6 @@ public record SystemTableDef(
     if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_STORAGE && storagePath.isBlank()) {
       throw new IllegalArgumentException("storagePath is required for TABLE_BACKEND_KIND_STORAGE");
     }
-    if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_ENGINE && engineLabel.isBlank()) {
-      throw new IllegalArgumentException("engineLabel is required for TABLE_BACKEND_KIND_ENGINE");
-    }
   }
 
   public SystemTableDef(
@@ -70,7 +65,7 @@ public record SystemTableDef(
       TableBackendKind backendKind,
       String scannerId,
       List<EngineSpecificRule> engineSpecific) {
-    this(name, displayName, columns, backendKind, scannerId, "", "", engineSpecific);
+    this(name, displayName, columns, backendKind, scannerId, "", engineSpecific);
   }
 
   @Override

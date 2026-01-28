@@ -98,7 +98,7 @@ When headers are absent or the engine kind is unknown, `EngineContext.effectiveE
 | Backend | Description | Required field | Scanner policy |
 | --- | --- | --- | --- |
 | `FLOECAT` | Rows produced by Floecat scanners (information_schema, system tables, plugin metadata tables). | `scannerId` (non-blank) | `SystemScannerResolver` accepts only `FloeCatSystemTableNode` instances, so only FLOECAT tables can be scanned through `SystemScannerResolver`. |
-| `ENGINE` | Rows produced directly by an engine backend (e.g., engine information tables). | `engineLabel` | Metadata-only: not scanable through `SystemScannerResolver` and exposed solely for planners to reason about engine-provided hints. |
+| `ENGINE` | Rows produced directly by an engine backend (e.g., engine information tables). | - | Metadata-only: not scanable through `SystemScannerResolver` and exposed solely for planners to reason about engine-provided hints. |
 | `STORAGE` | Tables whose rows are stored on disk. | `storagePath` | Metadata-only: not scanable via `SystemScannerResolver` and often serve as hints in downstream planning (e.g., partitions or external tables). |
 
  `SystemTableDef` throws at construction time when the required backend-specific value is missing, guaranteeing the graph never exposes partially-specified tables.

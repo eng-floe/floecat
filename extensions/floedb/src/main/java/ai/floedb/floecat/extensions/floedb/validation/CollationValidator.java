@@ -29,6 +29,9 @@ import java.util.Map;
 import java.util.Set;
 
 final class CollationValidator implements SectionValidator<CollationValidationResult> {
+  private static final String CODE_LOCALE_REQUIRED = "floe.collation.locale.required";
+  private static final String CODE_SIGNATURE_DUPLICATE = "floe.collation.duplicate";
+
   private final ValidationScope scope;
   private final ValidationSupport.ValidationRunContext runContext;
 
@@ -56,6 +59,7 @@ final class CollationValidator implements SectionValidator<CollationValidationRe
       List<ValidationSupport.DecodedRule<FloeCollationSpecific>> decodedOut) {
     Map<Integer, String> oidIdentity = new HashMap<>();
     Set<Integer> seen = new HashSet<>();
+    Set<String> signatures = new HashSet<>();
 
     for (SystemCollationDef coll : collations) {
       String ctx = ValidationSupport.context("collation", coll.name());
@@ -77,6 +81,12 @@ final class CollationValidator implements SectionValidator<CollationValidationRe
         }
 
         String canonical = ValidationSupport.canonicalOrBlank(coll.name());
+        String locale = coll.locale();
+        if (ValidationSupport.isBlank(locale)) {
+          ValidationSupport.err(errors, CODE_LOCALE_REQUIRED, ruleCtx);
+          continue;
+        }
+        String signature = collationSignature(coll);
         String existing = oidIdentity.get(oid);
         if (existing != null && !existing.equals(canonical)) {
           ValidationSupport.err(
@@ -85,6 +95,10 @@ final class CollationValidator implements SectionValidator<CollationValidationRe
         }
         oidIdentity.putIfAbsent(oid, canonical);
         seen.add(oid);
+        if (!signatures.add(signature)) {
+          ValidationSupport.err(errors, CODE_SIGNATURE_DUPLICATE, ruleCtx, signature);
+          continue;
+        }
 
         if (!spec.getCollname().equals(coll.name().getName())) {
           ValidationSupport.err(
@@ -95,5 +109,11 @@ final class CollationValidator implements SectionValidator<CollationValidationRe
       }
     }
     return seen;
+  }
+
+  private static String collationSignature(SystemCollationDef coll) {
+    String name = ValidationSupport.canonicalOrBlank(coll.name());
+    String locale = coll.locale() == null ? "" : coll.locale();
+    return name + ":" + locale;
   }
 }
