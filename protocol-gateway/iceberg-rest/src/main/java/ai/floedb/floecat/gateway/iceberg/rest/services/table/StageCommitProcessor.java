@@ -101,13 +101,9 @@ public class StageCommitProcessor {
     if (entry.state() == StageState.ABORTED) {
       throw StageCommitException.conflict("stage " + stageId + " was aborted");
     }
-    String stagedMetadata =
-        entry.request().properties() == null
-            ? null
-            : entry.request().properties().get("metadata-location");
     LOG.infof(
-        "Processing staged payload stageId=%s namespace=%s table=%s metadata=%s",
-        stageId, namespacePath, tableName, stagedMetadata);
+        "Processing staged payload stageId=%s namespace=%s table=%s",
+        stageId, namespacePath, tableName);
 
     Table existing = null;
     boolean tableExists = false;

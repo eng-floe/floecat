@@ -159,11 +159,11 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace, "description", "Snapshot namespace"))
+        .body(Map.of("namespace", namespace))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201);
+        .statusCode(200);
 
     registerTable(namespace, table, METADATA_V3, false);
 
@@ -277,11 +277,11 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace, "description", "Connector namespace"))
+        .body(Map.of("namespace", namespace))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201);
+        .statusCode(200);
 
     String stageId = "stage-" + UUID.randomUUID();
     Map<String, Object> stageRequest = stageCreateRequest(table, namespace);
@@ -294,11 +294,11 @@ class IcebergRestFixtureIT {
         .then()
         .log()
         .ifValidationFails()
-        .statusCode(200)
-        .body("stage-id", equalTo(stageId));
+        .statusCode(200);
 
     given()
         .spec(spec)
+        .header("Iceberg-Transaction-Id", stageId)
         .body(
             Map.of(
                 "table-changes",
@@ -306,19 +306,10 @@ class IcebergRestFixtureIT {
                     Map.of(
                         "identifier",
                         Map.of("namespace", List.of(namespace), "name", table),
-                        "stage-id",
-                        stageId,
                         "requirements",
                         List.of(),
                         "updates",
-                        List.of(
-                            Map.of(
-                                "action",
-                                "set-properties",
-                                "updates",
-                                Map.of(
-                                    "metadata-location",
-                                    fixtureMetadataTarget(namespace, table))))))))
+                        List.of()))))
         .when()
         .post("/v1/" + CATALOG + "/transactions/commit")
         .then()
@@ -347,10 +338,11 @@ class IcebergRestFixtureIT {
                             .build())
                     .getConnector());
 
+    String stagePrefix = TestS3Fixtures.stageTableUri(namespace, table, "metadata/");
     Assertions.assertTrue(
-        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        commitMetadataLocation.startsWith(stagePrefix),
         () ->
-            "persisted metadata should reside under the floecat fixture bucket: "
+            "persisted metadata should reside under the stage bucket: "
                 + commitMetadataLocation);
     assertFixtureObjectExists(
         commitMetadataLocation, "persisted metadata file should exist in fixture storage");
@@ -366,11 +358,11 @@ class IcebergRestFixtureIT {
       String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
       given()
           .spec(spec)
-          .body(Map.of("namespace", namespace, "description", "Purge namespace"))
+          .body(Map.of("namespace", namespace))
           .when()
           .post("/v1/" + CATALOG + "/namespaces")
           .then()
-          .statusCode(201);
+          .statusCode(200);
 
       String keepTable = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
       registerTable(namespace, keepTable, METADATA_V1, false);
@@ -437,11 +429,11 @@ class IcebergRestFixtureIT {
     String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace, "description", "Metadata namespace"))
+        .body(Map.of("namespace", namespace))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201);
+        .statusCode(200);
 
     registerTable(namespace, table, METADATA_V3, false);
 
@@ -569,7 +561,7 @@ class IcebergRestFixtureIT {
   @Test
   void createsAndDeletesNamespaceViaGateway() {
     String ns = uniqueName("it_ns_");
-    Map<String, Object> payload = Map.of("namespace", ns, "description", "Integration test");
+    Map<String, Object> payload = Map.of("namespace", ns);
 
     given()
         .spec(spec)
@@ -577,7 +569,7 @@ class IcebergRestFixtureIT {
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201)
+        .statusCode(200)
         .body("namespace[0]", equalTo(ns));
 
     given()
@@ -601,9 +593,9 @@ class IcebergRestFixtureIT {
       given()
           .spec(spec)
           .when()
-          .head("/v1/" + CATALOG + "/namespaces/" + namespace)
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
           .then()
-          .statusCode(204);
+          .statusCode(200);
 
       given()
           .spec(spec)
@@ -770,7 +762,8 @@ class IcebergRestFixtureIT {
               .extract()
               .asString();
 
-      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      JsonNode responseNode = MAPPER.readTree(commitBody);
+      JsonNode commitNode = responseNode.path("metadata");
       Assertions.assertEquals(snapshotId, commitNode.path("current-snapshot-id").asLong());
       Assertions.assertTrue(
           commitNode.path("last-sequence-number").asLong() >= 1L,
@@ -779,7 +772,7 @@ class IcebergRestFixtureIT {
           snapshotId,
           commitNode.path("refs").path("main").path("snapshot-id").asLong());
       Assertions.assertTrue(
-          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          responseNode.path("metadata-location").asText("").contains("/metadata/"),
           "metadata-location should be populated");
     } finally {
       deleteTableResource(namespace, table);
@@ -797,14 +790,14 @@ class IcebergRestFixtureIT {
       given()
           .spec(spec)
           .when()
-          .head("/v1/" + CATALOG + "/namespaces/" + namespace)
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
           .then()
-          .statusCode(204);
+          .statusCode(200);
 
       given()
           .spec(spec)
           .when()
-          .head("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
           .then()
           .statusCode(404);
 
@@ -824,18 +817,15 @@ class IcebergRestFixtureIT {
       createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
       createPayload.put("properties", Map.of());
 
-      String stageId =
-          given()
-              .spec(spec)
-              .body(createPayload)
-              .when()
-              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
-              .then()
-              .statusCode(200)
-              .extract()
-              .path("'stage-id'");
-
-      Assertions.assertNotNull(stageId, "stage-id should be returned");
+      String stageId = "stage-" + UUID.randomUUID();
+      given()
+          .spec(spec)
+          .header("Iceberg-Transaction-Id", stageId)
+          .body(createPayload)
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+          .then()
+          .statusCode(200);
 
       Map<String, Object> commitPayload = new LinkedHashMap<>();
       commitPayload.put("requirements", List.of(Map.of("type", "assert-create")));
@@ -880,6 +870,7 @@ class IcebergRestFixtureIT {
       io.restassured.response.Response commitResponse =
           given()
               .spec(spec)
+              .header("Iceberg-Transaction-Id", stageId)
               .body(commitPayload)
               .when()
               .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
@@ -896,9 +887,10 @@ class IcebergRestFixtureIT {
                   + " body="
                   + commitBody);
 
-      JsonNode commitNode = MAPPER.readTree(commitBody).path("metadata");
+      JsonNode responseNode = MAPPER.readTree(commitBody);
+      JsonNode commitNode = responseNode.path("metadata");
       Assertions.assertTrue(
-          commitNode.path("properties").path("metadata-location").asText("").contains("/metadata/"),
+          responseNode.path("metadata-location").asText("").contains("/metadata/"),
           "metadata-location should be populated");
       Assertions.assertEquals(1, commitNode.path("format-version").asInt());
       Assertions.assertTrue(
@@ -1051,12 +1043,11 @@ class IcebergRestFixtureIT {
 
       Map<String, Object> commitPayload =
           Map.of(
-              "properties",
-              Map.of("owner", "integration"),
               "requirements",
               List.of(),
               "updates",
-              List.of());
+              List.of(
+                  Map.of("action", "set-properties", "updates", Map.of("owner", "integration"))));
 
       given()
           .spec(spec)
@@ -1121,11 +1112,11 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace, "description", "Staged namespace"))
+        .body(Map.of("namespace", namespace))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201);
+        .statusCode(200);
 
     String stageId = "stage-" + UUID.randomUUID();
     String tableLocation = "s3://" + STAGE_BUCKET + "/" + namespace + "/" + table;
@@ -1149,28 +1140,19 @@ class IcebergRestFixtureIT {
         .when()
         .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
         .then()
-        .statusCode(200)
-        .body("stage-id", equalTo(stageId));
+        .statusCode(200);
 
     Map<String, Object> commitRequest =
         Map.of(
-            "stage-id",
-            stageId,
             "requirements",
             List.of(Map.of("type", "assert-create")),
-            "properties",
-            Map.of("metadata-location", fixtureMetadataTarget(namespace, table)),
             "updates",
-            List.of(
-                Map.of(
-                    "action",
-                    "set-properties",
-                    "updates",
-                    Map.of("metadata-location", fixtureMetadataTarget(namespace, table)))));
+            List.of());
 
     String commitMetadataLocation =
         given()
             .spec(spec)
+            .header("Iceberg-Transaction-Id", stageId)
             .body(commitRequest)
             .when()
             .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
@@ -1182,11 +1164,11 @@ class IcebergRestFixtureIT {
             .path("'metadata-location'");
 
     Assertions.assertNotNull(commitMetadataLocation, "metadata-location should be populated");
+    String stagePrefix = TestS3Fixtures.stageTableUri(namespace, table, "metadata/");
     Assertions.assertTrue(
-        commitMetadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        commitMetadataLocation.startsWith(stagePrefix),
         () ->
-            "metadata-location should reside under the floecat fixture bucket: "
-                + commitMetadataLocation);
+            "metadata-location should reside under the stage bucket: " + commitMetadataLocation);
     String fileName = commitMetadataLocation.substring(commitMetadataLocation.lastIndexOf('/') + 1);
     Assertions.assertTrue(
         fileName.contains("-"), "materialized metadata file should include a version prefix");
@@ -1194,10 +1176,9 @@ class IcebergRestFixtureIT {
     String persistedLocation =
         ensurePromotedMetadata(fetchTablePropertyMetadataLocation(namespace, table));
     Assertions.assertTrue(
-        persistedLocation.startsWith(FIXTURE_METADATA_PREFIX),
+        persistedLocation.startsWith(stagePrefix),
         () ->
-            "persisted metadata should be stored under the floecat fixture bucket: "
-                + persistedLocation);
+            "persisted metadata should be stored under the stage bucket: " + persistedLocation);
     Assertions.assertTrue(
         persistedLocation.endsWith(".metadata.json"),
         "persisted metadata should be an Iceberg metadata file");
@@ -1322,6 +1303,8 @@ class IcebergRestFixtureIT {
       JsonNode propsNode = objectNode.get("properties");
       if (propsNode instanceof ObjectNode props) {
         props.remove("format-version");
+        props.remove("metadata-location");
+        props.remove("metadata_location");
         String propLocation = props.path("location").asText(null);
         if (propLocation != null && propLocation.endsWith("/")) {
           props.put("location", propLocation.substring(0, propLocation.length() - 1));
@@ -1333,6 +1316,9 @@ class IcebergRestFixtureIT {
 
   private String ensurePromotedMetadata(String location) {
     if (location == null || location.isBlank()) {
+      return location;
+    }
+    if (location.startsWith("s3://")) {
       return location;
     }
     if (location.startsWith(FIXTURE_METADATA_PREFIX)) {
@@ -1347,14 +1333,14 @@ class IcebergRestFixtureIT {
 
   private void createNamespace(String namespace) {
     Map<String, Object> payload =
-        Map.of("namespace", namespace, "description", "Integration test namespace");
+        Map.of("namespace", namespace);
     given()
         .spec(spec)
         .body(payload)
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
-        .statusCode(201)
+        .statusCode(200)
         .body("namespace[0]", equalTo(namespace));
   }
 
@@ -1362,7 +1348,7 @@ class IcebergRestFixtureIT {
     given()
         .spec(spec)
         .when()
-        .delete("/v1/" + CATALOG + "/namespaces/" + namespace + "?requireEmpty=false")
+        .delete("/v1/" + CATALOG + "/namespaces/" + namespace)
         .then()
         .statusCode(anyOf(is(204), is(404)));
   }

@@ -42,15 +42,6 @@ public class NamespaceListService {
     } else {
       req.setCatalogId(command.catalogContext().catalogId());
     }
-    if (Boolean.TRUE.equals(command.childrenOnly())) {
-      req.setChildrenOnly(true);
-    }
-    if (Boolean.TRUE.equals(command.recursive())) {
-      req.setRecursive(true);
-    }
-    if (command.namePrefix() != null) {
-      req.setNamePrefix(command.namePrefix());
-    }
     PageRequest.Builder page = PageRequestHelper.builder(command.pageToken(), command.pageSize());
     if (page != null) {
       req.setPage(page);
@@ -68,9 +59,6 @@ public class NamespaceListService {
   public record ListCommand(
       CatalogRequestContext catalogContext,
       NamespaceRequestContext parentNamespace,
-      Boolean childrenOnly,
-      Boolean recursive,
-      String namePrefix,
       String pageToken,
       Integer pageSize) {}
 

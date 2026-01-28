@@ -55,7 +55,7 @@ public record TableMetadataView(
     }
     Map<String, String> updatedProps =
         properties == null ? new LinkedHashMap<>() : new LinkedHashMap<>(properties);
-    MetadataLocationUtil.setMetadataLocation(updatedProps, newLocation);
+    updatedProps.remove(MetadataLocationUtil.PRIMARY_KEY);
     return new TableMetadataView(
         formatVersion,
         tableUuid,

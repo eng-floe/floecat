@@ -106,14 +106,11 @@ public class TableGatewaySupport {
     if (req == null) {
       return spec;
     }
-    String schemaJson = req.schemaJson();
-    if ((schemaJson == null || schemaJson.isBlank())
-        && req.schema() != null
-        && !req.schema().isNull()) {
-      schemaJson = mapper.writeValueAsString(req.schema());
-    }
-    if (schemaJson != null && !schemaJson.isBlank()) {
-      spec.setSchemaJson(schemaJson);
+    if (req.schema() != null && !req.schema().isNull()) {
+      String schemaJson = mapper.writeValueAsString(req.schema());
+      if (!schemaJson.isBlank()) {
+        spec.setSchemaJson(schemaJson);
+      }
     }
     if (req.location() != null && !req.location().isBlank()) {
       spec.putProperties("location", req.location());
@@ -149,10 +146,6 @@ public class TableGatewaySupport {
     MetadataLocationUtil.setMetadataLocation(spec::putProperties, metadataLocation);
   }
 
-  public String metadataLocationFromCreate(TableRequests.Create req) {
-    return MetadataLocationUtil.metadataLocation(req == null ? null : req.properties());
-  }
-
   private Map<String, String> sanitizeCreateProperties(Map<String, String> props) {
     if (props.isEmpty()) {
       return Map.of();
@@ -172,6 +165,10 @@ public class TableGatewaySupport {
           sanitized.put(key, value);
         });
     return sanitized;
+  }
+
+  public String metadataLocationFromCreate(TableRequests.Create req) {
+    return MetadataLocationUtil.metadataLocation(req == null ? null : req.properties());
   }
 
   public String resolveTableLocation(String requestedLocation, String metadataLocation) {
@@ -290,6 +287,45 @@ public class TableGatewaySupport {
         List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
     storageCredentialCache = computed;
     return computed;
+  }
+
+  public List<StorageCredentialDto> credentialsForAccessDelegation(String accessDelegationMode) {
+    if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
+      return null;
+    }
+    boolean vended = false;
+    for (String raw : accessDelegationMode.split(",")) {
+      String mode = raw == null ? "" : raw.trim();
+      if (mode.isEmpty()) {
+        continue;
+      }
+      if ("vended-credentials".equalsIgnoreCase(mode)) {
+        vended = true;
+        continue;
+      }
+      throw new IllegalArgumentException("Unsupported access delegation mode: " + mode);
+    }
+    if (!vended) {
+      return null;
+    }
+    if (!hasConfiguredCredentials()) {
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no credentials are available");
+    }
+    return defaultCredentials();
+  }
+
+  private boolean hasConfiguredCredentials() {
+    Map<String, String> props = new LinkedHashMap<>();
+    config.storageCredential().ifPresent(cfg -> props.putAll(cfg.properties()));
+    readPrefixedConfig("floecat.gateway.storage-credential.properties.")
+        .forEach(
+            (k, v) -> {
+              if (v != null && !v.isBlank()) {
+                props.put(k, v);
+              }
+            });
+    return !props.isEmpty();
   }
 
   public IcebergMetadata loadCurrentMetadata(Table table) {

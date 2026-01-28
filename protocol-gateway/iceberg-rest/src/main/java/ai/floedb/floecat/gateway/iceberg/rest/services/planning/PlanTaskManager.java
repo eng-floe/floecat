@@ -85,7 +85,8 @@ public class PlanTaskManager {
             table,
             credentials == null ? List.of() : List.copyOf(credentials),
             files,
-            deletes);
+            deletes,
+            PlanStatus.COMPLETED);
     if (!files.isEmpty()) {
       int chunkSize = Math.max(1, filesPerTask);
       for (int offset = 0; offset < files.size(); offset += chunkSize) {
@@ -98,6 +99,25 @@ public class PlanTaskManager {
         planTasks.put(taskId, new PlanTaskPayload(taskId, planId, namespace, table, payload));
       }
     }
+    plans.put(planId, entry);
+    return entry.toDescriptor();
+  }
+
+  public PlanDescriptor registerSubmittedPlan(String planId, String namespace, String table) {
+    expire();
+    Objects.requireNonNull(planId, "planId is required");
+    PlanEntry entry =
+        new PlanEntry(
+            planId, namespace, table, List.of(), List.of(), List.of(), PlanStatus.SUBMITTED);
+    plans.put(planId, entry);
+    return entry.toDescriptor();
+  }
+
+  public PlanDescriptor registerFailedPlan(String planId, String namespace, String table) {
+    expire();
+    Objects.requireNonNull(planId, "planId is required");
+    PlanEntry entry =
+        new PlanEntry(planId, namespace, table, List.of(), List.of(), List.of(), PlanStatus.FAILED);
     plans.put(planId, entry);
     return entry.toDescriptor();
   }
@@ -159,7 +179,9 @@ public class PlanTaskManager {
   }
 
   public enum PlanStatus {
+    SUBMITTED("submitted"),
     COMPLETED("completed"),
+    FAILED("failed"),
     CANCELLED("cancelled");
 
     private final String value;
@@ -191,7 +213,7 @@ public class PlanTaskManager {
     private final List<FileScanTaskDto> fileScanTasks;
     private final List<ContentFileDto> deleteFiles;
     private final CopyOnWriteArrayList<String> taskIds = new CopyOnWriteArrayList<>();
-    private volatile PlanStatus status = PlanStatus.COMPLETED;
+    private volatile PlanStatus status;
     private volatile Instant updatedAt = Instant.now();
 
     PlanEntry(
@@ -200,13 +222,15 @@ public class PlanTaskManager {
         String table,
         List<StorageCredentialDto> credentials,
         List<FileScanTaskDto> fileScanTasks,
-        List<ContentFileDto> deleteFiles) {
+        List<ContentFileDto> deleteFiles,
+        PlanStatus status) {
       this.planId = planId;
       this.namespace = namespace;
       this.table = table;
       this.credentials = credentials;
       this.fileScanTasks = fileScanTasks;
       this.deleteFiles = deleteFiles;
+      this.status = status == null ? PlanStatus.SUBMITTED : status;
     }
 
     void addTask(String taskId) {

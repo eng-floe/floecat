@@ -29,12 +29,6 @@ public final class NamespaceResponseMapper {
   public static NamespaceInfoDto toInfo(Namespace ns) {
     List<String> path = toPath(ns);
     Map<String, String> props = new LinkedHashMap<>(ns.getPropertiesMap());
-    if (ns.hasDescription() && ns.getDescription() != null && !ns.getDescription().isBlank()) {
-      props.putIfAbsent("description", ns.getDescription());
-    }
-    if (ns.hasPolicyRef() && ns.getPolicyRef() != null && !ns.getPolicyRef().isBlank()) {
-      props.putIfAbsent("policy_ref", ns.getPolicyRef());
-    }
     return new NamespaceInfoDto(path, Map.copyOf(props));
   }
 

@@ -33,20 +33,20 @@ class SystemResourceTest extends AbstractRestResourceTest {
   @Test
   void oauthTokensEndpointNotSupported() {
     given()
-        .body("{\"grant_type\":\"client_credentials\"}")
-        .header("Content-Type", "application/json")
+        .contentType("application/x-www-form-urlencoded")
+        .formParam("grant_type", "client_credentials")
         .when()
         .post("/v1/oauth/tokens")
         .then()
-        .statusCode(501)
-        .body("error.type", equalTo("UnsupportedOperationException"));
+        .statusCode(400)
+        .body("error", equalTo("unsupported_grant_type"));
   }
 
   @Test
   void returnsConfigDto() {
     given()
         .when()
-        .get("/v1/config")
+        .get("/v1/config?warehouse=examples")
         .then()
         .statusCode(200)
         .body("defaults.'catalog-name'", equalTo("examples"))

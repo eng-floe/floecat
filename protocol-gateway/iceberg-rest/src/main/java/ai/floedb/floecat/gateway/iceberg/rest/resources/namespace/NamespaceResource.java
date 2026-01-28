@@ -57,27 +57,16 @@ public class NamespaceResource {
   public Response list(
       @PathParam("prefix") String prefix,
       @QueryParam("parent") String parent,
-      @QueryParam("namespace") String namespace,
-      @QueryParam("childrenOnly") Boolean childrenOnly,
-      @QueryParam("recursive") Boolean recursive,
-      @QueryParam("namePrefix") String namePrefix,
       @QueryParam("pageToken") String pageToken,
       @QueryParam("pageSize") Integer pageSize) {
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);
     NamespaceRequestContext parentNamespaceContext = null;
-    String parentNamespace = parent != null && !parent.isBlank() ? parent : namespace;
-    if (parentNamespace != null && !parentNamespace.isBlank()) {
-      parentNamespaceContext = requestContextFactory.namespace(prefix, parentNamespace);
+    if (parent != null && !parent.isBlank()) {
+      parentNamespaceContext = requestContextFactory.namespace(prefix, parent);
     }
     NamespaceListService.ListCommand command =
         new NamespaceListService.ListCommand(
-            catalogContext,
-            parentNamespaceContext,
-            childrenOnly,
-            recursive,
-            namePrefix,
-            pageToken,
-            pageSize);
+            catalogContext, parentNamespaceContext, pageToken, pageSize);
     return namespaceListService.list(command);
   }
 
@@ -106,11 +95,9 @@ public class NamespaceResource {
   @Path("/{namespace}")
   @DELETE
   public Response delete(
-      @PathParam("prefix") String prefix,
-      @PathParam("namespace") String namespace,
-      @QueryParam("requireEmpty") Boolean requireEmpty) {
+      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return namespaceDeleteService.delete(namespaceContext, requireEmpty);
+    return namespaceDeleteService.delete(namespaceContext);
   }
 
   @Path("/{namespace}/properties")

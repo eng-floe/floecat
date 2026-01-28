@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
@@ -43,13 +42,13 @@ public class StageMaterializationService {
       String catalogName,
       List<String> namespacePath,
       String table,
-      TableRequests.Commit request,
+      String explicitStageId,
       String transactionStageId)
       throws StageCommitException {
     if (resolutionFailure.getStatus().getCode() != Status.Code.NOT_FOUND) {
       return null;
     }
-    String stageIdToUse = resolveStageId(request, transactionStageId);
+    String stageIdToUse = resolveStageId(explicitStageId, transactionStageId);
     if (stageIdToUse == null) {
       stageIdToUse = resolveSingleStageId(catalogName, namespacePath, table);
       if (stageIdToUse == null) {
@@ -73,10 +72,10 @@ public class StageMaterializationService {
       String catalogName,
       List<String> namespacePath,
       String table,
-      TableRequests.Commit request,
+      String explicitStageId,
       String transactionStageId)
       throws StageCommitException {
-    String stageIdToUse = resolveStageId(request, transactionStageId);
+    String stageIdToUse = resolveStageId(explicitStageId, transactionStageId);
     if (stageIdToUse == null) {
       return null;
     }
@@ -87,9 +86,9 @@ public class StageMaterializationService {
     return commitStage(prefix, catalogName, namespacePath, table, stageIdToUse);
   }
 
-  public String resolveStageId(TableRequests.Commit req, String headerStageId) {
-    if (req != null && req.stageId() != null && !req.stageId().isBlank()) {
-      return req.stageId();
+  public String resolveStageId(String explicitStageId, String headerStageId) {
+    if (explicitStageId != null && !explicitStageId.isBlank()) {
+      return explicitStageId;
     }
     if (headerStageId != null && !headerStageId.isBlank()) {
       return headerStageId;

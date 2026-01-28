@@ -22,10 +22,13 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -42,9 +45,27 @@ public class TableRenameService {
     var sourcePath = request.source().namespace();
     var destinationPath = request.destination().namespace();
 
-    ResourceId tableId =
-        NameResolution.resolveTable(grpc, catalogName, sourcePath, request.source().name());
-    ResourceId namespaceId = NameResolution.resolveNamespace(grpc, catalogName, destinationPath);
+    ResourceId tableId;
+    try {
+      tableId = NameResolution.resolveTable(grpc, catalogName, sourcePath, request.source().name());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", sourcePath);
+        return IcebergErrorResponses.noSuchTable(
+            "Table " + namespace + "." + request.source().name() + " not found");
+      }
+      throw e;
+    }
+    ResourceId namespaceId;
+    try {
+      namespaceId = NameResolution.resolveNamespace(grpc, catalogName, destinationPath);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", destinationPath);
+        return IcebergErrorResponses.noSuchNamespace("Namespace " + namespace + " not found");
+      }
+      throw e;
+    }
 
     TableSpec.Builder spec =
         TableSpec.newBuilder()

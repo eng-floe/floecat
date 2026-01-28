@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.List;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -73,7 +74,7 @@ public class TableMetricsService {
     return value == null || value.isBlank();
   }
 
-  private boolean isEmpty(java.util.List<?> values) {
+  private boolean isEmpty(List<?> values) {
     return values == null || values.isEmpty();
   }
 }

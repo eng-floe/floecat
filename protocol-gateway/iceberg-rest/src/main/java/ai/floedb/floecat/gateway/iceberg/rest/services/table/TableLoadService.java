@@ -18,6 +18,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
@@ -28,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 
@@ -40,6 +43,7 @@ public class TableLoadService {
       TableRequestContext tableContext,
       String tableName,
       String snapshots,
+      String accessDelegationMode,
       String ifNoneMatch,
       TableGatewaySupport tableSupport) {
     Table tableRecord = tableLifecycleService.getTable(tableContext.tableId());
@@ -54,8 +58,20 @@ public class TableLoadService {
         SnapshotLister.fetchSnapshots(
             snapshotClient, tableContext.tableId(), snapshotMode, metadata);
     String etagValue = metadataLocation(metadata);
+    if (etagValue != null) {
+      etagValue = IcebergHttpUtil.etagForMetadataLocation(etagValue);
+    }
+    if (ifNoneMatch != null && ifNoneMatch.trim().equals("*")) {
+      return IcebergErrorResponses.validation("If-None-Match may not take the value of '*'");
+    }
     if (etagMatches(etagValue, ifNoneMatch)) {
-      return Response.status(Response.Status.NOT_MODIFIED).tag(etagValue).build();
+      return Response.notModified().build();
+    }
+    List<StorageCredentialDto> credentials;
+    try {
+      credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
     }
     Response.ResponseBuilder builder =
         Response.ok(
@@ -65,9 +81,9 @@ public class TableLoadService {
                 metadata,
                 snapshotList,
                 tableSupport.defaultTableConfig(),
-                tableSupport.defaultCredentials()));
+                credentials));
     if (etagValue != null) {
-      builder.tag(etagValue);
+      builder.header(HttpHeaders.ETAG, etagValue);
     }
     return builder.build();
   }
@@ -86,11 +102,28 @@ public class TableLoadService {
     if (etagValue == null || ifNoneMatch == null) {
       return false;
     }
-    String token = ifNoneMatch.trim();
-    if (token.startsWith("\"") && token.endsWith("\"") && token.length() >= 2) {
-      token = token.substring(1, token.length() - 1);
+    String expected = normalizeEtag(etagValue);
+    for (String raw : ifNoneMatch.split(",")) {
+      String token = normalizeEtag(raw);
+      if (!token.isEmpty() && token.equals(expected)) {
+        return true;
+      }
     }
-    return token.equals(etagValue);
+    return false;
+  }
+
+  private String normalizeEtag(String token) {
+    if (token == null) {
+      return "";
+    }
+    String value = token.trim();
+    if (value.startsWith("W/")) {
+      value = value.substring(2).trim();
+    }
+    if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
+      value = value.substring(1, value.length() - 1);
+    }
+    return value;
   }
 
   private String metadataLocation(IcebergMetadata metadata) {

@@ -34,7 +34,9 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 @ApplicationScoped
 public class ScanBundleService {
@@ -119,7 +121,19 @@ public class ScanBundleService {
       pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
     } while (!pageToken.isBlank());
 
-    return new FloecatConnector.ScanBundle(data, deletes);
+    List<ScanFile> linkedData =
+        deletes.isEmpty()
+            ? data
+            : data.stream()
+                .map(
+                    file ->
+                        file.toBuilder()
+                            .addAllDeleteFileIndices(
+                                IntStream.range(0, deletes.size()).boxed().toList())
+                            .build())
+                .toList();
+
+    return new FloecatConnector.ScanBundle(linkedData, deletes);
   }
 
   //  Direct mapping from catalog FileContent -> execution ScanFileContent

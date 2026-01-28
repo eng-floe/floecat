@@ -28,9 +28,7 @@ public final class NamespaceRequests {
   public record Create(
       @JsonProperty("namespace") @JsonDeserialize(using = NamespaceListDeserializer.class)
           List<String> namespace,
-      String description,
-      Map<String, String> properties,
-      String policyRef) {}
+      Map<String, String> properties) {}
 
-  public record Update(String description, Map<String, String> properties, String policyRef) {}
+  public record Update(Map<String, String> properties) {}
 }

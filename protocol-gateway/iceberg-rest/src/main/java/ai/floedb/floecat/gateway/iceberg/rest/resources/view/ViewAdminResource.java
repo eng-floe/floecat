@@ -23,9 +23,12 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
@@ -51,11 +54,30 @@ public class ViewAdminResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @NotNull @Valid RenameRequest request) {
     String catalogName = CatalogResolver.resolveCatalog(config, prefix);
-    ResourceId viewId =
-        NameResolution.resolveView(
-            grpc, catalogName, request.source().namespace(), request.source().name());
-    ResourceId namespaceId =
-        NameResolution.resolveNamespace(grpc, catalogName, request.destination().namespace());
+    ResourceId viewId;
+    try {
+      viewId =
+          NameResolution.resolveView(
+              grpc, catalogName, request.source().namespace(), request.source().name());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", request.source().namespace());
+        return IcebergErrorResponses.noSuchView(
+            "View " + namespace + "." + request.source().name() + " not found");
+      }
+      throw e;
+    }
+    ResourceId namespaceId;
+    try {
+      namespaceId =
+          NameResolution.resolveNamespace(grpc, catalogName, request.destination().namespace());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        String namespace = String.join(".", request.destination().namespace());
+        return IcebergErrorResponses.noSuchNamespace("Namespace " + namespace + " not found");
+      }
+      throw e;
+    }
 
     ViewSpec.Builder spec =
         ViewSpec.newBuilder()

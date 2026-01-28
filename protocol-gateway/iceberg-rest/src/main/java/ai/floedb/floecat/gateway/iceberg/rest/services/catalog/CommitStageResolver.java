@@ -18,7 +18,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
@@ -38,7 +37,7 @@ public class CommitStageResolver {
     String catalogName = command.catalogName();
     var namespacePath = command.namespacePath();
     String table = command.table();
-    TableRequests.Commit req = command.request();
+    String stageId = command.stageId();
     String transactionId = command.transactionId();
     StageCommitResult stageMaterialization = null;
     String materializedStageId = null;
@@ -48,7 +47,7 @@ public class CommitStageResolver {
       resolvedTableId = tableLifecycleService.resolveTableId(catalogName, namespacePath, table);
       StageMaterializationService.StageMaterializationResult explicitStage =
           stageMaterializationService.materializeExplicitStage(
-              prefix, catalogName, namespacePath, table, req, transactionId);
+              prefix, catalogName, namespacePath, table, stageId, transactionId);
       if (explicitStage != null) {
         stageMaterialization = explicitStage.result();
         materializedStageId = explicitStage.stageId();
@@ -59,7 +58,7 @@ public class CommitStageResolver {
       try {
         materialization =
             stageMaterializationService.materializeIfTableMissing(
-                e, prefix, catalogName, namespacePath, table, req, transactionId);
+                e, prefix, catalogName, namespacePath, table, stageId, transactionId);
       } catch (StageCommitException sce) {
         return StageResolution.failure(sce.toResponse());
       }
@@ -68,6 +67,12 @@ public class CommitStageResolver {
         materializedStageId = materialization.stageId();
         resolvedTableId = stageMaterialization.table().getResourceId();
       } else {
+        if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+          String namespace = String.join(".", namespacePath);
+          return StageResolution.failure(
+              ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses
+                  .noSuchTable("Table " + namespace + "." + table + " not found"));
+        }
         throw e;
       }
     }

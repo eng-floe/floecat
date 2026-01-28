@@ -130,6 +130,26 @@ public class ScanPruningUtilsTest {
   }
 
   @Test
+  void remapsDeleteFileIndicesAfterPruning() {
+    var data =
+        file("data", "id", 5, 10).toBuilder()
+            .addDeleteFileIndices(0)
+            .addDeleteFileIndices(1)
+            .build();
+    var delete1 = deleteFileWithStats("d1", "id", 1, 2);
+    var delete2 = deleteFileWithStats("d2", "id", 7, 9);
+    var pred = Predicate.newBuilder().setColumn("id").setOp(Operator.OP_EQ).addValues("7").build();
+
+    var out =
+        ScanPruningUtils.pruneBundle(
+            rawBundle(List.of(data), List.of(delete1, delete2)), List.of("id"), List.of(pred));
+
+    assertEquals(1, out.getDeleteFilesCount());
+    assertEquals("d2", out.getDeleteFiles(0).getFilePath());
+    assertEquals(List.of(0), out.getDataFiles(0).getDeleteFileIndicesList());
+  }
+
+  @Test
   void testInRejectsAllOutside() {
     var f = file("p", "id", 5, 10);
     var pred =

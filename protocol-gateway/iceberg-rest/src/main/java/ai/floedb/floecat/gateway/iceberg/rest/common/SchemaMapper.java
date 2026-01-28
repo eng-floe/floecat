@@ -65,16 +65,6 @@ final class SchemaMapper {
   static Map<String, Object> schemaFromRequest(TableRequests.Create request) {
     JsonNode node = request.schema();
     if (node == null || node.isNull()) {
-      String schemaJson = request.schemaJson();
-      if (schemaJson != null && !schemaJson.isBlank()) {
-        try {
-          node = JSON.readTree(schemaJson);
-        } catch (JsonProcessingException e) {
-          throw new IllegalArgumentException("schemaJson is invalid", e);
-        }
-      }
-    }
-    if (node == null || node.isNull()) {
       throw new IllegalArgumentException("schema is required");
     }
     if (!node.isObject()) {

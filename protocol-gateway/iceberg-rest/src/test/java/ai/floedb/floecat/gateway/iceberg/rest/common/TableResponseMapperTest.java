@@ -29,7 +29,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergStatisticsFile;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
@@ -106,7 +105,7 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void createRequestUsesSchemaJson() {
+  void createRequestUsesSchema() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
@@ -131,8 +130,7 @@ class TableResponseMapperTest {
     TableRequests.Create request =
         new TableRequests.Create(
             "orders",
-            fixtureSchemaJson(),
-            null,
+            fixtureSchema(),
             location,
             props,
             fixturePartitionSpec(),
@@ -315,7 +313,7 @@ class TableResponseMapperTest {
     assertTrue(blobMetadata instanceof List<?>);
   }
 
-  private static String fixtureSchemaJson() {
+  private static JsonNode fixtureSchema() {
     Map<String, Object> schema =
         selectById(
             FIXTURE_METADATA_VIEW.schemas(),
@@ -337,11 +335,7 @@ class TableResponseMapperTest {
       schema.put("last-column-id", lastColumnId);
     }
     Map<String, Object> payload = new LinkedHashMap<>(schema);
-    try {
-      return JSON.writeValueAsString(payload);
-    } catch (JsonProcessingException e) {
-      throw new IllegalStateException("Failed to build schema-json", e);
-    }
+    return JSON.valueToTree(payload);
   }
 
   private static JsonNode fixturePartitionSpec() {

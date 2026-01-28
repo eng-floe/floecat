@@ -24,9 +24,9 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StageCreateResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
@@ -43,6 +43,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -66,6 +67,7 @@ public class TableCreateService {
 
   public Response create(
       NamespaceRequestContext namespaceContext,
+      String accessDelegationMode,
       String idempotencyKey,
       String transactionId,
       TableRequests.Create request,
@@ -85,7 +87,13 @@ public class TableCreateService {
         applyDefaultLocationIfMissing(namespaceContext, tableName, request);
     if (Boolean.TRUE.equals(effectiveReq.stageCreate())) {
       return handleStageCreate(
-          namespaceContext, tableName, effectiveReq, transactionId, idempotencyKey, tableSupport);
+          namespaceContext,
+          tableName,
+          effectiveReq,
+          transactionId,
+          idempotencyKey,
+          accessDelegationMode,
+          tableSupport);
     }
 
     TableSpec.Builder spec;
@@ -101,7 +109,12 @@ public class TableCreateService {
     }
     Table created = tableLifecycleService.createTable(spec, idempotencyKey);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
-    List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
+    List<StorageCredentialDto> credentials;
+    try {
+      credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+    } catch (IllegalArgumentException e) {
+      return IcebergErrorResponses.validation(e.getMessage());
+    }
     LoadTableResultDto loadResult;
     try {
       loadResult =
@@ -142,9 +155,9 @@ public class TableCreateService {
         loadResult.config().keySet());
 
     Response.ResponseBuilder builder = Response.ok(loadResult);
-    String etagValue = responseMetadataLocation;
-    if (etagValue != null) {
-      builder.tag(etagValue);
+    if (responseMetadataLocation != null) {
+      builder.header(
+          HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(responseMetadataLocation));
     }
     return builder.build();
   }
@@ -155,6 +168,7 @@ public class TableCreateService {
       TableRequests.Create request,
       String transactionId,
       String idempotencyKey,
+      String accessDelegationMode,
       TableGatewaySupport tableSupport) {
     if (request == null) {
       return IcebergErrorResponses.validation("stage-create requires a request body");
@@ -173,10 +187,7 @@ public class TableCreateService {
     if (accountId == null || accountId.isBlank()) {
       return IcebergErrorResponses.validation("account context is required");
     }
-    String stageId =
-        (transactionId == null || transactionId.isBlank())
-            ? UUID.randomUUID().toString()
-            : transactionId.trim();
+    String stageId = resolveStageId(transactionId, idempotencyKey);
     try {
       LOG.infof(
           "Stage-create request payload prefix=%s namespace=%s table=%s stageId=%s location=%s"
@@ -227,32 +238,22 @@ public class TableCreateService {
               .setNamespaceId(namespaceContext.namespaceId())
               .setDisplayName(tableName)
               .build();
+      List<StorageCredentialDto> credentials;
+      try {
+        credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
+      } catch (IllegalArgumentException e) {
+        return IcebergErrorResponses.validation(e.getMessage());
+      }
       LoadTableResultDto loadResult =
           TableResponseMapper.toLoadResultFromCreate(
-              tableName,
-              stubTable,
-              effectiveReq,
-              tableSupport.defaultTableConfig(),
-              tableSupport.defaultCredentials());
+              tableName, stubTable, effectiveReq, tableSupport.defaultTableConfig(), credentials);
       LOG.infof(
-          "Stage-create metadata resolved stageId=%s location=%s requestProperty=%s",
-          stored.key().stageId(),
-          loadResult.metadataLocation(),
-          effectiveReq.properties() == null
-              ? "<none>"
-              : effectiveReq.properties().get("metadata-location"));
+          "Stage-create metadata resolved stageId=%s location=%s",
+          stored.key().stageId(), loadResult.metadataLocation());
       LOG.infof(
           "Stage-create response stageId=%s metadataLocation=%s configKeys=%s",
           stored.key().stageId(), loadResult.metadataLocation(), loadResult.config().keySet());
-      return Response.ok(
-              new StageCreateResponseDto(
-                  loadResult.metadataLocation(),
-                  loadResult.metadata(),
-                  loadResult.config(),
-                  loadResult.storageCredentials(),
-                  stored.requirements(),
-                  stored.key().stageId()))
-          .build();
+      return Response.ok(loadResult).build();
     } catch (IllegalArgumentException | JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -272,13 +273,22 @@ public class TableCreateService {
     }
     return new TableRequests.Create(
         request.name(),
-        request.schemaJson(),
         request.schema(),
         resolved,
         request.properties(),
         request.partitionSpec(),
         request.writeOrder(),
         request.stageCreate());
+  }
+
+  private String resolveStageId(String transactionId, String idempotencyKey) {
+    if (transactionId != null && !transactionId.isBlank()) {
+      return transactionId.trim();
+    }
+    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+      return idempotencyKey.trim();
+    }
+    return UUID.randomUUID().toString();
   }
 
   private String resolveDefaultLocation(
@@ -366,9 +376,6 @@ public class TableCreateService {
   private boolean hasSchema(TableRequests.Create request) {
     if (request == null) {
       return false;
-    }
-    if (request.schemaJson() != null && !request.schemaJson().isBlank()) {
-      return true;
     }
     return request.schema() != null && !request.schema().isNull();
   }

@@ -29,14 +29,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -47,7 +45,6 @@ import java.util.function.Supplier;
 public class TableUpdatePlanner {
 
   @Inject CommitRequirementService commitRequirementService;
-  @Inject TableLifecycleService tableLifecycleService;
   @Inject TablePropertyService tablePropertyService;
   @Inject SnapshotMetadataService snapshotMetadataService;
 
@@ -75,32 +72,10 @@ public class TableUpdatePlanner {
     if (requirementError != null) {
       return UpdatePlan.failure(spec, mask, requirementError);
     }
-    if (req.name() != null) {
-      spec.setDisplayName(req.name());
-      mask.addPaths("display_name");
-    }
-    if (req.namespace() != null && !req.namespace().isEmpty()) {
-      var targetNs =
-          tableLifecycleService.resolveNamespaceId(
-              command.catalogName(), new ArrayList<>(req.namespace()));
-      spec.setNamespaceId(targetNs);
-      mask.addPaths("namespace_id");
-    }
-    if (req.schemaJson() != null && !req.schemaJson().isBlank()) {
-      spec.setSchemaJson(req.schemaJson());
-      mask.addPaths("schema_json");
-    }
     Map<String, String> mergedProps = null;
-    if (req.properties() != null && !req.properties().isEmpty()) {
-      mergedProps = new LinkedHashMap<>(req.properties());
-      tablePropertyService.stripMetadataLocation(mergedProps);
-      if (mergedProps.isEmpty()) {
-        mergedProps = null;
-      }
-    }
     if (tablePropertyService.hasPropertyUpdates(req)) {
       if (mergedProps == null) {
-        mergedProps = new LinkedHashMap<>(tableSupplier.get().getPropertiesMap());
+        mergedProps = tablePropertyService.ensurePropertyMap(tableSupplier, null);
       }
       Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
       if (updateError != null) {

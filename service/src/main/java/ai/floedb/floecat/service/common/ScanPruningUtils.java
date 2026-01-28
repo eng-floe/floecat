@@ -24,8 +24,10 @@ import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
 
@@ -124,19 +126,42 @@ public final class ScanPruningUtils {
     }
 
     ScanBundle.Builder out = ScanBundle.newBuilder();
+    List<ScanFile> originalDeletes = bundle.getDeleteFilesList();
+    Map<String, Integer> deleteIndexByPath = new HashMap<>();
 
-    for (ScanFile f : bundle.getDataFilesList()) {
-      if (matches(f, preds)) {
-        out.addDataFiles(f);
-      }
-    }
     for (ScanFile f : bundle.getDeleteFilesList()) {
       if (matches(f, preds)) {
+        deleteIndexByPath.put(f.getFilePath(), out.getDeleteFilesCount());
         out.addDeleteFiles(f);
       }
     }
 
+    for (ScanFile f : bundle.getDataFilesList()) {
+      if (matches(f, preds)) {
+        out.addDataFiles(remapDeleteFileIndices(f, originalDeletes, deleteIndexByPath));
+      }
+    }
+
     return out.build();
+  }
+
+  private static ScanFile remapDeleteFileIndices(
+      ScanFile file, List<ScanFile> originalDeletes, Map<String, Integer> deleteIndexByPath) {
+    if (file.getDeleteFileIndicesCount() == 0 || deleteIndexByPath.isEmpty()) {
+      return file;
+    }
+    var builder = file.toBuilder().clearDeleteFileIndices();
+    for (int idx : file.getDeleteFileIndicesList()) {
+      if (idx < 0 || idx >= originalDeletes.size()) {
+        continue;
+      }
+      String path = originalDeletes.get(idx).getFilePath();
+      Integer newIndex = deleteIndexByPath.get(path);
+      if (newIndex != null) {
+        builder.addDeleteFileIndices(newIndex);
+      }
+    }
+    return builder.build();
   }
 
   private static boolean matches(ScanFile file, List<Predicate> preds) {

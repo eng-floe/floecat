@@ -79,6 +79,9 @@ message ScanFile {
 
   // Iceberg file sequence number (if known).
   optional int64 sequence_number = 10;
+
+  // For data files: indices into the parent ScanBundle.delete_files list that apply to this file.
+  repeated int32 delete_file_indices = 11;
 }
 
 /**

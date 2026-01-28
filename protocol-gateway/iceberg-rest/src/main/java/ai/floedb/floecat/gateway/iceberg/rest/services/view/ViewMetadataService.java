@@ -21,6 +21,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepresentation;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewVersion;
+import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -59,6 +60,9 @@ public class ViewMetadataService {
     if (req.viewVersion() == null) {
       throw new IllegalArgumentException("view-version is required");
     }
+    if (req.properties() == null) {
+      throw new IllegalArgumentException("properties is required");
+    }
     ViewMetadataView.SchemaSummary schema = parseSchema(req.schema());
     ViewMetadataView.ViewVersion version =
         toMetadataVersion(req.viewVersion(), namespacePath, schema.schemaId());
@@ -84,6 +88,25 @@ public class ViewMetadataService {
         parseStoredMetadata(props, namespacePath, viewName, view, userProps);
     String sql = extractSql(metadata);
     return new MetadataContext(metadata, userProps, sql);
+  }
+
+  public MetadataContext fromMetadata(ViewMetadataView metadata) {
+    if (metadata == null) {
+      throw new IllegalArgumentException("metadata is required");
+    }
+    Map<String, String> userProps = sanitizeProperties(metadata.properties());
+    ViewMetadataView sanitized =
+        new ViewMetadataView(
+            metadata.viewUuid(),
+            metadata.formatVersion(),
+            metadata.location(),
+            metadata.currentVersionId(),
+            metadata.versions(),
+            metadata.versionLog(),
+            metadata.schemas(),
+            userProps);
+    String sql = extractSql(sanitized);
+    return new MetadataContext(sanitized, userProps, sql);
   }
 
   public MetadataContext applyCommit(
@@ -505,6 +528,7 @@ public class ViewMetadataService {
     if (props == null) {
       return sanitized;
     }
+    ReservedPropertyUtil.validateAndFilter(props);
     props.forEach(
         (key, value) -> {
           if (key == null || value == null || RESERVED_PROPERTY_KEYS.contains(key)) {

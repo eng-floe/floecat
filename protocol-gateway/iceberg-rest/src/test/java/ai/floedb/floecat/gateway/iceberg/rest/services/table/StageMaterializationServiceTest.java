@@ -32,7 +32,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
@@ -90,13 +89,7 @@ class StageMaterializationServiceTest {
 
     StageMaterializationService.StageMaterializationResult result =
         service.materializeIfTableMissing(
-            failure,
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
-            null);
+            failure, "pref", "cat", List.of("db"), "orders", null, null);
 
     assertNull(result);
     verify(stageCommitProcessor, never()).commitStage(any(), any(), any(), any(), any(), any());
@@ -120,7 +113,7 @@ class StageMaterializationServiceTest {
             "cat",
             List.of("db"),
             "orders",
-            new TableRequests.Commit(null, null, null, null, "stage-1", List.of(), List.of()),
+            "stage-1",
             "header-stage");
 
     assertNotNull(result);
@@ -143,7 +136,7 @@ class StageMaterializationServiceTest {
                     "cat",
                     List.of("db"),
                     "orders",
-                    new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
+                    null,
                     null));
 
     assertEquals(
@@ -164,7 +157,7 @@ class StageMaterializationServiceTest {
           "cat",
           List.of("db"),
           "orders",
-          new TableRequests.Commit(null, null, null, null, "stage-1", List.of(), List.of()),
+          "stage-1",
           null);
     } catch (StageCommitException expected) {
       assertEquals("bad stage", expected.getMessage());
@@ -174,13 +167,7 @@ class StageMaterializationServiceTest {
   @Test
   void materializeExplicitStageSkipsWhenNoStageIdAndNoFallback() throws Exception {
     StageMaterializationService.StageMaterializationResult result =
-        service.materializeExplicitStage(
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(null, null, null, null, null, List.of(), List.of()),
-            null);
+        service.materializeExplicitStage("pref", "cat", List.of("db"), "orders", null, null);
 
     assertNull(result);
     verify(stageCommitProcessor, never()).commitStage(any(), any(), any(), any(), any(), any());
@@ -199,13 +186,7 @@ class StageMaterializationServiceTest {
 
     StageMaterializationService.StageMaterializationResult result =
         service.materializeExplicitStage(
-            "pref",
-            "cat",
-            List.of("db"),
-            "orders",
-            new TableRequests.Commit(
-                null, null, null, null, "explicit-stage", List.of(), List.of()),
-            null);
+            "pref", "cat", List.of("db"), "orders", "explicit-stage", null);
 
     assertNotNull(result);
     assertEquals("explicit-stage", result.stageId());

@@ -21,10 +21,10 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespaceRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -53,14 +53,12 @@ public class NamespaceCreateService {
             .addAllPath(parents)
             .setDisplayName(displayName);
 
-    if (req.description() != null) {
-      spec.setDescription(req.description());
-    }
     if (req.properties() != null) {
-      spec.putAllProperties(req.properties());
-    }
-    if (req.policyRef() != null) {
-      spec.setPolicyRef(req.policyRef());
+      try {
+        spec.putAllProperties(ReservedPropertyUtil.validateAndFilter(req.properties()));
+      } catch (IllegalArgumentException e) {
+        return IcebergErrorResponses.validation(e.getMessage());
+      }
     }
 
     Namespace created =
@@ -68,10 +66,6 @@ public class NamespaceCreateService {
             .createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build())
             .getNamespace();
 
-    List<String> createdPath = NamespaceResponseMapper.toPath(created);
-    String locationNs = NamespacePaths.encode(createdPath);
-    return Response.created(uriInfo.getAbsolutePathBuilder().path(locationNs).build())
-        .entity(NamespaceResponseMapper.toInfo(created))
-        .build();
+    return Response.ok(NamespaceResponseMapper.toInfo(created)).build();
   }
 }

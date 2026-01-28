@@ -50,5 +50,7 @@ public final class ViewRequests {
       String sql,
       Map<String, String> properties) {}
 
+  public record Register(String name, @JsonProperty("metadata-location") String metadataLocation) {}
+
   public record Commit(List<JsonNode> requirements, List<JsonNode> updates) {}
 }

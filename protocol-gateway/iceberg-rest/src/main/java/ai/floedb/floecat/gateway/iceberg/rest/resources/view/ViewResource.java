@@ -97,7 +97,8 @@ public class ViewResource {
   public Response delete(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @PathParam("view") String view) {
+      @PathParam("view") String view,
+      @HeaderParam("Idempotency-Key") String idempotencyKey) {
     ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
     return viewDeleteService.delete(viewContext);
   }

@@ -90,7 +90,7 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
   private String mapType(Error mcError, Status status) {
     if (mcError != null) {
       return switch (mcError.getCode()) {
-        case MC_NOT_FOUND -> "NoSuchObjectException";
+        case MC_NOT_FOUND -> mapNotFoundType(mcError);
         case MC_PRECONDITION_FAILED, MC_CONFLICT -> "CommitFailedException";
         case MC_PERMISSION_DENIED -> "ForbiddenException";
         case MC_UNAUTHENTICATED -> "UnauthorizedException";
@@ -106,5 +106,22 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
       case UNAUTHENTICATED -> "UnauthorizedException";
       default -> status.getCode().name();
     };
+  }
+
+  private String mapNotFoundType(Error mcError) {
+    String key = mcError.getMessageKey();
+    if (key != null && !key.isBlank()) {
+      String lower = key.toLowerCase();
+      if (lower.contains(".namespace")) {
+        return "NoSuchNamespaceException";
+      }
+      if (lower.contains(".table")) {
+        return "NoSuchTableException";
+      }
+      if (lower.contains(".view")) {
+        return "NoSuchViewException";
+      }
+    }
+    return "NoSuchObjectException";
   }
 }
