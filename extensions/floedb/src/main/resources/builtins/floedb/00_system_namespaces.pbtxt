@@ -12,12 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-00_system_namespaces.pbtxt
-10_registry.pbtxt
-20_types.pbtxt
-30_functions.pbtxt
-40_operators.pbtxt
-50_casts.pbtxt
-60_collations.pbtxt
-70_aggregates.pbtxt
-80_system_relations.pbtxt
+system_namespaces {
+  name {
+    name: "pg_catalog"
+  }
+  display_name: "pg_catalog"
+  engine_specific {
+    [floe.ext.floe_namespace] {
+      oid: 11
+      nspname: "pg_catalog"
+    }
+    payload_type: "floe.namespace+proto"
+  }
+}
+
+system_namespaces {
+  name {
+    name: "sys"
+  }
+  display_name: "sys"
+  engine_specific {
+    [floe.ext.floe_namespace] {
+      oid: 3300
+      nspname: "sys"
+    }
+    payload_type: "floe.namespace+proto"
+  }
+}

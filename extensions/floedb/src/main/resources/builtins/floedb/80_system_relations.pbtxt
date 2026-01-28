@@ -1,0 +1,734 @@
+# Copyright 2026 Yellowbrick Data, Inc
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+system_tables {
+  name {
+    path: "pg_catalog"
+    name: "pg_attribute"
+  }
+  display_name: "pg_attribute"
+  columns {
+    name: "attrelid"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attrelid"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attname"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attname"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "atttypid"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "atttypid"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "atttypmod"
+    type {
+      name: "INT"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "atttypmod"
+        atttypid: 23
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attnum"
+    type {
+      name: "INT"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attnum"
+        atttypid: 23
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attlen"
+    type {
+      name: "INT"
+    }
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attlen"
+        atttypid: 23
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attbyval"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attbyval"
+        atttypid: 16
+        attnum: 7
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attnotnull"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attnotnull"
+        atttypid: 16
+        attnum: 8
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attisdropped"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attisdropped"
+        atttypid: 16
+        attnum: 9
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attalign"
+    type {
+      name: "CHAR"
+    }
+    ordinal: 10
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attalign"
+        atttypid: 18
+        attnum: 10
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attstorage"
+    type {
+      name: "CHAR"
+    }
+    ordinal: 11
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attstorage"
+        atttypid: 18
+        attnum: 11
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attndims"
+    type {
+      name: "INT"
+    }
+    ordinal: 12
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attndims"
+        atttypid: 23
+        attnum: 12
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "attcollation"
+    type {
+      name: "INT"
+    }
+    ordinal: 13
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "attcollation"
+        atttypid: 23
+        attnum: 13
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "pg_attribute_scanner"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 1249
+      relname: "pg_attribute"
+      relnamespace: 11
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "pg_catalog"
+    name: "pg_class"
+  }
+  display_name: "pg_class"
+  columns {
+    name: "oid"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "oid"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "relname"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "relname"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "relnamespace"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "relnamespace"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "relkind"
+    type {
+      name: "CHAR"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "relkind"
+        atttypid: 18
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "reltuples"
+    type {
+      name: "FLOAT"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "reltuples"
+        atttypid: 700
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "pg_class_scanner"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 1259
+      relname: "pg_class"
+      relnamespace: 11
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "pg_catalog"
+    name: "pg_namespace"
+  }
+  display_name: "pg_namespace"
+  columns {
+    name: "oid"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "oid"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "nspname"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "nspname"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "pg_namespace_scanner"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 2615
+      relname: "pg_namespace"
+      relnamespace: 11
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "pg_catalog"
+    name: "pg_proc"
+  }
+  display_name: "pg_proc"
+  columns {
+    name: "oid"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "oid"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "proname"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "proname"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "pronamespace"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "pronamespace"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "prorettype"
+    type {
+      name: "INT"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "prorettype"
+        atttypid: 23
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "proargtypes"
+    type {
+      name: "INT[]"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "proargtypes"
+        atttypid: 1007
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "proisagg"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "proisagg"
+        atttypid: 16
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "proiswindow"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "proiswindow"
+        atttypid: 16
+        attnum: 7
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "pg_proc_scanner"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 1255
+      relname: "pg_proc"
+      relnamespace: 11
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "pg_catalog"
+    name: "pg_type"
+  }
+  display_name: "pg_type"
+  columns {
+    name: "oid"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "oid"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typname"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typname"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typnamespace"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typnamespace"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typlen"
+    type {
+      name: "INT"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typlen"
+        atttypid: 23
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typbyval"
+    type {
+      name: "BOOLEAN"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typbyval"
+        atttypid: 16
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typdelim"
+    type {
+      name: "CHAR"
+    }
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typdelim"
+        atttypid: 18
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typelem"
+    type {
+      name: "INT"
+    }
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typelem"
+        atttypid: 23
+        attnum: 7
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typarray"
+    type {
+      name: "INT"
+    }
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typarray"
+        atttypid: 23
+        attnum: 8
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "typalign"
+    type {
+      name: "CHAR"
+    }
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "typalign"
+        atttypid: 18
+        attnum: 9
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "pg_type_scanner"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 1247
+      relname: "pg_type"
+      relnamespace: 11
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "const"
+  }
+  display_name: "const"
+  columns {
+    name: "one"
+    type {
+      name: "INT"
+    }
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "one"
+        atttypid: 23
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_ENGINE
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 6026
+      relname: "const"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 1.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
