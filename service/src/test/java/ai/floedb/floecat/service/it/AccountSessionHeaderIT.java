@@ -48,6 +48,9 @@ import org.junit.jupiter.api.Test;
 @TestProfile(OidcSessionHeaderProfile.class)
 class AccountSessionHeaderIT {
 
+  private static final String ACCOUNT_ID =
+      TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+
   private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> SESSION_HEADER =
@@ -109,17 +112,14 @@ class AccountSessionHeaderIT {
   }
 
   @Test
-  void listAccountsRejectsMissingPrincipalHeader() throws Exception {
+  void listAccountsAcceptsMissingPrincipalHeader() throws Exception {
     Metadata metadata = new Metadata();
     metadata.put(SESSION_HEADER, sessionJwt());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> stub.listAccounts(ListAccountsRequest.getDefaultInstance()));
+    var response = stub.listAccounts(ListAccountsRequest.getDefaultInstance());
 
-    assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
+    assertFalse(response.getAccountsList().isEmpty());
   }
 
   @Test
@@ -275,6 +275,7 @@ class AccountSessionHeaderIT {
         Jwt.claims()
             .issuer("https://floecat.test")
             .subject("it-user")
+            .claim("account_id", ACCOUNT_ID)
             .issuedAt(now.plusSeconds(issuedAtOffsetSeconds))
             .expiresAt(now.plusSeconds(expiresInSeconds));
     if (audience != null) {

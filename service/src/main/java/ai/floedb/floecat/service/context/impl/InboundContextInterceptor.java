@@ -21,8 +21,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.grpc.Context;
@@ -40,9 +40,12 @@ import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
@@ -79,6 +82,12 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   @ConfigProperty(name = "floecat.interceptor.session.header")
   Optional<String> sessionHeader;
+
+  @ConfigProperty(name = "floecat.interceptor.session.account-claim", defaultValue = "account_id")
+  String accountClaimName;
+
+  @ConfigProperty(name = "floecat.interceptor.session.role-claim", defaultValue = "roles")
+  String roleClaimName;
 
   @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
   boolean allowDevContext;
@@ -174,6 +183,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
   private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {
     byte[] pcBytes = headers.get(PRINC_BIN);
 
+    SecurityIdentity sessionIdentity =
+        this.sessionHeader.isPresent() ? validateSessionHeader(headers) : null;
+
     if (pcBytes != null) {
       PrincipalContext pc = parsePrincipal(pcBytes);
 
@@ -181,8 +193,13 @@ public class InboundContextInterceptor implements ServerInterceptor {
         validateAccount(pc.getAccountId());
       }
 
-      if (this.sessionHeader.isPresent()) {
-        validateSessionHeader(headers);
+      if (sessionIdentity != null) {
+        String accountId = requireAccountIdClaim(sessionIdentity);
+        if (!isBlank(pc.getAccountId()) && !pc.getAccountId().equals(accountId)) {
+          throw Status.UNAUTHENTICATED
+              .withDescription("account_id mismatch between principal and token")
+              .asRuntimeException();
+        }
       }
 
       if (!isBlank(queryIdHeader)
@@ -197,47 +214,27 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return new ResolvedContext(pc, canonicalQueryId);
     }
 
-    if (!isBlank(queryIdHeader)) {
-      QueryContext ctx =
-          queryStore
-              .get(queryIdHeader)
-              .orElseThrow(
-                  () ->
-                      Status.UNAUTHENTICATED
-                          .withDescription("unknown x-query-id")
-                          .asRuntimeException());
-
-      long now = clock.millis();
-      if (ctx.getState() != QueryContext.State.ACTIVE) {
-        throw Status.FAILED_PRECONDITION.withDescription("query not active").asRuntimeException();
+    if (sessionIdentity != null) {
+      String accountId = requireAccountIdClaim(sessionIdentity);
+      String subject = requireSubjectClaim(sessionIdentity);
+      var roles = extractRoles(sessionIdentity);
+      PrincipalContext.Builder builder =
+          PrincipalContext.newBuilder().setAccountId(accountId).setSubject(subject);
+      if (!isBlank(queryIdHeader)) {
+        builder.setQueryId(queryIdHeader);
       }
-      if (ctx.getExpiresAtMs() < now) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("query lease expired")
-            .asRuntimeException();
-      }
-
-      PrincipalContext principalContext = ctx.getPrincipal();
-      if (!isBlank(principalContext.getQueryId())
-          && !principalContext.getQueryId().equals(queryIdHeader)) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("query_id mismatch (store vs principal)")
-            .asRuntimeException();
-      }
-
-      return new ResolvedContext(principalContext, queryIdHeader);
+      RolePermissions.permissionsForRoles(roles, allowDevContext).forEach(builder::addPermissions);
+      return new ResolvedContext(builder.build(), queryIdHeader);
     }
 
     if (allowDevContext) {
       return new ResolvedContext(devContext(), "");
     }
 
-    throw Status.UNAUTHENTICATED
-        .withDescription("missing x-principal-bin and x-query-id")
-        .asRuntimeException();
+    throw Status.UNAUTHENTICATED.withDescription("missing x-principal-bin").asRuntimeException();
   }
 
-  private void validateSessionHeader(Metadata headers) {
+  private SecurityIdentity validateSessionHeader(Metadata headers) {
     var headerName = this.sessionHeader.orElseThrow();
     var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
     String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
@@ -254,6 +251,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
         LOG.warn("Session token inactive");
         throw Status.UNAUTHENTICATED.withDescription("inactive session token").asRuntimeException();
       }
+      return identity;
     } catch (RuntimeException e) {
       LOG.warnf(e, "Session token validation failed: %s", e.getMessage());
       throw Status.UNAUTHENTICATED
@@ -261,6 +259,64 @@ public class InboundContextInterceptor implements ServerInterceptor {
           .withCause(e)
           .asRuntimeException();
     }
+  }
+
+  private String requireAccountIdClaim(SecurityIdentity identity) {
+    JsonWebToken jwt = requireJwt(identity);
+    Object claim = jwt.getClaim(accountClaimName);
+    if (claim instanceof String value && !value.isBlank()) {
+      return value;
+    }
+    if (claim instanceof Number value) {
+      return value.toString();
+    }
+    if (claim instanceof Iterable<?> items) {
+      for (Object item : items) {
+        if (item instanceof String value && !value.isBlank()) {
+          return value;
+        }
+      }
+    }
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing " + accountClaimName + " claim")
+        .asRuntimeException();
+  }
+
+  private String requireSubjectClaim(SecurityIdentity identity) {
+    JsonWebToken jwt = requireJwt(identity);
+    String subject = jwt.getSubject();
+    if (isBlank(subject)) {
+      subject = identity.getPrincipal().getName();
+    }
+    if (isBlank(subject)) {
+      throw Status.UNAUTHENTICATED.withDescription("missing subject").asRuntimeException();
+    }
+    return subject;
+  }
+
+  private JsonWebToken requireJwt(SecurityIdentity identity) {
+    if (identity.getPrincipal() instanceof JsonWebToken jwt) {
+      return jwt;
+    }
+    throw Status.UNAUTHENTICATED.withDescription("missing jwt principal").asRuntimeException();
+  }
+
+  private List<String> extractRoles(SecurityIdentity identity) {
+    JsonWebToken jwt = requireJwt(identity);
+    Object claim = jwt.getClaim(roleClaimName);
+    if (claim instanceof String value) {
+      return List.of(value);
+    }
+    if (claim instanceof Iterable<?> items) {
+      List<String> roles = new ArrayList<>();
+      for (Object item : items) {
+        if (item instanceof String value) {
+          roles.add(value);
+        }
+      }
+      return roles;
+    }
+    return List.of();
   }
 
   private static PrincipalContext parsePrincipal(byte[] encoded) {
@@ -286,22 +342,13 @@ public class InboundContextInterceptor implements ServerInterceptor {
     var id = AccountIds.deterministicAccountId("/account:t-0001");
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
-    return PrincipalContext.newBuilder()
-        .setAccountId(rid.getId())
-        .setSubject("dev-user")
-        .setLocale("en")
-        .addPermissions("account.read")
-        .addPermissions("account.write")
-        .addPermissions("catalog.read")
-        .addPermissions("catalog.write")
-        .addPermissions("namespace.read")
-        .addPermissions("namespace.write")
-        .addPermissions("table.read")
-        .addPermissions("table.write")
-        .addPermissions("view.read")
-        .addPermissions("view.write")
-        .addPermissions("connector.manage")
-        .build();
+    PrincipalContext.Builder builder =
+        PrincipalContext.newBuilder()
+            .setAccountId(rid.getId())
+            .setSubject("dev-user")
+            .setLocale("en");
+    RolePermissions.permissionsForRoles(List.of(), true).forEach(builder::addPermissions);
+    return builder.build();
   }
 
   private void validateAccount(String accountId) {
