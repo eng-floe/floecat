@@ -104,6 +104,9 @@ same headers for internal gRPC calls (service-to-service).
 `Authorizer` currently performs simple list membership checks on `PrincipalContext.permissions`; it
 can be replaced by injecting a custom implementation.
 
+External session header authentication is documented in
+[`docs/external_authentication.md`](external_authentication.md).
+
 ### Query Lifecycle Service
 `QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,
 expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
