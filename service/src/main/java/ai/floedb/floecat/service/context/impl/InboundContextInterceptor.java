@@ -89,6 +89,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
   @ConfigProperty(name = "floecat.interceptor.session.role-claim", defaultValue = "roles")
   String roleClaimName;
 
+  @ConfigProperty(name = "floecat.interceptor.allow.principal-header", defaultValue = "false")
+  boolean allowPrincipalHeader;
+
   @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
   boolean allowDevContext;
 
@@ -181,25 +184,19 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {
-    byte[] pcBytes = headers.get(PRINC_BIN);
 
-    SecurityIdentity sessionIdentity =
-        this.sessionHeader.isPresent() ? validateSessionHeader(headers) : null;
+    if (this.sessionHeader.isPresent()) {
+      SecurityIdentity identity = validateSessionHeader(headers);
+      PrincipalContext principal = buildPrincipalFromIdentity(identity, queryIdHeader);
+      return new ResolvedContext(principal, queryIdHeader);
+    }
 
-    if (pcBytes != null) {
+    if (allowPrincipalHeader && headers.containsKey(PRINC_BIN)) {
+      byte[] pcBytes = headers.get(PRINC_BIN);
       PrincipalContext pc = parsePrincipal(pcBytes);
 
       if (this.validateAccount) {
         validateAccount(pc.getAccountId());
-      }
-
-      if (sessionIdentity != null) {
-        String accountId = requireAccountIdClaim(sessionIdentity);
-        if (!isBlank(pc.getAccountId()) && !pc.getAccountId().equals(accountId)) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("account_id mismatch between principal and token")
-              .asRuntimeException();
-        }
       }
 
       if (!isBlank(queryIdHeader)
@@ -214,24 +211,15 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return new ResolvedContext(pc, canonicalQueryId);
     }
 
-    if (sessionIdentity != null) {
-      String accountId = requireAccountIdClaim(sessionIdentity);
-      String subject = requireSubjectClaim(sessionIdentity);
-      var roles = extractRoles(sessionIdentity);
-      PrincipalContext.Builder builder =
-          PrincipalContext.newBuilder().setAccountId(accountId).setSubject(subject);
-      if (!isBlank(queryIdHeader)) {
-        builder.setQueryId(queryIdHeader);
-      }
-      RolePermissions.permissionsForRoles(roles, allowDevContext).forEach(builder::addPermissions);
-      return new ResolvedContext(builder.build(), queryIdHeader);
-    }
-
     if (allowDevContext) {
       return new ResolvedContext(devContext(), "");
     }
 
-    throw Status.UNAUTHENTICATED.withDescription("missing x-principal-bin").asRuntimeException();
+    String message =
+        allowPrincipalHeader
+            ? "missing x-principal-bin"
+            : "missing session header and x-principal-bin disabled";
+    throw Status.UNAUTHENTICATED.withDescription(message).asRuntimeException();
   }
 
   private SecurityIdentity validateSessionHeader(Metadata headers) {
@@ -319,6 +307,23 @@ public class InboundContextInterceptor implements ServerInterceptor {
     return List.of();
   }
 
+  private PrincipalContext buildPrincipalFromIdentity(
+      SecurityIdentity identity, String queryIdHeader) {
+    String accountId = requireAccountIdClaim(identity);
+    if (validateAccount) {
+      validateAccount(accountId);
+    }
+    String subject = requireSubjectClaim(identity);
+    var roles = extractRoles(identity);
+    PrincipalContext.Builder builder =
+        PrincipalContext.newBuilder().setAccountId(accountId).setSubject(subject);
+    if (!isBlank(queryIdHeader)) {
+      builder.setQueryId(queryIdHeader);
+    }
+    RolePermissions.permissionsForRoles(roles, allowDevContext).forEach(builder::addPermissions);
+    return builder.build();
+  }
+
   private static PrincipalContext parsePrincipal(byte[] encoded) {
     try {
       return PrincipalContext.parseFrom(encoded);
@@ -338,7 +343,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
     return Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
   }
 
-  private static PrincipalContext devContext() {
+  private PrincipalContext devContext() {
     var id = AccountIds.deterministicAccountId("/account:t-0001");
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
