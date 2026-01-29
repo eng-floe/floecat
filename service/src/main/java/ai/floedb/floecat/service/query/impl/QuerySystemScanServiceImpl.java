@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 import static java.util.Objects.requireNonNullElse;
 
 import ai.floedb.floecat.common.rpc.Predicate;
@@ -109,13 +110,13 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       var ctxOpt = queryStore.get(queryId);
       if (ctxOpt.isEmpty()) {
         throw GrpcErrors.notFound(
-            correlationIdHolder.get(), "query.not_found", Map.of("query_id", queryId));
+            correlationIdHolder.get(), QUERY_NOT_FOUND, Map.of("query_id", queryId));
       }
       var queryCtx = ctxOpt.get();
 
       if (!request.hasTableId()) {
         throw GrpcErrors.invalidArgument(
-            correlationIdHolder.get(), "system.table_id.required", Map.of());
+            correlationIdHolder.get(), SYSTEM_TABLE_ID_REQUIRED, Map.of());
       }
 
       ResourceId tableId = request.getTableId();
@@ -132,7 +133,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       if (format == OutputFormat.UNRECOGNIZED) {
         throw GrpcErrors.invalidArgument(
             correlationIdHolder.get(),
-            "system.output_format.unrecognized",
+            SYSTEM_OUTPUT_FORMAT_UNRECOGNIZED,
             Map.of("output_format", format.toString()));
       }
       boolean arrowRequested = format != OutputFormat.ROWS;

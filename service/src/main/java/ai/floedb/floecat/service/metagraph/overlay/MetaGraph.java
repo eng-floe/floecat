@@ -30,6 +30,7 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -200,7 +201,7 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveNamespace(ref, ctx),
         () -> userGraph.tryResolveNamespace(correlationId, ref),
-        "namespace");
+        GeneratedErrorMessages.MessageKey.NAMESPACE);
   }
 
   /**
@@ -222,7 +223,7 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveTable(ref, ctx),
         () -> userGraph.tryResolveTable(correlationId, ref),
-        "table");
+        GeneratedErrorMessages.MessageKey.TABLE);
   }
 
   /**
@@ -244,7 +245,7 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveView(ref, ctx),
         () -> userGraph.tryResolveView(correlationId, ref),
-        "view");
+        GeneratedErrorMessages.MessageKey.VIEW);
   }
 
   /**
@@ -266,7 +267,7 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveName(ref, ctx),
         () -> userGraph.tryResolveName(correlationId, ref),
-        "table");
+        GeneratedErrorMessages.MessageKey.TABLE);
   }
 
   /**
@@ -494,12 +495,14 @@ public final class MetaGraph implements CatalogOverlay {
       NameRef ref,
       Supplier<Optional<ResourceId>> systemResolver,
       Supplier<Optional<ResourceId>> userResolver,
-      String notFoundMessageKey) {
+      GeneratedErrorMessages.MessageKey notFoundMessageKey) {
     Optional<ResourceId> sys = systemResolver.get();
     Optional<ResourceId> user = userResolver.get();
     if (sys.isPresent() && user.isPresent()) {
       throw GrpcErrors.invalidArgument(
-          correlationId, "query.input.ambiguous", Map.of("name", ref.toString()));
+          correlationId,
+          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
+          Map.of("name", ref.toString()));
     }
     if (sys.isPresent()) {
       return sys.get();

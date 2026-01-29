@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.Precondition;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -166,18 +167,19 @@ public final class MutationOps {
         final var nowMeta = nowMetaSupplier.get();
         throw GrpcErrors.preconditionFailed(
             correlationId,
-            "version_mismatch",
+            GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
             Map.of(
                 "expected", Long.toString(expected),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
     } catch (BaseResourceRepository.NameConflictException nce) {
-      throw GrpcErrors.conflict(correlationId, entity + ".already_exists", conflictKVs);
+      throw GrpcErrors.conflict(
+          correlationId, GeneratedErrorMessages.bySuffix(entity + ".already_exists"), conflictKVs);
     } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = nowMetaSupplier.get();
       throw GrpcErrors.preconditionFailed(
           correlationId,
-          "version_mismatch",
+          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
           Map.of(
               "expected", Long.toString(expected),
               "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -204,7 +206,8 @@ public final class MutationOps {
     try {
       meta = requireMeta(metaSupplier, correlationId, entity);
     } catch (BaseResourceRepository.NotFoundException e) {
-      throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+      throw GrpcErrors.notFound(
+          correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
     }
 
     BaseServiceChecks.enforcePreconditions(correlationId, meta, precondition);
@@ -219,28 +222,31 @@ public final class MutationOps {
           return nowMeta;
         }
         if (nowMeta.getPointerVersion() == 0L) {
-          throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+          throw GrpcErrors.notFound(
+              correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
         }
         throw GrpcErrors.preconditionFailed(
             correlationId,
-            "version_mismatch",
+            GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
             Map.of(
                 "expected", Long.toString(expected),
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
     } catch (BaseResourceRepository.NotFoundException nfe) {
-      throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+      throw GrpcErrors.notFound(
+          correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
     } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = safeMetaSupplier.get();
       if (!callerCares) {
         return nowMeta;
       }
       if (nowMeta.getPointerVersion() == 0L) {
-        throw GrpcErrors.notFound(correlationId, entity, notFoundKVs);
+        throw GrpcErrors.notFound(
+            correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
       }
       throw GrpcErrors.preconditionFailed(
           correlationId,
-          "version_mismatch",
+          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
           Map.of(
               "expected", Long.toString(expected),
               "actual", Long.toString(nowMeta.getPointerVersion())));

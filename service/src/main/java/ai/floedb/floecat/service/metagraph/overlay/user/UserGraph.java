@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
@@ -342,7 +343,9 @@ public final class UserGraph {
 
     if (t.isPresent() && v.isPresent()) {
       throw GrpcErrors.invalidArgument(
-          cid, "query.input.ambiguous", Map.of("name", ref.toString()));
+          cid,
+          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
+          Map.of("name", ref.toString()));
     }
 
     return t.map(ResolvedRelation::resourceId)
@@ -350,7 +353,9 @@ public final class UserGraph {
         .orElseThrow(
             () ->
                 GrpcErrors.invalidArgument(
-                    cid, "query.input.unresolved", Map.of("name", ref.toString())));
+                    cid,
+                    GeneratedErrorMessages.MessageKey.QUERY_INPUT_UNRESOLVED,
+                    Map.of("name", ref.toString())));
   }
 
   /**
@@ -376,7 +381,10 @@ public final class UserGraph {
   public SchemaResolution schemaFor(String cid, ResourceId tblId, SnapshotRef snapshot) {
     UserTableNode tbl =
         table(tblId)
-            .orElseThrow(() -> GrpcErrors.notFound(cid, "table", Map.of("id", tblId.getId())));
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        cid, GeneratedErrorMessages.MessageKey.TABLE, Map.of("id", tblId.getId())));
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot));
   }
 
@@ -633,12 +641,23 @@ public final class UserGraph {
 
   private void validateNameRef(String cid, NameRef ref) {
     if (ref == null || ref.getCatalog().isBlank())
-      throw GrpcErrors.invalidArgument(cid, "catalog.missing", Map.of());
+      throw GrpcErrors.invalidArgument(
+          cid, GeneratedErrorMessages.MessageKey.CATALOG_MISSING, Map.of());
   }
 
   private void validateRelationName(String cid, NameRef ref, String type) {
-    if (ref.getName().isBlank())
-      throw GrpcErrors.invalidArgument(cid, type + ".name.missing", Map.of("name", ref.getName()));
+    if (ref.getName().isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          cid, relationNameMissingKey(type), Map.of("name", ref.getName()));
+    }
+  }
+
+  private GeneratedErrorMessages.MessageKey relationNameMissingKey(String type) {
+    return switch (type) {
+      case "table" -> GeneratedErrorMessages.MessageKey.TABLE_NAME_MISSING;
+      case "view" -> GeneratedErrorMessages.MessageKey.VIEW_NAME_MISSING;
+      default -> GeneratedErrorMessages.MessageKey.FIELD;
+    };
   }
 
   // ----------------------------------------------------------------------

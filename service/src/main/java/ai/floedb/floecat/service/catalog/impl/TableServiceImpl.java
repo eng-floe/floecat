@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
@@ -121,7 +123,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               () ->
                                   GrpcErrors.notFound(
                                       correlationId(),
-                                      "namespace",
+                                      NAMESPACE,
                                       Map.of("id", namespaceId.getId())));
 
                   var catalogId = namespace.getCatalogId();
@@ -139,7 +141,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
                   }
 
                   var page =
@@ -178,7 +180,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               () ->
                                   GrpcErrors.notFound(
                                       correlationId(),
-                                      "table",
+                                      TABLE,
                                       Map.of("id", request.getTableId().getId())));
                   return GetTableResponse.newBuilder().setTable(table).build();
                 }),
@@ -218,7 +220,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           () ->
                               GrpcErrors.notFound(
                                   corr,
-                                  "catalog",
+                                  CATALOG,
                                   Map.of("id", request.getSpec().getCatalogId().getId())));
 
                   var ns =
@@ -228,13 +230,13 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               () ->
                                   GrpcErrors.notFound(
                                       corr,
-                                      "namespace",
+                                      NAMESPACE,
                                       Map.of("id", request.getSpec().getNamespaceId().getId())));
                   var catId = request.getSpec().getCatalogId();
                   if (!ns.getCatalogId().getId().equals(catId.getId())) {
                     throw GrpcErrors.invalidArgument(
                         corr,
-                        "namespace.catalog_mismatch",
+                        NAMESPACE_CATALOG_MISMATCH,
                         Map.of(
                             "namespace_id", ns.getResourceId().getId(),
                             "namespace.catalog_id", ns.getCatalogId().getId(),
@@ -281,7 +283,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     if (existing.isPresent()) {
                       throw GrpcErrors.conflict(
                           corr,
-                          "table.already_exists",
+                          TABLE_ALREADY_EXISTS,
                           Map.of(
                               "display_name", normName,
                               "catalog_id", spec.getCatalogId().getId(),
@@ -292,7 +294,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       throw GrpcErrors.conflict(
                           corr,
-                          "table.already_exists",
+                          TABLE_ALREADY_EXISTS,
                           Map.of(
                               "display_name", normName,
                               "catalog_id", spec.getCatalogId().getId(),
@@ -336,7 +338,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "table.already_exists",
+                                          TABLE_ALREADY_EXISTS,
                                           Map.of(
                                               "display_name", normName,
                                               "catalog_id", spec.getCatalogId().getId(),
@@ -385,11 +387,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .getById(tableId)
                           .orElseThrow(
                               () ->
-                                  GrpcErrors.notFound(
-                                      corr, "table", Map.of("id", tableId.getId())));
+                                  GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var spec = request.getSpec();
@@ -404,8 +405,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           .getById(tableId)
                           .orElseThrow(
                               () ->
-                                  GrpcErrors.notFound(
-                                      corr, "table", Map.of("id", tableId.getId())));
+                                  GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
 
@@ -415,7 +415,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -440,18 +440,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       var nowMeta = tableRepo.metaForSafe(tableId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, "table.already_exists", conflictInfo);
+                    throw GrpcErrors.conflict(corr, TABLE_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = tableRepo.metaForSafe(tableId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -504,7 +504,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(
-                          correlationId, "table", Map.of("id", tableId.getId()));
+                          correlationId, TABLE, Map.of("id", tableId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
@@ -543,11 +543,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private static void validateTableMaskOrThrow(FieldMask mask, String corr) {
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
     }
     for (var p : paths) {
       if (!TABLE_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
     boolean hasUpstreamWhole = paths.contains("upstream");
@@ -556,7 +556,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     if (hasUpstreamWhole && hasUpstreamParts) {
       throw GrpcErrors.invalidArgument(
           corr,
-          "update_mask.upstream.mix_forbidden",
+          UPDATE_MASK_UPSTREAM_MIX_FORBIDDEN,
           Map.of("hint", "use either 'upstream' or 'upstream.*' but not both"));
     }
   }
@@ -569,7 +569,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     if (maskTargets(mask, "display_name")) {
       if (!spec.hasDisplayName()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
       b.setDisplayName(
           normalizeName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr)));
@@ -585,7 +585,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     if (maskTargets(mask, "schema_json")) {
       if (!spec.hasSchemaJson()) {
-        throw GrpcErrors.invalidArgument(corr, "schema_json.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, SCHEMA_JSON_CANNOT_CLEAR, Map.of());
       }
       b.setSchemaJson(mustNonEmpty(spec.getSchemaJson(), "spec.schema_json", corr));
     }
@@ -599,34 +599,33 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
-        throw GrpcErrors.invalidArgument(corr, "catalog_id.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
       ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
       catalogRepo
           .getById(catId)
-          .orElseThrow(() -> GrpcErrors.notFound(corr, "catalog", Map.of("id", catId.getId())));
+          .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catId.getId())));
       b.setCatalogId(catId);
       catalogChanged = true;
     }
 
     if (maskTargets(mask, "namespace_id")) {
       if (!spec.hasNamespaceId()) {
-        throw GrpcErrors.invalidArgument(corr, "namespace_id.cannot_clear", Map.of());
+        throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
       ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
       var ns =
           namespaceRepo
               .getById(nsId)
-              .orElseThrow(
-                  () -> GrpcErrors.notFound(corr, "namespace", Map.of("id", nsId.getId())));
+              .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", nsId.getId())));
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
       if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
-            "namespace.catalog_mismatch",
+            NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", nsId.getId(),
                 "namespace.catalog_id", ns.getCatalogId().getId(),
@@ -644,11 +643,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
               .orElseThrow(
                   () ->
                       GrpcErrors.notFound(
-                          corr, "namespace", Map.of("id", b.getNamespaceId().getId())));
+                          corr, NAMESPACE, Map.of("id", b.getNamespaceId().getId())));
       if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
-            "namespace.catalog_mismatch",
+            NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", b.getNamespaceId().getId(),
                 "namespace.catalog_id", ns.getCatalogId().getId(),
@@ -669,12 +668,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
       mergedUp = inUp;
     } else if (maskTargetsUnder(mask, "upstream")) {
       if (!spec.hasUpstream()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.missing_for_replacement", Map.of());
+        throw GrpcErrors.invalidArgument(corr, UPSTREAM_MISSING_FOR_REPLACEMENT, Map.of());
       }
       if (!current.hasUpstream()) {
         throw GrpcErrors.invalidArgument(
             corr,
-            "upstream.missing_for_replacement",
+            UPSTREAM_MISSING_FOR_REPLACEMENT,
             Map.of("hint", "use update_mask ['upstream'] to set"));
       }
       var ub = currentUp.toBuilder();
@@ -764,7 +763,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private void validateUpstreamRef(UpstreamRef up, String corr) {
     if (up.hasConnectorId()) {
       if (up.getConnectorId().getId().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "upstream.connector_id.required", Map.of());
+        throw GrpcErrors.invalidArgument(corr, UPSTREAM_CONNECTOR_ID_REQUIRED, Map.of());
       }
       ensureKind(
           up.getConnectorId(), ResourceKind.RK_CONNECTOR, "spec.upstream.connector_id", corr);
@@ -773,7 +772,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     if (up.getNamespacePathCount() > 0) {
       for (var seg : up.getNamespacePathList()) {
         if (seg == null || seg.isBlank()) {
-          throw GrpcErrors.invalidArgument(corr, "upstream.namespace_path.segment.blank", Map.of());
+          throw GrpcErrors.invalidArgument(corr, UPSTREAM_NAMESPACE_PATH_SEGMENT_BLANK, Map.of());
         }
       }
     }
@@ -781,7 +780,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     if (up.getColumnIdAlgorithm() == ColumnIdAlgorithm.CID_UNKNOWN) {
       throw GrpcErrors.invalidArgument(
           corr,
-          "upstream.column_id_algorithm.invalid",
+          UPSTREAM_COLUMN_ID_ALGORITHM_INVALID,
           Map.of("upstream.column_id_algorithm", up.getColumnIdAlgorithm().name()));
     }
   }

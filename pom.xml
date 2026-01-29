@@ -61,6 +61,7 @@
 
       <!-- Tools -->
       <module>tools/builtin-validator</module>
+      <module>tools/error-messages-generator</module>
 
       <!-- Service -->
       <module>service</module>

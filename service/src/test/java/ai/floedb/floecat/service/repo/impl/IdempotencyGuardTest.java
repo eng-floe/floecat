@@ -202,7 +202,7 @@ public class IdempotencyGuardTest {
     }
     assertThat(mcError).isNotNull();
     assertThat(mcError.getCode()).isEqualTo(ErrorCode.MC_CONFLICT);
-    assertThat(mcError.getMessageKey()).isEqualTo("idempotency_mismatch");
+    assertThat(mcError.getMessageKey()).isEqualTo("idempotency.mismatch");
     assertThat(mcError.getParamsMap()).containsEntry("op", OP).containsEntry("key", idemKey);
   }
 

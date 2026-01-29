@@ -31,6 +31,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -178,7 +179,9 @@ public final class UserObjectBundleTestSupport {
           .orElseThrow(
               () ->
                   GrpcErrors.notFound(
-                      correlationId, "query.input.unresolved", Map.of("name", ref.toString())));
+                      correlationId,
+                      GeneratedErrorMessages.MessageKey.QUERY_INPUT_UNRESOLVED,
+                      Map.of("name", ref.toString())));
     }
 
     @Override

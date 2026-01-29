@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ColumnStatsBatch;
@@ -130,12 +132,12 @@ public class PlannerStatsBundleService {
       String correlationId, FetchColumnStatsRequest request) {
     if (request.getTablesCount() == 0) {
       throw GrpcErrors.invalidArgument(
-          correlationId, "planner_stats.request.tables.missing", Map.of());
+          correlationId, PLANNER_STATS_REQUEST_TABLES_MISSING, Map.of());
     }
     if (request.getTablesCount() > maxTables) {
       throw GrpcErrors.invalidArgument(
           correlationId,
-          "planner_stats.request.tables.limit",
+          PLANNER_STATS_REQUEST_TABLES_LIMIT,
           Map.of("max_tables", Integer.toString(maxTables)));
     }
 
@@ -147,13 +149,13 @@ public class PlannerStatsBundleService {
       if (!table.hasTableId()) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "planner_stats.request.table_id.missing",
+            PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
             Map.of("table_index", Integer.toString(tableIndex)));
       }
       if (table.getColumnIdsCount() == 0) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "planner_stats.request.columns.missing",
+            PLANNER_STATS_REQUEST_COLUMNS_MISSING,
             Map.of("table_id", table.getTableId().getId()));
       }
 
@@ -162,7 +164,7 @@ public class PlannerStatsBundleService {
       if (deduped.isEmpty()) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "planner_stats.request.columns.missing",
+            PLANNER_STATS_REQUEST_COLUMNS_MISSING,
             Map.of("table_id", table.getTableId().getId()));
       }
 
@@ -171,7 +173,7 @@ public class PlannerStatsBundleService {
       if (totalColumns > maxColumns) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "planner_stats.request.columns.limit",
+            PLANNER_STATS_REQUEST_COLUMNS_LIMIT,
             Map.of("max_columns", Integer.toString(maxColumns)));
       }
     }
@@ -186,7 +188,7 @@ public class PlannerStatsBundleService {
       if (id == null || id <= 0) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            "planner_stats.request.column_id.invalid",
+            PLANNER_STATS_REQUEST_COLUMN_ID_INVALID,
             Map.of("table_id", tableId, "column_id", id == null ? "null" : Long.toString(id)));
       }
       seen.add(id);

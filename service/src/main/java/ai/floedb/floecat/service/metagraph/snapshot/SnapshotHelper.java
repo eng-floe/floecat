@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.metagraph.snapshot;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlockingStub;
@@ -132,7 +134,7 @@ public class SnapshotHelper {
                   () ->
                       GrpcErrors.notFound(
                           cid,
-                          "snapshot",
+                          SNAPSHOT,
                           Map.of(
                               "table_id", tableId.getId(),
                               "snapshot_id", Long.toString(ref.getSnapshotId()))));
@@ -144,7 +146,7 @@ public class SnapshotHelper {
                   () ->
                       GrpcErrors.notFound(
                           cid,
-                          "snapshot",
+                          SNAPSHOT,
                           Map.of(
                               "table_id", tableId.getId(),
                               "as_of",
@@ -155,22 +157,22 @@ public class SnapshotHelper {
       case SPECIAL -> {
         if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
           throw GrpcErrors.invalidArgument(
-              cid, "snapshot.special.unsupported", Map.of("requested", ref.getSpecial().name()));
+              cid, SNAPSHOT_SPECIAL_UNSUPPORTED, Map.of("requested", ref.getSpecial().name()));
         }
 
         yield snapshots
             .getCurrentSnapshot(tableId)
             .orElseThrow(
-                () -> GrpcErrors.notFound(cid, "snapshot", Map.of("table_id", tableId.getId())));
+                () -> GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId())));
       }
 
       case WHICH_NOT_SET ->
           throw GrpcErrors.invalidArgument(
-              cid, "snapshot.missing", Map.of("table_id", tableId.getId()));
+              cid, SNAPSHOT_MISSING, Map.of("table_id", tableId.getId()));
 
       default ->
           throw GrpcErrors.invalidArgument(
-              cid, "snapshot.missing", Map.of("table_id", tableId.getId()));
+              cid, SNAPSHOT_MISSING, Map.of("table_id", tableId.getId()));
     };
   }
 

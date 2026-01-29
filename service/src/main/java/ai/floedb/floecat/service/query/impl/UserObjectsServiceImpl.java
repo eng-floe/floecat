@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
@@ -70,14 +72,14 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                       var ctxOpt = queryStore.get(queryId);
                       if (ctxOpt.isEmpty()) {
                         throw GrpcErrors.notFound(
-                            correlationId, "query.not_found", Map.of("query_id", queryId));
+                            correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                       }
 
                       QueryContext ctx = ctxOpt.get();
                       if (!ctx.isActive()) {
                         throw GrpcErrors.preconditionFailed(
                             correlationId,
-                            "query.not_active",
+                            QUERY_NOT_ACTIVE,
                             Map.of("query_id", queryId, "state", ctx.getState().name()));
                       }
 

@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.statistics.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
@@ -92,7 +94,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   final var tableId = request.getTableId();
                   final var ref = request.getSnapshot();
                   if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   final long snapId;
@@ -101,7 +103,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                     case SPECIAL -> {
                       if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.special.missing", Map.of());
+                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
                       snapId =
                           snapshots
@@ -111,7 +113,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     case AS_OF -> {
@@ -124,12 +126,12 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     default ->
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.missing", Map.of());
+                            correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   return stats
@@ -139,7 +141,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(),
-                                  "table_stats",
+                                  TABLE_STATS,
                                   Map.of(
                                       "table_id",
                                       tableId.getId(),
@@ -174,7 +176,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   final var tableId = request.getTableId();
                   final var ref = request.getSnapshot();
                   if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   final long snapId;
@@ -183,7 +185,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                     case SPECIAL -> {
                       if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.special.missing", Map.of());
+                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
                       snapId =
                           snapshots
@@ -193,12 +195,12 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     default ->
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.missing", Map.of());
+                            correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   var items = stats.list(tableId, snapId, Math.max(1, limit), token, next);
@@ -241,7 +243,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   final var tableId = request.getTableId();
                   final var ref = request.getSnapshot();
                   if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   final long snapId;
@@ -250,7 +252,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                     case SPECIAL -> {
                       if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.special.missing", Map.of());
+                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
                       snapId =
                           snapshots
@@ -260,12 +262,12 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     default ->
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.missing", Map.of());
+                            correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   var items = stats.listFileStats(tableId, snapId, Math.max(1, limit), token, next);
@@ -307,7 +309,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(),
-                                  "table",
+                                  TABLE,
                                   Map.of("id", request.getTableId().getId())));
 
                   if (snapshots.getById(request.getTableId(), request.getSnapshotId()).isEmpty()) {
@@ -388,8 +390,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                 .onItem()
                 .ifNull()
                 .failWith(
-                    () ->
-                        GrpcErrors.invalidArgument(correlationId(), "column_stats.empty", Map.of()))
+                    () -> GrpcErrors.invalidArgument(correlationId(), COLUMN_STATS_EMPTY, Map.of()))
                 .replaceWith(
                     () -> PutColumnStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
             correlationId())
@@ -420,7 +421,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                 .failWith(
                     () ->
                         GrpcErrors.invalidArgument(
-                            correlationId(), "file_column_stats.empty", Map.of()))
+                            correlationId(), FILE_COLUMN_STATS_EMPTY, Map.of()))
                 .replaceWith(
                     () ->
                         PutFileColumnStatsResponse.newBuilder()
@@ -450,7 +451,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       return state.with(tableId, snapshotId, null, false);
     }
     if (!state.tableId.equals(tableId) || state.snapshotId != snapshotId) {
-      throw GrpcErrors.invalidArgument(correlationId(), "stats.inconsistent_target", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId(), STATS_INCONSISTENT_TARGET, Map.of());
     }
     return state;
   }
@@ -463,7 +464,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       return state.with(state.tableId, state.snapshotId, candidate.trim(), state.validated);
     }
     if (!state.idempotencyKey.equals(candidate.trim())) {
-      throw GrpcErrors.invalidArgument(correlationId(), "idempotency.inconsistent_key", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId(), IDEMPOTENCY_INCONSISTENT_KEY, Map.of());
     }
     return state;
   }
@@ -478,15 +479,14 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     tables
         .getById(state.tableId)
         .orElseThrow(
-            () ->
-                GrpcErrors.notFound(correlationId(), "table", Map.of("id", state.tableId.getId())));
+            () -> GrpcErrors.notFound(correlationId(), TABLE, Map.of("id", state.tableId.getId())));
 
     snapshots
         .getById(state.tableId, state.snapshotId)
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(
-                    correlationId(), "snapshot", Map.of("id", Long.toString(state.snapshotId))));
+                    correlationId(), SNAPSHOT, Map.of("id", Long.toString(state.snapshotId))));
 
     return state.with(state.tableId, state.snapshotId, state.idempotencyKey, true);
   }

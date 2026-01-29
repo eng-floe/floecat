@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
@@ -127,7 +129,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   // Default catalog scope of the query
                   if (!request.hasDefaultCatalogId()) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId, "query.catalog.required", Map.of());
+                        correlationId, QUERY_CATALOG_REQUIRED, Map.of());
                   }
 
                   ResourceId catalogId = request.getDefaultCatalogId();
@@ -203,7 +205,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   var updated = queryStore.extendLease(queryId, requestedExp);
                   if (updated.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
+                        correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                   }
 
                   return RenewQueryResponse.newBuilder()
@@ -236,7 +238,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   var ended = queryStore.end(queryId, request.getCommit());
                   if (ended.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
+                        correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                   }
 
                   return EndQueryResponse.newBuilder().setQueryId(queryId).build();
@@ -266,7 +268,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   var ctxOpt = queryStore.get(queryId);
                   if (ctxOpt.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
+                        correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                   }
                   var ctx = ctxOpt.get();
 
@@ -283,9 +285,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                       builder.setSnapshots(SnapshotSet.parseFrom(ctx.getSnapshotSet()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
-                          correlationId,
-                          "query.snapshot.parse_failed",
-                          Map.of("query_id", queryId));
+                          correlationId, QUERY_SNAPSHOT_PARSE_FAILED, Map.of("query_id", queryId));
                     }
                   }
 
@@ -294,9 +294,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                       builder.setExpansion(ExpansionMap.parseFrom(ctx.getExpansionMap()));
                     } catch (InvalidProtocolBufferException e) {
                       throw GrpcErrors.internal(
-                          correlationId,
-                          "query.expansion.parse_failed",
-                          Map.of("query_id", queryId));
+                          correlationId, QUERY_EXPANSION_PARSE_FAILED, Map.of("query_id", queryId));
                     }
                   }
 

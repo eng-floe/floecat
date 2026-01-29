@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogService;
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
@@ -94,7 +96,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                             next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
                   }
 
                   var page =
@@ -131,7 +133,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(),
-                                  "catalog",
+                                  CATALOG,
                                   Map.of("id", request.getCatalogId().getId())));
                 }),
             correlationId())
@@ -180,7 +182,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     var existing = catalogRepo.getByName(accountId, normName);
                     if (existing.isPresent()) {
                       throw GrpcErrors.conflict(
-                          corr, "catalog.already_exists", Map.of("display_name", normName));
+                          corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
                     }
 
                     catalogRepo.create(built);
@@ -217,7 +219,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "catalog.already_exists",
+                                          CATALOG_ALREADY_EXISTS,
                                           Map.of("display_name", normName));
                                     }
                                     metadataGraph.invalidate(catalogId);
@@ -257,7 +259,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var spec = request.getSpec();
@@ -273,7 +275,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      corr, "catalog", Map.of("id", catalogId.getId())));
+                                      corr, CATALOG, Map.of("id", catalogId.getId())));
 
                   var desired = applyCatalogSpecPatch(current, spec, mask, corr);
 
@@ -283,7 +285,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -302,7 +304,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                       var nowMeta = catalogRepo.metaForSafe(catalogId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -310,13 +312,13 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.conflict(
                         corr,
-                        "catalog.already_exists",
+                        CATALOG_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = catalogRepo.metaForSafe(catalogId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -359,7 +361,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     var safe = catalogRepo.metaForSafe(id);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
-                      throw GrpcErrors.notFound(correlationId, "catalog", Map.of("id", id.getId()));
+                      throw GrpcErrors.notFound(correlationId, CATALOG, Map.of("id", id.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
@@ -374,12 +376,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                             ? currentCatalog.getDisplayName()
                             : id.getId();
                     throw GrpcErrors.conflict(
-                        correlationId, "catalog.not_empty", Map.of("display_name", displayName));
+                        correlationId, CATALOG_NOT_EMPTY, Map.of("display_name", displayName));
                   }
 
                   if (!markerStore.advanceCatalogMarker(id, markerVersion)) {
                     throw GrpcErrors.preconditionFailed(
-                        correlationId, "catalog.children_changed", Map.of());
+                        correlationId, CATALOG_CHILDREN_CHANGED, Map.of());
                   }
 
                   var out =
@@ -408,12 +410,12 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
     }
 
     for (var p : paths) {
       if (!CATALOG_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
 
@@ -422,7 +424,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
     if (maskTargets(mask, "display_name")) {
       var name = spec.getDisplayName();
       if (name == null || name.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.required", Map.of());
+        throw GrpcErrors.invalidArgument(corr, DISPLAY_NAME_REQUIRED, Map.of());
       }
       b.setDisplayName(name);
     }

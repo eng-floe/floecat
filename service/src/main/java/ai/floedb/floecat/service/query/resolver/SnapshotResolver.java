@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -46,7 +48,7 @@ public class SnapshotResolver {
           out.add(emptyViewPin(in.getViewId()));
           continue;
         }
-        throw GrpcErrors.invalidArgument(correlationId, "query.input.not_table", Map.of());
+        throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_NOT_TABLE, Map.of());
       }
 
       ResourceId tableId = in.getTableId();

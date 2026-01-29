@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.account.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountService;
 import ai.floedb.floecat.account.rpc.AccountSpec;
@@ -85,7 +87,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     accounts = accountRepo.list(Math.max(1, pageIn.limit), pageIn.token, next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
                   }
 
                   var page = MutationOps.pageOut(next.toString(), accountRepo.count());
@@ -121,7 +123,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      correlationId, "account", Map.of("id", resourceId.getId())));
+                                      correlationId, ACCOUNT, Map.of("id", resourceId.getId())));
 
                   return GetAccountResponse.newBuilder().setAccount(account).build();
                 }),
@@ -171,7 +173,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     var existingOpt = accountRepo.getByName(normName);
                     if (existingOpt.isPresent()) {
                       throw GrpcErrors.conflict(
-                          corr, "account.already_exists", Map.of("display_name", normName));
+                          corr, ACCOUNT_ALREADY_EXISTS, Map.of("display_name", normName));
                     }
 
                     accountRepo.create(desiredAccount);
@@ -205,7 +207,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "account.already_exists",
+                                          ACCOUNT_ALREADY_EXISTS,
                                           Map.of("display_name", normName));
                                     }
                                     return new IdempotencyGuard.CreateResult<>(
@@ -235,14 +237,14 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     if (request.hasAccountId()) {
       var candidate = ResourceId.newBuilder(request.getAccountId());
       if (candidate.getId().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "account_id.id.required", Map.of());
+        throw GrpcErrors.invalidArgument(corr, ACCOUNT_ID_ID_REQUIRED, Map.of());
       }
       if (candidate.getKind() == ResourceKind.RK_UNSPECIFIED) {
         candidate.setKind(ResourceKind.RK_ACCOUNT);
       }
       if (candidate.getKind() != ResourceKind.RK_ACCOUNT) {
         throw GrpcErrors.invalidArgument(
-            corr, "account_id.kind.invalid", Map.of("kind", candidate.getKind().name()));
+            corr, ACCOUNT_ID_KIND_INVALID, Map.of("kind", candidate.getKind().name()));
       }
       if (candidate.getAccountId().isBlank()) {
         candidate.setAccountId(principalAccountId);
@@ -273,7 +275,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var spec = request.getSpec();
@@ -289,7 +291,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
-                                      corr, "account", Map.of("id", accountId.getId())));
+                                      corr, ACCOUNT, Map.of("id", accountId.getId())));
 
                   var desired = applyAccountSpecPatch(current, spec, mask, corr);
 
@@ -299,7 +301,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(metaNoop.getPointerVersion())));
@@ -318,7 +320,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                       var nowMeta = accountRepo.metaForSafe(accountId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -326,13 +328,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.conflict(
                         corr,
-                        "account.already_exists",
+                        ACCOUNT_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = accountRepo.metaForSafe(accountId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -373,7 +375,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     var safe = accountRepo.metaForSafe(accountId);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
-                      throw GrpcErrors.notFound(corr, "account", Map.of("id", accountId.getId()));
+                      throw GrpcErrors.notFound(corr, ACCOUNT, Map.of("id", accountId.getId()));
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
@@ -387,7 +389,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                             ? cur.getDisplayName()
                             : accountId.getId();
                     throw GrpcErrors.conflict(
-                        corr, "account.not_empty", Map.of("display_name", name));
+                        corr, ACCOUNT_NOT_EMPTY, Map.of("display_name", name));
                   }
 
                   var out =
@@ -415,12 +417,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
     }
 
     for (var p : paths) {
       if (!ACCOUNT_MUTABLE_PATHS.contains(p)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", p));
+        throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", p));
       }
     }
 
@@ -429,7 +431,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     if (maskTargets(mask, "display_name")) {
       var name = spec.getDisplayName();
       if (name == null || name.isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, "display_name.required", Map.of());
+        throw GrpcErrors.invalidArgument(corr, DISPLAY_NAME_REQUIRED, Map.of());
       }
       b.setDisplayName(name);
     }

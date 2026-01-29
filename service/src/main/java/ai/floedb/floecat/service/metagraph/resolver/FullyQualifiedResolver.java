@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -236,7 +237,10 @@ public class FullyQualifiedResolver {
   private Catalog catalogByName(String cid, String accountId, String name) {
     return catalogRepository
         .getByName(accountId, name)
-        .orElseThrow(() -> GrpcErrors.notFound(cid, "catalog", Map.of("id", name)));
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    cid, GeneratedErrorMessages.MessageKey.CATALOG, Map.of("id", name)));
   }
 
   private Namespace namespaceByPath(
@@ -248,7 +252,7 @@ public class FullyQualifiedResolver {
             () ->
                 GrpcErrors.notFound(
                     cid,
-                    "namespace.by_path_missing",
+                    GeneratedErrorMessages.MessageKey.NAMESPACE_BY_PATH_MISSING,
                     Map.of(
                         "catalog_id", catalog.getResourceId().getId(),
                         "path", String.join(".", path))));
@@ -272,7 +276,8 @@ public class FullyQualifiedResolver {
           token,
           nextOut);
     } catch (IllegalArgumentException ex) {
-      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
+      throw GrpcErrors.invalidArgument(
+          cid, GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID, Map.of("page_token", token));
     }
   }
 
@@ -294,7 +299,8 @@ public class FullyQualifiedResolver {
           token,
           nextOut);
     } catch (IllegalArgumentException ex) {
-      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
+      throw GrpcErrors.invalidArgument(
+          cid, GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID, Map.of("page_token", token));
     }
   }
 
@@ -304,7 +310,8 @@ public class FullyQualifiedResolver {
 
   private void validateListToken(String cid, String token) {
     if (token != null && !token.isBlank()) {
-      throw GrpcErrors.invalidArgument(cid, "page_token.invalid", Map.of("page_token", token));
+      throw GrpcErrors.invalidArgument(
+          cid, GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID, Map.of("page_token", token));
     }
   }
 
@@ -314,14 +321,24 @@ public class FullyQualifiedResolver {
 
   private void validateNameRef(String cid, NameRef ref) {
     if (ref == null || ref.getCatalog().isBlank()) {
-      throw GrpcErrors.invalidArgument(cid, "catalog.missing", Map.of());
+      throw GrpcErrors.invalidArgument(
+          cid, GeneratedErrorMessages.MessageKey.CATALOG_MISSING, Map.of());
     }
   }
 
   private void validateRelationName(String cid, NameRef ref, String type) {
     if (ref.getName().isBlank()) {
-      throw GrpcErrors.invalidArgument(cid, type + ".name.missing", Map.of("name", ref.getName()));
+      throw GrpcErrors.invalidArgument(
+          cid, relationNameMissingKey(type), Map.of("name", ref.getName()));
     }
+  }
+
+  private GeneratedErrorMessages.MessageKey relationNameMissingKey(String type) {
+    return switch (type) {
+      case "table" -> GeneratedErrorMessages.MessageKey.TABLE_NAME_MISSING;
+      case "view" -> GeneratedErrorMessages.MessageKey.VIEW_NAME_MISSING;
+      default -> GeneratedErrorMessages.MessageKey.FIELD;
+    };
   }
 
   // ----------------------------------------------------------------------

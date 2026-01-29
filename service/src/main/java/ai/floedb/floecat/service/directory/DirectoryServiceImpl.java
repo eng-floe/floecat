@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.directory;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.DirectoryService;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
@@ -323,7 +325,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     return builder.build();
                   }
 
-                  throw GrpcErrors.invalidArgument(correlationId(), "selector.required", Map.of());
+                  throw GrpcErrors.invalidArgument(correlationId(), SELECTOR_REQUIRED, Map.of());
                 }),
             correlationId())
         .onFailure()
@@ -393,7 +395,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                     return builder.build();
                   }
 
-                  throw GrpcErrors.invalidArgument(correlationId(), "selector.required", Map.of());
+                  throw GrpcErrors.invalidArgument(correlationId(), SELECTOR_REQUIRED, Map.of());
                 }),
             correlationId())
         .onFailure()
@@ -404,24 +406,24 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
   private void validateNameRefOrThrow(NameRef ref) {
     if (ref.getCatalog() == null || ref.getCatalog().isBlank()) {
-      throw GrpcErrors.invalidArgument(correlationId(), "catalog.missing", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId(), CATALOG_MISSING, Map.of());
     }
     for (String pathSegment : ref.getPathList()) {
       if (pathSegment == null || pathSegment.isBlank()) {
-        throw GrpcErrors.invalidArgument(correlationId(), "path.segment.blank", Map.of());
+        throw GrpcErrors.invalidArgument(correlationId(), PATH_SEGMENT_BLANK, Map.of());
       }
     }
   }
 
   private void validateTableNameOrThrow(NameRef ref) {
     if (ref.getName() == null || ref.getName().isBlank()) {
-      throw GrpcErrors.invalidArgument(correlationId(), "table.name.missing", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId(), TABLE_NAME_MISSING, Map.of());
     }
   }
 
   private void validateViewNameOrThrow(NameRef ref) {
     if (ref.getName() == null || ref.getName().isBlank()) {
-      throw GrpcErrors.invalidArgument(correlationId(), "view.name.missing", Map.of());
+      throw GrpcErrors.invalidArgument(correlationId(), VIEW_NAME_MISSING, Map.of());
     }
   }
 }

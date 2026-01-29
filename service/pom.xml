@@ -206,6 +206,12 @@
       <version>5.14.2</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5-engine</artifactId>
+      <version>1.1.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -235,6 +241,24 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>ai.floedb.floecat</groupId>
+        <artifactId>floecat-error-messages-generator</artifactId>
+        <version>${project.version}</version>
+        <executions>
+          <execution>
+            <id>generate-error-messages</id>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <resourcesDirectory>${project.basedir}/src/main/resources</resourcesDirectory>
+          <generatedSourcesDirectory>${project.build.directory}/generated-sources/error-messages</generatedSourcesDirectory>
+        </configuration>
       </plugin>
 
       <plugin>

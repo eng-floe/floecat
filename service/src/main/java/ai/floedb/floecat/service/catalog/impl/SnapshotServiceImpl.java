@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
@@ -88,7 +90,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           () ->
                               GrpcErrors.notFound(
                                   correlationId(),
-                                  "table",
+                                  TABLE,
                                   Map.of("id", request.getTableId().getId())));
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
@@ -101,7 +103,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                             request.getTableId(), Math.max(1, pageIn.limit), pageIn.token, next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId(), "page_token.invalid", Map.of("page_token", pageIn.token));
+                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
                   }
 
                   int total = snapshotRepo.count(request.getTableId());
@@ -137,11 +139,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
-                                  correlationId(), "table", Map.of("id", tableId.getId())));
+                                  correlationId(), TABLE, Map.of("id", tableId.getId())));
 
                   final var ref = request.getSnapshot();
                   if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), "snapshot.missing", Map.of());
+                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   Snapshot snap;
@@ -155,7 +157,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of(
                                               "reason",
                                               "no_snapshots",
@@ -165,7 +167,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     case SPECIAL -> {
                       if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.special.missing", Map.of());
+                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
                       snap =
                           snapshotRepo
@@ -174,7 +176,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     case AS_OF -> {
@@ -186,12 +188,12 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
-                                          "snapshot",
+                                          SNAPSHOT,
                                           Map.of("id", tableId.getId())));
                     }
                     default ->
                         throw GrpcErrors.invalidArgument(
-                            correlationId(), "snapshot.missing", Map.of());
+                            correlationId(), SNAPSHOT_MISSING, Map.of());
                   }
 
                   return GetSnapshotResponse.newBuilder().setSnapshot(snap).build();
@@ -224,8 +226,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           .getById(tableId)
                           .orElseThrow(
                               () ->
-                                  GrpcErrors.notFound(
-                                      corr, "table", Map.of("id", tableId.getId())));
+                                  GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var tsNow = nowTs();
 
@@ -276,7 +277,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       if (!stored.equals(incoming)) {
                         throw GrpcErrors.conflict(
                             corr,
-                            "snapshot.mismatch",
+                            SNAPSHOT_MISMATCH,
                             Map.of(
                                 "table_id", tableId.getId(),
                                 "snapshot_id", Long.toString(snap.getSnapshotId())));
@@ -319,7 +320,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                       }
                                       throw GrpcErrors.conflict(
                                           corr,
-                                          "snapshot.mismatch",
+                                          SNAPSHOT_MISMATCH,
                                           Map.of(
                                               "table_id", tableId.getId(),
                                               "snapshot_id", Long.toString(snap.getSnapshotId())));
@@ -368,7 +369,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   } catch (BaseResourceRepository.NotFoundException e) {
                     if (hasMeaningfulPrecondition(request.getPrecondition())) {
                       throw GrpcErrors.notFound(
-                          correlationId, "snapshot", Map.of("id", Long.toString(snapshotId)));
+                          correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
                     statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
@@ -384,7 +385,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                       throw GrpcErrors.preconditionFailed(
                           correlationId,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(expectedVersion),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -395,13 +396,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(expectedVersion),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   } catch (BaseResourceRepository.NotFoundException nfe) {
                     throw GrpcErrors.notFound(
-                        correlationId, "snapshot", Map.of("id", Long.toString(snapshotId)));
+                        correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                   }
 
                   return DeleteSnapshotResponse.newBuilder().setMeta(meta).build();
@@ -426,14 +427,14 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   authz.require(pc, "table.write");
 
                   if (!request.hasSpec()) {
-                    throw GrpcErrors.invalidArgument(corr, "spec.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, SPEC_REQUIRED, Map.of());
                   }
 
                   var spec = request.getSpec();
                   if (!spec.hasTableId()
                       || spec.getTableId().getId().isBlank()
                       || spec.getSnapshotId() == 0L) {
-                    throw GrpcErrors.invalidArgument(corr, "spec.missing_ids", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, SPEC_MISSING_IDS, Map.of());
                   }
 
                   var tableId = spec.getTableId();
@@ -441,7 +442,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+                    throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
                   var meta = snapshotRepo.metaFor(tableId, snapshotId);
@@ -454,7 +455,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               () ->
                                   GrpcErrors.notFound(
                                       corr,
-                                      "snapshot",
+                                      SNAPSHOT,
                                       Map.of(
                                           "table_id", tableId.getId(),
                                           "snapshot_id", Long.toString(snapshotId))));
@@ -469,7 +470,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     if (callerCares && noopMeta.getPointerVersion() != meta.getPointerVersion()) {
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(noopMeta.getPointerVersion())));
@@ -492,18 +493,18 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
-                          "version_mismatch",
+                          VERSION_MISMATCH,
                           Map.of(
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, "snapshot.already_exists", conflictInfo);
+                    throw GrpcErrors.conflict(corr, SNAPSHOT_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(
                         corr,
-                        "version_mismatch",
+                        VERSION_MISMATCH,
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
@@ -540,12 +541,12 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     mask = normalizeMask(mask);
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
-      throw GrpcErrors.invalidArgument(corr, "update_mask.required", Map.of());
+      throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
     }
 
     for (var path : paths) {
       if (!SNAPSHOT_MUTABLE_PATHS.contains(path)) {
-        throw GrpcErrors.invalidArgument(corr, "update_mask.path.invalid", Map.of("path", path));
+        throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
     }
 
@@ -554,33 +555,32 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       switch (path) {
         case "upstream_created_at" -> {
           if (!spec.hasUpstreamCreatedAt()) {
-            throw GrpcErrors.invalidArgument(
-                corr, "snapshot.upstream_created_at.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_UPSTREAM_CREATED_AT_REQUIRED, Map.of());
           }
           builder.setUpstreamCreatedAt(spec.getUpstreamCreatedAt());
         }
         case "parent_snapshot_id" -> builder.setParentSnapshotId(spec.getParentSnapshotId());
         case "schema_json" -> {
           if (!spec.hasSchemaJson()) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.schema_json.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_SCHEMA_JSON_REQUIRED, Map.of());
           }
           builder.setSchemaJson(spec.getSchemaJson());
         }
         case "partition_spec" -> {
           if (!spec.hasPartitionSpec()) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.partition_spec.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_PARTITION_SPEC_REQUIRED, Map.of());
           }
           builder.setPartitionSpec(spec.getPartitionSpec());
         }
         case "sequence_number" -> {
           if (!spec.hasSequenceNumber()) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.sequence_number.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_SEQUENCE_NUMBER_REQUIRED, Map.of());
           }
           builder.setSequenceNumber(spec.getSequenceNumber());
         }
         case "manifest_list" -> {
           if (!spec.hasManifestList()) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.manifest_list.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_MANIFEST_LIST_REQUIRED, Map.of());
           }
           builder.setManifestList(spec.getManifestList());
         }
@@ -590,20 +590,19 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
         }
         case "schema_id" -> {
           if (!spec.hasSchemaId()) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.schema_id.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_SCHEMA_ID_REQUIRED, Map.of());
           }
           builder.setSchemaId(spec.getSchemaId());
         }
         case "format_metadata" -> {
           if (spec.getFormatMetadataCount() == 0) {
-            throw GrpcErrors.invalidArgument(corr, "snapshot.iceberg.required", Map.of());
+            throw GrpcErrors.invalidArgument(corr, SNAPSHOT_ICEBERG_REQUIRED, Map.of());
           }
           builder.clearFormatMetadata();
           builder.putAllFormatMetadata(spec.getFormatMetadataMap());
         }
         default ->
-            throw GrpcErrors.invalidArgument(
-                corr, "update_mask.path.invalid", Map.of("path", path));
+            throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
     }
     return builder.build();

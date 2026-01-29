@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.query.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
@@ -88,13 +90,13 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
 
                   if (!request.hasTableId()) {
                     throw GrpcErrors.invalidArgument(
-                        correlationId, "query.table_id.required", Map.of("query_id", queryId));
+                        correlationId, QUERY_TABLE_ID_REQUIRED, Map.of("query_id", queryId));
                   }
 
                   var ctxOpt = queryStore.get(queryId);
                   if (ctxOpt.isEmpty()) {
                     throw GrpcErrors.notFound(
-                        correlationId, "query.not_found", Map.of("query_id", queryId));
+                        correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                   }
                   var ctx = ctxOpt.get();
 
