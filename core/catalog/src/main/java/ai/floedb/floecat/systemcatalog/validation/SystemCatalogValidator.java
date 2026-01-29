@@ -28,6 +28,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -253,7 +254,7 @@ public final class SystemCatalogValidator {
       }
 
       String fnCtx = objectCtx("function", name);
-      String signature = functionSignature(fn);
+      String signature = SignatureUtil.functionSignature(fn);
       if (!signatures.add(signature)) {
         err(issues, Codes.Function.DUPLICATE, fnCtx, null, signature);
       }
@@ -316,7 +317,7 @@ public final class SystemCatalogValidator {
       }
 
       String opCtx = objectCtx("operator", name);
-      String signature = operatorSignature(op);
+      String signature = SignatureUtil.operatorSignature(op);
       if (!signatures.add(signature)) {
         err(issues, Codes.Operator.DUPLICATE, opCtx, null, signature);
       }
@@ -424,7 +425,7 @@ public final class SystemCatalogValidator {
       }
 
       if (src != null && !isBlank(src.getName()) && tgt != null && !isBlank(tgt.getName())) {
-        String mapping = castSignature(src, tgt);
+        String mapping = SignatureUtil.castSignature(cast);
         if (!mappings.add(mapping)) {
           err(issues, Codes.Cast.DUPLICATE, castCtx, null, mapping);
         }
@@ -492,7 +493,7 @@ public final class SystemCatalogValidator {
 
       String aggCtx = objectCtx("aggregate", name);
 
-      String signature = aggregateSignature(agg);
+      String signature = SignatureUtil.aggregateSignature(agg);
       if (!signatures.add(signature)) {
         err(issues, Codes.Aggregate.DUPLICATE, aggCtx, null, signature);
       }
@@ -826,53 +827,6 @@ public final class SystemCatalogValidator {
       return objectCtx(kind, name);
     }
     return objectCtx(kind, name) + "." + fieldPath;
-  }
-
-  private static String operatorSignature(SystemOperatorDef op) {
-    return formatName(op.name())
-        + "("
-        + formatName(op.leftType())
-        + ","
-        + formatName(op.rightType())
-        + ")";
-  }
-
-  private static String castSignature(NameRef src, NameRef tgt) {
-    return formatName(src) + "->" + formatName(tgt);
-  }
-
-  private static String aggregateSignature(SystemAggregateDef agg) {
-    StringBuilder b = new StringBuilder();
-    b.append(formatName(agg.name())).append("(");
-    List<NameRef> args = agg.argumentTypes();
-    if (args != null) {
-      for (int i = 0; i < args.size(); i++) {
-        b.append(formatName(args.get(i)));
-        if (i + 1 < args.size()) {
-          b.append(",");
-        }
-      }
-    }
-    b.append(")");
-    b.append("->").append(formatName(agg.returnType()));
-    b.append("[").append(formatName(agg.stateType())).append("]");
-    return b.toString();
-  }
-
-  private static String functionSignature(SystemFunctionDef fn) {
-    StringBuilder b = new StringBuilder();
-    b.append(formatName(fn.name())).append("(");
-    List<NameRef> args = fn.argumentTypes();
-    if (args != null) {
-      for (int i = 0; i < args.size(); i++) {
-        b.append(formatName(args.get(i)));
-        if (i + 1 < args.size()) {
-          b.append(",");
-        }
-      }
-    }
-    b.append(")->").append(formatName(fn.returnType()));
-    return b.toString();
   }
 
   private static String collationSignature(SystemCollationDef coll) {

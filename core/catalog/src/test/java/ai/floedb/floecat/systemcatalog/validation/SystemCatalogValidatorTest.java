@@ -216,7 +216,34 @@ final class SystemCatalogValidatorTest {
     ValidationIssue dup = findFirst(issues, "function.duplicate");
     assertThat(dup).isNotNull();
     assertThat(dup.ctx()).isEqualTo("function:f");
-    assertThat(dup.args()).containsExactly("f(int)->int");
+    assertThat(dup.args()).containsExactly("f(int)");
+
+    // functions that only differ by return type still conflict
+    var fIntReturn =
+        new SystemFunctionDef(
+            name("f"), List.of(name("int")), name("int"), false, false, List.of());
+    var fTextReturn =
+        new SystemFunctionDef(
+            name("f"), List.of(name("int")), name("text"), false, false, List.of());
+
+    catalog =
+        new SystemCatalogData(
+            List.of(fIntReturn, fTextReturn),
+            List.of(),
+            List.of(type("int"), type("text")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("function.duplicate");
+    dup = findFirst(issues, "function.duplicate");
+    assertThat(dup).isNotNull();
+    assertThat(dup.args()).containsExactly("f(int)");
   }
 
   // ---------------------------------------------------------------------------

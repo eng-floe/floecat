@@ -51,7 +51,7 @@ class CollationHintProviderTest {
             List.of(),
             List.of(),
             List.of(
-                new SystemCollationDef(BuiltinTestSupport.nr("pg.en_US"), "en-US", List.of(rule))),
+                new SystemCollationDef(BuiltinTestSupport.nr("pg.en_US"), "en_US", List.of(rule))),
             List.of(),
             List.of(),
             List.of(),
@@ -61,7 +61,7 @@ class CollationHintProviderTest {
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
     var key = new EngineKey(ENGINE, "16.0");
 
-    var node = BuiltinTestSupport.collationNode(ENGINE, "pg.en_US");
+    var node = BuiltinTestSupport.collationNode(ENGINE, "pg.en_US", "en_US");
 
     var result = provider.compute(node, key, COLLATION_PAYLOAD_TYPE, "cid").orElseThrow();
     assertThat(result.payloadType()).isEqualTo(COLLATION_PAYLOAD_TYPE);
