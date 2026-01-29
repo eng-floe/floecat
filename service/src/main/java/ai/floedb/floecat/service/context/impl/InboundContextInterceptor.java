@@ -34,6 +34,7 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.opentelemetry.api.trace.Span;
+import io.quarkus.grpc.GlobalInterceptor;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.quarkus.security.identity.SecurityIdentity;
@@ -50,6 +51,9 @@ import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
+// Must be applied globally so every gRPC call (including late-bound or platform-managed ones)
+// receives the MDC/context plumbing before any other interceptor runs.
+@GlobalInterceptor
 @ApplicationScoped
 public class InboundContextInterceptor implements ServerInterceptor {
   private static final Logger LOG = Logger.getLogger(InboundContextInterceptor.class);

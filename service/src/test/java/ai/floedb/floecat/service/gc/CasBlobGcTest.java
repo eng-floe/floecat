@@ -21,10 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.storage.BlobStore;
-import ai.floedb.floecat.storage.InMemoryBlobStore;
-import ai.floedb.floecat.storage.InMemoryPointerStore;
-import ai.floedb.floecat.storage.PointerStore;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

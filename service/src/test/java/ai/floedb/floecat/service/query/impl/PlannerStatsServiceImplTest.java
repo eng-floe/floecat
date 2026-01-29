@@ -37,8 +37,8 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.storage.InMemoryBlobStore;
-import ai.floedb.floecat.storage.InMemoryPointerStore;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;

@@ -18,10 +18,10 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.storage.BlobStore;
-import ai.floedb.floecat.storage.PointerStore;
 import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

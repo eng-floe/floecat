@@ -28,6 +28,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <iceberg.version>1.9.2</iceberg.version>
+    <test.jvm.args.extra>--add-opens java.base/sun.nio.ch=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
   </properties>
 
   <dependencyManagement>
@@ -135,12 +136,6 @@
     
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-catalog</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-extension-floedb</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -176,6 +171,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-catalog</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-aws</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -188,12 +189,6 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-catalog</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-protocol-gateway-common-test</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -201,19 +196,18 @@
     <dependency>
       <groupId>org.jboss.logmanager</groupId>
       <artifactId>jboss-logmanager</artifactId>
-      <version>3.1.2.Final</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>5.14.2</version>
+      <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-junit-jupiter</artifactId>
-      <version>5.14.2</version>
+      <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -281,11 +275,7 @@
           </includes>
           <skipTests>${skipUTs}</skipTests>
           <useSystemClassLoader>false</useSystemClassLoader>
-          <argLine>
-            --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED
-            --add-opens java.base/sun.nio.ch=ALL-UNNAMED
-            -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true
-          </argLine>
+          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
           </configuration>
       </plugin>
 
@@ -311,11 +301,7 @@
           <failIfNoTests>false</failIfNoTests>
 
           <useSystemClassLoader>false</useSystemClassLoader>
-          <argLine>
-            --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED
-            --add-opens java.base/sun.nio.ch=ALL-UNNAMED
-            -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true
-          </argLine>
+          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
     </plugins>

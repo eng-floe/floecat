@@ -28,6 +28,9 @@
   <artifactId>floecat-error-messages-generator</artifactId>
   <packaging>maven-plugin</packaging>
   <description>Mojo that validates error bundles and generates a strongly-typed registry.</description>
+  <properties>
+    <test.jvm.args.extra>-Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
+  </properties>
 
   <dependencies>
     <dependency>
@@ -58,6 +61,16 @@
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
       <version>5.13.4</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jboss.logmanager</groupId>
+      <artifactId>jboss-logmanager</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jboss.slf4j</groupId>
+      <artifactId>slf4j-jboss-logmanager</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

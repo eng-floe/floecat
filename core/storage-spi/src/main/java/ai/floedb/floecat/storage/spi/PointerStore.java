@@ -14,36 +14,29 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage;
+package ai.floedb.floecat.storage.spi;
 
-import ai.floedb.floecat.common.rpc.BlobHeader;
-import java.util.HashMap;
+import ai.floedb.floecat.common.rpc.Pointer;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
-public interface BlobStore {
-  byte[] get(String uri);
+public interface PointerStore {
+  Optional<Pointer> get(String key);
 
-  void put(String uri, byte[] bytes, String contentType);
+  boolean compareAndSet(String key, long expectedVersion, Pointer next);
 
-  Optional<BlobHeader> head(String uri);
+  boolean delete(String key);
 
-  boolean delete(String uri);
+  boolean compareAndDelete(String key, long expectedVersion);
 
-  void deletePrefix(String prefix);
+  List<Pointer> listPointersByPrefix(
+      String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
-  default Map<String, byte[]> getBatch(List<String> uris) {
-    Map<String, byte[]> out = new HashMap<>(uris.size());
-    for (String u : uris) out.put(u, get(u));
-    return out;
-  }
+  int deleteByPrefix(String prefix);
 
-  interface Page {
-    List<String> keys();
+  int countByPrefix(String prefix);
 
-    String nextToken();
-  }
+  boolean isEmpty();
 
-  Page list(String prefix, int limit, String pageToken);
+  default void dump(String header) {}
 }

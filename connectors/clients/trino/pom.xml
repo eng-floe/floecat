@@ -38,6 +38,7 @@
     <trino.grpc.version>1.78.0</trino.grpc.version>
     <protobuf.version>4.32.1</protobuf.version>
     <proto.source.dir>${project.basedir}/../../../core/proto/src/main/proto</proto.source.dir>
+    <test.jvm.args.extra>-Djdk.attach.allowAttachSelf=true</test.jvm.args.extra>
   </properties>
 
   <dependencies>
@@ -220,9 +221,7 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.4</version>
         <configuration>
-          <argLine>
-      --add-opens java.base/java.lang=ALL-UNNAMED -Djdk.attach.allowAttachSelf=true
-          </argLine>
+          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
 
