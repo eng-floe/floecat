@@ -105,7 +105,7 @@ same headers for internal gRPC calls (service-to-service).
 can be replaced by injecting a custom implementation.
 
 External session header authentication is documented in
-[`docs/external_authentication.md`](external_authentication.md).
+[`docs/external-authentication.md`](external-authentication.md).
 
 ### Query Lifecycle Service
 `QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,

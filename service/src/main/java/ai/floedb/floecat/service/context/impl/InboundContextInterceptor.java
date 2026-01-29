@@ -37,13 +37,14 @@ import io.opentelemetry.api.trace.Span;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.quarkus.security.identity.SecurityIdentity;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
@@ -71,8 +72,6 @@ public class InboundContextInterceptor implements ServerInterceptor {
   public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
 
-  private Clock clock = Clock.systemUTC();
-
   @Inject QueryContextStore queryStore;
   @Inject AccountRepository accountRepository;
   @Inject TenantIdentityProvider identityProvider;
@@ -94,6 +93,18 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
   boolean allowDevContext;
+
+  @PostConstruct
+  void logConfig() {
+    String header = sessionHeader.orElse("");
+    LOG.infof(
+        "InboundContextInterceptor ready: sessionHeader=%s allowPrincipalHeader=%s"
+            + " allowDevContext=%s validateAccount=%s",
+        header.isBlank() ? "<disabled>" : header,
+        allowPrincipalHeader,
+        allowDevContext,
+        validateAccount);
+  }
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -223,6 +234,30 @@ public class InboundContextInterceptor implements ServerInterceptor {
   }
 
   private SecurityIdentity validateSessionHeader(Metadata headers) {
+    var config = ConfigProvider.getConfig();
+    boolean tenantEnabled =
+        config.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
+    boolean hasPublicKey =
+        config
+            .getOptionalValue("quarkus.oidc.public-key", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    boolean hasAuthServerUrl =
+        config
+            .getOptionalValue("quarkus.oidc.auth-server-url", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    if (!tenantEnabled) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("session header configured but OIDC tenant is disabled")
+          .asRuntimeException();
+    }
+    if (!hasPublicKey && !hasAuthServerUrl) {
+      throw Status.UNAUTHENTICATED
+          .withDescription(
+              "session header configured but no OIDC public key or auth server URL configured")
+          .asRuntimeException();
+    }
     var headerName = this.sessionHeader.orElseThrow();
     var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
     String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");

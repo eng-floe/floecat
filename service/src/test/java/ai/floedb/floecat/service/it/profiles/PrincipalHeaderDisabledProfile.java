@@ -24,6 +24,12 @@ public class PrincipalHeaderDisabledProfile implements QuarkusTestProfile {
   public Map<String, String> getConfigOverrides() {
     return Map.of(
         "floecat.interceptor.allow.principal-header", "false",
-        "floecat.interceptor.allow.dev-context", "false");
+        "floecat.interceptor.allow.dev-context", "false",
+        "quarkus.oidc.tenant-enabled", "false");
+  }
+
+  @Override
+  public String getConfigProfile() {
+    return "principal-header-disabled";
   }
 }

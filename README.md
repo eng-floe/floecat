@@ -28,7 +28,7 @@ catalogs, namespaces, tables, and snapshots.
 - Architecture, system flow, and modules: [`docs/architecture.md`](docs/architecture.md)
 - Storage model and key layout: [`docs/storage-layout.md`](docs/storage-layout.md)
 - API access patterns: [`docs/api-access.md`](docs/api-access.md)
-- External authentication and session headers: [`docs/external_authentication.md`](docs/external_authentication.md)
+- External authentication and session headers: [`docs/external-authentication.md`](docs/external-authentication.md)
 - CLI commands: [`docs/cli-reference.md`](docs/cli-reference.md)
 - Operations, testing, and observability: [`docs/operations.md`](docs/operations.md)
 
