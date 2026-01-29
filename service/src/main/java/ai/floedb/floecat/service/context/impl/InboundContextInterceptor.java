@@ -34,16 +34,22 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.opentelemetry.api.trace.Span;
+import io.quarkus.oidc.AccessTokenCredential;
+import io.quarkus.oidc.TenantIdentityProvider;
+import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
 @ApplicationScoped
 public class InboundContextInterceptor implements ServerInterceptor {
+  private static final Logger LOG = Logger.getLogger(InboundContextInterceptor.class);
+
   private static final Metadata.Key<byte[]> PRINC_BIN =
       Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID_HEADER =
@@ -66,6 +72,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
   @Inject QueryContextStore queryStore;
   @Inject AccountRepository accountRepository;
+  @Inject TenantIdentityProvider identityProvider;
 
   @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
   boolean validateAccount;
@@ -73,11 +80,8 @@ public class InboundContextInterceptor implements ServerInterceptor {
   @ConfigProperty(name = "floecat.interceptor.session.header")
   Optional<String> sessionHeader;
 
-  @ConfigProperty(name = "floecat.interceptor.oidc.issuer")
-  Optional<String> oidcIssuer;
-
-  @ConfigProperty(name = "floecat.interceptor.oidc.client-id")
-  Optional<String> oidcClientId;
+  @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
+  boolean allowDevContext;
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -175,7 +179,9 @@ public class InboundContextInterceptor implements ServerInterceptor {
 
       if (this.validateAccount) {
         validateAccount(pc.getAccountId());
-      } else if (this.sessionHeader.isPresent()) {
+      }
+
+      if (this.sessionHeader.isPresent()) {
         validateSessionHeader(headers);
       }
 
@@ -222,15 +228,39 @@ public class InboundContextInterceptor implements ServerInterceptor {
       return new ResolvedContext(principalContext, queryIdHeader);
     }
 
-    return new ResolvedContext(devContext(), "");
+    if (allowDevContext) {
+      return new ResolvedContext(devContext(), "");
+    }
+
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing x-principal-bin and x-query-id")
+        .asRuntimeException();
   }
 
   private void validateSessionHeader(Metadata headers) {
-    var oidcIssuer = this.oidcIssuer.orElseThrow();
-    var oidcClientId = this.oidcClientId.orElseThrow();
-
-    // TODO: validate gRPC JWT session header using quarkus-oidc-client w/oidcIssuer+oidcClientID
-    throw new UnsupportedOperationException("Session header validation is not supported");
+    var headerName = this.sessionHeader.orElseThrow();
+    var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
+    String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      token = token.substring(7).trim();
+    }
+    if (token.isBlank()) {
+      throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
+    }
+    try {
+      AccessTokenCredential credential = new AccessTokenCredential(token);
+      SecurityIdentity identity = identityProvider.authenticate(credential).await().indefinitely();
+      if (identity == null || identity.isAnonymous()) {
+        LOG.warn("Session token inactive");
+        throw Status.UNAUTHENTICATED.withDescription("inactive session token").asRuntimeException();
+      }
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Session token validation failed: %s", e.getMessage());
+      throw Status.UNAUTHENTICATED
+          .withDescription("invalid session token")
+          .withCause(e)
+          .asRuntimeException();
+    }
   }
 
   private static PrincipalContext parsePrincipal(byte[] encoded) {
