@@ -437,6 +437,7 @@ public class SeedRunner {
       long now) {
     var existing = connectorRepo.getByName(accountId.getId(), fixture.connectorName()).orElse(null);
     if (existing != null) {
+      ensureIcebergFixtureProperties(existing, now);
       return existing.getResourceId();
     }
 
@@ -478,8 +479,34 @@ public class SeedRunner {
     return connectorRid;
   }
 
+  private void ensureIcebergFixtureProperties(Connector existing, long now) {
+    var props = new LinkedHashMap<>(existing.getPropertiesMap());
+    boolean hasExternal =
+        props.containsKey("external.metadata-location")
+            && !props.get("external.metadata-location").isBlank();
+    boolean hasSource =
+        props.containsKey("iceberg.source") && !props.get("iceberg.source").isBlank();
+    if (!hasExternal || hasSource) {
+      return;
+    }
+    props.put("iceberg.source", "filesystem");
+
+    var updated =
+        existing.toBuilder()
+            .clearProperties()
+            .putAllProperties(props)
+            .setUpdatedAt(Timestamps.fromMillis(now))
+            .build();
+    var meta = connectorRepo.metaFor(existing.getResourceId());
+    if (!connectorRepo.update(updated, meta.getPointerVersion())) {
+      LOG.warnf(
+          "Failed to update fixture connector properties for %s", existing.getResourceId().getId());
+    }
+  }
+
   private Map<String, String> connectorProperties(FixtureConfig fixture, String fixtureRoot) {
     Map<String, String> props = new LinkedHashMap<>();
+    props.put("iceberg.source", "filesystem");
     props.put("external.metadata-location", fixture.metadataLocation());
     props.put("external.namespace", fixture.sourceNamespace());
     props.put("external.table-name", fixture.tableName());
