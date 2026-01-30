@@ -16,24 +16,20 @@
 
 package ai.floedb.floecat.service.it.profiles;
 
-import ai.floedb.floecat.service.it.util.TestKeyPair;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-public class OidcSessionHeaderProfile implements QuarkusTestProfile {
+public class OidcTenantDisabledProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "quarkus.oidc.tenant-enabled", "true",
-        "quarkus.oidc.token.audience", "floecat-client",
-        "floecat.interceptor.allow.dev-context", "false",
-        "floecat.interceptor.validate.account", "false",
         "floecat.interceptor.session.header", "x-floe-session",
-        "quarkus.oidc.public-key", TestKeyPair.publicKeyBase64());
+        "floecat.interceptor.allow.dev-context", "false",
+        "quarkus.oidc.tenant-enabled", "false");
   }
 
   @Override
   public String getConfigProfile() {
-    return "oidc-session-header";
+    return "oidc-tenant-disabled";
   }
 }
