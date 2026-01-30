@@ -322,14 +322,13 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
         new ExtensionInfo<>(EngineFloeExtensions.floeCast, CAST),
         new ExtensionInfo<>(
             EngineFloeExtensions.floeTypePlanningSemantics, TYPE_PLANNING_SEMANTICS),
-        new ExtensionInfo<>(EngineFloeExtensions.floeIndexAccessMethods, INDEX_ACCESS_METHODS),
+        new ExtensionInfo<>(EngineFloeExtensions.floeAccessMethods, ACCESS_METHODS),
+        new ExtensionInfo<>(EngineFloeExtensions.floeOperatorFamilies, OPERATOR_FAMILIES),
+        new ExtensionInfo<>(EngineFloeExtensions.floeOperatorClasses, OPERATOR_CLASSES),
         new ExtensionInfo<>(
-            EngineFloeExtensions.floeIndexOperatorFamilies, INDEX_OPERATOR_FAMILIES),
-        new ExtensionInfo<>(EngineFloeExtensions.floeIndexOperatorClasses, INDEX_OPERATOR_CLASSES),
+            EngineFloeExtensions.floeOperatorAccessMethods, OPERATOR_ACCESS_METHODS),
         new ExtensionInfo<>(
-            EngineFloeExtensions.floeIndexOperatorStrategies, INDEX_OPERATOR_STRATEGIES),
-        new ExtensionInfo<>(
-            EngineFloeExtensions.floeIndexSupportProcedures, INDEX_SUPPORT_PROCEDURES));
+            EngineFloeExtensions.floeProcedureAccessMethods, PROCEDURE_ACCESS_METHODS));
   }
 
   /** Extension registry entry with proto extension and payload descriptor */

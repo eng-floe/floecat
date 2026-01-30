@@ -232,6 +232,12 @@ message FloeTypeSpecific {
 
   /** Collation OID (typcollation). */
   optional uint32 typcollation = 16;
+  
+  /** True if this is a preferred type within its category (typispreferred). */
+  optional bool typispreferred = 17;
+  
+  /** Type category (typcategory). One-character PG code stored as a string. */
+  optional string typcategory = 18;
 }
 
 /**
@@ -403,14 +409,14 @@ message FloeCollationSpecific {
 }
 
 /**
- * Registry-level index access method dictionary (pg_am).
+ * Registry-level access method dictionary (pg_am).
  *
  * This is emitted once per (engine_kind, engine_version) and attached to
  * SystemObjectsRegistry.engine_specific.
  *
- * payload_type: "floe.index.access_methods+proto"
+ * payload_type: "floe.access_methods+proto"
  */
-message FloeIndexAccessMethods {
+message FloeAccessMethods {
   /** Access methods known to the engine. */
   repeated AccessMethod methods = 1;
 
@@ -419,19 +425,19 @@ message FloeIndexAccessMethods {
     optional uint32 oid = 1;
 
     /** Access method name (amname). Example: "btree", "hash". */
-    optional string name = 2;
+    optional string amname = 2;
   }
 }
 
 /**
- * Registry-level index operator family dictionary (pg_opfamily).
+ * Registry-level operator family dictionary (pg_opfamily).
  *
  * This is emitted once per (engine_kind, engine_version) and attached to
  * SystemObjectsRegistry.engine_specific.
  *
- * payload_type: "floe.index.operator_families+proto"
+ * payload_type: "floe.operator_families+proto"
  */
-message FloeIndexOperatorFamilies {
+message FloeOperatorFamilies {
   /** Operator families known to the engine. */
   repeated OperatorFamily families = 1;
 
@@ -440,25 +446,25 @@ message FloeIndexOperatorFamilies {
     optional uint32 oid = 1;
 
     /** Access method OID (opfmethod -> pg_am.oid). */
-    optional uint32 access_method_oid = 2;
+    optional uint32 opfmethod = 2;
 
     /** Family name (opfname). Optional/debug. */
-    optional string name = 3;
+    optional string opfname = 3;
 
     /** Namespace OID (opfnamespace). Optional/debug. */
-    optional uint32 namespace_oid = 4;
+    optional uint32 opfnamespace = 4;
   }
 }
 
 /**
- * Registry-level index operator class dictionary (pg_opclass).
+ * Registry-level operator class dictionary (pg_opclass).
  *
  * This is emitted once per (engine_kind, engine_version) and attached to
  * SystemObjectsRegistry.engine_specific.
  *
- * payload_type: "floe.index.operator_classes+proto"
+ * payload_type: "floe.operator_classes+proto"
  */
-message FloeIndexOperatorClasses {
+message FloeOperatorClasses {
   /** Operator classes known to the engine. */
   repeated OperatorClass classes = 1;
 
@@ -467,52 +473,52 @@ message FloeIndexOperatorClasses {
     optional uint32 oid = 1;
 
     /** Operator family OID (opcfamily -> pg_opfamily.oid). */
-    optional uint32 family_oid = 2;
+    optional uint32 opcfamily = 2;
 
     /** Input type OID (opcintype -> pg_type.oid). */
-    optional uint32 input_type_oid = 3;
+    optional uint32 opcintype = 3;
 
     /** Access method OID (opcmethod -> pg_am.oid). */
-    optional uint32 access_method_oid = 4;
+    optional uint32 opcmethod = 4;
 
-    /** True if default opclass for (input_type_oid, access_method_oid). */
-    optional bool is_default = 5;
+    /** True if default opclass for opcintype */
+    optional bool opcdefault = 5;
 
     /** Operator class name (opcname). Optional/debug. */
-    optional string name = 6;
+    optional string opcname = 6;
 
     /** Namespace OID (opcnamespace). Optional/debug. */
-    optional uint32 namespace_oid = 7;
+    optional uint32 opcnamespace = 7;
   }
 }
 
 /**
- * Registry-level index operator strategy dictionary (pg_amop).
+ * Registry-level operator access methods dictionary (pg_amop).
  *
  * This is emitted once per (engine_kind, engine_version) and attached to
  * SystemObjectsRegistry.engine_specific.
  *
- * payload_type: "floe.index.operator_strategies+proto"
+ * payload_type: "floe.operator_access_methods+proto"
  */
-message FloeIndexOperatorStrategies {
+message FloeOperatorAccessMethods {
   /** Strategy entries mapping index semantics to operators. */
-  repeated OperatorStrategy entries = 1;
+  repeated OperatorAccessMethod entries = 1;
 
-  message OperatorStrategy {
+  message OperatorAccessMethod {
     /** Operator family OID (amopfamily -> pg_opfamily.oid). */
-    optional uint32 family_oid = 1;
+    optional uint32 amopfamily = 1;
 
     /** Strategy number (amopstrategy). */
-    optional uint32 strategy = 2;
+    optional uint32 amopstrategy = 2;
 
     /** Left type OID (amoplefttype -> pg_type.oid). */
-    optional uint32 left_type_oid = 3;
+    optional uint32 amoplefttype = 3;
 
     /** Right type OID (amoprighttype -> pg_type.oid). */
-    optional uint32 right_type_oid = 4;
+    optional uint32 amoprighttype = 4;
 
     /** Operator OID (amopopr -> pg_operator.oid). */
-    optional uint32 operator_oid = 5;
+    optional uint32 amopopr = 5;
 
     /**
      * Purpose flag (amoppurpose). Optional.
@@ -521,40 +527,43 @@ message FloeIndexOperatorStrategies {
      *  - "s" for search semantics
      *  - "o" for ordering semantics
      */
-    optional string purpose = 6;
+    optional string amoppurpose = 6;
 
     /** Sort family OID (amopsortfamily -> pg_opfamily.oid). Optional. */
-    optional uint32 sort_family_oid = 7;
+    optional uint32 amopsortfamily = 7;
+    
+    /** Access method OID (amopmethod -> pg_am.oid). */
+    optional uint32 amopmethod = 8;
   }
 }
 
 /**
- * Registry-level index support procedure dictionary (pg_amproc).
+ * Registry-level procedure access methods dictionary (pg_amproc).
  *
  * This is emitted once per (engine_kind, engine_version) and attached to
  * SystemObjectsRegistry.engine_specific.
  *
- * payload_type: "floe.index.support_procedures+proto"
+ * payload_type: "floe.procedure_access_methods+proto"
  */
-message FloeIndexSupportProcedures {
+message FloeProcedureAccessMethods {
   /** Support procedure entries mapping AM procedures to functions. */
-  repeated SupportProcedure entries = 1;
+  repeated ProcedureAccessMethod entries = 1;
 
-  message SupportProcedure {
+  message ProcedureAccessMethod {
     /** Operator family OID (amprocfamily -> pg_opfamily.oid). */
-    optional uint32 family_oid = 1;
+    optional uint32 amprocfamily = 1;
 
-    /** Support procedure number (amprocnum). */
-    optional uint32 proc_number = 2;
+    /** Function number (amprocnum). */
+    optional uint32 amprocnum = 2;
 
     /** Left type OID (amproclefttype -> pg_type.oid). */
-    optional uint32 left_type_oid = 3;
+    optional uint32 amproclefttype = 3;
 
     /** Right type OID (amprocrighttype -> pg_type.oid). */
-    optional uint32 right_type_oid = 4;
+    optional uint32 amprocrighttype = 4;
 
     /** Function OID (amproc -> pg_proc.oid). */
-    optional uint32 function_oid = 5;
+    optional uint32 amproc = 5;
   }
 }
 

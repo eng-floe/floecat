@@ -16,11 +16,11 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexAccessMethods;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorClasses;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorFamilies;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorStrategies;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexSupportProcedures;
+import ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods;
+import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorAccessMethods;
+import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorClasses;
+import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies;
+import ai.floedb.floecat.extensions.floedb.proto.FloeProcedureAccessMethods;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -60,52 +60,52 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   public SimpleValidationResult validate(SystemCatalogData catalog) {
     List<ValidationIssue> errors = new ArrayList<>();
 
-    List<ValidationSupport.DecodedRule<FloeIndexAccessMethods>> accessRules =
+    List<ValidationSupport.DecodedRule<FloeAccessMethods>> accessRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.INDEX_ACCESS_METHODS,
+            FloePayloads.ACCESS_METHODS,
             CONTEXT_ACCESS_METHODS,
             errors);
     IntervalIndex<Integer> accessIndex = processAccessMethods(accessRules, errors);
 
-    List<ValidationSupport.DecodedRule<FloeIndexOperatorFamilies>> familyRules =
+    List<ValidationSupport.DecodedRule<FloeOperatorFamilies>> familyRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.INDEX_OPERATOR_FAMILIES,
+            FloePayloads.OPERATOR_FAMILIES,
             CONTEXT_OPERATOR_FAMILIES,
             errors);
     IntervalIndex<Integer> familyIndex = processOperatorFamilies(familyRules, accessIndex, errors);
 
-    List<ValidationSupport.DecodedRule<FloeIndexOperatorClasses>> classRules =
+    List<ValidationSupport.DecodedRule<FloeOperatorClasses>> classRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.INDEX_OPERATOR_CLASSES,
+            FloePayloads.OPERATOR_CLASSES,
             CONTEXT_OPERATOR_CLASSES,
             errors);
     IntervalIndex<Integer> classIndex = processOperatorClasses(classRules, familyIndex, errors);
 
-    List<ValidationSupport.DecodedRule<FloeIndexOperatorStrategies>> strategyRules =
+    List<ValidationSupport.DecodedRule<FloeOperatorAccessMethods>> strategyRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.INDEX_OPERATOR_STRATEGIES,
+            FloePayloads.OPERATOR_ACCESS_METHODS,
             CONTEXT_OPERATOR_STRATEGIES,
             errors);
     processOperatorStrategies(strategyRules, familyIndex, accessIndex, classIndex, errors);
 
-    List<ValidationSupport.DecodedRule<FloeIndexSupportProcedures>> procRules =
+    List<ValidationSupport.DecodedRule<FloeProcedureAccessMethods>> procRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.INDEX_SUPPORT_PROCEDURES,
+            FloePayloads.PROCEDURE_ACCESS_METHODS,
             CONTEXT_SUPPORT_PROCEDURES,
             errors);
     processSupportProcedures(procRules, familyIndex, errors);
@@ -114,12 +114,11 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   }
 
   private static IntervalIndex<Integer> processAccessMethods(
-      List<ValidationSupport.DecodedRule<FloeIndexAccessMethods>> rules,
-      List<ValidationIssue> errors) {
+      List<ValidationSupport.DecodedRule<FloeAccessMethods>> rules, List<ValidationIssue> errors) {
     Map<Integer, List<VersionIntervals.VersionInterval>> intervals = new LinkedHashMap<>();
-    for (ValidationSupport.DecodedRule<FloeIndexAccessMethods> decoded : rules) {
+    for (ValidationSupport.DecodedRule<FloeAccessMethods> decoded : rules) {
       VersionIntervals.VersionInterval interval = decoded.interval();
-      for (FloeIndexAccessMethods.AccessMethod method : decoded.payload().getMethodsList()) {
+      for (FloeAccessMethods.AccessMethod method : decoded.payload().getMethodsList()) {
         int oid = method.getOid();
         if (oid <= 0) {
           ValidationSupport.err(
@@ -139,26 +138,26 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   }
 
   private static IntervalIndex<Integer> processOperatorFamilies(
-      List<ValidationSupport.DecodedRule<FloeIndexOperatorFamilies>> rules,
+      List<ValidationSupport.DecodedRule<FloeOperatorFamilies>> rules,
       IntervalIndex<Integer> accessIndex,
       List<ValidationIssue> errors) {
     Map<Integer, List<VersionIntervals.VersionInterval>> intervals = new LinkedHashMap<>();
-    for (ValidationSupport.DecodedRule<FloeIndexOperatorFamilies> decoded : rules) {
+    for (ValidationSupport.DecodedRule<FloeOperatorFamilies> decoded : rules) {
       VersionIntervals.VersionInterval interval = decoded.interval();
-      for (FloeIndexOperatorFamilies.OperatorFamily family : decoded.payload().getFamiliesList()) {
+      for (FloeOperatorFamilies.OperatorFamily family : decoded.payload().getFamiliesList()) {
         int oid = family.getOid();
         if (oid <= 0) {
           ValidationSupport.err(
               errors, "floe.registry.operator_family.oid.required", CONTEXT_OPERATOR_FAMILIES);
           continue;
         }
-        int accessMethod = family.getAccessMethodOid();
+        int accessMethod = family.getOpfmethod();
         if (!ensureCoverage(
             accessIndex,
             accessMethod,
             interval,
             errors,
-            "floe.registry.operator_family.access_method.unknown",
+            "floe.registry.operator_family.opfmethod.unknown",
             CONTEXT_OPERATOR_FAMILIES)) {
           continue;
         }
@@ -175,14 +174,14 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   }
 
   private IntervalIndex<Integer> processOperatorClasses(
-      List<ValidationSupport.DecodedRule<FloeIndexOperatorClasses>> rules,
+      List<ValidationSupport.DecodedRule<FloeOperatorClasses>> rules,
       IntervalIndex<Integer> familyIndex,
       List<ValidationIssue> errors) {
     Map<Integer, List<VersionIntervals.VersionInterval>> intervals = new LinkedHashMap<>();
     Map<String, List<VersionIntervals.VersionInterval>> defaultIntervals = new LinkedHashMap<>();
-    for (ValidationSupport.DecodedRule<FloeIndexOperatorClasses> decoded : rules) {
+    for (ValidationSupport.DecodedRule<FloeOperatorClasses> decoded : rules) {
       VersionIntervals.VersionInterval interval = decoded.interval();
-      for (FloeIndexOperatorClasses.OperatorClass cls : decoded.payload().getClassesList()) {
+      for (FloeOperatorClasses.OperatorClass cls : decoded.payload().getClassesList()) {
         int oid = cls.getOid();
         if (oid <= 0) {
           ValidationSupport.err(
@@ -191,24 +190,24 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
         }
         if (!ensureCoverage(
             familyIndex,
-            cls.getFamilyOid(),
+            cls.getOpcfamily(),
             interval,
             errors,
-            "floe.registry.operator_class.family.unknown",
+            "floe.registry.operator_class.opcfamily.unknown",
             CONTEXT_OPERATOR_CLASSES)) {
           continue;
         }
         if (!ensureCoverage(
             typeIntervals,
-            cls.getInputTypeOid(),
+            cls.getOpcintype(),
             interval,
             errors,
-            "floe.registry.operator_class.type.unknown",
+            "floe.registry.operator_class.opcintype.unknown",
             CONTEXT_OPERATOR_CLASSES)) {
           continue;
         }
-        if (cls.getIsDefault()) {
-          String key = cls.getFamilyOid() + ":" + cls.getInputTypeOid();
+        if (cls.getOpcdefault()) {
+          String key = cls.getOpcfamily() + ":" + cls.getOpcintype();
           enforceDefaultUnique(defaultIntervals, key, interval, errors, CONTEXT_OPERATOR_CLASSES);
         }
         addInterval(
@@ -224,63 +223,63 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   }
 
   private void processOperatorStrategies(
-      List<ValidationSupport.DecodedRule<FloeIndexOperatorStrategies>> rules,
+      List<ValidationSupport.DecodedRule<FloeOperatorAccessMethods>> rules,
       IntervalIndex<Integer> familyIndex,
       IntervalIndex<Integer> accessIndex,
       IntervalIndex<Integer> classIndex,
       List<ValidationIssue> errors) {
     Map<String, List<VersionIntervals.VersionInterval>> seen = new LinkedHashMap<>();
-    for (ValidationSupport.DecodedRule<FloeIndexOperatorStrategies> decoded : rules) {
+    for (ValidationSupport.DecodedRule<FloeOperatorAccessMethods> decoded : rules) {
       VersionIntervals.VersionInterval interval = decoded.interval();
-      for (FloeIndexOperatorStrategies.OperatorStrategy strategy :
+      for (FloeOperatorAccessMethods.OperatorAccessMethod strategy :
           decoded.payload().getEntriesList()) {
         if (!ensureCoverage(
             familyIndex,
-            strategy.getFamilyOid(),
+            strategy.getAmopfamily(),
             interval,
             errors,
-            "floe.registry.operator_strategy.family.unknown",
+            "floe.registry.operator_strategy.amopfamily.unknown",
             CONTEXT_OPERATOR_STRATEGIES)) {
           continue;
         }
         checkFunctionReference(
             errors,
-            "floe.registry.operator_strategy.operator.unknown",
+            "floe.registry.operator_strategy.amopopr.unknown",
             CONTEXT_OPERATOR_STRATEGIES,
-            strategy.getOperatorOid(),
+            strategy.getAmopopr(),
             operatorIntervals,
             interval);
         checkFunctionReference(
             errors,
-            "floe.registry.operator_strategy.left_type.unknown",
+            "floe.registry.operator_strategy.amoplefttype.unknown",
             CONTEXT_OPERATOR_STRATEGIES,
-            strategy.getLeftTypeOid(),
+            strategy.getAmoplefttype(),
             typeIntervals,
             interval);
         checkFunctionReference(
             errors,
-            "floe.registry.operator_strategy.right_type.unknown",
+            "floe.registry.operator_strategy.amoprighttype.unknown",
             CONTEXT_OPERATOR_STRATEGIES,
-            strategy.getRightTypeOid(),
+            strategy.getAmoprighttype(),
             typeIntervals,
             interval);
-        if (strategy.getSortFamilyOid() > 0) {
+        if (strategy.getAmopsortfamily() > 0) {
           ensureCoverage(
               familyIndex,
-              strategy.getSortFamilyOid(),
+              strategy.getAmopsortfamily(),
               interval,
               errors,
-              "floe.registry.operator_strategy.sort_family.unknown",
+              "floe.registry.operator_strategy.amopsortfamily.unknown",
               CONTEXT_OPERATOR_STRATEGIES);
         }
         String key =
-            strategy.getFamilyOid()
+            strategy.getAmopfamily()
                 + ":"
-                + strategy.getStrategy()
+                + strategy.getAmopstrategy()
                 + ":"
-                + strategy.getLeftTypeOid()
+                + strategy.getAmoplefttype()
                 + ":"
-                + strategy.getRightTypeOid();
+                + strategy.getAmoprighttype();
         recordInterval(
             seen,
             key,
@@ -293,51 +292,52 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
   }
 
   private void processSupportProcedures(
-      List<ValidationSupport.DecodedRule<FloeIndexSupportProcedures>> rules,
+      List<ValidationSupport.DecodedRule<FloeProcedureAccessMethods>> rules,
       IntervalIndex<Integer> familyIndex,
       List<ValidationIssue> errors) {
     Map<String, List<VersionIntervals.VersionInterval>> seen = new LinkedHashMap<>();
-    for (ValidationSupport.DecodedRule<FloeIndexSupportProcedures> decoded : rules) {
+    for (ValidationSupport.DecodedRule<FloeProcedureAccessMethods> decoded : rules) {
       VersionIntervals.VersionInterval interval = decoded.interval();
-      for (FloeIndexSupportProcedures.SupportProcedure proc : decoded.payload().getEntriesList()) {
+      for (FloeProcedureAccessMethods.ProcedureAccessMethod proc :
+          decoded.payload().getEntriesList()) {
         if (!ensureCoverage(
             familyIndex,
-            proc.getFamilyOid(),
+            proc.getAmprocfamily(),
             interval,
             errors,
-            "floe.registry.support_procedure.family.unknown",
+            "floe.registry.support_procedure.amprocfamily.unknown",
             CONTEXT_SUPPORT_PROCEDURES)) {
           continue;
         }
         checkFunctionReference(
             errors,
-            "floe.registry.support_procedure.function.unknown",
+            "floe.registry.support_procedure.amproc.unknown",
             CONTEXT_SUPPORT_PROCEDURES,
-            proc.getFunctionOid(),
+            proc.getAmproc(),
             functionIntervals,
             interval);
         checkFunctionReference(
             errors,
-            "floe.registry.support_procedure.left_type.unknown",
+            "floe.registry.support_procedure.amproclefttype.unknown",
             CONTEXT_SUPPORT_PROCEDURES,
-            proc.getLeftTypeOid(),
+            proc.getAmproclefttype(),
             typeIntervals,
             interval);
         checkFunctionReference(
             errors,
-            "floe.registry.support_procedure.right_type.unknown",
+            "floe.registry.support_procedure.amprocrighttype.unknown",
             CONTEXT_SUPPORT_PROCEDURES,
-            proc.getRightTypeOid(),
+            proc.getAmprocrighttype(),
             typeIntervals,
             interval);
         String key =
-            proc.getFamilyOid()
+            proc.getAmprocfamily()
                 + ":"
-                + proc.getProcNumber()
+                + proc.getAmproc()
                 + ":"
-                + proc.getLeftTypeOid()
+                + proc.getAmproclefttype()
                 + ":"
-                + proc.getRightTypeOid();
+                + proc.getAmprocrighttype();
         recordInterval(
             seen,
             key,

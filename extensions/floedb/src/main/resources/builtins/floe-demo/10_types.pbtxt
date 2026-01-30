@@ -21,6 +21,8 @@ types {
       oid: 23
       typname: "int4"
       typnamespace: 11
+      typcategory: "N"
+      typispreferred: true
       typlen: 4
       typbyval: true
       typdelim: ","
@@ -39,6 +41,8 @@ types {
       oid: 20
       typname: "int8"
       typnamespace: 11
+      typcategory: "N"
+      typispreferred: false
       typlen: 8
       typbyval: true
       typdelim: ","
@@ -55,6 +59,8 @@ types {
     [floe.ext.floe_type] {
       oid: 25
       typname: "text"
+      typcategory: "S"
+      typispreferred: true
       typnamespace: 11
       typlen: -1
       typbyval: false
@@ -75,6 +81,8 @@ types {
       oid: 1007
       typname: "_int4"
       typnamespace: 11
+      typcategory: "A"
+      typispreferred: false
       typlen: -1
       typbyval: false
       typdelim: ","

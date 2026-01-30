@@ -105,6 +105,20 @@ final class TypeValidator implements SectionValidator<TypeValidationResult> {
               errors, "floe.type.element_oid.unexpected", ruleCtx, spec.getTypelem());
         }
 
+        if (!spec.hasTypcategory()) {
+          ValidationSupport.err(errors, "floe.type.typcategory.required", ruleCtx);
+        }
+
+        if (!List.of("A", "B", "C", "D", "E", "G", "I", "N", "P", "R", "S", "T", "U", "V", "X", "Z")
+            .contains(spec.getTypcategory())) {
+          ValidationSupport.err(
+              errors, "floe.type.typcategory.invalid", ruleCtx, spec.getTypcategory());
+        }
+
+        if (!spec.hasTypispreferred()) {
+          ValidationSupport.err(errors, "floe.type.typispreferred.required", ruleCtx);
+        }
+
         decodedOut.add(decodedRule);
         TypeInfo info = new TypeInfo(type, spec, decodedRule.interval());
         typesByOid.computeIfAbsent(oid, k -> new ArrayList<>()).add(info);

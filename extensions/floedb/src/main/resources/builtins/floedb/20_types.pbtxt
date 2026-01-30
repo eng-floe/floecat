@@ -31,6 +31,8 @@ types {
       typreceive: 2598
       typsend: 2407
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -56,6 +58,8 @@ types {
       typsend: 2433
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -88,6 +92,8 @@ types {
       typsend: 2433
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -119,6 +125,8 @@ types {
       typreceive: 2598
       typsend: 2477
       typalign: "d"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -144,6 +152,8 @@ types {
       typsend: 2433
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -181,6 +191,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -211,6 +223,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -241,6 +255,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -273,6 +289,8 @@ types {
       typmodin: 2919
       typmodout: 2920
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -303,6 +321,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -336,6 +356,8 @@ types {
       typmodout: 2914
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -373,6 +395,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -403,6 +427,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -433,6 +459,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -463,6 +491,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -493,6 +523,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -523,6 +555,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -553,6 +587,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -583,6 +619,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -613,6 +651,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -645,6 +685,8 @@ types {
       typmodin: 14776
       typmodout: 14777
       typalign: "d"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -675,6 +717,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -705,6 +749,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -735,6 +781,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -765,6 +813,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -795,6 +845,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -825,6 +877,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -855,6 +909,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -885,6 +941,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -917,6 +975,8 @@ types {
       typmodin: 2903
       typmodout: 2904
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -947,6 +1007,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -977,6 +1039,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1007,6 +1071,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1037,6 +1103,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1067,6 +1135,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1097,6 +1167,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1127,6 +1199,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1157,6 +1231,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1189,6 +1265,8 @@ types {
       typmodin: 2917
       typmodout: 2918
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1219,6 +1297,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1249,6 +1329,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1279,6 +1361,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1309,6 +1393,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1339,6 +1425,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -1369,6 +1457,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1399,6 +1489,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1429,6 +1521,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1459,6 +1553,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1489,6 +1585,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1519,6 +1617,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1549,6 +1649,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1579,6 +1681,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1609,6 +1713,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1639,6 +1745,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1669,6 +1777,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1699,6 +1809,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1730,6 +1842,8 @@ types {
       typsend: 2401
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1767,6 +1881,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1799,6 +1915,8 @@ types {
       typmodin: 2909
       typmodout: 2910
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1831,6 +1949,8 @@ types {
       typmodin: 2905
       typmodout: 2906
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1863,6 +1983,8 @@ types {
       typmodin: 2907
       typmodout: 2908
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1895,6 +2017,8 @@ types {
       typmodin: 2911
       typmodout: 2912
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1925,6 +2049,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1955,6 +2081,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -1985,6 +2113,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2015,6 +2145,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2045,6 +2177,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2075,6 +2209,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "d"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2105,6 +2241,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2137,6 +2275,8 @@ types {
       typmodin: 2902
       typmodout: 2921
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2170,6 +2310,8 @@ types {
       typmodout: 2916
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2207,6 +2349,8 @@ types {
       typreceive: 2400
       typsend: 2401
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -2232,6 +2376,8 @@ types {
       typreceive: 2462
       typsend: 2463
       typalign: "i"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -2272,6 +2418,8 @@ types {
       typreceive: 1147
       typsend: 1146
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -2304,6 +2452,8 @@ types {
       typinput: 4206
       typoutput: 4207
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -2326,6 +2476,8 @@ types {
       typinput: 2294
       typoutput: 2295
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2350,6 +2502,8 @@ types {
       typreceive: 2502
       typsend: 2503
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2387,6 +2541,8 @@ types {
       typinput: 2312
       typoutput: 2313
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2409,6 +2565,8 @@ types {
       typinput: 3504
       typoutput: 3505
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2446,6 +2604,8 @@ types {
       typinput: 2777
       typoutput: 2778
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2468,6 +2628,8 @@ types {
       typinput: 3832
       typoutput: 3833
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2510,6 +2672,8 @@ types {
       typmodin: 2919
       typmodout: 2920
       typalign: "i"
+      typispreferred: false
+      typcategory: "V"
     }
     payload_type: "floe.type+proto"
   }
@@ -2547,6 +2711,8 @@ types {
       typreceive: 2436
       typsend: 2437
       typalign: "c"
+      typispreferred: true
+      typcategory: "B"
     }
     payload_type: "floe.type+proto"
   }
@@ -2590,6 +2756,8 @@ types {
       typmodout: 2914
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -2631,6 +2799,8 @@ types {
       typreceive: 2412
       typsend: 2413
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -2671,6 +2841,8 @@ types {
       typreceive: 2434
       typsend: 2435
       typalign: "c"
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -2711,6 +2883,8 @@ types {
       typreceive: 2442
       typsend: 2443
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -2745,6 +2919,8 @@ types {
       typreceive: 2498
       typsend: 2499
       typalign: "i"
+      typispreferred: false
+      typcategory: "I"
     }
     payload_type: "floe.type+proto"
   }
@@ -2770,6 +2946,8 @@ types {
       typreceive: 2500
       typsend: 2501
       typalign: "c"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2795,6 +2973,8 @@ types {
       typreceive: 2468
       typsend: 2469
       typalign: "i"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -2835,6 +3015,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "i"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -2857,6 +3039,8 @@ types {
       typinput: 3594
       typoutput: 3595
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2879,6 +3063,8 @@ types {
       typinput: 3116
       typoutput: 3117
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -2904,6 +3090,8 @@ types {
       typreceive: 2424
       typsend: 2425
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -2944,6 +3132,8 @@ types {
       typreceive: 2426
       typsend: 2427
       typalign: "d"
+      typispreferred: true
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -2986,6 +3176,8 @@ types {
       typmodin: 14776
       typmodout: 14777
       typalign: "d"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3024,6 +3216,8 @@ types {
       typinput: 3646
       typoutput: 3647
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3049,6 +3243,8 @@ types {
       typreceive: 2496
       typsend: 2497
       typalign: "i"
+      typispreferred: true
+      typcategory: "I"
     }
     payload_type: "floe.type+proto"
   }
@@ -3089,6 +3285,8 @@ types {
       typreceive: 2404
       typsend: 2405
       typalign: "s"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -3129,6 +3327,8 @@ types {
       typreceive: 2410
       typsend: 2411
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -3163,6 +3363,8 @@ types {
       typreceive: 2406
       typsend: 2407
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -3203,6 +3405,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "i"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -3228,6 +3432,8 @@ types {
       typreceive: 2408
       typsend: 2409
       typalign: "d"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -3268,6 +3474,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "d"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -3290,6 +3498,8 @@ types {
       typinput: 2304
       typoutput: 2305
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -3317,6 +3527,8 @@ types {
       typmodin: 2903
       typmodout: 2904
       typalign: "d"
+      typispreferred: true
+      typcategory: "T"
     }
     payload_type: "floe.type+proto"
   }
@@ -3357,6 +3569,8 @@ types {
       typreceive: 2926
       typsend: 2927
       typalign: "i"
+      typispreferred: false
+      typcategory: "I"
     }
     payload_type: "floe.type+proto"
   }
@@ -3397,6 +3611,8 @@ types {
       typreceive: 2928
       typsend: 2929
       typalign: "i"
+      typispreferred: false
+      typcategory: "I"
     }
     payload_type: "floe.type+proto"
   }
@@ -3437,6 +3653,8 @@ types {
       typreceive: 323
       typsend: 324
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3477,6 +3695,8 @@ types {
       typreceive: 3805
       typsend: 3803
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3517,6 +3737,8 @@ types {
       typreceive: 2867
       typsend: 2868
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3539,6 +3761,8 @@ types {
       typinput: 2302
       typoutput: 2303
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -3564,6 +3788,8 @@ types {
       typreceive: 2494
       typsend: 2495
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3604,6 +3830,8 @@ types {
       typreceive: 3407
       typsend: 3408
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3644,6 +3872,8 @@ types {
       typreceive: 2422
       typsend: 2423
       typalign: "c"
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -3686,6 +3916,8 @@ types {
       typmodin: 2917
       typmodout: 2918
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -3726,6 +3958,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "i"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -3751,6 +3985,8 @@ types {
       typreceive: 2418
       typsend: 2419
       typalign: "i"
+      typispreferred: true
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -3791,6 +4027,8 @@ types {
       typreceive: 2420
       typsend: 2421
       typalign: "i"
+      typispreferred: false
+      typcategory: "A"
     }
     payload_type: "floe.type+proto"
   }
@@ -3828,6 +4066,8 @@ types {
       typinput: 2306
       typoutput: 2307
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -3852,6 +4092,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -3876,6 +4118,8 @@ types {
       typreceive: 88
       typsend: 90
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -3901,6 +4145,8 @@ types {
       typreceive: 3238
       typsend: 3239
       typalign: "d"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -3941,6 +4187,8 @@ types {
       typsend: 198
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -3972,6 +4220,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -3997,6 +4247,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -4034,6 +4286,8 @@ types {
       typreceive: 2414
       typsend: 2415
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4059,6 +4313,8 @@ types {
       typreceive: 2452
       typsend: 2453
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4084,6 +4340,8 @@ types {
       typreceive: 3738
       typsend: 3739
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4109,6 +4367,8 @@ types {
       typreceive: 3773
       typsend: 3774
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4134,6 +4394,8 @@ types {
       typreceive: 4087
       typsend: 4088
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4159,6 +4421,8 @@ types {
       typreceive: 2448
       typsend: 2449
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4184,6 +4448,8 @@ types {
       typreceive: 2450
       typsend: 2451
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4209,6 +4475,8 @@ types {
       typreceive: 2444
       typsend: 2445
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4234,6 +4502,8 @@ types {
       typreceive: 2446
       typsend: 2447
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4259,6 +4529,8 @@ types {
       typreceive: 4094
       typsend: 4095
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4284,6 +4556,8 @@ types {
       typreceive: 2454
       typsend: 2455
       typalign: "i"
+      typispreferred: false
+      typcategory: "N"
     }
     payload_type: "floe.type+proto"
   }
@@ -4309,6 +4583,8 @@ types {
       typreceive: 2464
       typsend: 2465
       typalign: "i"
+      typispreferred: false
+      typcategory: "T"
     }
     payload_type: "floe.type+proto"
   }
@@ -4346,6 +4622,8 @@ types {
       typinput: 760
       typoutput: 761
       typalign: "s"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4372,6 +4650,8 @@ types {
       typsend: 2415
       typalign: "i"
       typcollation: 100
+      typispreferred: true
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -4413,6 +4693,8 @@ types {
       typreceive: 2438
       typsend: 2439
       typalign: "s"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4452,6 +4734,8 @@ types {
       typmodin: 2909
       typmodout: 2910
       typalign: "d"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -4494,6 +4778,8 @@ types {
       typmodin: 2905
       typmodout: 2906
       typalign: "d"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -4536,6 +4822,8 @@ types {
       typmodin: 2907
       typmodout: 2908
       typalign: "d"
+      typispreferred: true
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -4578,6 +4866,8 @@ types {
       typmodin: 2911
       typmodout: 2912
       typalign: "d"
+      typispreferred: false
+      typcategory: "D"
     }
     payload_type: "floe.type+proto"
   }
@@ -4618,6 +4908,8 @@ types {
       typreceive: 2466
       typsend: 2467
       typalign: "i"
+      typispreferred: false
+      typcategory: "T"
     }
     payload_type: "floe.type+proto"
   }
@@ -4652,6 +4944,8 @@ types {
       typinput: 2300
       typoutput: 2301
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -4674,6 +4968,8 @@ types {
       typinput: 3311
       typoutput: 3312
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -4699,6 +4995,8 @@ types {
       typreceive: 3641
       typsend: 3640
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4736,6 +5034,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "d"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -4761,6 +5061,8 @@ types {
       typreceive: 3836
       typsend: 3837
       typalign: "d"
+      typispreferred: false
+      typcategory: "R"
     }
     payload_type: "floe.type+proto"
   }
@@ -4786,6 +5088,8 @@ types {
       typreceive: 3639
       typsend: 3638
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4823,6 +5127,8 @@ types {
       typreceive: 2941
       typsend: 2942
       typalign: "d"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4847,6 +5153,8 @@ types {
       typreceive: 2416
       typsend: 2417
       typalign: "c"
+      typispreferred: false
+      typcategory: "X"
     }
     payload_type: "floe.type+proto"
   }
@@ -4872,6 +5180,8 @@ types {
       typreceive: 2961
       typsend: 2962
       typalign: "c"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -4914,6 +5224,8 @@ types {
       typmodin: 2902
       typmodout: 2921
       typalign: "i"
+      typispreferred: true
+      typcategory: "V"
     }
     payload_type: "floe.type+proto"
   }
@@ -4954,6 +5266,8 @@ types {
       typmodout: 2916
       typalign: "i"
       typcollation: 100
+      typispreferred: false
+      typcategory: "S"
     }
     payload_type: "floe.type+proto"
   }
@@ -4985,6 +5299,8 @@ types {
       typreceive: 3120
       typsend: 3121
       typalign: "i"
+      typispreferred: false
+      typcategory: "P"
     }
     payload_type: "floe.type+proto"
   }
@@ -5010,6 +5326,8 @@ types {
       typreceive: 2440
       typsend: 2441
       typalign: "i"
+      typispreferred: false
+      typcategory: "U"
     }
     payload_type: "floe.type+proto"
   }
@@ -5043,6 +5361,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5067,6 +5387,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5091,6 +5413,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5115,6 +5439,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5139,6 +5465,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5163,6 +5491,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5187,6 +5517,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5211,6 +5543,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5235,6 +5569,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5259,6 +5595,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5283,6 +5621,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5307,6 +5647,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5331,6 +5673,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }
@@ -5355,6 +5699,8 @@ types {
       typreceive: 2402
       typsend: 2403
       typalign: "d"
+      typispreferred: false
+      typcategory: "C"
     }
     payload_type: "floe.type+proto"
   }

@@ -18,12 +18,12 @@ package ai.floedb.floecat.extensions.floedb.validation;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods;
 import ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexAccessMethods;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorClasses;
-import ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorFamilies;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorClasses;
+import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
@@ -173,20 +173,20 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
   }
 
   private void trackRegistry(List<EngineSpecificRule> rules, List<ValidationIssue> errors) {
-    List<ValidationSupport.DecodedRule<FloeIndexAccessMethods>> accessRules =
+    List<ValidationSupport.DecodedRule<FloeAccessMethods>> accessRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             rules,
-            FloePayloads.INDEX_ACCESS_METHODS,
+            FloePayloads.ACCESS_METHODS,
             "registry:access_methods",
             errors);
-    for (ValidationSupport.DecodedRule<FloeIndexAccessMethods> dr : accessRules) {
-      for (FloeIndexAccessMethods.AccessMethod method : dr.payload().getMethodsList()) {
+    for (ValidationSupport.DecodedRule<FloeAccessMethods> dr : accessRules) {
+      for (FloeAccessMethods.AccessMethod method : dr.payload().getMethodsList()) {
         if (method.getOid() <= 0) {
           continue;
         }
-        String identity = "access_method:" + method.getName();
+        String identity = "access_method:" + method.getAmname();
         ValidationSupport.trackGlobalOid(
             runContext,
             errors,
@@ -197,20 +197,20 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
             dr.interval());
       }
     }
-    List<ValidationSupport.DecodedRule<FloeIndexOperatorFamilies>> familyRules =
+    List<ValidationSupport.DecodedRule<FloeOperatorFamilies>> familyRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             rules,
-            FloePayloads.INDEX_OPERATOR_FAMILIES,
+            FloePayloads.OPERATOR_FAMILIES,
             "registry:operator_families",
             errors);
-    for (ValidationSupport.DecodedRule<FloeIndexOperatorFamilies> dr : familyRules) {
-      for (FloeIndexOperatorFamilies.OperatorFamily family : dr.payload().getFamiliesList()) {
+    for (ValidationSupport.DecodedRule<FloeOperatorFamilies> dr : familyRules) {
+      for (FloeOperatorFamilies.OperatorFamily family : dr.payload().getFamiliesList()) {
         if (family.getOid() <= 0) {
           continue;
         }
-        String identity = "operator_family:" + family.getAccessMethodOid() + ":" + family.getName();
+        String identity = "operator_family:" + family.getOpfmethod() + ":" + family.getOpfname();
         ValidationSupport.trackGlobalOid(
             runContext,
             errors,
@@ -221,26 +221,26 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
             dr.interval());
       }
     }
-    List<ValidationSupport.DecodedRule<FloeIndexOperatorClasses>> classRules =
+    List<ValidationSupport.DecodedRule<FloeOperatorClasses>> classRules =
         ValidationSupport.decodeAllPayloads(
             runContext,
             scope,
             rules,
-            FloePayloads.INDEX_OPERATOR_CLASSES,
+            FloePayloads.OPERATOR_CLASSES,
             "registry:operator_classes",
             errors);
-    for (ValidationSupport.DecodedRule<FloeIndexOperatorClasses> dr : classRules) {
-      for (FloeIndexOperatorClasses.OperatorClass clazz : dr.payload().getClassesList()) {
+    for (ValidationSupport.DecodedRule<FloeOperatorClasses> dr : classRules) {
+      for (FloeOperatorClasses.OperatorClass clazz : dr.payload().getClassesList()) {
         if (clazz.getOid() <= 0) {
           continue;
         }
         String identity =
             "operator_class:"
-                + clazz.getFamilyOid()
+                + clazz.getOpcfamily()
                 + ":"
-                + clazz.getInputTypeOid()
+                + clazz.getOpcintype()
                 + ":"
-                + clazz.getAccessMethodOid();
+                + clazz.getOpcmethod();
         ValidationSupport.trackGlobalOid(
             runContext,
             errors,

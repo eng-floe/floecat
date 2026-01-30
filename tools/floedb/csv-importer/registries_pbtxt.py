@@ -19,11 +19,11 @@ Generate FloeCat PBtxt for registry-level index dictionaries.
 
 Emits a single registries.pbtxt containing registry-level EngineSpecific payloads:
 
-- floe.index.access_methods+proto          (pg_am)
-- floe.index.operator_families+proto       (pg_opfamily)
-- floe.index.operator_classes+proto        (pg_opclass)
-- floe.index.operator_strategies+proto     (pg_amop)
-- floe.index.support_procedures+proto      (pg_amproc)
+- floe.access_methods+proto          (pg_am)
+- floe.operator_families+proto       (pg_opfamily)
+- floe.operator_classes+proto        (pg_opclass)
+- floe.operator_access_methods+proto     (pg_amop)
+- floe.procedure_access_methods+proto      (pg_amproc)
 
 All entries are filtered to system objects only (OIDs < 16384) where applicable.
 
@@ -73,8 +73,8 @@ def _emit_access_methods(
 ) -> tuple[str, int]:
     out: List[str] = []
     out.append("engine_specific {")
-    out.append('  payload_type: "floe.index.access_methods+proto"')
-    out.append("  [floe.ext.floe_index_access_methods] {")
+    out.append('  payload_type: "floe.access_methods+proto"')
+    out.append("  [floe.ext.floe_access_methods] {")
     count = 0
     for oid in sorted(am.keys()):
         row = am[oid]
@@ -94,7 +94,7 @@ def _emit_access_methods(
             continue
         out.append("    methods {")
         out.append(f"      oid: {row.oid}")
-        out.append(f'      name: "{pb_escape(row.amname)}"')
+        out.append(f'      amname: "{pb_escape(row.amname)}"')
         out.append("    }")
         count += 1
         stats.record_emitted()
@@ -110,8 +110,8 @@ def _emit_operator_families(
 ) -> tuple[str, int]:
     out: List[str] = []
     out.append("engine_specific {")
-    out.append('  payload_type: "floe.index.operator_families+proto"')
-    out.append("  [floe.ext.floe_index_operator_families] {")
+    out.append('  payload_type: "floe.operator_families+proto"')
+    out.append("  [floe.ext.floe_operator_families] {")
     count = 0
     for oid in sorted(opf.keys()):
         row = opf[oid]
@@ -131,11 +131,11 @@ def _emit_operator_families(
             continue
         out.append("    families {")
         out.append(f"      oid: {row.oid}")
-        out.append(f"      access_method_oid: {row.opfmethod}")
+        out.append(f"      opfmethod: {row.opfmethod}")
         if row.opfname is not None:
-            out.append(f'      name: "{pb_escape(row.opfname)}"')
+            out.append(f'      opfname: "{pb_escape(row.opfname)}"')
         if row.opfnamespace is not None:
-            out.append(f"      namespace_oid: {row.opfnamespace}")
+            out.append(f"      opfnamespace: {row.opfnamespace}")
         out.append("    }")
         count += 1
         stats.record_emitted()
@@ -151,8 +151,8 @@ def _emit_operator_classes(
 ) -> tuple[str, int]:
     out: List[str] = []
     out.append("engine_specific {")
-    out.append('  payload_type: "floe.index.operator_classes+proto"')
-    out.append("  [floe.ext.floe_index_operator_classes] {")
+    out.append('  payload_type: "floe.operator_classes+proto"')
+    out.append("  [floe.ext.floe_operator_classes] {")
     count = 0
     for oid in sorted(opc.keys()):
         row = opc[oid]
@@ -172,15 +172,15 @@ def _emit_operator_classes(
             continue
         out.append("    classes {")
         out.append(f"      oid: {row.oid}")
-        out.append(f"      family_oid: {row.opcfamily}")
-        out.append(f"      input_type_oid: {row.opcintype}")
-        out.append(f"      access_method_oid: {row.opcmethod}")
+        out.append(f"      opcfamily: {row.opcfamily}")
+        out.append(f"      opcintype: {row.opcintype}")
+        out.append(f"      opcmethod: {row.opcmethod}")
         if row.opcdefault is not None:
-            out.append(f"      is_default: {'true' if row.opcdefault else 'false'}")
+            out.append(f"      opcdefault: {'true' if row.opcdefault else 'false'}")
         if row.opcname is not None:
-            out.append(f'      name: "{pb_escape(row.opcname)}"')
+            out.append(f'      opcname: "{pb_escape(row.opcname)}"')
         if row.opcnamespace is not None:
-            out.append(f"      namespace_oid: {row.opcnamespace}")
+            out.append(f"      opcnamespace: {row.opcnamespace}")
         out.append("    }")
         count += 1
         stats.record_emitted()
@@ -189,15 +189,15 @@ def _emit_operator_classes(
     return "\n".join(out), count
 
 
-def _emit_operator_strategies(
+def _emit_operator_access_methods(
     amop: List[AmopRow],
     *,
     stats,
 ) -> tuple[str, int]:
     out: List[str] = []
     out.append("engine_specific {")
-    out.append('  payload_type: "floe.index.operator_strategies+proto"')
-    out.append("  [floe.ext.floe_index_operator_strategies] {")
+    out.append('  payload_type: "floe.operator_access_methods+proto"')
+    out.append("  [floe.ext.floe_operator_access_methods] {")
     count = 0
 
     def key(r: AmopRow) -> tuple[int, int, int, int, int]:
@@ -223,17 +223,19 @@ def _emit_operator_strategies(
         stats.record_system_pass()
 
         out.append("    entries {")
-        out.append(f"      family_oid: {r.amopfamily}")
-        out.append(f"      strategy: {r.amopstrategy}")
+        out.append(f"      amopfamily: {r.amopfamily}")
+        out.append(f"      amopstrategy: {r.amopstrategy}")
         if r.amoplefttype is not None:
-            out.append(f"      left_type_oid: {r.amoplefttype}")
+            out.append(f"      amoplefttype: {r.amoplefttype}")
         if r.amoprighttype is not None:
-            out.append(f"      right_type_oid: {r.amoprighttype}")
-        out.append(f"      operator_oid: {r.amopopr}")
+            out.append(f"      amoprighttype: {r.amoprighttype}")
+        out.append(f"      amopopr: {r.amopopr}")
         if r.amoppurpose is not None:
-            out.append(f'      purpose: "{pb_escape(r.amoppurpose)}"')
+            out.append(f'      amoppurpose: "{pb_escape(r.amoppurpose)}"')
         if r.amopsortfamily is not None:
-            out.append(f"      sort_family_oid: {r.amopsortfamily}")
+            out.append(f"      amopsortfamily: {r.amopsortfamily}")
+        if r.amopmethod is not None:
+            out.append(f"      amopmethod: {r.amopmethod}")
         out.append("    }")
         count += 1
         stats.record_emitted()
@@ -243,7 +245,7 @@ def _emit_operator_strategies(
     return "\n".join(out), count
 
 
-def _emit_support_procedures(
+def _emit_procedures_access_methods(
     amproc: List[AmprocRow],
     *,
     proc_name_to_oid: Dict[str, int],
@@ -251,8 +253,8 @@ def _emit_support_procedures(
 ) -> tuple[str, int]:
     out: List[str] = []
     out.append("engine_specific {")
-    out.append('  payload_type: "floe.index.support_procedures+proto"')
-    out.append("  [floe.ext.floe_index_support_procedures] {")
+    out.append('  payload_type: "floe.procedure_access_methods+proto"')
+    out.append("  [floe.ext.floe_procedure_access_methods] {")
     count = 0
 
     def key(r: AmprocRow) -> tuple[int, int, int, int, int, str]:
@@ -299,13 +301,13 @@ def _emit_support_procedures(
         stats.record_system_pass()
 
         out.append("    entries {")
-        out.append(f"      family_oid: {r.amprocfamily}")
-        out.append(f"      proc_number: {r.amprocnum}")
+        out.append(f"      amprocfamily: {r.amprocfamily}")
+        out.append(f"      amprocnum: {r.amprocnum}")
         if r.amproclefttype is not None:
-            out.append(f"      left_type_oid: {r.amproclefttype}")
+            out.append(f"      amproclefttype: {r.amproclefttype}")
         if r.amprocrighttype is not None:
-            out.append(f"      right_type_oid: {r.amprocrighttype}")
-        out.append(f"      function_oid: {func_oid}")
+            out.append(f"      amprocrighttype: {r.amprocrighttype}")
+        out.append(f"      amproc: {func_oid}")
         out.append("    }")
         count += 1
         stats.record_emitted()
@@ -343,23 +345,23 @@ def generate_registries_pbtxt(
     opc_block, opc_count = _emit_operator_classes(
         opc, stats=stats
     )
-    amop_block, amop_count = _emit_operator_strategies(
+    amop_block, amop_count = _emit_operator_access_methods(
         amop, stats=stats
     )
-    support_block, support_count = _emit_support_procedures(
+    proc_block, proc_count = _emit_procedures_access_methods(
         amproc,
         proc_name_to_oid=proc_name_to_oid,
         stats=stats,
     )
 
-    blocks = [am_block, opf_block, opc_block, amop_block, support_block]
+    blocks = [am_block, opf_block, opc_block, amop_block, proc_block]
     summary = [
         "# registry counts:",
         f"#   access_methods: {am_count}",
         f"#   operator_families: {opf_count}",
         f"#   operator_classes: {opc_count}",
-        f"#   operator_strategies: {amop_count}",
-        f"#   support_procedures: {support_count}",
+        f"#   operator_access_methods: {amop_count}",
+        f"#   procedure_access_methods: {proc_count}",
     ]
 
     content = "\n\n".join(blocks) + "\n\n" + "\n".join(summary) + "\n"
@@ -367,8 +369,8 @@ def generate_registries_pbtxt(
         "access_methods": am_count,
         "operator_families": opf_count,
         "operator_classes": opc_count,
-        "operator_strategies": amop_count,
-        "support_procedures": support_count,
+        "operator_access_methods": amop_count,
+        "procedure_access_methods": proc_count,
     }
     return with_pbtxt_header(content), counts
 
