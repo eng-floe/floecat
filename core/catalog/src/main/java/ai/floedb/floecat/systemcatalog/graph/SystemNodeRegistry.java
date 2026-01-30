@@ -55,6 +55,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import ai.floedb.floecat.systemcatalog.util.SystemSchemaMapper;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -164,8 +165,7 @@ public class SystemNodeRegistry {
         namespaceDefs.stream()
             .collect(
                 Collectors.toUnmodifiableMap(
-                    ns -> NameRefUtil.canonical(ns.name()),
-                    ns -> resourceId(normalizedKind, ResourceKind.RK_NAMESPACE, ns.name())));
+                    ns -> NameRefUtil.canonical(ns.name()), ns -> resourceId(normalizedKind, ns)));
 
     // --- Functions ---
     List<SystemFunctionDef> functionDefs =
@@ -252,7 +252,7 @@ public class SystemNodeRegistry {
         logMissingNamespace("table", table.name());
         continue;
       }
-      ResourceId tableId = resourceId(normalizedKind, ResourceKind.RK_TABLE, table.name());
+      ResourceId tableId = resourceId(normalizedKind, table);
       Map<String, Map<EngineHintKey, EngineHint>> columnHints =
           buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
       List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
@@ -323,7 +323,7 @@ public class SystemNodeRegistry {
         logMissingNamespace("view", view.name());
         continue;
       }
-      ResourceId viewId = resourceId(normalizedKind, ResourceKind.RK_VIEW, view.name());
+      ResourceId viewId = resourceId(normalizedKind, view);
       List<SchemaColumn> viewColumns = SystemSchemaMapper.toSchemaColumns(view.columns());
       Map<EngineHintKey, EngineHint> viewHints =
           EngineHintsMapper.toHints(normalizedKind, normalizedVersion, view.engineSpecific());
@@ -349,7 +349,7 @@ public class SystemNodeRegistry {
     }
 
     for (SystemNamespaceDef ns : namespaceDefs) {
-      ResourceId namespaceId = resourceId(normalizedKind, ResourceKind.RK_NAMESPACE, ns.name());
+      ResourceId namespaceId = resourceId(normalizedKind, ns);
       Map<EngineHintKey, EngineHint> namespaceHints =
           EngineHintsMapper.toHints(normalizedKind, normalizedVersion, ns.engineSpecific());
       NamespaceNode node =
@@ -616,7 +616,7 @@ public class SystemNodeRegistry {
     ResourceId nsId = findNamespaceId(def.name(), namespaceIds).orElse(null);
 
     return new FunctionNode(
-        resourceId(engineKind, ResourceKind.RK_FUNCTION, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -634,7 +634,7 @@ public class SystemNodeRegistry {
   private OperatorNode toOperatorNode(String engineKind, long version, SystemOperatorDef def) {
 
     return new OperatorNode(
-        resourceId(engineKind, ResourceKind.RK_OPERATOR, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -649,7 +649,7 @@ public class SystemNodeRegistry {
 
   private TypeNode toTypeNode(String engineKind, long version, SystemTypeDef def) {
     return new TypeNode(
-        resourceId(engineKind, ResourceKind.RK_TYPE, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -664,7 +664,7 @@ public class SystemNodeRegistry {
 
   private CastNode toCastNode(String engineKind, long version, SystemCastDef def) {
     return new CastNode(
-        resourceId(engineKind, ResourceKind.RK_CAST, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -677,7 +677,7 @@ public class SystemNodeRegistry {
   private CollationNode toCollationNode(String engineKind, long version, SystemCollationDef def) {
 
     return new CollationNode(
-        resourceId(engineKind, ResourceKind.RK_COLLATION, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -689,7 +689,7 @@ public class SystemNodeRegistry {
   private AggregateNode toAggregateNode(String engineKind, long version, SystemAggregateDef def) {
 
     return new AggregateNode(
-        resourceId(engineKind, ResourceKind.RK_AGGREGATE, def.name()),
+        resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
@@ -703,10 +703,35 @@ public class SystemNodeRegistry {
   }
 
   // =======================================================================
-  // Helpers
+  // ResourceId helpers
   // =======================================================================
 
+  /**
+   * Universal ResourceId entrypoint for system objects.
+   *
+   * <p>This method centralizes the mapping from {@link SystemObjectDef} to {@link ResourceKind} and
+   * the identity string strategy (canonical name vs overload-safe signature).
+   */
+  public static ResourceId resourceId(String engineKind, SystemObjectDef def) {
+    String suffix = SignatureUtil.identityString(def);
+    if (def == null) {
+      return resourceId(engineKind, ResourceKind.RK_UNSPECIFIED, "");
+    }
+    return resourceId(engineKind, def.kind(), suffix);
+  }
+
+  /** ResourceId builder for objects identified by NameRef only (no overloads). */
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
+    return resourceId(engineKind, kind, NameRefUtil.canonical(name));
+  }
+
+  /**
+   * Single implementation used by all ResourceId construction.
+   *
+   * <p>Used for objects that can be overloaded with NameRef only (e.g., system-defined functions)
+   * or other identifiers.
+   */
+  public static ResourceId resourceId(String engineKind, ResourceKind kind, String idSuffix) {
     String engine =
         (engineKind == null || engineKind.isBlank())
             ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
@@ -714,7 +739,7 @@ public class SystemNodeRegistry {
     return ResourceId.newBuilder()
         .setAccountId(SYSTEM_ACCOUNT)
         .setKind(kind)
-        .setId(engine + ":" + safeName(name))
+        .setId(engine + ":" + (idSuffix == null ? "" : idSuffix))
         .build();
   }
 

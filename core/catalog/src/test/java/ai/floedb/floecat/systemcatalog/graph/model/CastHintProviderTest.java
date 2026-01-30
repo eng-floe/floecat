@@ -61,7 +61,9 @@ class CastHintProviderTest {
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
     var key = new EngineKey(ENGINE, "16.0");
 
-    var node = BuiltinTestSupport.castNode(ENGINE, "pg.cast", "pg.int4", "pg.text", "explicit");
+    var node =
+        BuiltinTestSupport.castNode(
+            ENGINE, "pg.cast", "pg.int4", "pg.text", SystemCastMethod.EXPLICIT);
 
     var result = provider.compute(node, key, CAST_PAYLOAD_TYPE, "cid").orElseThrow();
     assertThat(result.payloadType()).isEqualTo(CAST_PAYLOAD_TYPE);

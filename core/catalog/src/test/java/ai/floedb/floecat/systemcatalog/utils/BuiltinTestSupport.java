@@ -18,6 +18,12 @@ package ai.floedb.floecat.systemcatalog.utils;
 
 import ai.floedb.floecat.common.rpc.*;
 import ai.floedb.floecat.metagraph.model.*;
+import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
+import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
+import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
+import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
@@ -26,6 +32,7 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
@@ -57,17 +64,14 @@ public final class BuiltinTestSupport {
   public static FunctionNode functionNode(
       String engine, List<String> argTypes, String retType, String fullname) {
 
+    List<NameRef> argRefs = argTypes.stream().map(BuiltinTestSupport::nr).toList();
     List<ResourceId> argIds =
-        argTypes.stream()
-            .map(
-                a ->
-                    SystemNodeRegistry.resourceId(
-                        engine, ResourceKind.RK_TYPE, NameRef.newBuilder().setName(a).build()))
+        argRefs.stream()
+            .map(a -> SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, a))
             .toList();
 
-    ResourceId retId =
-        SystemNodeRegistry.resourceId(
-            engine, ResourceKind.RK_TYPE, NameRef.newBuilder().setName(retType).build());
+    NameRef retRef = nr(retType);
+    ResourceId retId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, retRef);
 
     NameRef fn = nr(fullname);
     String namespaceCanonical = NameRefUtil.namespaceFromCanonical(NameRefUtil.canonical(fn));
@@ -77,7 +81,9 @@ public final class BuiltinTestSupport {
             : SystemNodeRegistry.resourceId(
                 engine, ResourceKind.RK_NAMESPACE, NameRefUtil.fromCanonical(namespaceCanonical));
 
-    ResourceId fnId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_FUNCTION, fn);
+    SystemFunctionDef fnDef = new SystemFunctionDef(fn, argRefs, retRef, false, false, List.of());
+    String signature = SignatureUtil.functionSignature(fnDef);
+    ResourceId fnId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_FUNCTION, signature);
 
     return new FunctionNode(
         fnId,
@@ -98,8 +104,12 @@ public final class BuiltinTestSupport {
   public static OperatorNode operatorNode(
       String engine, String name, String left, String right, String ret) {
 
+    SystemOperatorDef opDef =
+        new SystemOperatorDef(nr(name), nr(left), nr(right), nr(ret), false, false, List.of());
+
     return new OperatorNode(
-        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_OPERATOR, nr(name)),
+        SystemNodeRegistry.resourceId(
+            engine, ResourceKind.RK_OPERATOR, SignatureUtil.operatorSignature(opDef)),
         1L,
         Instant.EPOCH,
         engine,
@@ -115,16 +125,20 @@ public final class BuiltinTestSupport {
   // --- Build cast nodes ----------------------------------------------------
 
   public static CastNode castNode(
-      String engine, String name, String srcType, String dstType, String method) {
+      String engine, String name, String srcType, String dstType, SystemCastMethod method) {
+
+    SystemCastDef castDef =
+        new SystemCastDef(nr(name), nr(srcType), nr(dstType), method, List.of());
 
     return new CastNode(
-        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_CAST, nr(name)),
+        SystemNodeRegistry.resourceId(
+            engine, ResourceKind.RK_CAST, SignatureUtil.castSignature(castDef)),
         1L,
         Instant.EPOCH,
         engine,
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(srcType)),
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(dstType)),
-        method,
+        method.wireValue(),
         Map.of());
   }
 
@@ -145,35 +159,42 @@ public final class BuiltinTestSupport {
 
   // --- Build collation nodes ----------------------------------------------
 
-  public static CollationNode collationNode(String engine, String name) {
+  public static CollationNode collationNode(String engine, String name, String locale) {
+    SystemCollationDef collationDef = new SystemCollationDef(nr(name), locale, List.of());
     return new CollationNode(
-        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_COLLATION, nr(name)),
+        SystemNodeRegistry.resourceId(engine, collationDef),
         1L,
         Instant.EPOCH,
         engine,
         name,
-        "en_US",
+        locale,
         Map.of());
   }
 
   // --- Build aggregate nodes ----------------------------------------------
 
   public static AggregateNode aggregateNode(
-      String engine, String name, List<String> args, String ret) {
+      String engine, String name, List<String> args, String state, String ret) {
 
     List<ResourceId> argIds =
         args.stream()
             .map(a -> SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(a)))
             .toList();
 
+    List<NameRef> argRefs = args.stream().map(BuiltinTestSupport::nr).toList();
+
+    SystemAggregateDef aggDef =
+        new SystemAggregateDef(nr(name), argRefs, nr(state), nr(ret), List.of());
+
     return new AggregateNode(
-        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_AGGREGATE, nr(name)),
+        SystemNodeRegistry.resourceId(
+            engine, ResourceKind.RK_AGGREGATE, SignatureUtil.aggregateSignature(aggDef)),
         1L,
         Instant.EPOCH,
         engine,
         name,
         argIds,
-        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr("state")),
+        SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(state)),
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(ret)),
         Map.of());
   }

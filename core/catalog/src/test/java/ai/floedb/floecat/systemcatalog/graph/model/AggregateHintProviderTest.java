@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import java.util.List;
@@ -66,10 +67,14 @@ class AggregateHintProviderTest {
     var provider = BuiltinTestSupport.providerFrom(ENGINE, catalog);
     var key = new EngineKey(ENGINE, "16.0");
 
-    var node = BuiltinTestSupport.aggregateNode(ENGINE, "pg.sum", List.of("pg.int4"), "pg.int4");
+    var node =
+        BuiltinTestSupport.aggregateNode(
+            ENGINE, "pg.sum", List.of("pg.int4"), "pg.state", "pg.int4");
 
     var result = provider.compute(node, key, AGG_PAYLOAD_TYPE, "cid").orElseThrow();
     var payload = result.payload();
+    var def = catalog.aggregates().get(0);
+    assertThat(node.id()).isEqualTo(SystemNodeRegistry.resourceId(ENGINE, def));
     assertThat(result.payloadType()).isEqualTo(AGG_PAYLOAD_TYPE);
     assertThat(new String(payload)).contains("aggfinalextra");
     assertThat(result.metadata()).containsEntry("oid", "6006");

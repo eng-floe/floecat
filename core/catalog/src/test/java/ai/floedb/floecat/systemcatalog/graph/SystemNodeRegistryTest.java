@@ -22,10 +22,13 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
@@ -321,6 +324,190 @@ class SystemNodeRegistryTest {
     assertThat(built.displayName()).isEqualTo("pg.abs");
     assertThat(built.argumentTypes().get(0).getId()).isEqualTo(FLOE_KIND + ":pg.int4");
     assertThat(built.returnType().getId()).isEqualTo(FLOE_KIND + ":pg.int4");
+  }
+
+  @Test
+  void overloadedFunctions_haveDistinctResourceIds() {
+    var int4 = new SystemTypeDef(nr("pg_catalog.int4"), "N", false, null, List.of());
+    var text = new SystemTypeDef(nr("pg_catalog.text"), "S", false, null, List.of());
+
+    // same function name, different arg types => overloads
+    var fInt =
+        new SystemFunctionDef(
+            nr("pg_catalog.overloaded"),
+            List.of(nr("pg_catalog.int4")),
+            nr("pg_catalog.int4"),
+            false,
+            false,
+            List.of());
+
+    var fText =
+        new SystemFunctionDef(
+            nr("pg_catalog.overloaded"),
+            List.of(nr("pg_catalog.text")),
+            nr("pg_catalog.text"),
+            false,
+            false,
+            List.of());
+
+    var catalog =
+        new SystemCatalogData(
+            List.of(fInt, fText),
+            List.of(),
+            List.of(int4, text),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    var defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+
+    assertThat(nodes.functions()).hasSize(2);
+
+    var ids = nodes.functions().stream().map(fn -> fn.id().getId()).toList();
+    assertThat(ids)
+        .containsExactlyInAnyOrder(
+            FLOE_KIND + ":pg_catalog.overloaded(pg_catalog.int4)",
+            FLOE_KIND + ":pg_catalog.overloaded(pg_catalog.text)");
+
+    // sanity: both are for the same display name (safeName) but distinct IDs
+    assertThat(nodes.functions())
+        .extracting(fn -> fn.displayName())
+        .containsOnly("pg_catalog.overloaded");
+  }
+
+  @Test
+  void overloadedOperatorsProduceDistinctIds() {
+    SystemOperatorDef opInt =
+        new SystemOperatorDef(
+            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog.int4"),
+            NameRefUtil.name("pg_catalog.int4"),
+            NameRefUtil.name("pg_catalog.int4"),
+            true,
+            true,
+            List.of());
+    SystemOperatorDef opText =
+        new SystemOperatorDef(
+            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog.text"),
+            NameRefUtil.name("pg_catalog.text"),
+            NameRefUtil.name("pg_catalog.text"),
+            true,
+            true,
+            List.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(opInt, opText),
+            List.of(
+                new SystemTypeDef(NameRefUtil.name("pg_catalog.int4"), "I", false, null, List.of()),
+                new SystemTypeDef(
+                    NameRefUtil.name("pg_catalog.text"), "T", false, null, List.of())),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    var defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+
+    var ids = nodes.operators().stream().map(node -> node.id().getId()).toList();
+    assertThat(ids)
+        .containsExactlyInAnyOrder(
+            FLOE_KIND + ":add(pg_catalog.int4,pg_catalog.int4)->pg_catalog.int4",
+            FLOE_KIND + ":add(pg_catalog.text,pg_catalog.text)->pg_catalog.text");
+  }
+
+  @Test
+  void aggregatesWithDifferentSignaturesProduceDistinctIds() {
+    SystemAggregateDef aggSum =
+        new SystemAggregateDef(
+            NameRefUtil.name("sum"),
+            List.of(NameRefUtil.name("pg_catalog.int4")),
+            NameRefUtil.name("pg_catalog.int4"),
+            NameRefUtil.name("pg_catalog.int4"),
+            List.of());
+    SystemAggregateDef aggCount =
+        new SystemAggregateDef(
+            NameRefUtil.name("sum"),
+            List.of(NameRefUtil.name("pg_catalog.text")),
+            NameRefUtil.name("pg_catalog.int4"),
+            NameRefUtil.name("pg_catalog.int4"),
+            List.of());
+    SystemAggregateDef aggStateDifferent =
+        new SystemAggregateDef(
+            NameRefUtil.name("sum"),
+            List.of(NameRefUtil.name("pg_catalog.int4")),
+            NameRefUtil.name("pg_catalog.text"),
+            NameRefUtil.name("pg_catalog.int4"),
+            List.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(
+                new SystemTypeDef(NameRefUtil.name("pg_catalog.int4"), "I", false, null, List.of()),
+                new SystemTypeDef(
+                    NameRefUtil.name("pg_catalog.text"), "T", false, null, List.of())),
+            List.of(),
+            List.of(),
+            List.of(aggSum, aggCount, aggStateDifferent),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    var defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+
+    assertThat(nodes.aggregates())
+        .extracting(node -> node.id().getId())
+        .containsExactlyInAnyOrder(
+            FLOE_KIND + ":sum(pg_catalog.int4)->pg_catalog.int4[pg_catalog.int4]",
+            FLOE_KIND + ":sum(pg_catalog.text)->pg_catalog.int4[pg_catalog.int4]",
+            FLOE_KIND + ":sum(pg_catalog.int4)->pg_catalog.int4[pg_catalog.text]");
+  }
+
+  @Test
+  void collationsWithDifferentLocalesKeepDistinctIdentities() {
+    SystemCollationDef enColl =
+        new SystemCollationDef(NameRefUtil.name("locale"), "en_US", List.of());
+    SystemCollationDef frColl =
+        new SystemCollationDef(NameRefUtil.name("locale"), "fr_FR", List.of());
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(enColl, frColl),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    var defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+
+    assertThat(nodes.collations())
+        .extracting(node -> node.id().getId())
+        .containsExactlyInAnyOrder(FLOE_KIND + ":locale.en_US", FLOE_KIND + ":locale.fr_FR");
   }
 
   @Test

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.systemcatalog.hint;
 
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.systemcatalog.def.*;
@@ -173,12 +172,7 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
         (List<SystemObjectDef>)
             (List<?>)
                 defs.stream()
-                    .filter(
-                        def ->
-                            node.id()
-                                .equals(
-                                    SystemNodeRegistry.resourceId(
-                                        engineKind, def.kind(), def.name())))
+                    .filter(def -> node.id().equals(SystemNodeRegistry.resourceId(engineKind, def)))
                     .toList();
 
     if (candidates.isEmpty()) {
@@ -187,127 +181,13 @@ public class SystemCatalogHintProvider implements EngineHintProvider {
 
     for (SystemObjectDef def : candidates) {
       EngineSpecificRule r =
-          switch (def.kind()) {
-            case RK_FUNCTION ->
-                matchFunction(
-                    (SystemFunctionDef) def,
-                    (FunctionNode) node,
-                    engineKind,
-                    engineVersion,
-                    payloadType);
-
-            case RK_AGGREGATE ->
-                matchAggregate(
-                    (SystemAggregateDef) def,
-                    (AggregateNode) node,
-                    engineKind,
-                    engineVersion,
-                    payloadType);
-
-            case RK_OPERATOR ->
-                matchOperator(
-                    (SystemOperatorDef) def,
-                    (OperatorNode) node,
-                    engineKind,
-                    engineVersion,
-                    payloadType);
-
-            case RK_CAST ->
-                matchCast(
-                    (SystemCastDef) def, (CastNode) node, engineKind, engineVersion, payloadType);
-
-            case RK_TYPE, RK_COLLATION ->
-                selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType);
-
-            default -> null;
-          };
-
-      if (r != null) return r;
+          selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType);
+      if (r != null) {
+        return r;
+      }
     }
 
     return null;
-  }
-
-  private EngineSpecificRule matchFunction(
-      SystemFunctionDef def,
-      FunctionNode fn,
-      String engineKind,
-      String engineVersion,
-      String payloadType) {
-    boolean argsMatch =
-        def.argumentTypes().stream()
-            .map(a -> SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
-            .toList()
-            .equals(fn.argumentTypes());
-
-    boolean retMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
-            .equals(fn.returnType());
-
-    return (argsMatch && retMatch)
-        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
-        : null;
-  }
-
-  private EngineSpecificRule matchAggregate(
-      SystemAggregateDef def,
-      AggregateNode an,
-      String engineKind,
-      String engineVersion,
-      String payloadType) {
-    boolean argsMatch =
-        def.argumentTypes().stream()
-            .map(a -> SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, a))
-            .toList()
-            .equals(an.argumentTypes());
-
-    boolean retMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
-            .equals(an.returnType());
-
-    return (argsMatch && retMatch)
-        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
-        : null;
-  }
-
-  private EngineSpecificRule matchOperator(
-      SystemOperatorDef def,
-      OperatorNode on,
-      String engineKind,
-      String engineVersion,
-      String payloadType) {
-    boolean leftMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.leftType())
-            .equals(on.leftType());
-
-    boolean rightMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.rightType())
-            .equals(on.rightType());
-
-    boolean retMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType())
-            .equals(on.returnType());
-
-    return (leftMatch && rightMatch && retMatch)
-        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
-        : null;
-  }
-
-  private EngineSpecificRule matchCast(
-      SystemCastDef def, CastNode cn, String engineKind, String engineVersion, String payloadType) {
-    boolean srcMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.sourceType())
-            .equals(cn.sourceType());
-
-    boolean dstMatch =
-        SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TYPE, def.targetType())
-            .equals(cn.targetType());
-
-    boolean methodMatch = def.method().wireValue().equalsIgnoreCase(cn.method());
-
-    return (srcMatch && dstMatch && methodMatch)
-        ? selectRule(def.engineSpecific(), engineKind, engineVersion, payloadType)
-        : null;
   }
 
   /**
