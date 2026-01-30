@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage;
+package ai.floedb.floecat.storage.memory;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Tag;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.properties.IfBuildProperty;

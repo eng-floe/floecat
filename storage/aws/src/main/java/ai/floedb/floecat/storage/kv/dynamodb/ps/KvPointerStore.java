@@ -16,7 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.storage.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
 

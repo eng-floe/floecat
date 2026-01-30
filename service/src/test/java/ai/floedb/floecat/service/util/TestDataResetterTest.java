@@ -18,8 +18,8 @@ package ai.floedb.floecat.service.util;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.storage.BlobStore;
-import ai.floedb.floecat.storage.PointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;

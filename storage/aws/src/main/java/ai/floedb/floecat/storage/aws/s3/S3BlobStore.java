@@ -17,13 +17,13 @@
 package ai.floedb.floecat.storage.aws.s3;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
-import ai.floedb.floecat.storage.BlobStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageConflictException;
 import ai.floedb.floecat.storage.errors.StorageCorruptionException;
 import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StoragePreconditionFailedException;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;

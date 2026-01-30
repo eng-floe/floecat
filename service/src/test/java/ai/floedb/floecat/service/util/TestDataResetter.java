@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.util;
 
-import ai.floedb.floecat.storage.BlobStore;
-import ai.floedb.floecat.storage.PointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;

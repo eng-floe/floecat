@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage;
+package ai.floedb.floecat.storage.memory;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;

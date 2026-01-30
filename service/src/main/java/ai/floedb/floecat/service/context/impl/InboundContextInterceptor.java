@@ -20,7 +20,6 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
-import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -31,27 +30,29 @@ import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
-import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.opentelemetry.api.trace.Span;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.quarkus.security.identity.SecurityIdentity;
-import jakarta.annotation.PostConstruct;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.ConfigProvider;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
-@ApplicationScoped
-public class InboundContextInterceptor implements ServerInterceptor {
+/**
+ * Inbound gRPC context logic (plain helper).
+ *
+ * <p>Intentionally does NOT implement io.grpc.ServerInterceptor to avoid Quarkus build-time "unused
+ * gRPC interceptor" warnings. It is invoked by BlockingInboundContextInterceptor via a
+ * runtime-generated proxy, and executed off the Vert.x event-loop using
+ * BlockingServerInterceptor.wrap(...).
+ */
+public class InboundContextInterceptor {
   private static final Logger LOG = Logger.getLogger(InboundContextInterceptor.class);
 
   private static final Metadata.Key<byte[]> PRINC_BIN =
@@ -72,30 +73,34 @@ public class InboundContextInterceptor implements ServerInterceptor {
   public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
 
-  @Inject QueryContextStore queryStore;
-  @Inject AccountRepository accountRepository;
-  @Inject TenantIdentityProvider identityProvider;
+  private final AccountRepository accountRepository;
+  private final TenantIdentityProvider identityProvider;
 
-  @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
-  boolean validateAccount;
+  private final boolean validateAccount;
+  private final Optional<String> sessionHeader;
+  private final boolean allowDevContext;
+  private final String accountClaimName;
+  private final String roleClaimName;
+  private final boolean allowPrincipalHeader;
 
-  @ConfigProperty(name = "floecat.interceptor.session.header")
-  Optional<String> sessionHeader;
+  public InboundContextInterceptor(
+      AccountRepository accountRepository,
+      TenantIdentityProvider identityProvider,
+      boolean validateAccount,
+      Optional<String> sessionHeader,
+      boolean allowDevContext,
+      String accountClaimName,
+      String roleClaimName,
+      boolean allowPrincipalHeader) {
+    this.accountRepository = accountRepository;
+    this.identityProvider = identityProvider;
+    this.validateAccount = validateAccount;
+    this.sessionHeader = sessionHeader;
+    this.allowDevContext = allowDevContext;
+    this.accountClaimName = accountClaimName;
+    this.roleClaimName = roleClaimName;
+    this.allowPrincipalHeader = allowPrincipalHeader;
 
-  @ConfigProperty(name = "floecat.interceptor.session.account-claim", defaultValue = "account_id")
-  String accountClaimName;
-
-  @ConfigProperty(name = "floecat.interceptor.session.role-claim", defaultValue = "roles")
-  String roleClaimName;
-
-  @ConfigProperty(name = "floecat.interceptor.allow.principal-header", defaultValue = "false")
-  boolean allowPrincipalHeader;
-
-  @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
-  boolean allowDevContext;
-
-  @PostConstruct
-  void logConfig() {
     String header = sessionHeader.orElse("");
     LOG.infof(
         "InboundContextInterceptor ready: sessionHeader=%s allowPrincipalHeader=%s"
@@ -106,7 +111,6 @@ public class InboundContextInterceptor implements ServerInterceptor {
         validateAccount);
   }
 
-  @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
@@ -175,23 +179,7 @@ public class InboundContextInterceptor implements ServerInterceptor {
           }
         };
 
-    var listener = Contexts.interceptCall(context, forwarding, headers, next);
-
-    span = io.opentelemetry.api.trace.Span.current();
-    if (span.getSpanContext().isValid()) {
-      span.setAttribute("query_id", queryId);
-      span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("account_id", principalContext.getAccountId());
-      span.setAttribute("subject", principalContext.getSubject());
-      if (!engineVersion.isBlank()) {
-        span.setAttribute("engine_version", engineVersion);
-      }
-      if (!engineKind.isBlank()) {
-        span.setAttribute("engine_kind", engineKind);
-      }
-    }
-
-    return listener;
+    return Contexts.interceptCall(context, forwarding, headers, next);
   }
 
   private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {

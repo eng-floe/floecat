@@ -28,8 +28,6 @@ option java_package = "ai.floedb.floecat.extensions.floedb.proto";
  * mechanism to enrich the unified SQL object model.
  */
 
-import "floecat/query/engine_specific.proto";
-
 /**
  * Engine-specific namespace attributes (pg_namespace).
  */

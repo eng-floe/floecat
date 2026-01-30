@@ -51,6 +51,7 @@
 
   <properties>
     <quarkus-plugin.version>${quarkus.platform.version}</quarkus-plugin.version>
+    <test.jvm.args.extra>-Djdk.attach.allowAttachSelf=true -Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
   </properties>
 
   <dependencies>
@@ -149,6 +150,16 @@
       <artifactId>rest-assured</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.jboss.logmanager</groupId>
+      <artifactId>jboss-logmanager</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jboss.slf4j</groupId>
+      <artifactId>slf4j-jboss-logmanager</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -207,7 +218,7 @@
             <include>**/*Test.java</include>
           </includes>
           <skipTests>${skipUTs}</skipTests>
-          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED -Djdk.attach.allowAttachSelf=true</argLine>
+          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
       <plugin>
@@ -227,7 +238,7 @@
             <include>**/*IT.java</include>
           </includes>
           <skipITs>${skipITs}</skipITs>
-          <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
     </plugins>
