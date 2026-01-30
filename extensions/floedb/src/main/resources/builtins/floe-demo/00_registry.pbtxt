@@ -13,105 +13,92 @@
 # limitations under the License.
 
 engine_specific {
-  payload_type: "floe.index.access_methods+proto"
-  [floe.ext.floe_index_access_methods] {
-    methods { oid: 403 name: "btree" }
-    methods { oid: 405 name: "hash" }
+  payload_type: "floe.access_methods+proto"
+  [floe.ext.floe_access_methods] {
+    methods { oid: 403 amname: "btree" }
+    methods { oid: 405 amname: "hash" }
   }
 }
 
 engine_specific {
-  payload_type: "floe.index.operator_families+proto"
-  [floe.ext.floe_index_operator_families] {
-    # btree integer_ops (typical PG OIDs; adjust if Floe differs)
-    families { oid: 1976 access_method_oid: 403 name: "integer_ops" namespace_oid: 11 }
-    # hash int4_ops (again, typical; adjust if needed)
-    families { oid: 1977 access_method_oid: 405 name: "integer_ops" namespace_oid: 11 }
-    # btree text_ops
-    families { oid: 1994 access_method_oid: 403 name: "text_ops" namespace_oid: 11 }
-    # hash text_ops
-    families { oid: 1995 access_method_oid: 405 name: "text_ops" namespace_oid: 11 }
+  payload_type: "floe.operator_families+proto"
+  [floe.ext.floe_operator_families] {
+    families { oid: 1976 opfmethod: 403 opfname: "integer_ops" opfnamespace: 11 }
+    families { oid: 1977 opfmethod: 405 opfname: "integer_ops" opfnamespace: 11 }
+    families { oid: 1994 opfmethod: 403 opfname: "text_ops" opfnamespace: 11 }
+    families { oid: 1995 opfmethod: 405 opfname: "text_ops" opfnamespace: 11 }
   }
 }
 
 engine_specific {
-  payload_type: "floe.index.operator_classes+proto"
-  [floe.ext.floe_index_operator_classes] {
+  payload_type: "floe.operator_classes+proto"
+  [floe.ext.floe_operator_classes] {
     # int4 btree opclass
     classes {
       oid: 1978
-      family_oid: 1976
-      input_type_oid: 23
-      access_method_oid: 403
-      is_default: true
-      name: "int4_ops"
-      namespace_oid: 11
+      opcfamily: 1976
+      opcintype: 23
+      opcmethod: 403
+      opcdefault: true
+      opcname: "int4_ops"
+      opcnamespace: 11
     }
 
     # int4 hash opclass
     classes {
       oid: 1979
-      family_oid: 1977
-      input_type_oid: 23
-      access_method_oid: 405
-      is_default: true
-      name: "int4_ops"
-      namespace_oid: 11
+      opcfamily: 1977
+      opcintype: 23
+      opcmethod: 405
+      opcdefault: true
+      opcname: "int4_ops"
+      opcnamespace: 11
     }
 
     # text btree opclass
     classes {
       oid: 3121
-      family_oid: 1994
-      input_type_oid: 25
-      access_method_oid: 403
-      is_default: true
-      name: "text_ops"
-      namespace_oid: 11
+      opcfamily: 1994
+      opcintype: 25
+      opcmethod: 403
+      opcdefault: true
+      opcname: "text_ops"
+      opcnamespace: 11
     }
 
     # text hash opclass
     classes {
       oid: 3122
-      family_oid: 1995
-      input_type_oid: 25
-      access_method_oid: 405
-      is_default: true
-      name: "text_ops"
-      namespace_oid: 11
+      opcfamily: 1995
+      opcintype: 25
+      opcmethod: 405
+      opcdefault: true
+      opcname: "text_ops"
+      opcnamespace: 11
     }
   }
 }
 
 engine_specific {
-  payload_type: "floe.index.operator_strategies+proto"
-  [floe.ext.floe_index_operator_strategies] {
-    # Minimal btree strategy coverage for int4: < <= = >= >
-    # Using placeholder operator OIDs; update to real pg_operator.oid values if you want strict validity.
-
-    entries { family_oid: 1976 strategy: 1 left_type_oid: 23 right_type_oid: 23 operator_oid: 0 purpose: "s" }  # <
-    entries { family_oid: 1976 strategy: 2 left_type_oid: 23 right_type_oid: 23 operator_oid: 0 purpose: "s" }  # <=
-    entries { family_oid: 1976 strategy: 3 left_type_oid: 23 right_type_oid: 23 operator_oid: 0 purpose: "s" }  # =
-    entries { family_oid: 1976 strategy: 4 left_type_oid: 23 right_type_oid: 23 operator_oid: 0 purpose: "s" }  # >=
-    entries { family_oid: 1976 strategy: 5 left_type_oid: 23 right_type_oid: 23 operator_oid: 0 purpose: "s" }  # >
-
-    # Minimal btree strategy coverage for text
-    entries { family_oid: 1994 strategy: 1 left_type_oid: 25 right_type_oid: 25 operator_oid: 0 purpose: "s" }  # <
-    entries { family_oid: 1994 strategy: 2 left_type_oid: 25 right_type_oid: 25 operator_oid: 0 purpose: "s" }  # <=
-    entries { family_oid: 1994 strategy: 3 left_type_oid: 25 right_type_oid: 25 operator_oid: 0 purpose: "s" }  # =
-    entries { family_oid: 1994 strategy: 4 left_type_oid: 25 right_type_oid: 25 operator_oid: 0 purpose: "s" }  # >=
-    entries { family_oid: 1994 strategy: 5 left_type_oid: 25 right_type_oid: 25 operator_oid: 0 purpose: "s" }  # >
+  payload_type: "floe.operator_access_methods+proto"
+  [floe.ext.floe_operator_access_methods] {
+    entries { amopfamily: 1976 amopstrategy: 1 amoplefttype: 23 amoprighttype: 23 amopopr: 0 amoppurpose: "s" }  # <
+    entries { amopfamily: 1976 amopstrategy: 2 amoplefttype: 23 amoprighttype: 23 amopopr: 0 amoppurpose: "s" }  # <=
+    entries { amopfamily: 1976 amopstrategy: 3 amoplefttype: 23 amoprighttype: 23 amopopr: 0 amoppurpose: "s" }  # =
+    entries { amopfamily: 1976 amopstrategy: 4 amoplefttype: 23 amoprighttype: 23 amopopr: 0 amoppurpose: "s" }  # >=
+    entries { amopfamily: 1976 amopstrategy: 5 amoplefttype: 23 amoprighttype: 23 amopopr: 0 amoppurpose: "s" }  # >
+    entries { amopfamily: 1994 amopstrategy: 1 amoplefttype: 25 amoprighttype :25 amopopr :0 amoppurpose: "s" } # <
+    entries { amopfamily: 1994 amopstrategy: 2 amoplefttype: 25 amoprighttype: 25 amopopr: 0 amoppurpose: "s" }  # <=
+    entries { amopfamily: 1994 amopstrategy: 3 amoplefttype: 25 amoprighttype: 25 amopopr: 0 amoppurpose: "s" }  # =
+    entries { amopfamily: 1994 amopstrategy: 4 amoplefttype: 25 amoprighttype: 25 amopopr: 0 amoppurpose: "s" } # >=
+    entries { amopfamily :1994 amopstrategy :5 amoplefttype :25 amoprighttype :25 amopopr :0 amoppurpose: "s" } # >
   }
 }
 
 engine_specific {
-  payload_type: "floe.index.support_procedures+proto"
-  [floe.ext.floe_index_support_procedures] {
-    # Minimal “cmp” support proc for btree int4/text.
-    # proc_number is AM-defined; in PG btree, 1 is often "cmp" (implementation dependent).
-    # function_oid placeholders (0) unless you want to wire real pg_proc.oid values.
-
-    entries { family_oid: 1976 proc_number: 1 left_type_oid: 23 right_type_oid: 23 function_oid: 0 }
-    entries { family_oid: 1994 proc_number: 1 left_type_oid: 25 right_type_oid: 25 function_oid: 0 }
+  payload_type: "floe.procedure_access_methods+proto"
+  [floe.ext.floe_procedure_access_methods] {
+    entries { amprocfamily: 1976 amprocnum: 1 amproclefttype: 23 amprocrighttype: 23 amproc: 0 }
+    entries { amprocfamily: 1994 amprocnum: 1 amproclefttype: 25 amprocrighttype: 25 amproc: 0 }
   }
 }

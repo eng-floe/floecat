@@ -188,7 +188,7 @@ def resolve_namespace_name(namespaces: Dict[int, NamespaceRow], oid: int) -> str
 
 
 # =============================================================================
-# pg_type (add typcollation)
+# pg_type
 # =============================================================================
 
 @dataclass(frozen=True)
@@ -209,8 +209,10 @@ class TypeRow:
     typrelid: Optional[int]
 
     typcollation: Optional[int]
+    
+    typcategory: Optional[str]
+    typispreferred: Optional[bool]
 
-    # NEW: keep raw pg_type proc refs as exported (OID or regproc name or '-')
     typinput_raw: Optional[str]
     typoutput_raw: Optional[str]
     typreceive_raw: Optional[str]
@@ -241,8 +243,8 @@ def read_types(csv_dir: Path) -> Dict[int, TypeRow]:
             typtype=to_str(r.get("typtype")),
             typrelid=to_int(r.get("typrelid")),
             typcollation=to_int(r.get("typcollation")),
-
-            # NEW: raw proc refs
+            typcategory=to_str(r.get("typcategory")),
+            typispreferred=to_bool_pg(r.get("typispreferred")),
             typinput_raw=to_str(r.get("typinput")),
             typoutput_raw=to_str(r.get("typoutput")),
             typreceive_raw=to_str(r.get("typreceive")),
@@ -742,6 +744,7 @@ class AmopRow:
     amopopr: Optional[int]
     amoppurpose: Optional[str]
     amopsortfamily: Optional[int]
+    amopmethod: Optional[int]
 
 
 def read_amop(csv_dir: Path) -> List[AmopRow]:
@@ -759,6 +762,7 @@ def read_amop(csv_dir: Path) -> List[AmopRow]:
                 amopopr=to_int(r.get("amopopr")),
                 amoppurpose=to_str(r.get("amoppurpose")),
                 amopsortfamily=to_int(r.get("amopsortfamily")),
+                amopmethod=to_int(r.get("amopmethod")),
             )
         )
     return out

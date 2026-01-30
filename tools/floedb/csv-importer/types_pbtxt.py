@@ -294,7 +294,9 @@ def _emit_type_block(
     out.append(f"      oid: {t.oid}")
     out.append(f'      typname: "{pb_escape(t.typname)}"')
     out.append(f"      typnamespace: {t.typnamespace}")
-
+    out.append(f'      typcategory: "{pb_escape(t.typcategory)}"')
+    out.append(f'      typispreferred: {"true" if t.typispreferred else "false"}')
+    
     if t.typlen is not None:
         out.append(f"      typlen: {t.typlen}")
     if t.typbyval is not None:

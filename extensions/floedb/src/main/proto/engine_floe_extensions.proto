@@ -25,7 +25,7 @@ option java_outer_classname = "EngineFloeExtensions";
  * NOTE: This file exists solely to provide a *short* proto package for
  * EngineSpecific extension names so that PBtxt can use concise bracket notation:
  *   [floe.ext.floe_function] { ... }
- *   [floe.ext.floe_index_access_methods] { ... }
+ *   [floe.ext.floe_access_methods] { ... }
  *
  * Protobuf TextFormat requires bracket notation for proto2 extensions and the
  * identifier inside the brackets must be the fully-qualified *proto* name.
@@ -72,24 +72,23 @@ extend ai.floedb.floecat.query.EngineSpecific {
   // Registry-level payloads (SystemObjectsRegistry.engine_specific)
 
   // Registry-level index access method dictionary (pg_am).
-  // payload_type: "floe.index.access_methods+proto"
-  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexAccessMethods floe_index_access_methods = 20;
+  // payload_type: "floe.access_methods+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods floe_access_methods = 20;
 
   // Registry-level index operator family dictionary (pg_opfamily).
-  // payload_type: "floe.index.operator_families+proto"
-  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorFamilies floe_index_operator_families = 21;
+  // payload_type: "floe.operator_families+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies floe_operator_families = 21;
 
   // Registry-level index operator class dictionary (pg_opclass).
-  // payload_type: "floe.index.operator_classes+proto"
-  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorClasses floe_index_operator_classes = 22;
-
+  // payload_type: "floe.operator_classes+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeOperatorClasses floe_operator_classes = 22;
   // Registry-level index operator strategy dictionary (pg_amop).
-  // payload_type: "floe.index.operator_strategies+proto"
-  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexOperatorStrategies floe_index_operator_strategies = 23;
+  // payload_type: "floe.operator_access_methods+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeOperatorAccessMethods floe_operator_access_methods = 23;
 
   // Registry-level index support procedure dictionary (pg_amproc).
-  // payload_type: "floe.index.support_procedures+proto"
-  optional ai.floedb.floecat.extensions.floedb.proto.FloeIndexSupportProcedures floe_index_support_procedures = 24;
+  // payload_type: "floe.procedure_access_methods+proto"
+  optional ai.floedb.floecat.extensions.floedb.proto.FloeProcedureAccessMethods floe_procedure_access_methods = 24;
 
   // Type planning semantics (typcache accelerant).
   // payload_type: "floe.type.planning_semantics+proto"

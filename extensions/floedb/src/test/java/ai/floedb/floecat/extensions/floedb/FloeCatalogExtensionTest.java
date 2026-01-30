@@ -280,11 +280,11 @@ class FloeCatalogExtensionTest {
 
     Set<String> expected =
         Set.of(
-            "floe.index.access_methods+proto",
-            "floe.index.operator_families+proto",
-            "floe.index.operator_classes+proto",
-            "floe.index.operator_strategies+proto",
-            "floe.index.support_procedures+proto");
+            "floe.access_methods+proto",
+            "floe.operator_families+proto",
+            "floe.operator_classes+proto",
+            "floe.operator_access_methods+proto",
+            "floe.procedure_access_methods+proto");
 
     assert payloadTypes.containsAll(expected) : "Missing Floe registry payloads " + expected;
 
