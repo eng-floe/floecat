@@ -31,6 +31,8 @@ import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -47,6 +49,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -54,6 +57,7 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,12 +75,122 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
 
+  // Overlay gives access to system namespaces (and other system objects)
+  @Inject CatalogOverlay overlay;
+
   private static final Set<String> NAMESPACE_MUTABLE_PATHS =
       Set.of("display_name", "description", "path", "policy_ref", "properties", "catalog_id");
-  private static final String PATH_DELIM = "\u001F";
   private static final String NS_TOKEN_PREFIX = "ns:";
 
   private static final Logger LOG = Logger.getLogger(NamespaceService.class);
+
+  // ---------- SYSTEM immutability + strict collision helpers ----------
+
+  private void rejectIfSystemNamespace(ResourceId namespaceId, String corr) {
+    if (namespaceId == null) {
+      return;
+    }
+
+    boolean isSystem =
+        overlay
+            .resolve(namespaceId)
+            .filter(NamespaceNode.class::isInstance)
+            .map(NamespaceNode.class::cast)
+            .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
+            .isPresent();
+
+    if (isSystem) {
+      throw GrpcErrors.permissionDenied(
+          corr,
+          GeneratedErrorMessages.MessageKey.SYSTEM_OBJECT_IMMUTABLE,
+          Map.of("id", namespaceId.getId()));
+    }
+  }
+
+  private List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
+    if (catalogId == null) {
+      return List.of();
+    }
+    return overlay.listNamespaces(catalogId).stream()
+        .filter(ns -> ns != null && ns.origin() == GraphNodeOrigin.SYSTEM)
+        .toList();
+  }
+
+  private static final String PATH_DELIM = "\u001F";
+
+  private enum SystemPathMatch {
+    NONE,
+    /** Exact match to an existing SYSTEM namespace path. */
+    EXACT,
+    /** A prefix of the requested path is an existing SYSTEM namespace path (i.e. under SYSTEM). */
+    UNDER_SYSTEM
+  }
+
+  /**
+   * Returns whether {@code fullPath} collides with (EXACT) or is under (UNDER_SYSTEM) a SYSTEM
+   * namespace.
+   */
+  private SystemPathMatch systemNamespacePathMatch(
+      ResourceId catalogId, List<String> fullPath, List<NamespaceNode> sysNamespaces) {
+    if (catalogId == null || fullPath == null || fullPath.isEmpty()) {
+      return SystemPathMatch.NONE;
+    }
+
+    // Normalize the candidate path once (defensive: callers should already normalize).
+    var fullNorm = new ArrayList<String>(fullPath.size());
+    for (var seg : fullPath) {
+      fullNorm.add(normalizeName(seg));
+    }
+
+    // Build a set of SYSTEM namespace full paths (normalized), encoded as a single string.
+    var sysFullPaths = new java.util.HashSet<String>();
+    for (var n : sysNamespaces) {
+      if (n == null) {
+        continue;
+      }
+
+      var leaf = n.displayName();
+      if (leaf == null || leaf.isBlank()) {
+        continue;
+      }
+
+      // Encode the SYSTEM full path with a StringBuilder to reduce allocations.
+      var sb = new StringBuilder();
+      boolean first = true;
+      for (var seg : n.pathSegments()) {
+        var s = normalizeName(seg);
+        if (!first) {
+          sb.append(PATH_DELIM);
+        }
+        sb.append(s);
+        first = false;
+      }
+      var leafNorm = normalizeName(leaf);
+      if (!first) {
+        sb.append(PATH_DELIM);
+      }
+      sb.append(leafNorm);
+
+      sysFullPaths.add(sb.toString());
+    }
+
+    // Check prefixes efficiently without allocating a new joined string each time.
+    var sb = new StringBuilder();
+    for (int i = 0; i < fullNorm.size(); i++) {
+      if (i > 0) {
+        sb.append(PATH_DELIM);
+      }
+      sb.append(fullNorm.get(i));
+
+      if (sysFullPaths.contains(sb.toString())) {
+        return (i == fullNorm.size() - 1) ? SystemPathMatch.EXACT : SystemPathMatch.UNDER_SYSTEM;
+      }
+    }
+
+    return SystemPathMatch.NONE;
+  }
+
+  // ---------- RPCs ----------
 
   @Override
   public Uni<ListNamespacesResponse> listNamespaces(ListNamespacesRequest request) {
@@ -91,19 +205,34 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   final ResourceId catalogId;
                   final List<String> parentPath;
+
                   if (request.hasNamespaceId()) {
-                    var parent =
-                        namespaceRepo
-                            .getById(request.getNamespaceId())
-                            .orElseThrow(
-                                () ->
-                                    GrpcErrors.notFound(
-                                        correlationId(),
-                                        GeneratedErrorMessages.MessageKey.NAMESPACE,
-                                        Map.of("id", request.getNamespaceId().getId())));
-                    catalogId = parent.getCatalogId();
-                    parentPath = append(parent.getParentsList(), parent.getDisplayName());
+                    // Repo-first for user namespaces, but allow SYSTEM namespace parents via
+                    // overlay.
+                    var parentId = request.getNamespaceId();
+                    var parentOpt = namespaceRepo.getById(parentId);
+
+                    if (parentOpt.isPresent()) {
+                      var parent = parentOpt.get();
+                      catalogId = parent.getCatalogId();
+                      parentPath = append(parent.getParentsList(), parent.getDisplayName());
+                    } else {
+                      var parentNode =
+                          overlay
+                              .resolve(parentId)
+                              .filter(NamespaceNode.class::isInstance)
+                              .map(NamespaceNode.class::cast)
+                              .orElseThrow(
+                                  () ->
+                                      GrpcErrors.notFound(
+                                          correlationId(),
+                                          GeneratedErrorMessages.MessageKey.NAMESPACE,
+                                          Map.of("id", parentId.getId())));
+                      catalogId = parentNode.catalogId();
+                      parentPath = append(parentNode.pathSegments(), parentNode.displayName());
+                    }
                   } else if (request.hasCatalogId()) {
+                    // Keep existing behavior: validate catalog existence via repo.
                     catalogRepo
                         .getById(request.getCatalogId())
                         .orElseThrow(
@@ -130,6 +259,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   final String namePrefix = request.getNamePrefix().trim();
+                  final List<NamespaceNode> sysNamespaces = listSystemNamespaces(catalogId);
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
                   final int want = Math.max(1, pageIn.limit);
@@ -143,6 +273,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var out = new ArrayList<Namespace>(want);
                   String lastEmittedRel = "";
 
+                  // Phase 1: existing repo-backed pagination (unchanged)
                   while (out.size() < want) {
                     var next = new StringBuilder();
                     final List<Namespace> scanned;
@@ -168,8 +299,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           continue;
                         }
 
-                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0)
+                        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
                           continue;
+                        }
 
                         out.add(ns);
                         lastEmittedRel = rel;
@@ -210,6 +342,35 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     }
                   }
 
+                  // Phase 2: only once repo cursor is exhausted, append SYSTEM namespaces.
+                  if (cursor.isBlank() && out.size() < want) {
+
+                    record SysItem(NamespaceNode node, String rel) {}
+
+                    var sysItems =
+                        sysNamespaces.stream()
+                            .filter(
+                                ns ->
+                                    recursive
+                                        ? isDescendantOf(ns, parentPath)
+                                        : isImmediateChildOf(ns, parentPath))
+                            .map(ns -> new SysItem(ns, relativeQualifiedName(ns, parentPath)))
+                            .filter(it -> namePrefix.isBlank() || it.rel().startsWith(namePrefix))
+                            .sorted(Comparator.comparing(SysItem::rel))
+                            .toList();
+
+                    for (var it : sysItems) {
+                      if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
+                        continue;
+                      }
+                      if (out.size() >= want) {
+                        break;
+                      }
+                      out.add(toProto(it.node()));
+                      lastEmittedRel = it.rel();
+                    }
+                  }
+
                   String nextToken = cursor;
                   if (nextToken.isBlank() && out.size() == want) {
                     nextToken = encodeNsToken(lastEmittedRel);
@@ -217,7 +378,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   final int total =
                       countNamespaces(
-                          accountId, catalogId.getId(), parentPath, namePrefix, recursive);
+                          accountId,
+                          catalogId.getId(),
+                          parentPath,
+                          namePrefix,
+                          recursive,
+                          sysNamespaces);
 
                   var page = MutationOps.pageOut(nextToken, total);
                   return ListNamespacesResponse.newBuilder()
@@ -232,12 +398,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::ok);
   }
 
+  // Includes SYSTEM namespaces from overlay in totalSize.
   private int countNamespaces(
       String accountId,
       String catalogId,
       List<String> parentPath,
       String namePrefix,
-      boolean recursive) {
+      boolean recursive,
+      List<NamespaceNode> sysNamespaces) {
 
     int count = 0;
     String cursor = "";
@@ -275,16 +443,43 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         break;
       }
     }
-    return count;
+
+    int sysCount = 0;
+
+    for (var ns : sysNamespaces) {
+      boolean matchesScope =
+          recursive ? isDescendantOf(ns, parentPath) : isImmediateChildOf(ns, parentPath);
+      if (!matchesScope) {
+        continue;
+      }
+
+      if (!namePrefix.isBlank()) {
+        var rel = relativeQualifiedName(ns, parentPath);
+        if (!rel.startsWith(namePrefix)) {
+          continue;
+        }
+      }
+
+      sysCount++;
+    }
+
+    return count + sysCount;
   }
 
   private static boolean isDescendantOf(Namespace ns, List<String> parentPath) {
-    var p = ns.getParentsList();
-    if (p.size() < parentPath.size()) {
+    return isDescendantOf(ns.getParentsList(), parentPath);
+  }
+
+  private static boolean isDescendantOf(NamespaceNode ns, List<String> parentPath) {
+    return isDescendantOf(ns.pathSegments(), parentPath);
+  }
+
+  private static boolean isDescendantOf(List<String> namespaceParentPath, List<String> parentPath) {
+    if (namespaceParentPath.size() < parentPath.size()) {
       return false;
     }
     for (int i = 0; i < parentPath.size(); i++) {
-      if (!p.get(i).equals(parentPath.get(i))) {
+      if (!namespaceParentPath.get(i).equals(parentPath.get(i))) {
         return false;
       }
     }
@@ -292,13 +487,20 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
-    var p = ns.getParentsList();
-    if (p.size() != parentPath.size()) {
+    return isImmediateChildOf(ns.getParentsList(), parentPath);
+  }
+
+  private static boolean isImmediateChildOf(NamespaceNode ns, List<String> parentPath) {
+    return isImmediateChildOf(ns.pathSegments(), parentPath);
+  }
+
+  private static boolean isImmediateChildOf(List<String> nsParentPath, List<String> parentPath) {
+    if (nsParentPath.size() != parentPath.size()) {
       return false;
     }
 
     for (int i = 0; i < parentPath.size(); i++) {
-      if (!p.get(i).equals(parentPath.get(i))) {
+      if (!nsParentPath.get(i).equals(parentPath.get(i))) {
         return false;
       }
     }
@@ -328,6 +530,33 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return String.join(".", segs);
   }
 
+  private static String relativeQualifiedName(NamespaceNode ns, List<String> parentPath) {
+    var p = ns.pathSegments();
+    int n = parentPath.size();
+    var segs = new ArrayList<String>(Math.max(0, p.size() - n) + 1);
+
+    for (int i = n; i < p.size(); i++) {
+      segs.add(p.get(i));
+    }
+
+    if (ns.displayName() != null && !ns.displayName().isBlank()) {
+      segs.add(ns.displayName());
+    }
+
+    return String.join(".", segs);
+  }
+
+  private static Namespace toProto(NamespaceNode n) {
+    return Namespace.newBuilder()
+        .setResourceId(n.id())
+        .setCatalogId(n.catalogId())
+        .setDisplayName(n.displayName())
+        .clearParents()
+        .addAllParents(n.pathSegments())
+        .putAllProperties(n.properties())
+        .build();
+  }
+
   @Override
   public Uni<GetNamespaceResponse> getNamespace(GetNamespaceRequest request) {
     var L = LogHelper.start(LOG, "GetNamespace");
@@ -338,16 +567,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var princ = principal.get();
                   authz.require(princ, "namespace.read");
                   var nsId = request.getNamespaceId();
-                  var ns =
-                      namespaceRepo
-                          .getById(nsId)
+
+                  // Repo first (unchanged), then overlay (system).
+                  var nsOpt = namespaceRepo.getById(nsId);
+                  if (nsOpt.isPresent()) {
+                    return GetNamespaceResponse.newBuilder().setNamespace(nsOpt.get()).build();
+                  }
+
+                  var node =
+                      overlay
+                          .resolve(nsId)
+                          .filter(NamespaceNode.class::isInstance)
+                          .map(NamespaceNode.class::cast)
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
                                       correlationId(),
                                       GeneratedErrorMessages.MessageKey.NAMESPACE,
                                       Map.of("id", nsId.getId())));
-                  return GetNamespaceResponse.newBuilder().setNamespace(ns).build();
+
+                  return GetNamespaceResponse.newBuilder().setNamespace(toProto(node)).build();
                 }),
             correlationId())
         .onFailure()
@@ -409,7 +648,30 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   final List<String> parents = List.copyOf(normalizedParents);
                   final List<String> fullPath = new ArrayList<>(parents);
+                  final List<NamespaceNode> sysNamespaces =
+                      listSystemNamespaces(spec.getCatalogId());
                   fullPath.add(display);
+
+                  var sysMatch =
+                      systemNamespacePathMatch(spec.getCatalogId(), fullPath, sysNamespaces);
+                  if (sysMatch == SystemPathMatch.EXACT) {
+                    // Exact collision with an existing SYSTEM namespace.
+                    throw GrpcErrors.conflict(
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
+                        Map.of(
+                            "display_name", display,
+                            "catalog_id", spec.getCatalogId().getId(),
+                            "path", String.join(".", fullPath)));
+                  } else if (sysMatch == SystemPathMatch.UNDER_SYSTEM) {
+                    // Reject creating at/under a SYSTEM namespace subtree.
+                    throw GrpcErrors.permissionDenied(
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.SYSTEM_OBJECT_IMMUTABLE,
+                        Map.of(
+                            "catalog_id", spec.getCatalogId().getId(),
+                            "path", String.join(".", fullPath)));
+                  }
 
                   final byte[] fingerprint =
                       canonicalFingerprint(spec.getCatalogId(), parents, display, spec);
@@ -540,6 +802,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             corr, GeneratedErrorMessages.MessageKey.PATH_SEGMENT_BLANK, Map.of());
       }
       chain.add(seg);
+
       var existing = namespaceRepo.getByPath(accountId, catalogId.getId(), chain);
       if (existing.isPresent()) {
         continue;
@@ -586,6 +849,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var nsId = request.getNamespaceId();
                   ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
+
+                  // SYSTEM namespaces are immutable
+                  rejectIfSystemNamespace(nsId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
@@ -690,6 +956,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var namespaceId = request.getNamespaceId();
                   ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
+
+                  // SYSTEM namespaces are immutable
+                  rejectIfSystemNamespace(namespaceId, correlationId);
 
                   var namespace = namespaceRepo.getById(namespaceId).orElse(null);
                   var catalogId =
