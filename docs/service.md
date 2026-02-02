@@ -96,10 +96,11 @@ Each repository extends `BaseResourceRepository<T>`:
 implementations.
 
 ### Security and Context
-`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
-validates account membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
-principal (full permissions) if no credentials exist. `OutboundContextClientInterceptor` mirrors the
-same headers for internal gRPC calls (service-to-service).
+`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, `x-engine-version`,
+`x-correlation-id`, and optional `x-account-id` headers, plus optional OIDC session/authorization
+headers, validates account membership, hydrates MDC/OpenTelemetry attributes, and enforces the
+configured `floecat.auth.mode`. `OutboundContextClientInterceptor` mirrors the same headers for
+internal gRPC calls (service-to-service).
 
 `Authorizer` currently performs simple list membership checks on `PrincipalContext.permissions`; it
 can be replaced by injecting a custom implementation.
@@ -160,6 +161,9 @@ Notable `application.properties` keys:
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
+| `floecat.auth.mode` | Auth enforcement mode (`auto`, `oidc`, `oidc-or-principal`, `principal-header`, `dev`). |
+| `floecat.auth.admin.account` | Admin account display name created on startup when `auth.mode=oidc`. |
+| `floecat.auth.admin.account.description` | Description for the admin account (optional). |
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).

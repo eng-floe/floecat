@@ -130,6 +130,22 @@ services:
     networks:
       - floecat
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.2
+    pull_policy: if_not_present
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    command: ["start-dev", "--import-realm"]
+    volumes:
+      - ./keycloak/realm-floecat.json:/opt/keycloak/data/import/realm-floecat.json:ro
+    profiles:
+      - keycloak
+    networks:
+      - floecat
+
 networks:
   floecat:
     driver: bridge
