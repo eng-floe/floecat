@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -45,40 +46,51 @@ public class SnapshotResolver {
 
       if (!in.hasTableId()) {
         if (in.hasViewId()) {
-          out.add(emptyViewPin(in.getViewId()));
+          out.add(viewPin(in.getViewId()));
           continue;
         }
         throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_NOT_TABLE, Map.of());
       }
 
       ResourceId tableId = in.getTableId();
-      SnapshotRef override = in.getSnapshot();
+      SnapshotRef override = in.hasSnapshot() ? in.getSnapshot() : null;
 
-      // case 1: snapshot_id override
-      if (override != null && override.hasSnapshotId()) {
-        out.add(
-            SnapshotPin.newBuilder()
-                .setTableId(tableId)
-                .setSnapshotId(override.getSnapshotId())
-                .build());
+      if (override == null || override.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+        out.add(ctx.requireSnapshotPin(tableId, correlationId));
         continue;
       }
 
-      // case 2: as_of override
-      if (override != null && override.hasAsOf()) {
-        out.add(SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
-        continue;
-      }
+      switch (override.getWhichCase()) {
+        case SNAPSHOT_ID ->
+            out.add(
+                SnapshotPin.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(override.getSnapshotId())
+                    .build());
 
-      // case 3: fallback to pinned snapshot
-      SnapshotPin pinned = ctx.requireSnapshotPin(tableId, correlationId);
-      out.add(pinned);
+        case AS_OF ->
+            out.add(
+                SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
+
+        case SPECIAL -> {
+          // SS_CURRENT means "no override": use pinned snapshot for this query context.
+          // Any other special value should be rejected to avoid silently mis-resolving.
+          if (override.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+            throw GrpcErrors.invalidArgument(correlationId, SNAPSHOT_SPECIAL_MISSING, Map.of());
+          }
+          out.add(ctx.requireSnapshotPin(tableId, correlationId));
+        }
+
+        default -> throw GrpcErrors.invalidArgument(correlationId, SNAPSHOT_MISSING, Map.of());
+      }
     }
 
     return out;
   }
 
-  private SnapshotPin emptyViewPin(ResourceId viewId) {
+  private SnapshotPin viewPin(ResourceId viewId) {
+    // NOTE: SnapshotPin is table-oriented; views don't participate in snapshot pinning.
+    // We return a "dummy" pin keyed by the view id to preserve output cardinality.
     return SnapshotPin.newBuilder().setTableId(viewId).build();
   }
 }
