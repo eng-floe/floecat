@@ -102,7 +102,5 @@ public interface IcebergGatewayConfig {
     Map<String, String> properties();
 
     Map<String, String> headerHints();
-
-    Optional<String> secretRef();
   }
 }

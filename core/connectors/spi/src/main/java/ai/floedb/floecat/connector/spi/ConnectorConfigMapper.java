@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.spi;
 
+import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 
 public final class ConnectorConfigMapper {
@@ -29,13 +30,16 @@ public final class ConnectorConfigMapper {
           default -> throw new IllegalArgumentException("unsupported kind: " + c.getKind());
         };
 
-    var auth =
-        new ConnectorConfig.Auth(
-            c.getAuth().getScheme(),
-            c.getAuth().getPropertiesMap(),
-            c.getAuth().getHeaderHintsMap(),
-            c.getAuth().getSecretRef());
+    var auth = toAuth(c.getAuth());
 
     return new ConnectorConfig(kind, c.getDisplayName(), c.getUri(), c.getPropertiesMap(), auth);
+  }
+
+  private static ConnectorConfig.Auth toAuth(AuthConfig auth) {
+    return new ConnectorConfig.Auth(
+        auth.getScheme(),
+        auth.getPropertiesMap(),
+        auth.getHeaderHintsMap(),
+        auth.hasCredentials() ? auth.getCredentials() : null);
   }
 }

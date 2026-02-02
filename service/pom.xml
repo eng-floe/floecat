@@ -133,6 +133,12 @@
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     
     <dependency>
       <groupId>ai.floedb.floecat</groupId>

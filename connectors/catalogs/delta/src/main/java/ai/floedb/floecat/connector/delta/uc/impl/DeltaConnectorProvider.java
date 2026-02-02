@@ -16,7 +16,10 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.AuthProvider;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -31,8 +34,31 @@ public final class DeltaConnectorProvider implements ConnectorProvider {
 
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
-    Map<String, String> options = new HashMap<>(cfg.options());
-    AuthProvider authProvider = DatabricksAuthFactory.from(cfg.auth());
+    ConnectorConfig resolved = resolveCredentials(cfg);
+    Map<String, String> options = new HashMap<>(resolved.options());
+    AuthProvider authProvider = DatabricksAuthFactory.from(resolved.auth());
     return DeltaConnectorFactory.create(cfg.uri(), options, authProvider);
+  }
+
+  private static ConnectorConfig resolveCredentials(ConnectorConfig cfg) {
+    if (cfg == null) {
+      return cfg;
+    }
+    AuthCredentials credentials = cfg.auth() != null ? cfg.auth().credentials() : null;
+    if (credentials == null
+        || credentials.getCredentialCase() == AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return cfg;
+    }
+    if (isTokenExchange(credentials)) {
+      return cfg;
+    }
+    return CredentialResolverSupport.apply(cfg, credentials, AuthResolutionContext.empty());
+  }
+
+  private static boolean isTokenExchange(AuthCredentials credentials) {
+    return switch (credentials.getCredentialCase()) {
+      case RFC8693_TOKEN_EXCHANGE, AZURE_TOKEN_EXCHANGE, GCP_TOKEN_EXCHANGE -> true;
+      default -> false;
+    };
   }
 }

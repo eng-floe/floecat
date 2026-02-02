@@ -168,6 +168,10 @@ final class IcebergConnectorFactory {
         default -> throw new IllegalArgumentException("Unsupported iceberg.source: " + source);
       };
     }
+    String externalMetadata = options.get("external.metadata-location");
+    if (externalMetadata != null && !externalMetadata.isBlank()) {
+      return IcebergSource.FILESYSTEM;
+    }
     return IcebergSource.GLUE;
   }
 

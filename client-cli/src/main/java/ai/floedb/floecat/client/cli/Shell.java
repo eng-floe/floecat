@@ -555,18 +555,18 @@ public class Shell implements Runnable {
              [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-ns <a.b[.c]>] [--dest-table <name>]
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
-             [--head k=v ...] [--secret <ref>]
+             [--head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
              [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
              [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
-             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+             [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
@@ -1587,7 +1587,7 @@ public class Shell implements Runnable {
                   + " <source_namespace (a[.b[.c]...])> <destination_catalog (name)>"
                   + " [--source-table <name>] [--source-cols c1,#id2,...] [--dest-ns <a.b[.c]>]"
                   + " [--dest-table <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v"
-                  + " ...] [--head k=v ...] [--secret <ref>] [--policy-enabled] (if provided,"
+                  + " ...] [--head k=v ...] [--policy-enabled] (if provided,"
                   + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-max-par <n>]"
                   + " [--policy-not-before-epoch <sec>] [--props k=v ...]  (e.g."
                   + " stats.ndv.enabled=false,stats.ndv.sample_fraction=0.1)");
@@ -1615,7 +1615,6 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
 
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
@@ -1623,7 +1622,7 @@ public class Shell implements Runnable {
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth = buildAuth(authScheme, authProps, headerHints, secretRef);
+        var auth = buildAuth(authScheme, authProps, headerHints);
         var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
 
         var spec =
@@ -1660,7 +1659,7 @@ public class Shell implements Runnable {
                   + " <uri>] [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols"
                   + " c1,#id2,...] [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table"
                   + " <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v"
-                  + " ...] [--secret <ref>] [--policy-enabled true|false] [--policy-interval-sec"
+                  + " ...] [--policy-enabled true|false] [--policy-interval-sec"
                   + " <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--props k=v"
                   + " ...] [--etag <etag>]");
           return;
@@ -1690,7 +1689,6 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
         String policyEnabledStr = parseStringFlag(args, "--policy-enabled", "");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
@@ -1721,16 +1719,11 @@ public class Shell implements Runnable {
           mask.add("properties");
         }
 
-        boolean authSet =
-            !authScheme.isBlank()
-                || !authProps.isEmpty()
-                || !headerHints.isEmpty()
-                || !secretRef.isBlank();
+        boolean authSet = !authScheme.isBlank() || !authProps.isEmpty() || !headerHints.isEmpty();
         if (authSet) {
-          var ab = buildAuth(authScheme, authProps, headerHints, secretRef);
+          var ab = buildAuth(authScheme, authProps, headerHints);
           spec.setAuth(ab);
           if (!authScheme.isBlank()) mask.add("auth.scheme");
-          if (!secretRef.isBlank()) mask.add("auth.secret_ref");
           if (!authProps.isEmpty()) mask.add("auth.properties");
           if (!headerHints.isEmpty()) mask.add("auth.header_hints");
         }
@@ -1807,7 +1800,7 @@ public class Shell implements Runnable {
         if (args.size() < 3) {
           out.println(
               "usage: connector validate <kind> <uri>"
-                  + " [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]"
+                  + " [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]"
                   + " [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]"
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
                   + " [--props k=v ...]");
@@ -1829,11 +1822,10 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
-        String secretRef = Quotes.unquote(parseStringFlag(args, "--secret", ""));
 
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth = buildAuth(authScheme, authProps, headerHints, secretRef);
+        var auth = buildAuth(authScheme, authProps, headerHints);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1914,12 +1906,11 @@ public class Shell implements Runnable {
   }
 
   private AuthConfig buildAuth(
-      String scheme, Map<String, String> props, Map<String, String> heads, String secret) {
+      String scheme, Map<String, String> props, Map<String, String> heads) {
     return AuthConfig.newBuilder()
         .setScheme(nvl(scheme, ""))
         .putAllProperties(props)
         .putAllHeaderHints(heads)
-        .setSecretRef(nvl(secret, ""))
         .build();
   }
 
@@ -3264,14 +3255,17 @@ public class Shell implements Runnable {
 
       if (c.hasAuth()) {
         var a = c.getAuth();
-        boolean anyA =
-            (a.getScheme() != null && !a.getScheme().isBlank())
-                || (a.getSecretRef() != null && !a.getSecretRef().isBlank());
+        boolean hasCredentials =
+            a.hasCredentials()
+                && a.getCredentials().getCredentialCase()
+                    != ai.floedb.floecat.connector.rpc.AuthCredentials.CredentialCase
+                        .CREDENTIAL_NOT_SET;
+        boolean anyA = (a.getScheme() != null && !a.getScheme().isBlank()) || hasCredentials;
         if (anyA) {
           out.println(
               "  auth:"
                   + (a.getScheme().isBlank() ? "" : " scheme=" + a.getScheme())
-                  + (a.getSecretRef().isBlank() ? "" : " secret_ref=" + a.getSecretRef()));
+                  + (hasCredentials ? " credentials=present" : ""));
         }
       }
 

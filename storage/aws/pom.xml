@@ -117,6 +117,10 @@
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sts</artifactId>
     </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>secretsmanager</artifactId>
+    </dependency>
 
     <!-- Logging (AWS SDK uses slf4j) -->
     <dependency>
