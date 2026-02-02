@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.metagraph.model;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 
 public interface TableNode extends GraphNode {
@@ -27,5 +28,17 @@ public interface TableNode extends GraphNode {
   @Override
   default GraphNodeKind kind() {
     return GraphNodeKind.TABLE;
+  }
+
+  default Table.Builder toTableProtoBuilder() {
+    return Table.newBuilder()
+        .setResourceId(id())
+        .setDisplayName(displayName())
+        .setNamespaceId(namespaceId());
+    // TODO(mrouvroy): add more fields so we can have full content
+  }
+
+  default Table toTableProtoTable() {
+    return toTableProtoBuilder().build();
   }
 }
