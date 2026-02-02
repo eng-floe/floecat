@@ -43,6 +43,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -52,9 +53,11 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -83,6 +86,7 @@ public class ReconcilerService {
 
   @Inject GrpcClients clients;
   @Inject LogicalSchemaMapper schemaMapper;
+  @Inject CredentialResolver credentialResolver;
 
   public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
     return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
@@ -131,8 +135,9 @@ public class ReconcilerService {
         stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
 
     var cfg = ConnectorConfigMapper.fromProto(stored);
+    var resolved = resolveCredentials(cfg, stored.getAuth());
 
-    try (FloecatConnector connector = ConnectorFactory.create(cfg)) {
+    try (FloecatConnector connector = ConnectorFactory.create(resolved)) {
       final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
@@ -865,6 +870,25 @@ public class ReconcilerService {
       out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
     }
     return out;
+  }
+
+  private ConnectorConfig resolveCredentials(
+      ConnectorConfig base, ai.floedb.floecat.connector.rpc.AuthConfig auth) {
+    var credentialsCase = auth.getAuthCredentialsCase();
+    if (credentialsCase
+        == ai.floedb.floecat.connector.rpc.AuthConfig.AuthCredentialsCase.CREDENTIALS) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (credentialsCase
+        != ai.floedb.floecat.connector.rpc.AuthConfig.AuthCredentialsCase.SECRET_REF) {
+      return base;
+    }
+    String secretRef = auth.getSecretRef();
+    if (secretRef == null || secretRef.isBlank()) {
+      return base;
+    }
+    var credential = credentialResolver.resolve(auth);
+    return credential.map(c -> CredentialResolverSupport.apply(base, c)).orElse(base);
   }
 
   public static final class Result {

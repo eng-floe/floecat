@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.connector.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
@@ -50,6 +51,7 @@ import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -91,6 +93,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
+  @Inject CredentialResolver credentialResolver;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -113,6 +116,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "auth",
           "auth.scheme",
           "auth.secret_ref",
+          "auth.credentials",
           "auth.header_hints",
           "auth.properties",
           "policy",
@@ -592,12 +596,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
                       };
 
-                  var auth =
-                      new ConnectorConfig.Auth(
-                          spec.getAuth().getScheme(),
-                          spec.getAuth().getPropertiesMap(),
-                          spec.getAuth().getHeaderHintsMap(),
-                          spec.getAuth().getSecretRef());
+                  var auth = toConnectorAuth(spec.getAuth());
 
                   var cfg =
                       new ConnectorConfig(
@@ -607,7 +606,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           spec.getPropertiesMap(),
                           auth);
 
-                  try (var connector = ConnectorFactory.create(cfg)) {
+                  var resolved = resolveCredentials(cfg, spec.getAuth());
+                  try (var connector = ConnectorFactory.create(resolved)) {
                     var namespaces = connector.listNamespaces();
 
                     if (spec.hasSource()) {
@@ -776,6 +776,39 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private ConnectorConfig resolveCredentials(ConnectorConfig base, AuthConfig auth) {
+    var credentialsCase = auth.getAuthCredentialsCase();
+    if (credentialsCase == AuthConfig.AuthCredentialsCase.CREDENTIALS) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (credentialsCase != AuthConfig.AuthCredentialsCase.SECRET_REF) {
+      return base;
+    }
+    boolean hasSecretRef = auth.getSecretRef() != null && !auth.getSecretRef().isBlank();
+    if (!hasSecretRef) {
+      return base;
+    }
+    var credential = credentialResolver.resolve(auth);
+    return credential.map(c -> CredentialResolverSupport.apply(base, c)).orElse(base);
+  }
+
+  private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {
+    String secretRef =
+        auth.getAuthCredentialsCase() == AuthConfig.AuthCredentialsCase.SECRET_REF
+            ? auth.getSecretRef()
+            : "";
+    var credentials =
+        auth.getAuthCredentialsCase() == AuthConfig.AuthCredentialsCase.CREDENTIALS
+            ? auth.getCredentials()
+            : null;
+    return new ConnectorConfig.Auth(
+        auth.getScheme(),
+        auth.getPropertiesMap(),
+        auth.getHeaderHintsMap(),
+        secretRef,
+        credentials);
   }
 
   private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {
@@ -1048,10 +1081,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         }
       }
       if (maskTargets(mask, "auth.secret_ref")) {
-        if (inAuth.getSecretRef() != null && !inAuth.getSecretRef().isBlank()) {
+        if (inAuth.getAuthCredentialsCase() == AuthConfig.AuthCredentialsCase.SECRET_REF
+            && inAuth.getSecretRef() != null
+            && !inAuth.getSecretRef().isBlank()) {
           ab.setSecretRef(inAuth.getSecretRef());
         } else {
           ab.clearSecretRef();
+        }
+      }
+      if (maskTargets(mask, "auth.credentials")) {
+        if (inAuth.getAuthCredentialsCase() == AuthConfig.AuthCredentialsCase.CREDENTIALS) {
+          ab.setCredentials(inAuth.getCredentials());
+        } else {
+          ab.clearCredentials();
         }
       }
       if (maskTargets(mask, "auth.header_hints")) {
@@ -1182,6 +1224,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         g ->
             g.scalar("scheme", auth.getScheme())
                 .scalar("secret_ref", auth.getSecretRef())
+                .scalar("credentials", auth.getCredentials())
                 .map("header_hints", auth.getHeaderHintsMap())
                 .map("properties", auth.getPropertiesMap()));
 

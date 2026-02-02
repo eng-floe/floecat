@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.spi;
 
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
@@ -28,7 +29,7 @@ public record ConnectorConfig(
     Objects.requireNonNull(displayName);
     Objects.requireNonNull(uri);
     options = options == null ? Map.of() : Collections.unmodifiableMap(options);
-    auth = auth == null ? new Auth("none", Map.of(), Map.of(), "") : auth;
+    auth = auth == null ? new Auth("none", Map.of(), Map.of(), "", null) : auth;
   }
 
   public enum Kind {
@@ -39,7 +40,11 @@ public record ConnectorConfig(
   }
 
   public record Auth(
-      String scheme, Map<String, String> props, Map<String, String> headerHints, String secretRef) {
+      String scheme,
+      Map<String, String> props,
+      Map<String, String> headerHints,
+      String secretRef,
+      AuthCredentials credentials) {
     public Auth {
       scheme = Objects.requireNonNullElse(scheme, "none");
       props = props == null ? Map.of() : Map.copyOf(props);
