@@ -620,6 +620,11 @@ public class SeedRunner {
                 result.message());
             return;
           }
+          if (Thread.currentThread().isInterrupted()) {
+            LOG.warnf(
+                "Seed sync thread interrupted for %s; clearing interrupt and retrying", tableName);
+            Thread.interrupted();
+          }
           LOG.warnf(
               "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
               tableName, attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
@@ -631,6 +636,13 @@ public class SeedRunner {
             result.error, "Failed to populate fixture table {0}: {1}", tableName, result.message());
         return;
       } catch (RuntimeException e) {
+        // gRPC blocking calls may set the interrupt flag (e.g., CANCELLED: Thread interrupted).
+        // During startup seeding we treat this as transient; clear the flag so retries can proceed.
+        if (Thread.currentThread().isInterrupted()) {
+          LOG.warnf(
+              "Seed sync thread interrupted for %s; clearing interrupt and retrying", tableName);
+          Thread.interrupted(); // clears interrupt status
+        }
         if (!isRetryableSeedSyncError(e) || attempt == SEED_SYNC_MAX_ATTEMPTS) {
           throw e;
         }
@@ -646,10 +658,28 @@ public class SeedRunner {
   private static boolean isRetryableSeedSyncError(Throwable error) {
     Throwable current = error;
     while (current != null) {
-      if (current instanceof StatusRuntimeException statusEx
-          && statusEx.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-        return true;
+      // Retry transient gRPC startup conditions.
+      if (current instanceof StatusRuntimeException statusEx) {
+        var code = statusEx.getStatus().getCode();
+        if (code == Status.Code.UNAVAILABLE || code == Status.Code.NOT_FOUND) {
+          return true;
+        }
+        // If the call was cancelled but the thread wasn't interrupted, treat it as transient.
+        if (code == Status.Code.CANCELLED && !Thread.currentThread().isInterrupted()) {
+          return true;
+        }
       }
+
+      // Reconciler wraps getConnector failures as IllegalArgumentException; treat that as
+      // retryable.
+      if (current instanceof IllegalArgumentException iae) {
+        String msg = iae.getMessage();
+        if (msg != null
+            && (msg.startsWith("Connector not found:") || msg.startsWith("getConnector failed"))) {
+          return true;
+        }
+      }
+
       current = current.getCause();
     }
     return false;
