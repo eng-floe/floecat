@@ -23,7 +23,17 @@ public class PointerGcMinAgeProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "floecat.gc.pointer.min-age-ms", "600000", "quarkus.oidc.tenant-enabled", "false");
+        "floecat.gc.pointer.min-age-ms",
+        "600000",
+        "quarkus.oidc.tenant-enabled",
+        "false",
+        // test-only auth conveniences
+        "floecat.interceptor.allow.dev-context",
+        "true",
+        "floecat.interceptor.allow.principal-header",
+        "true",
+        "floecat.interceptor.validate.account",
+        "false");
   }
 
   @Override

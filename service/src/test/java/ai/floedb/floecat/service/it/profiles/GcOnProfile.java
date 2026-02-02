@@ -23,12 +23,25 @@ public class GcOnProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "floecat.gc.idempotency.enabled", "true",
-        "floecat.gc.idempotency.tick-every", "1s",
-        "floecat.gc.idempotency.page-size", "500",
-        "floecat.gc.idempotency.batch-limit", "10000",
-        "floecat.gc.idempotency.slice-millis", "5000",
-        "floecat.idempotency.ttl-seconds", "1");
+        "floecat.gc.idempotency.enabled",
+        "true",
+        "floecat.gc.idempotency.tick-every",
+        "1s",
+        "floecat.gc.idempotency.page-size",
+        "500",
+        "floecat.gc.idempotency.batch-limit",
+        "10000",
+        "floecat.gc.idempotency.slice-millis",
+        "5000",
+        "floecat.idempotency.ttl-seconds",
+        "1",
+        // test-only auth conveniences
+        "floecat.interceptor.allow.dev-context",
+        "true",
+        "floecat.interceptor.allow.principal-header",
+        "true",
+        "floecat.interceptor.validate.account",
+        "false");
   }
 
   @Override

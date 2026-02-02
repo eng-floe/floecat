@@ -180,6 +180,19 @@ public class Shell implements Runnable {
       description = "gRPC port (default: 9100)")
   Integer grpcPort;
 
+  @CommandLine.Option(
+      names = {"--token"},
+      description =
+          "Session token (or set FLOECAT_TOKEN). If set, CLI uses session-header auth instead of"
+              + " x-principal-bin.")
+  String token;
+
+  @CommandLine.Option(
+      names = {"--session-header"},
+      description = "Header name used to pass the session token (default: Authorization).",
+      defaultValue = "Authorization")
+  String sessionHeader;
+
   @Inject
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
@@ -233,7 +246,8 @@ public class Shell implements Runnable {
 
   private volatile String currentAccountId =
       System.getenv().getOrDefault("FLOECAT_ACCOUNT", "").trim();
-
+  private volatile String authToken =
+      Optional.ofNullable(System.getenv("FLOECAT_TOKEN")).orElse("").trim();
   private volatile String currentCatalog =
       System.getenv().getOrDefault("FLOECAT_CATALOG", "").trim();
 
@@ -241,7 +255,12 @@ public class Shell implements Runnable {
   public void run() {
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
     try {
+      // CLI flag overrides env if provided
+      if (token != null && !token.trim().isBlank()) {
+        authToken = token.trim();
+      }
       configureGrpcChannel();
+      applyClientInterceptors();
       Terminal terminal = TerminalBuilder.builder().system(true).build();
       Path historyPath = Paths.get(System.getProperty("user.home"), ".floecat_shell_history");
       var parser = new DefaultParser();
@@ -350,6 +369,41 @@ public class Shell implements Runnable {
       System.out.println("!   " + lines.get(i));
     }
 
+    // Add a friendlier hint for common auth/permission failures.
+    if (root instanceof StatusRuntimeException sre) {
+      var status = sre.getStatus();
+      var code = status.getCode();
+      String desc = status.getDescription();
+      if (desc == null || desc.isBlank()) {
+        desc = sre.getMessage();
+      }
+      String d = (desc == null) ? "" : desc;
+
+      // Only auth-ish hints when the server is explicitly talking about permissions.
+      if (code == Status.Code.PERMISSION_DENIED) {
+        String perm = extractMissingPermission(d);
+        if (perm != null) {
+          System.out.println("! hint: missing permission '" + perm + "' in this account context.");
+          System.out.println(
+              "! hint: if you intended to use a session token, pass --token / set FLOECAT_TOKEN.");
+          System.out.println(
+              "! hint: if you're in dev mode without a token, ensure the server allows"
+                  + " x-principal-bin (dev/test only).");
+        }
+        return;
+      }
+
+      if (code == Status.Code.UNAUTHENTICATED) {
+        System.out.println(
+            "! hint: unauthenticated. If the server expects a session header, pass --token / set"
+                + " FLOECAT_TOKEN.");
+        System.out.println(
+            "! hint: if you're relying on dev principal headers, ensure the server enables"
+                + " principal headers (dev/test only).");
+        return;
+      }
+    }
+
     for (int i = chain.size() - 2; i >= 0; i--) {
       var c = chain.get(i);
       String rendered = renderThrowable(c);
@@ -365,6 +419,25 @@ public class Shell implements Runnable {
       }
       t.printStackTrace(System.out);
     }
+  }
+
+  private static String extractMissingPermission(String desc) {
+    if (desc == null) return null;
+
+    int idx = desc.indexOf("missing permission:");
+    if (idx >= 0) {
+      String perm = desc.substring(idx + "missing permission:".length()).trim();
+      return perm.isBlank() ? null : perm;
+    }
+
+    // Optionally support plural form
+    int idx2 = desc.indexOf("missing permissions:");
+    if (idx2 >= 0) {
+      String perms = desc.substring(idx2 + "missing permissions:".length()).trim();
+      return perms.isBlank() ? null : perms;
+    }
+
+    return null;
   }
 
   private static String messageFor(Throwable t) {
@@ -450,6 +523,8 @@ public class Shell implements Runnable {
          Options:
          --host <host>   gRPC host (default: localhost)
          --port <port>   gRPC port (default: 9100)
+         --token <token>           Session token (or set FLOECAT_TOKEN)
+         --session-header <name>   Header name used to pass the session token (default: Authorization)
 
          Commands:
          account <id>
@@ -553,7 +628,13 @@ public class Shell implements Runnable {
 
     switch (command) {
       case "account", "help", "quit", "exit" -> {}
-      default -> ensureAccountSet();
+      default -> {
+        // With token auth, server identity/account comes from token claims; don't require
+        // `account`.
+        if (!tokenAuthActive()) {
+          ensureAccountSet();
+        }
+      }
     }
 
     switch (command) {
@@ -603,11 +684,16 @@ public class Shell implements Runnable {
   }
 
   private void cmdAccount(List<String> args) {
+    boolean tokenActive = tokenAuthActive();
     if (args.isEmpty()) {
       out.println(
           currentAccountId == null || currentAccountId.isBlank()
               ? "account: <not set>"
               : ("account: " + currentAccountId));
+
+      if (tokenActive) {
+        out.println("note: token auth is active; server account comes from token claims.");
+      }
       return;
     }
     String t = args.get(0).trim();
@@ -615,8 +701,25 @@ public class Shell implements Runnable {
       out.println("usage: account <accountId>");
       return;
     }
+
+    // In non-token mode, the server currently expects a UUID account id.
+    // Fail fast with a clearer client-side message.
+    if (!tokenActive && !looksLikeUuid(t)) {
+      out.println(
+          "Error: account id must be a UUID (server rejected non-UUID accounts, e.g. t-001)."
+              + " Use a UUID, or use --token/FLOECAT_TOKEN for token auth.");
+      return;
+    }
+
     currentAccountId = t;
     out.println("account set: " + currentAccountId);
+    if (tokenActive) {
+      out.println("warning: token auth is active; `account` does not change server identity.");
+    }
+  }
+
+  private boolean tokenAuthActive() {
+    return authToken != null && !authToken.isBlank();
   }
 
   private List<String> tail(List<String> list) {
@@ -2580,10 +2683,17 @@ public class Shell implements Runnable {
   }
 
   private ResourceId resourceId(String id, ResourceKind kind) {
-    if (currentAccountId == null || currentAccountId.isBlank()) {
-      throw new IllegalStateException("No account set. Use: account <accountId>");
+    var b = ResourceId.newBuilder();
+    if (currentAccountId != null && !currentAccountId.isBlank()) {
+      b.setAccountId(currentAccountId);
+    } else if (!tokenAuthActive()) {
+      throw new IllegalStateException(
+          "No account set. Run `account <id>` or set FLOECAT_ACCOUNT (or use --token/FLOECAT_TOKEN"
+              + " for token auth).");
     }
-    return ResourceId.newBuilder().setAccountId(currentAccountId).setKind(kind).setId(id).build();
+    b.setKind(kind);
+    b.setId(id);
+    return b.build();
   }
 
   private ResourceId catalogRid(String id) {
@@ -3142,6 +3252,22 @@ public class Shell implements Runnable {
     out.println();
   }
 
+  private void applyClientInterceptors() {
+    var auth = new CliAuthInterceptor(() -> authToken, () -> currentAccountId, () -> sessionHeader);
+
+    catalogs = catalogs.withInterceptors(auth);
+    namespaces = namespaces.withInterceptors(auth);
+    tables = tables.withInterceptors(auth);
+    directory = directory.withInterceptors(auth);
+    statistics = statistics.withInterceptors(auth);
+    snapshots = snapshots.withInterceptors(auth);
+    viewService = viewService.withInterceptors(auth);
+    connectors = connectors.withInterceptors(auth);
+    queries = queries.withInterceptors(auth);
+    queryScan = queryScan.withInterceptors(auth);
+    querySchema = querySchema.withInterceptors(auth);
+  }
+
   private String ts(Timestamp t) {
     if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) {
       return "-";
@@ -3359,9 +3485,17 @@ public class Shell implements Runnable {
   }
 
   private void ensureAccountSet() {
-    if (currentAccountId == null || currentAccountId.isBlank()) {
-      throw new IllegalStateException("No account set. Use: account <accountId>");
+    if (currentAccountId != null && !currentAccountId.isBlank()) {
+      return;
     }
+    // If token auth is active, the server derives account identity from token claims, so we do not
+    // force users to run `account <id>`.
+    if (tokenAuthActive()) {
+      return;
+    }
+    throw new IllegalStateException(
+        "No account set. Run `account <id>` or set FLOECAT_ACCOUNT (or use --token/FLOECAT_TOKEN"
+            + " for token auth).");
   }
 
   private static List<String> splitPathRespectingQuotesAndEscapes(String input) {
