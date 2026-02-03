@@ -51,7 +51,7 @@ query lifecycle / scan bundle logic.
 
 ## Public API / Surface Area
 Each gRPC implementation derives from `BaseServiceImpl`, gaining retry semantics, error mapping, and
-helpers like `randomResourceId` (UUIDv7). Highlights:
+helpers like `randomResourceId` (UUIDv4). Highlights:
 
 - **CatalogServiceImpl** – Enforces `catalog.read`/`catalog.write` permissions, canonicalises names,
   uses `IdempotencyGuard` for Create, and ensures namespace cascading checks during Delete.
@@ -174,7 +174,7 @@ Extension points:
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, allocates a
-  UUIDv7 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
+  UUIDv4 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
   pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the caller supplies an
   `IdempotencyKey`, the repository short-circuits duplicates.
 - **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via
