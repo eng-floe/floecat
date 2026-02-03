@@ -18,8 +18,8 @@ package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
-import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
@@ -28,15 +28,15 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
+import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Locale;
 import java.util.Optional;
 
 @GlobalInterceptor
 @ApplicationScoped
+@Priority(10)
 public class LocalizeErrorsInterceptor implements ServerInterceptor {
-  private static final Metadata.Key<byte[]> PRINC_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> ACCEPT_LANGUAGE =
       Metadata.Key.of("accept-language", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -44,8 +44,7 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
 
-    byte[] principalContextBytes = headers.get(PRINC_BIN);
-    PrincipalContext principal = tryParsePrincipal(principalContextBytes);
+    PrincipalContext principal = InboundContextInterceptor.PC_KEY.get();
 
     String tag = pickLocaleTag(headers, principal);
     final Locale locale =
@@ -123,17 +122,5 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
     }
 
     return "en";
-  }
-
-  private static PrincipalContext tryParsePrincipal(byte[] pcBytes) {
-    if (pcBytes == null || pcBytes.length == 0) {
-      return null;
-    }
-
-    try {
-      return PrincipalContext.parseFrom(pcBytes);
-    } catch (InvalidProtocolBufferException e) {
-      return null;
-    }
   }
 }

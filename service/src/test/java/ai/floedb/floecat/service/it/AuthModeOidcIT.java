@@ -22,8 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.AuthModeOidcProfile;
 import ai.floedb.floecat.service.it.util.TestKeyPair;
@@ -51,8 +49,6 @@ class AuthModeOidcIT {
 
   private static final Metadata.Key<String> AUTH_HEADER =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-  private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
 
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
@@ -67,9 +63,8 @@ class AuthModeOidcIT {
   }
 
   @Test
-  void listAccountsRejectsPrincipalHeaderWhenOidcRequired() {
+  void listAccountsRejectsMissingAuthorizationHeader() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     StatusRuntimeException ex =
@@ -89,15 +84,6 @@ class AuthModeOidcIT {
     var response = stub.listAccounts(ListAccountsRequest.getDefaultInstance());
 
     assertFalse(response.getAccountsList().isEmpty());
-  }
-
-  private static PrincipalContext principal() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    return PrincipalContext.newBuilder()
-        .setAccountId(accountId.getId())
-        .setSubject("it-user")
-        .addPermissions("account.read")
-        .build();
   }
 
   private static String sessionJwt() throws Exception {

@@ -16,13 +16,13 @@ services:
   service:
     image: floecat-service:local
     pull_policy: never
+    env_file:
+      - ${FLOECAT_ENV_FILE:-./env.inmem}
     ports:
       - "9100:9100"
     environment:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
-      FLOECAT_SEED_ENABLED: ${FLOECAT_SEED_ENABLED:-true}
-      FLOECAT_SEED_MODE: ${FLOECAT_SEED_MODE:-fake}
       FLOECAT_CONNECTOR_FILEIO_OVERRIDES: ${FLOECAT_CONNECTOR_FILEIO_OVERRIDES:-true}
       AWS_REGION: ${FLOECAT_S3_REGION:-us-east-1}
       AWS_DEFAULT_REGION: ${FLOECAT_S3_REGION:-us-east-1}
@@ -103,8 +103,6 @@ services:
     stdin_open: true
     tty: true
     command: ["--host", "service", "--port", "9100"]
-    profiles:
-      - cli
     networks:
       - floecat
 

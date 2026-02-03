@@ -60,7 +60,6 @@ class KeycloakBootstrapIT {
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     List<Account> existing =
         stub.listAccounts(ListAccountsRequest.getDefaultInstance()).getAccountsList();
-
     assertFalse(existing.isEmpty());
     assertTrue(
         existing.stream().anyMatch(account -> "admin".equals(account.getDisplayName())),

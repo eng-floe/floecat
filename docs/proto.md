@@ -88,7 +88,7 @@ engine release.
   depending on connector planning success. Lease expirations are surfaced via `expires_at`.
 
 ## Data Flow & Lifecycle
-1. Clients populate `PrincipalContext` metadata in the `x-principal-bin` header (see
+1. Clients authenticate using the configured OIDC session/authorization headers (see
    [`docs/service.md`](service.md#security-and-context)) and call gRPC endpoints.
 2. Mutations include `IdempotencyKey` for once-and-only-once semantics; the service persists a hash
   of the request along with the resultant `MutationMeta` so replays yield the previous payload.

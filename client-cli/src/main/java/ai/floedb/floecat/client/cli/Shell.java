@@ -22,6 +22,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.AccountSpec;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
+import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.catalog.rpc.Catalog;
@@ -509,6 +510,7 @@ public class Shell implements Runnable {
          account list
          account get <id>
          account create <display_name> [--desc <text>]
+         account delete <id> (or omit id to use current account)
          catalogs
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
@@ -712,6 +714,7 @@ public class Shell implements Runnable {
       case "list" -> cmdAccountList();
       case "get" -> cmdAccountGet(tail(args));
       case "create" -> cmdAccountCreate(tail(args));
+      case "delete" -> cmdAccountDelete(tail(args));
       default -> {
         String t = sub.trim();
         if (t.isEmpty()) {
@@ -759,6 +762,24 @@ public class Shell implements Runnable {
         AccountSpec.newBuilder().setDisplayName(display).setDescription(nvl(desc, "")).build();
     var resp = accounts.createAccount(CreateAccountRequest.newBuilder().setSpec(spec).build());
     printAccounts(List.of(resp.getAccount()));
+  }
+
+  private void cmdAccountDelete(List<String> args) {
+    String id =
+        args.isEmpty() ? (currentAccountId == null ? "" : currentAccountId.trim()) : args.get(0);
+    id = Quotes.unquote(id);
+    if (id.isBlank()) {
+      out.println("usage: account delete <id>");
+      return;
+    }
+    accounts.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
+            .build());
+    if (currentAccountId != null && currentAccountId.trim().equals(id)) {
+      currentAccountId = null;
+    }
+    out.println("account deleted: " + id);
   }
 
   private List<String> tail(List<String> list) {

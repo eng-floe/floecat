@@ -27,12 +27,11 @@ import io.opentelemetry.api.baggage.Baggage;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 @GlobalInterceptor
 public class OutboundContextClientInterceptor implements io.grpc.ClientInterceptor {
-  private static final Metadata.Key<byte[]> PRINC_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_KIND =
@@ -41,6 +40,17 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+
+  private final Optional<String> sessionHeader;
+  private final Optional<String> authorizationHeader;
+
+  public OutboundContextClientInterceptor(
+      @ConfigProperty(name = "floecat.interceptor.session.header") Optional<String> sessionHeader,
+      @ConfigProperty(name = "floecat.interceptor.authorization.header")
+          Optional<String> authorizationHeader) {
+    this.sessionHeader = sessionHeader.filter(header -> !header.isBlank());
+    this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
+  }
 
   @Override
   public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
@@ -51,7 +61,9 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
       @Override
       public void start(Listener<RespT> responseListener, Metadata headers) {
-        var principalContext = InboundContextInterceptor.PC_KEY.get();
+        String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
+        String authorizationHeaderValue =
+            InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
         var queryId =
             Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
@@ -79,8 +91,15 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
             Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
                 .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
 
-        if (principalContext != null) {
-          headers.put(PRINC_BIN, principalContext.toByteArray());
+        if (sessionHeaderValue != null && sessionHeader.isPresent()) {
+          Metadata.Key<String> key =
+              Metadata.Key.of(sessionHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+          headers.put(key, sessionHeaderValue);
+        }
+        if (authorizationHeaderValue != null && authorizationHeader.isPresent()) {
+          Metadata.Key<String> key =
+              Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+          headers.put(key, authorizationHeaderValue);
         }
 
         putIfNonBlank(headers, QUERY_ID, queryId);

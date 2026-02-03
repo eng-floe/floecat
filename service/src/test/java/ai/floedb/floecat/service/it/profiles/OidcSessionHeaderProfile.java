@@ -24,9 +24,10 @@ public class OidcSessionHeaderProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
+        "floecat.auth.mode", "oidc",
+        "floecat.auth.admin.account", "disabled",
         "quarkus.oidc.tenant-enabled", "true",
         "quarkus.oidc.token.audience", "floecat-client",
-        "floecat.interceptor.allow.dev-context", "false",
         "floecat.interceptor.validate.account", "false",
         "floecat.interceptor.session.header", "x-floe-session",
         "quarkus.oidc.public-key", TestKeyPair.publicKeyBase64());

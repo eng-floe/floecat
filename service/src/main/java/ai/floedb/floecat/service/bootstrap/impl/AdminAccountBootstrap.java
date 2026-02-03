@@ -23,7 +23,6 @@ import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.runtime.StartupEvent;
-import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -35,7 +34,6 @@ public class AdminAccountBootstrap {
   private static final Logger LOG = Logger.getLogger(AdminAccountBootstrap.class);
 
   @Inject AccountRepository accounts;
-  @Inject Vertx vertx;
 
   @ConfigProperty(name = "floecat.auth.mode", defaultValue = "auto")
   String authMode;
@@ -57,19 +55,16 @@ public class AdminAccountBootstrap {
       LOG.warn("Admin account bootstrap skipped (admin account name is blank)");
       return;
     }
-    vertx
-        .<Void>executeBlocking(
-            promise -> {
-              try {
-                ensureAdminAccount();
-                promise.complete(null);
-              } catch (Throwable t) {
-                promise.fail(t);
-              }
-            },
-            true)
-        .onSuccess(v -> LOG.info("Admin account bootstrap completed"))
-        .onFailure(t -> LOG.error("Admin account bootstrap failed", t));
+    if ("disabled".equalsIgnoreCase(adminAccountName.trim())) {
+      LOG.info("Admin account bootstrap disabled by configuration");
+      return;
+    }
+    try {
+      ensureAdminAccount();
+      LOG.info("Admin account bootstrap completed");
+    } catch (Throwable t) {
+      LOG.error("Admin account bootstrap failed", t);
+    }
   }
 
   private void ensureAdminAccount() {

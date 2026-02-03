@@ -6,13 +6,9 @@ The `floecat` service can accept an external session header carrying a JWT. This
 Quarkus OIDC and used to authenticate gRPC calls.
 
 Auth modes:
-- `floecat.auth.mode=auto` (default): preserve legacy behavior (session/authorization if configured,
-  else principal header if allowed, else dev context if allowed).
 - `floecat.auth.mode=oidc`: require session or authorization header.
-- `floecat.auth.mode=oidc-or-principal`: accept session/authorization header, else require
-  `x-principal-bin`.
-- `floecat.auth.mode=principal-header`: require `x-principal-bin`.
 - `floecat.auth.mode=dev`: require dev context (for local-only use).
+Default is `oidc`; dev mode must be explicitly configured.
 
 When `floecat.auth.mode=oidc`, Floecat will ensure an admin account exists on startup. Configure:
 - `floecat.auth.admin.account=admin` (display name for the admin account)
@@ -42,13 +38,18 @@ Important: the hardcoded account id is derived from the admin account display na
 `AccountIds.deterministicAccountId("admin")`. If you change `floecat.auth.admin.account`, update
 `docker/keycloak/realm-floecat.json` with the new deterministic id.
 
-Example service config (dev):
+Example service config (dev, running service on the host):
 ```
 floecat.auth.mode=oidc
 floecat.auth.admin.account=admin
 floecat.interceptor.authorization.header=authorization
 quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat
 quarkus.oidc.token.audience=floecat-client
+```
+
+If the service runs in Docker, set the issuer to the Docker network hostname:
+```
+quarkus.oidc.auth-server-url=http://keycloak:8080/realms/floecat
 ```
 
 Example token request:
@@ -58,6 +59,48 @@ curl -s \
   -d "client_secret=floecat-secret" \
   -d "grant_type=client_credentials" \
   http://127.0.0.1:12221/realms/floecat/protocol/openid-connect/token
+```
+
+## OIDC Quickstart (Local + Shell CLI)
+
+1) Enable local OIDC in `docker/env.inmem`:
+```
+FLOECAT_AUTH_MODE=oidc
+FLOECAT_AUTH_ADMIN_ACCOUNT=admin
+FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER=authorization
+QUARKUS_OIDC_TENANT_ENABLED=true
+QUARKUS_OIDC_AUTH_SERVER_URL=http://keycloak:8080/realms/floecat
+QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client
+```
+
+2) Start Keycloak + service:
+```
+make oidc-up
+```
+
+3) Fetch a token on the Docker network (issuer must be `http://keycloak:8080/...`):
+```
+TOKEN=$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+  -d "client_id=floecat-client" \
+  -d "client_secret=floecat-secret" \
+  -d "grant_type=client_credentials" \
+  http://keycloak:8080/realms/floecat/protocol/openid-connect/token \
+  | jq -r .access_token)
+```
+Note: `docker_floecat` is the default Compose network name for this repo. If your compose project
+name is different, use the network name shown in `docker network ls`.
+
+4) Run the Shell CLI in Docker (interactive):
+```
+FLOECAT_TOKEN=$TOKEN \
+FLOECAT_ACCOUNT=21232f29-7a57-35a7-8389-4a0e4a801fc3 \
+make cli-docker
+```
+
+Inside the shell:
+```
+account 21232f29-7a57-35a7-8389-4a0e4a801fc3
+account list
 ```
 
 Configuration (service `application.properties`):
@@ -86,6 +129,33 @@ Environment equivalents:
 
 Further documentation on integration to external OpenID Connect IDPs can be found here:
 https://quarkus.io/guides/security-oidc-configuration-properties-reference
+
+## Dev vs Production Configuration
+
+### Development (local)
+- Use `docker/env.inmem` with `docker/docker-compose.yml` (via `env_file`) for local defaults.
+- For OIDC + Keycloak, use `docker/env.inmem-keycloak` by setting `FLOECAT_ENV_FILE=./env.inmem-keycloak`
+  (or run `make oidc-up`).
+- `floecat.auth.mode=oidc` (or `dev` for fully local use).
+- Use Keycloak dev realm or another local IdP.
+- `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`
+- `quarkus.oidc.token.audience=floecat-client`
+- `floecat.auth.admin.account=admin`
+- `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
+- Consider `floecat.interceptor.validate.account=false` if account ids are trusted in dev.
+
+### Production
+- Use `docker/env.aws` (or your own env file) and pass the values to the container.
+- `floecat.auth.mode=oidc`
+- `quarkus.oidc.tenant-enabled=true`
+- Configure exactly one of:
+  - `quarkus.oidc.auth-server-url=https://<issuer>/realms/<realm>`
+  - `quarkus.oidc.public-key=...` (offline JWT validation)
+- `quarkus.oidc.token.audience=<audience>`
+- `floecat.auth.admin.account=<admin display name>`
+- `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
+- `floecat.interceptor.validate.account=true` (recommended in prod)
+- Ensure transport security (TLS) at the edge and IdP issuer URLs use HTTPS.
 
 ## Direct OIDC Authorization Header
 

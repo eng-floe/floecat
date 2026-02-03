@@ -25,8 +25,6 @@ public class KeycloakOidcProfile implements QuarkusTestProfile {
     return Map.ofEntries(
         Map.entry("floecat.auth.mode", "oidc"),
         Map.entry("floecat.auth.admin.account", "admin"),
-        Map.entry("floecat.interceptor.allow.dev-context", "false"),
-        Map.entry("floecat.interceptor.allow.principal-header", "false"),
         Map.entry("floecat.interceptor.validate.account", "false"),
         Map.entry("floecat.interceptor.authorization.header", "authorization"),
         Map.entry("quarkus.oidc.tenant-enabled", "true"),

@@ -22,10 +22,7 @@ import java.util.Map;
 public class AuthModeDevProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of(
-        "floecat.auth.mode", "dev",
-        "floecat.interceptor.allow.dev-context", "true",
-        "floecat.interceptor.allow.principal-header", "false");
+    return Map.of("floecat.auth.mode", "dev");
   }
 
   @Override

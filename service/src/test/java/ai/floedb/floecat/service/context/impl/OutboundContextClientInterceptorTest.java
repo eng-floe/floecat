@@ -27,6 +27,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -39,7 +40,8 @@ final class OutboundContextClientInterceptorTest {
 
   @Test
   void doesNotEmitEmptyEngineHeadersWhenContextMissing() {
-    OutboundContextClientInterceptor interceptor = new OutboundContextClientInterceptor();
+    OutboundContextClientInterceptor interceptor =
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.empty());
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
     MethodDescriptor<String, String> method =

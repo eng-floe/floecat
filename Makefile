@@ -52,6 +52,10 @@
 # CLI:
 #   make cli                     # build client CLI (fast-jar, skip tests)
 #   make cli-run                 # run client CLI (use ARGS=...)
+#   make cli-docker              # run client CLI in docker network (OIDC-friendly)
+#   make cli-docker-token        # print OIDC token for docker network issuer
+#   make oidc-up                 # start docker stack with Keycloak + OIDC env
+#   make oidc-down               # stop docker stack started by oidc-up
 #   make cli-test                # run CLI tests
 #
 # Utilities:
@@ -274,7 +278,7 @@ localstack-restart: localstack-down localstack-up
 .PHONY: keycloak-up keycloak-down keycloak-restart
 keycloak-up:
 	@echo "==> [KEYCLOAK] starting docker compose (keycloak profile)"
-	KEYCLOAK_PORT=$(KEYCLOAK_PORT) $(DOCKER_COMPOSE_KEYCLOAK) up -d
+	KEYCLOAK_PORT=$(KEYCLOAK_PORT) $(DOCKER_COMPOSE_KEYCLOAK) up -d keycloak
 	@echo "==> [KEYCLOAK] waiting for realm readiness"
 	@bash -c 'set -euo pipefail; \
 	for i in $$(seq 1 45); do \
@@ -638,6 +642,41 @@ cli:
 cli-run: cli
 	@echo "==> [RUN] client CLI"
 	@java -jar $(CLI_JAR) $(ARGS)
+
+.PHONY: cli-docker-token
+cli-docker-token:
+	@echo "==> [TOKEN] client credentials via docker network"
+	@docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+	  -d "client_id=floecat-client" \
+	  -d "client_secret=floecat-secret" \
+	  -d "grant_type=client_credentials" \
+	  http://keycloak:8080/realms/floecat/protocol/openid-connect/token | jq -r .access_token
+
+.PHONY: cli-docker
+cli-docker:
+	@echo "==> [RUN] client CLI (docker)"
+	@TOKEN=$$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+	  -d "client_id=floecat-client" \
+	  -d "client_secret=floecat-secret" \
+	  -d "grant_type=client_credentials" \
+	  http://keycloak:8080/realms/floecat/protocol/openid-connect/token | jq -r .access_token); \
+	FLOECAT_ENV_FILE=./env.inmem-keycloak \
+	$(DOCKER_COMPOSE_MAIN) run --rm \
+	  -e FLOECAT_TOKEN=$$TOKEN \
+	  -e FLOECAT_ACCOUNT=21232f29-7a57-35a7-8389-4a0e4a801fc3 \
+	  cli
+
+.PHONY: oidc-up
+oidc-up:
+	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
+	@FLOECAT_ENV_FILE=./env.inmem-keycloak \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak up -d
+
+.PHONY: oidc-down
+oidc-down:
+	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
+	@FLOECAT_ENV_FILE=./env.inmem-keycloak \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)

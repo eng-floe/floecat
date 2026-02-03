@@ -22,8 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.OidcSessionHeaderProfile;
 import ai.floedb.floecat.service.it.util.TestKeyPair;
@@ -51,8 +49,6 @@ class AccountSessionHeaderIT {
   private static final String ACCOUNT_ID =
       TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
 
-  private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> SESSION_HEADER =
       Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -71,7 +67,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsAcceptsSessionHeaderJwt() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwt());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -83,7 +78,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMissingSessionHeader() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     StatusRuntimeException ex =
@@ -97,7 +91,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsWrongSessionHeaderName() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         Metadata.Key.of("x-floe-session-typo", Metadata.ASCII_STRING_MARSHALLER),
         "eyJhbGciOiJIUzI1NiJ9");
@@ -125,7 +118,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMalformedJwt() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, "not-a-jwt");
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -140,7 +132,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMissingAudience() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwtWithKeyAndAudience(TestKeyPair.privateKey(), null));
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -155,7 +146,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsInvalidSignature() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwtWithKey(generatePrivateKey()));
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -170,7 +160,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsWrongAudience() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndAudience(TestKeyPair.privateKey(), "wrong-audience"));
 
@@ -186,7 +175,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsInvalidExpiration() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), -300, -600, 0));
 
@@ -202,7 +190,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsExpiredToken() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), -3600, -300, 0));
 
@@ -218,7 +205,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsTokenNotYetValid() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), 0, 3600, 300));
 
@@ -229,15 +215,6 @@ class AccountSessionHeaderIT {
             () -> stub.listAccounts(ListAccountsRequest.getDefaultInstance()));
 
     assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
-  }
-
-  private static PrincipalContext principal() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    return PrincipalContext.newBuilder()
-        .setAccountId(accountId.getId())
-        .setSubject("it-user")
-        .addPermissions("account.read")
-        .build();
   }
 
   private static String sessionJwt() throws Exception {

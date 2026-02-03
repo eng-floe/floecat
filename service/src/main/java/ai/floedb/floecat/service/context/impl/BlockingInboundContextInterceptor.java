@@ -52,17 +52,13 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
           Optional<String> authorizationHeader,
       @ConfigProperty(name = "floecat.interceptor.account.header", defaultValue = "x-account-id")
           String accountHeader,
-      @ConfigProperty(name = "floecat.auth.mode", defaultValue = "auto") String authMode,
-      @ConfigProperty(name = "floecat.interceptor.allow.dev-context", defaultValue = "true")
-          boolean allowDevContext,
+      @ConfigProperty(name = "floecat.auth.mode", defaultValue = "oidc") String authMode,
       @ConfigProperty(
               name = "floecat.interceptor.session.account-claim",
               defaultValue = "account_id")
           String accountClaimName,
       @ConfigProperty(name = "floecat.interceptor.session.role-claim", defaultValue = "roles")
-          String roleClaimName,
-      @ConfigProperty(name = "floecat.interceptor.allow.principal-header", defaultValue = "false")
-          boolean allowPrincipalHeader) {
+          String roleClaimName) {
 
     // Plain helper with your logic; does NOT implement ServerInterceptor (avoids Quarkus "unused"
     // warnings).
@@ -75,10 +71,8 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
             authorizationHeader,
             Optional.ofNullable(accountHeader),
             authMode,
-            allowDevContext,
             accountClaimName,
-            roleClaimName,
-            allowPrincipalHeader);
+            roleClaimName);
 
     // Create a ServerInterceptor at runtime that delegates to your helper.
     ServerInterceptor runtimeInterceptor =

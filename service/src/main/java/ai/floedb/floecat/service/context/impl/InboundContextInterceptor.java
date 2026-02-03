@@ -55,8 +55,6 @@ import org.jboss.logging.MDC;
 public class InboundContextInterceptor {
   private static final Logger LOG = Logger.getLogger(InboundContextInterceptor.class);
 
-  private static final Metadata.Key<byte[]> PRINC_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID_HEADER =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
@@ -72,6 +70,10 @@ public class InboundContextInterceptor {
   public static final Context.Key<String> ENGINE_KIND_KEY = Context.key("engine_kind");
   public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
+  public static final Context.Key<String> SESSION_HEADER_VALUE_KEY =
+      Context.key("session_header_value");
+  public static final Context.Key<String> AUTHORIZATION_HEADER_VALUE_KEY =
+      Context.key("authorization_header_value");
 
   private final AccountRepository accountRepository;
   private final TenantIdentityProvider identityProvider;
@@ -81,10 +83,8 @@ public class InboundContextInterceptor {
   private final Optional<String> authorizationHeader;
   private final Optional<String> accountHeader;
   private final AuthMode authMode;
-  private final boolean allowDevContext;
   private final String accountClaimName;
   private final String roleClaimName;
-  private final boolean allowPrincipalHeader;
 
   public InboundContextInterceptor(
       AccountRepository accountRepository,
@@ -94,10 +94,8 @@ public class InboundContextInterceptor {
       Optional<String> authorizationHeader,
       Optional<String> accountHeader,
       String authMode,
-      boolean allowDevContext,
       String accountClaimName,
-      String roleClaimName,
-      boolean allowPrincipalHeader) {
+      String roleClaimName) {
     this.accountRepository = accountRepository;
     this.identityProvider = identityProvider;
     this.validateAccount = validateAccount;
@@ -105,24 +103,19 @@ public class InboundContextInterceptor {
     this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
     this.accountHeader = accountHeader.filter(header -> !header.isBlank());
     this.authMode = AuthMode.fromString(authMode);
-    this.allowDevContext = allowDevContext;
     this.accountClaimName = accountClaimName;
     this.roleClaimName = roleClaimName;
-    this.allowPrincipalHeader = allowPrincipalHeader;
 
     String header = this.sessionHeader.orElse("");
     String authHeader = this.authorizationHeader.orElse("");
     String acctHeader = this.accountHeader.orElse("");
     LOG.infof(
         "InboundContextInterceptor ready: sessionHeader=%s authorizationHeader=%s"
-            + " accountHeader=%s authMode=%s allowPrincipalHeader=%s allowDevContext=%s"
-            + " validateAccount=%s",
+            + " accountHeader=%s authMode=%s validateAccount=%s",
         header.isBlank() ? "<disabled>" : header,
         authHeader.isBlank() ? "<disabled>" : authHeader,
         acctHeader.isBlank() ? "<disabled>" : acctHeader,
         this.authMode.name().toLowerCase(),
-        allowPrincipalHeader,
-        allowDevContext,
         validateAccount);
   }
 
@@ -143,6 +136,8 @@ public class InboundContextInterceptor {
     PrincipalContext principalContext = resolvedContext.pc();
     String queryId = resolvedContext.queryId();
     EngineContext engineContext = EngineContext.of(engineKind, engineVersion);
+    String sessionHeaderValue = readHeaderValue(headers, sessionHeader).orElse(null);
+    String authorizationHeaderValue = readHeaderValue(headers, authorizationHeader).orElse(null);
 
     Context context =
         Context.current()
@@ -152,6 +147,12 @@ public class InboundContextInterceptor {
             .withValue(ENGINE_KIND_KEY, engineKind)
             .withValue(ENGINE_CONTEXT_KEY, engineContext)
             .withValue(CORR_KEY, correlationId);
+    if (sessionHeaderValue != null) {
+      context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
+    }
+    if (authorizationHeaderValue != null) {
+      context = context.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
+    }
 
     MDC.put("query_id", queryId);
     MDC.put("correlation_id", correlationId);
@@ -202,11 +203,6 @@ public class InboundContextInterceptor {
 
     switch (authMode) {
       case DEV -> {
-        if (!allowDevContext) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("dev auth mode enabled but dev context is disabled")
-              .asRuntimeException();
-        }
         PrincipalContext dev = devContext();
         if (accountHeaderValue.isPresent()
             && !accountHeaderValue.orElseThrow().equals(dev.getAccountId())) {
@@ -216,85 +212,17 @@ public class InboundContextInterceptor {
         }
         return new ResolvedContext(dev, "");
       }
-      case PRINCIPAL_HEADER -> {
-        if (!allowPrincipalHeader) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("principal header auth mode enabled but header is disabled")
-              .asRuntimeException();
-        }
-        if (!headers.containsKey(PRINC_BIN)) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("missing x-principal-bin")
-              .asRuntimeException();
-        }
-        byte[] pcBytes = headers.get(PRINC_BIN);
-        PrincipalContext pc = parsePrincipal(pcBytes);
-        if (accountHeaderValue.isPresent()
-            && !accountHeaderValue.orElseThrow().equals(pc.getAccountId())) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("account header does not match principal")
-              .asRuntimeException();
-        }
-        if (this.validateAccount) {
-          validateAccount(pc.getAccountId());
-        }
-        if (!isBlank(queryIdHeader)
-            && !isBlank(pc.getQueryId())
-            && !pc.getQueryId().equals(queryIdHeader)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription("query_id mismatch between header and principal")
-              .asRuntimeException();
-        }
-        String canonicalQueryId = !isBlank(pc.getQueryId()) ? pc.getQueryId() : queryIdHeader;
-        return new ResolvedContext(pc, canonicalQueryId);
-      }
       case OIDC -> {
+        if (this.sessionHeader.isPresent()) {
+          ensureOidcConfigured("session");
+        }
+        if (this.authorizationHeader.isPresent()) {
+          ensureOidcConfigured("authorization");
+        }
         PrincipalContext principal =
             resolveOidcPrincipal(headers, queryIdHeader, accountHeaderValue);
         return new ResolvedContext(principal, queryIdHeader);
       }
-      case OIDC_OR_PRINCIPAL -> {
-        Optional<PrincipalContext> oidc =
-            resolveOidcPrincipalOptional(headers, queryIdHeader, accountHeaderValue);
-        if (oidc.isPresent()) {
-          return new ResolvedContext(oidc.get(), queryIdHeader);
-        }
-        if (!allowPrincipalHeader) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("missing session token")
-              .asRuntimeException();
-        }
-        if (!headers.containsKey(PRINC_BIN)) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("missing session token")
-              .asRuntimeException();
-        }
-        byte[] pcBytes = headers.get(PRINC_BIN);
-        PrincipalContext pc = parsePrincipal(pcBytes);
-        if (accountHeaderValue.isPresent()
-            && !accountHeaderValue.orElseThrow().equals(pc.getAccountId())) {
-          throw Status.UNAUTHENTICATED
-              .withDescription("account header does not match principal")
-              .asRuntimeException();
-        }
-        if (this.validateAccount) {
-          validateAccount(pc.getAccountId());
-        }
-        if (!isBlank(queryIdHeader)
-            && !isBlank(pc.getQueryId())
-            && !pc.getQueryId().equals(queryIdHeader)) {
-          throw Status.FAILED_PRECONDITION
-              .withDescription("query_id mismatch between header and principal")
-              .asRuntimeException();
-        }
-        String canonicalQueryId = !isBlank(pc.getQueryId()) ? pc.getQueryId() : queryIdHeader;
-        return new ResolvedContext(pc, canonicalQueryId);
-      }
-      case AUTO -> {}
-    }
-
-    if (authMode == AuthMode.AUTO && this.sessionHeader.isPresent()) {
-      validateSessionHeaderConfig();
     }
 
     if (this.sessionHeader.isPresent() && hasHeader(headers, this.sessionHeader.orElseThrow())) {
@@ -318,75 +246,9 @@ public class InboundContextInterceptor {
       throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
     }
 
-    if (allowPrincipalHeader && headers.containsKey(PRINC_BIN)) {
-      byte[] pcBytes = headers.get(PRINC_BIN);
-      PrincipalContext pc = parsePrincipal(pcBytes);
-      if (accountHeaderValue.isPresent()
-          && !accountHeaderValue.orElseThrow().equals(pc.getAccountId())) {
-        throw Status.UNAUTHENTICATED
-            .withDescription("account header does not match principal")
-            .asRuntimeException();
-      }
-
-      if (this.validateAccount) {
-        validateAccount(pc.getAccountId());
-      }
-
-      if (!isBlank(queryIdHeader)
-          && !isBlank(pc.getQueryId())
-          && !pc.getQueryId().equals(queryIdHeader)) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("query_id mismatch between header and principal")
-            .asRuntimeException();
-      }
-
-      String canonicalQueryId = !isBlank(pc.getQueryId()) ? pc.getQueryId() : queryIdHeader;
-      return new ResolvedContext(pc, canonicalQueryId);
-    }
-
-    if (allowDevContext) {
-      PrincipalContext dev = devContext();
-      if (accountHeaderValue.isPresent()
-          && !accountHeaderValue.orElseThrow().equals(dev.getAccountId())) {
-        throw Status.UNAUTHENTICATED
-            .withDescription("account header does not match principal")
-            .asRuntimeException();
-      }
-      return new ResolvedContext(dev, "");
-    }
-
-    String message =
-        allowPrincipalHeader
-            ? "missing x-principal-bin"
-            : "missing session header and x-principal-bin disabled";
-    throw Status.UNAUTHENTICATED.withDescription(message).asRuntimeException();
-  }
-
-  private void validateSessionHeaderConfig() {
-    var config = ConfigProvider.getConfig();
-    boolean tenantEnabled =
-        config.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
-    boolean hasPublicKey =
-        config
-            .getOptionalValue("quarkus.oidc.public-key", String.class)
-            .filter(value -> !value.isBlank())
-            .isPresent();
-    boolean hasAuthServerUrl =
-        config
-            .getOptionalValue("quarkus.oidc.auth-server-url", String.class)
-            .filter(value -> !value.isBlank())
-            .isPresent();
-    if (!tenantEnabled) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("session header configured but OIDC tenant is disabled")
-          .asRuntimeException();
-    }
-    if (!hasPublicKey && !hasAuthServerUrl) {
-      throw Status.UNAUTHENTICATED
-          .withDescription(
-              "session header configured but no OIDC public key or auth server URL configured")
-          .asRuntimeException();
-    }
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing session or authorization token")
+        .asRuntimeException();
   }
 
   private PrincipalContext resolveOidcPrincipal(
@@ -396,7 +258,14 @@ public class InboundContextInterceptor {
     if (principal.isPresent()) {
       return principal.get();
     }
-    if (this.sessionHeader.isPresent()) {
+    boolean hasSessionHeader = this.sessionHeader.isPresent();
+    boolean hasAuthorizationHeader = this.authorizationHeader.isPresent();
+    if (hasSessionHeader && hasAuthorizationHeader) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("missing session or authorization token")
+          .asRuntimeException();
+    }
+    if (hasSessionHeader) {
       throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
     }
     throw Status.UNAUTHENTICATED
@@ -422,6 +291,37 @@ public class InboundContextInterceptor {
 
   private SecurityIdentity validateOidcHeader(
       Metadata headers, String headerName, String headerLabel) {
+    ensureOidcConfigured(headerLabel);
+    var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
+    String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      token = token.substring(7).trim();
+    }
+    if (token.isBlank()) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("missing " + headerLabel + " token")
+          .asRuntimeException();
+    }
+    try {
+      AccessTokenCredential credential = new AccessTokenCredential(token);
+      SecurityIdentity identity = identityProvider.authenticate(credential).await().indefinitely();
+      if (identity == null || identity.isAnonymous()) {
+        LOG.warnf("%s token inactive", headerLabel);
+        throw Status.UNAUTHENTICATED
+            .withDescription("inactive " + headerLabel + " token")
+            .asRuntimeException();
+      }
+      return identity;
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "%s token validation failed: %s", headerLabel, e.getMessage());
+      throw Status.UNAUTHENTICATED
+          .withDescription("invalid " + headerLabel + " token")
+          .withCause(e)
+          .asRuntimeException();
+    }
+  }
+
+  private void ensureOidcConfigured(String headerLabel) {
     var config = ConfigProvider.getConfig();
     boolean tenantEnabled =
         config.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
@@ -445,31 +345,6 @@ public class InboundContextInterceptor {
           .withDescription(
               headerLabel
                   + " header configured but no OIDC public key or auth server URL configured")
-          .asRuntimeException();
-    }
-    var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
-    String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
-    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
-      token = token.substring(7).trim();
-    }
-    if (token.isBlank()) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("missing " + headerLabel + " token")
-          .asRuntimeException();
-    }
-    try {
-      AccessTokenCredential credential = new AccessTokenCredential(token);
-      SecurityIdentity identity = identityProvider.authenticate(credential).await().indefinitely();
-      if (identity == null || identity.isAnonymous()) {
-        LOG.warn("Session token inactive");
-        throw Status.UNAUTHENTICATED.withDescription("inactive session token").asRuntimeException();
-      }
-      return identity;
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "Session token validation failed: %s", e.getMessage());
-      throw Status.UNAUTHENTICATED
-          .withDescription("invalid session token")
-          .withCause(e)
           .asRuntimeException();
     }
   }
@@ -601,19 +476,9 @@ public class InboundContextInterceptor {
     if (!isBlank(queryIdHeader)) {
       builder.setQueryId(queryIdHeader);
     }
-    RolePermissions.permissionsForRoles(roles, allowDevContext).forEach(builder::addPermissions);
+    RolePermissions.permissionsForRoles(roles, authMode == AuthMode.DEV)
+        .forEach(builder::addPermissions);
     return builder.build();
-  }
-
-  private static PrincipalContext parsePrincipal(byte[] encoded) {
-    try {
-      return PrincipalContext.parseFrom(encoded);
-    } catch (Exception e) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("invalid x-principal-bin")
-          .withCause(e)
-          .asRuntimeException();
-    }
   }
 
   private static boolean isBlank(String inputString) {
@@ -663,27 +528,19 @@ public class InboundContextInterceptor {
   private record ResolvedContext(PrincipalContext pc, String queryId) {}
 
   private enum AuthMode {
-    AUTO,
     DEV,
-    PRINCIPAL_HEADER,
-    OIDC,
-    OIDC_OR_PRINCIPAL;
+    OIDC;
 
     static AuthMode fromString(String value) {
       if (value == null || value.isBlank()) {
-        return AUTO;
+        return OIDC;
       }
       return switch (value.trim().toLowerCase()) {
         case "dev" -> DEV;
-        case "principal-header", "principal" -> PRINCIPAL_HEADER;
         case "oidc" -> OIDC;
-        case "oidc-or-principal", "oidc_or_principal" -> OIDC_OR_PRINCIPAL;
-        case "auto", "legacy" -> AUTO;
         default ->
             throw new IllegalArgumentException(
-                "unknown floecat.auth.mode: "
-                    + value
-                    + " (expected auto|dev|principal-header|oidc|oidc-or-principal)");
+                "unknown floecat.auth.mode: " + value + " (expected dev|oidc)");
       };
     }
   }
