@@ -326,14 +326,15 @@ public final class UserGraph {
   /**
    * Resolves a relation (table or view) by name reference.
    *
-   * <p>Checks both tables and views, throwing an error if both match or neither matches.
+   * <p>Checks both tables and views, throwing an error if both match and returning empty if neither
+   * resolves.
    *
    * @param cid correlation ID for error reporting
    * @param ref the name reference to resolve
-   * @return the resolved resource ID
-   * @throws GrpcErrors if the name is ambiguous or not found
+   * @return the resolved resource ID, if present
+   * @throws GrpcErrors if the name is ambiguous
    */
-  public ResourceId resolveName(String cid, NameRef ref) {
+  public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
 
@@ -348,14 +349,7 @@ public final class UserGraph {
           Map.of("name", ref.toString()));
     }
 
-    return t.map(ResolvedRelation::resourceId)
-        .or(() -> v.map(ResolvedRelation::resourceId))
-        .orElseThrow(
-            () ->
-                GrpcErrors.invalidArgument(
-                    cid,
-                    GeneratedErrorMessages.MessageKey.QUERY_INPUT_UNRESOLVED,
-                    Map.of("name", ref.toString())));
+    return t.map(ResolvedRelation::resourceId).or(() -> v.map(ResolvedRelation::resourceId));
   }
 
   /**
@@ -394,89 +388,28 @@ public final class UserGraph {
   // Name resolution
   // ----------------------------------------------------------------------
 
-  public ResourceId resolveCatalog(String cid, String name) {
+  public Optional<ResourceId> resolveCatalog(String cid, String name) {
     return names.resolveCatalogId(cid, requireAccountId(cid), name);
   }
 
-  public ResourceId resolveNamespace(String cid, NameRef ref) {
+  public Optional<ResourceId> resolveNamespace(String cid, NameRef ref) {
     validateNameRef(cid, ref);
-    return names.resolveNamespaceId(cid, requireAccountId(cid), ref);
+    String accountId = requireAccountId(cid);
+    return names.resolveNamespaceId(cid, accountId, ref);
   }
 
-  public ResourceId resolveTable(String cid, NameRef ref) {
+  public Optional<ResourceId> resolveTable(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "table");
-    return names.resolveTableId(cid, requireAccountId(cid), ref);
+    String accountId = requireAccountId(cid);
+    return names.resolveTableId(cid, accountId, ref);
   }
 
-  public ResourceId resolveView(String cid, NameRef ref) {
+  public Optional<ResourceId> resolveView(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "view");
-    return names.resolveViewId(cid, requireAccountId(cid), ref);
-  }
-
-  // ----------------------------------------------------------------------
-  // Try resolve (non-throwing variants)
-  // ----------------------------------------------------------------------
-
-  /**
-   * Attempts to resolve a namespace by name reference without throwing exceptions.
-   *
-   * @param cid correlation ID for error reporting
-   * @param ref the name reference to resolve
-   * @return the resolved resource ID, or empty if not found or invalid
-   */
-  public Optional<ResourceId> tryResolveNamespace(String cid, NameRef ref) {
-    try {
-      return Optional.of(resolveNamespace(cid, ref));
-    } catch (Exception e) {
-      return Optional.empty();
-    }
-  }
-
-  /**
-   * Attempts to resolve a table by name reference without throwing exceptions.
-   *
-   * @param cid correlation ID for error reporting
-   * @param ref the name reference to resolve
-   * @return the resolved resource ID, or empty if not found or invalid
-   */
-  public Optional<ResourceId> tryResolveTable(String cid, NameRef ref) {
-    try {
-      return Optional.of(resolveTable(cid, ref));
-    } catch (Exception e) {
-      return Optional.empty();
-    }
-  }
-
-  /**
-   * Attempts to resolve a view by name reference without throwing exceptions.
-   *
-   * @param cid correlation ID for error reporting
-   * @param ref the name reference to resolve
-   * @return the resolved resource ID, or empty if not found or invalid
-   */
-  public Optional<ResourceId> tryResolveView(String cid, NameRef ref) {
-    try {
-      return Optional.of(resolveView(cid, ref));
-    } catch (Exception e) {
-      return Optional.empty();
-    }
-  }
-
-  /**
-   * Attempts to resolve a relation (table or view) by name reference without throwing exceptions.
-   *
-   * @param cid correlation ID for error reporting
-   * @param ref the name reference to resolve
-   * @return the resolved resource ID, or empty if not found, invalid, or ambiguous
-   */
-  public Optional<ResourceId> tryResolveName(String cid, NameRef ref) {
-    try {
-      return Optional.of(resolveName(cid, ref));
-    } catch (Exception e) {
-      return Optional.empty();
-    }
+    String accountId = requireAccountId(cid);
+    return names.resolveViewId(cid, accountId, ref);
   }
 
   // ----------------------------------------------------------------------

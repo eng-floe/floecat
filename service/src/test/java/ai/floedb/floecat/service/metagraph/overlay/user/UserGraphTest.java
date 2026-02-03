@@ -293,9 +293,9 @@ class UserGraphTest {
         Catalog.newBuilder().setResourceId(catalogId).setDisplayName("sales").build(),
         mutationMeta(1L, Instant.now()));
 
-    ResourceId resolved = graph.resolveCatalog("corr", "sales");
+    Optional<ResourceId> resolved = graph.resolveCatalog("corr", "sales");
 
-    assertThat(resolved).isEqualTo(catalogId);
+    assertThat(resolved).contains(catalogId);
   }
 
   @Test
@@ -316,9 +316,9 @@ class UserGraphTest {
 
     NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("ns").build();
 
-    ResourceId resolved = graph.resolveNamespace("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveNamespace("corr", ref);
 
-    assertThat(resolved).isEqualTo(nsId.getResourceId());
+    assertThat(resolved).contains(nsId.getResourceId());
   }
 
   @Test
@@ -326,9 +326,9 @@ class UserGraphTest {
     var ids = seedTable("orders", "{\"fields\":[]}");
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders").build();
 
-    ResourceId resolved = graph.resolveTable("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveTable("corr", ref);
 
-    assertThat(resolved).isEqualTo(ids.tableId());
+    assertThat(resolved).contains(ids.tableId());
   }
 
   @Test
@@ -336,9 +336,9 @@ class UserGraphTest {
     var ids = seedView("reports");
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("reports").build();
 
-    ResourceId resolved = graph.resolveView("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveView("corr", ref);
 
-    assertThat(resolved).isEqualTo(ids);
+    assertThat(resolved).contains(ids);
   }
 
   @Test
@@ -347,9 +347,9 @@ class UserGraphTest {
     NameRef ref =
         NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_table").build();
 
-    ResourceId resolved = graph.resolveName("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved).isEqualTo(ids.tableId());
+    assertThat(resolved).contains(ids.tableId());
   }
 
   @Test
@@ -357,9 +357,9 @@ class UserGraphTest {
     ResourceId viewId = seedView("only_view");
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_view").build();
 
-    ResourceId resolved = graph.resolveName("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved).isEqualTo(viewId);
+    assertThat(resolved).contains(viewId);
   }
 
   @Test
@@ -534,9 +534,9 @@ class UserGraphTest {
             .build();
     tableRepository.put(table, mutationMeta(1L, Instant.now()));
 
-    ResourceId resolved = graph.resolveName("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved).isEqualTo(table.getResourceId());
+    assertThat(resolved).contains(table.getResourceId());
   }
 
   @Test
@@ -566,9 +566,18 @@ class UserGraphTest {
             .build();
     viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
-    ResourceId resolved = graph.resolveName("corr", ref);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
 
-    assertThat(resolved).isEqualTo(view.getResourceId());
+    assertThat(resolved).contains(view.getResourceId());
+  }
+
+  @Test
+  void resolveNameReturnsEmptyWhenMissing() {
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build();
+
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).isEmpty();
   }
 
   @Test
@@ -617,125 +626,6 @@ class UserGraphTest {
   }
 
   @Test
-  void tryResolveTable_returnsTableIdWhenExists() {
-    var ids = seedTable("try_resolve_table", "{}");
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("try_resolve_table").build();
-
-    Optional<ResourceId> result = graph.tryResolveTable("corr", ref);
-
-    assertThat(result).isPresent();
-    assertThat(result.get()).isEqualTo(ids.tableId());
-  }
-
-  @Test
-  void tryResolveTable_returnsEmptyWhenNotExists() {
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_table").build();
-
-    Optional<ResourceId> result = graph.tryResolveTable("corr", ref);
-
-    assertThat(result).isEmpty();
-  }
-
-  @Test
-  void tryResolveView_returnsViewIdWhenExists() {
-    ResourceId viewId = seedView("try_resolve_view");
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("try_resolve_view").build();
-
-    Optional<ResourceId> result = graph.tryResolveView("corr", ref);
-
-    assertThat(result).isPresent();
-    assertThat(result.get()).isEqualTo(viewId);
-  }
-
-  @Test
-  void tryResolveView_returnsEmptyWhenNotExists() {
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_view").build();
-
-    Optional<ResourceId> result = graph.tryResolveView("corr", ref);
-
-    assertThat(result).isEmpty();
-  }
-
-  @Test
-  void tryResolveNamespace_returnsNamespaceIdWhenExists() {
-    ResourceId namespaceId = seedNamespace("try_resolve_ns");
-    NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("try_resolve_ns").build();
-
-    Optional<ResourceId> result = graph.tryResolveNamespace("corr", ref);
-
-    assertThat(result).isPresent();
-    assertThat(result.get()).isEqualTo(namespaceId);
-  }
-
-  @Test
-  void tryResolveNamespace_returnsEmptyWhenNotExists() {
-    NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("nonexistent_ns").build();
-
-    Optional<ResourceId> result = graph.tryResolveNamespace("corr", ref);
-
-    assertThat(result).isEmpty();
-  }
-
-  @Test
-  void tryResolveName_returnsTableIdWhenOnlyTableExists() {
-    var ids = seedTable("try_resolve_name_table", "{}");
-    NameRef ref =
-        NameRef.newBuilder()
-            .setCatalog("cat")
-            .addPath("ns")
-            .setName("try_resolve_name_table")
-            .build();
-
-    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
-
-    assertThat(result).isPresent();
-    assertThat(result.get()).isEqualTo(ids.tableId());
-  }
-
-  @Test
-  void tryResolveName_returnsViewIdWhenOnlyViewExists() {
-    ResourceId viewId = seedView("try_resolve_name_view");
-    NameRef ref =
-        NameRef.newBuilder()
-            .setCatalog("cat")
-            .addPath("ns")
-            .setName("try_resolve_name_view")
-            .build();
-
-    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
-
-    assertThat(result).isPresent();
-    assertThat(result.get()).isEqualTo(viewId);
-  }
-
-  @Test
-  void tryResolveName_returnsEmptyWhenAmbiguous() {
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("ambiguous_obj").build();
-    // Create both table and view with same name
-    seedTable("ambiguous_obj", "{}");
-    seedView("ambiguous_obj");
-
-    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
-
-    assertThat(result).isEmpty(); // Should return empty for ambiguous names
-  }
-
-  @Test
-  void tryResolveName_returnsEmptyWhenNotExists() {
-    NameRef ref =
-        NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("nonexistent_obj").build();
-
-    Optional<ResourceId> result = graph.tryResolveName("corr", ref);
-
-    assertThat(result).isEmpty();
-  }
-
-  @Test
   void resolveTablesListReturnsCanonicalNames() {
     var ids = seedTable("orders_list", "{\"fields\":[]}");
     List<NameRef> inputs =
@@ -745,14 +635,12 @@ class UserGraphTest {
 
     UserGraph.ResolveResult result = graph.resolveTables("corr", inputs, 10, "");
 
-    assertThat(result.totalSize()).isEqualTo(inputs.size());
+    assertThat(result.totalSize()).isEqualTo(1);
     assertThat(result.nextToken()).isEmpty();
-    assertThat(result.relations()).hasSize(2);
+    assertThat(result.relations()).hasSize(1);
     UserGraph.QualifiedRelation first = result.relations().get(0);
     assertThat(first.resourceId()).isEqualTo(ids.tableId());
     assertThat(first.name().getResourceId()).isEqualTo(ids.tableId());
-    UserGraph.QualifiedRelation second = result.relations().get(1);
-    assertThat(second.resourceId()).isEqualTo(ResourceId.getDefaultInstance());
   }
 
   @Test
@@ -832,10 +720,9 @@ class UserGraphTest {
 
     UserGraph.ResolveResult result = graph.resolveViews("corr", inputs, 50, "");
 
-    assertThat(result.totalSize()).isEqualTo(inputs.size());
-    assertThat(result.relations()).hasSize(2);
+    assertThat(result.totalSize()).isEqualTo(1);
+    assertThat(result.relations()).hasSize(1);
     assertThat(result.relations().get(0).resourceId()).isEqualTo(viewId);
-    assertThat(result.relations().get(1).resourceId()).isEqualTo(ResourceId.getDefaultInstance());
   }
 
   @Test

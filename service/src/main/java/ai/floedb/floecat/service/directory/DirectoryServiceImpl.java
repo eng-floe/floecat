@@ -41,12 +41,14 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageResponse;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -73,8 +75,15 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var resourceId =
-                      catalogOverlay.resolveCatalog(correlationId(), request.getRef().getCatalog());
+                  ResourceId resourceId =
+                      catalogOverlay
+                          .resolveCatalog(correlationId(), request.getRef().getCatalog())
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId(),
+                                      CATALOG,
+                                      Map.of("id", request.getRef().getCatalog())));
 
                   return ResolveCatalogResponse.newBuilder().setResourceId(resourceId).build();
                 }),
@@ -126,7 +135,16 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   var ref = request.getRef();
                   validateNameRefOrThrow(ref);
 
-                  var namespaceId = catalogOverlay.resolveNamespace(correlationId(), ref);
+                  var namespacePath = String.join(".", NameRefUtil.namespacePath(ref));
+                  ResourceId namespaceId =
+                      catalogOverlay
+                          .resolveNamespace(correlationId(), ref)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId(),
+                                      NAMESPACE_BY_PATH_MISSING,
+                                      Map.of("catalog", ref.getCatalog(), "path", namespacePath)));
 
                   return ResolveNamespaceResponse.newBuilder().setResourceId(namespaceId).build();
                 }),
@@ -177,7 +195,21 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateTableNameOrThrow(nameRef);
 
-                  var tableId = catalogOverlay.resolveTable(correlationId(), nameRef);
+                  ResourceId tableId =
+                      catalogOverlay
+                          .resolveTable(correlationId(), nameRef)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId(),
+                                      TABLE_BY_NAME_MISSING,
+                                      Map.of(
+                                          "catalog",
+                                          nameRef.getCatalog(),
+                                          "path",
+                                          String.join(".", nameRef.getPathList()),
+                                          "name",
+                                          nameRef.getName())));
 
                   return ResolveTableResponse.newBuilder().setResourceId(tableId).build();
                 }),
@@ -228,7 +260,21 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateNameRefOrThrow(nameRef);
                   validateViewNameOrThrow(nameRef);
 
-                  var viewId = catalogOverlay.resolveView(correlationId(), nameRef);
+                  ResourceId viewId =
+                      catalogOverlay
+                          .resolveView(correlationId(), nameRef)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId(),
+                                      VIEW_BY_NAME_MISSING,
+                                      Map.of(
+                                          "catalog",
+                                          nameRef.getCatalog(),
+                                          "path",
+                                          String.join(".", nameRef.getPathList()),
+                                          "name",
+                                          nameRef.getName())));
 
                   return ResolveViewResponse.newBuilder().setResourceId(viewId).build();
                 }),
@@ -284,7 +330,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasList()) {
                     var result =
-                        catalogOverlay.resolveViews(
+                        catalogOverlay.batchResolveViews(
                             correlationId(), request.getList().getNamesList(), limit, token);
 
                     result
@@ -306,7 +352,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasPrefix()) {
                     var result =
-                        catalogOverlay.resolveViews(
+                        catalogOverlay.listViewsByPrefix(
                             correlationId(), request.getPrefix(), limit, token);
 
                     result
@@ -354,7 +400,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasList()) {
                     var result =
-                        catalogOverlay.resolveTables(
+                        catalogOverlay.batchResolveTables(
                             correlationId(), request.getList().getNamesList(), limit, token);
 
                     result
@@ -376,7 +422,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   if (request.hasPrefix()) {
                     var result =
-                        catalogOverlay.resolveTables(
+                        catalogOverlay.listTablesByPrefix(
                             correlationId(), request.getPrefix(), limit, token);
 
                     result

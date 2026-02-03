@@ -31,8 +31,6 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
-import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
-import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -151,37 +149,31 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public ResourceId resolveCatalog(String correlationId, String name) {
+    public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
       throw unsupported();
     }
 
     @Override
-    public ResourceId resolveNamespace(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
       throw unsupported();
     }
 
     @Override
-    public ResourceId resolveTable(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
       throw unsupported();
     }
 
     @Override
-    public ResourceId resolveView(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
       throw unsupported();
     }
 
     @Override
-    public ResourceId resolveName(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
-          .findFirst()
-          .orElseThrow(
-              () ->
-                  GrpcErrors.notFound(
-                      correlationId,
-                      GeneratedErrorMessages.MessageKey.QUERY_INPUT_UNRESOLVED,
-                      Map.of("name", ref.toString())));
+          .findFirst();
     }
 
     @Override
@@ -194,25 +186,25 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public ResolveResult resolveTables(
+    public ResolveResult batchResolveTables(
         String correlationId, List<NameRef> items, int limit, String token) {
       throw unsupported();
     }
 
     @Override
-    public ResolveResult resolveTables(
+    public ResolveResult listTablesByPrefix(
         String correlationId, NameRef prefix, int limit, String token) {
       throw unsupported();
     }
 
     @Override
-    public ResolveResult resolveViews(
+    public ResolveResult batchResolveViews(
         String correlationId, List<NameRef> items, int limit, String token) {
       throw unsupported();
     }
 
     @Override
-    public ResolveResult resolveViews(
+    public ResolveResult listViewsByPrefix(
         String correlationId, NameRef prefix, int limit, String token) {
       throw unsupported();
     }

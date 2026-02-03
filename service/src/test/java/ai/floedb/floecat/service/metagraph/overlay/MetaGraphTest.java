@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -29,21 +30,28 @@ import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class MetaGraphTest {
 
@@ -83,44 +91,45 @@ class MetaGraphTest {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     context = EngineContext.of("engine", "1");
     when(engine.engineContext()).thenReturn(context);
+    when(engine.isPresent()).thenReturn(true);
 
     meta = new MetaGraph(user, schemaMapper, system, engine);
   }
 
   @AfterEach
   void cleanup() {
-    // No cleanup needed
+    reset(system, user);
   }
 
   @Test
   void systemFirstResolution_table() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
-    when(user.tryResolveTable("c", ref)).thenReturn(Optional.empty());
+    when(user.resolveTable("c", ref)).thenReturn(Optional.empty());
 
-    ResourceId out = meta.resolveTable("c", ref);
+    Optional<ResourceId> out = meta.resolveTable("c", ref);
 
-    assertThat(out).isEqualTo(sysTable);
+    assertThat(out).contains(sysTable);
   }
 
   @Test
   void userResolutionWhenSystemAbsent_table() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.empty());
-    when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
+    when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
-    ResourceId out = meta.resolveTable("c", ref);
+    Optional<ResourceId> out = meta.resolveTable("c", ref);
 
-    assertThat(out).isEqualTo(usrTable);
+    assertThat(out).contains(usrTable);
   }
 
   @Test
   void unresolvedThrowsError_table() {
     NameRef ref = NameRef.newBuilder().setName("x").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.empty());
-    when(user.tryResolveTable("c", ref)).thenReturn(Optional.empty());
+    when(user.resolveTable("c", ref)).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
+    assertThat(meta.resolveTable("c", ref)).isEmpty();
   }
 
   @Test
@@ -240,9 +249,259 @@ class MetaGraphTest {
   void resolveTable_throwsWhenBothSystemAndUserMatch() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
-    when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
+    when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
+  }
+
+  private String firstErrorKey(StatusRuntimeException ex) {
+    com.google.rpc.Status status = StatusProto.fromThrowable(ex);
+    return status.getDetailsList().stream()
+        .filter(detail -> detail.is(Error.class))
+        .map(
+            detail -> {
+              try {
+                return detail.unpack(Error.class).getMessageKey();
+              } catch (Exception e) {
+                throw new AssertionError("unable to unpack error detail", e);
+              }
+            })
+        .findFirst()
+        .orElse("");
+  }
+
+  private UserGraph.ResolveResult userResolveResult(
+      int total, String token, CatalogOverlay.QualifiedRelation... relations) {
+    List<FullyQualifiedResolver.QualifiedRelation> delegate =
+        Arrays.stream(relations)
+            .map(rel -> new FullyQualifiedResolver.QualifiedRelation(rel.name(), rel.resourceId()))
+            .toList();
+    return new UserGraph.ResolveResult(
+        new FullyQualifiedResolver.ResolveResult(delegate, total, token));
+  }
+
+  @Test
+  void resolveTables_list_mergesSystemAndUser() {
+    NameRef systemRef = NameRef.newBuilder().setCatalog("examples").setName("system_table").build();
+    NameRef userRef = NameRef.newBuilder().setCatalog("examples").setName("user_table").build();
+    ResourceId userId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("user-table-2")
+            .build();
+
+    when(system.resolveTable(any(NameRef.class), eq(context))).thenReturn(Optional.of(sysTable));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+    when(system.resolveTable(argThat(ref -> ref.equals(userRef)), eq(context)))
+        .thenReturn(Optional.empty());
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(1, "user-token", new CatalogOverlay.QualifiedRelation(userRef, userId));
+    when(user.resolveTables(eq("cid"), anyList(), eq(2), eq(""))).thenReturn(userResult);
+
+    CatalogOverlay.ResolveResult merged =
+        meta.batchResolveTables("cid", List.of(systemRef, userRef), 2, "");
+
+    assertThat(merged.relations()).hasSize(2);
+    assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(merged.relations().get(0).name().getCatalog()).isEqualTo(systemRef.getCatalog());
+    assertThat(merged.relations().get(1).resourceId()).isEqualTo(userId);
+    assertThat(merged.nextToken()).isEmpty();
+  }
+
+  @Test
+  void resolveTables_list_throwsOnAmbiguousName() {
+    NameRef ref = NameRef.newBuilder().setCatalog("examples").setName("collide").build();
+    NameRef alias = NameRef.newBuilder().setCatalog("examples").setName("alias").build();
+
+    when(system.resolveTable(any(NameRef.class), eq(context))).thenReturn(Optional.of(sysTable));
+    when(system.tableName(sysTable, context)).thenReturn(Optional.of(alias));
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(1, "", new CatalogOverlay.QualifiedRelation(alias, usrTable));
+    when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
+
+    assertThatThrownBy(() -> meta.batchResolveTables("cid", List.of(ref), 1, ""))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(
+            ex ->
+                assertThat(firstErrorKey((StatusRuntimeException) ex))
+                    .contains("query.input.ambiguous"));
+  }
+
+  @Test
+  void resolveTables_prefix_mergesSystemAndUser() {
+    NameRef prefix = NameRef.newBuilder().setCatalog("examples").addPath("ns").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+
+    TableNode systemNode =
+        new TableNode() {
+          @Override
+          public ResourceId namespaceId() {
+            return namespaceId;
+          }
+
+          @Override
+          public String displayName() {
+            return "sys_t";
+          }
+
+          @Override
+          public ResourceId id() {
+            return sysTable;
+          }
+
+          @Override
+          public long version() {
+            return 1;
+          }
+
+          @Override
+          public Instant metadataUpdatedAt() {
+            return Instant.EPOCH;
+          }
+
+          @Override
+          public GraphNodeOrigin origin() {
+            return GraphNodeOrigin.SYSTEM;
+          }
+
+          @Override
+          public Map<EngineHintKey, EngineHint> engineHints() {
+            return Map.of();
+          }
+        };
+
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(systemNode));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("sys_t").build()));
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(
+            1,
+            "user-token",
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
+                usrTable));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq(""))).thenReturn(userResult);
+
+    CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
+
+    assertThat(merged.relations()).hasSize(2);
+    assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(merged.nextToken()).isEqualTo("u:user-token");
+  }
+
+  @Test
+  void resolveTables_prefix_handlesNamespaceMissingAfterSystemHit() {
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+
+    TableNode systemNode =
+        new TableNode() {
+          @Override
+          public ResourceId namespaceId() {
+            return namespaceId;
+          }
+
+          @Override
+          public String displayName() {
+            return "system_table";
+          }
+
+          @Override
+          public ResourceId id() {
+            return sysTable;
+          }
+
+          @Override
+          public long version() {
+            return 1;
+          }
+
+          @Override
+          public Instant metadataUpdatedAt() {
+            return Instant.EPOCH;
+          }
+
+          @Override
+          public GraphNodeOrigin origin() {
+            return GraphNodeOrigin.SYSTEM;
+          }
+
+          @Override
+          public Map<EngineHintKey, EngineHint> engineHints() {
+            return Map.of();
+          }
+        };
+
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(systemNode));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq("")))
+        .thenReturn(
+            new UserGraph.ResolveResult(
+                new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
+
+    CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
+
+    assertThat(merged.relations()).hasSize(1);
+    assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
+  }
+
+  @Test
+  void resolveTables_prefix_resolvesSystemNamespaceWithNameSegment() {
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+
+    ArgumentCaptor<NameRef> captor = ArgumentCaptor.forClass(NameRef.class);
+    when(system.resolveNamespace(captor.capture(), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of());
+
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq("")))
+        .thenReturn(
+            new UserGraph.ResolveResult(
+                new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
+
+    meta.listTablesByPrefix("cid", prefix, 50, "");
+
+    NameRef captured = captor.getValue();
+    assertThat(captured.getCatalog()).isEqualTo(context.effectiveEngineKind());
+    assertThat(captured.getPathCount()).isZero();
+    assertThat(captured.getName()).isEqualTo("information_schema");
   }
 
   @Test
@@ -254,10 +513,10 @@ class MetaGraphTest {
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());
-    when(user.tryResolveTable("c", ref)).thenReturn(Optional.of(usrTable));
+    when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
-    ResourceId out = metaNoEngine.resolveTable("c", ref);
+    Optional<ResourceId> out = metaNoEngine.resolveTable("c", ref);
 
-    assertThat(out).isEqualTo(usrTable);
+    assertThat(out).contains(usrTable);
   }
 }

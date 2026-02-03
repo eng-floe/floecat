@@ -561,9 +561,9 @@ public class QueryInputResolverTest {
     // MIMIC MetadataGraph API ---------------------------------------------
 
     @Override
-    public ResourceId resolveName(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
       if (ref.hasResourceId()) {
-        return ref.getResourceId();
+        return Optional.of(ref.getResourceId());
       }
       RuntimeException failure = failures.get(ref);
       if (failure != null) {
@@ -571,9 +571,9 @@ public class QueryInputResolverTest {
       }
       ResourceId id = nameBindings.get(ref);
       if (id == null) {
-        throw new StatusRuntimeException(io.grpc.Status.INVALID_ARGUMENT);
+        return Optional.empty();
       }
-      return id;
+      return Optional.of(id);
     }
 
     @Override

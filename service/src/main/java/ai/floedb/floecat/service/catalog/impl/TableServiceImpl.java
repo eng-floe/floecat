@@ -36,6 +36,12 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -55,11 +61,14 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -79,6 +88,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject CatalogOverlay overlay;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
       Set.of(
@@ -97,7 +107,107 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "upstream.partition_keys",
           "upstream.column_id_algorithm");
 
+  private static final String TBL_TOKEN_PREFIX = "tbl:";
   private static final Logger LOG = Logger.getLogger(TableService.class);
+
+  private void ensureTableWritable(ResourceId tableId, String corr) {
+    // Only user tables may be mutated.
+    GraphNode node = requireVisibleTableNode(tableId, corr);
+    enforceWritableTableNode(node, tableId, corr);
+  }
+
+  private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
+    if (node instanceof UserTableNode) {
+      return;
+    }
+
+    // System tables are immutable; return PERMISSION_DENIED when we can prove it's SYSTEM.
+    if (node != null && node.origin() == GraphNodeOrigin.SYSTEM) {
+      throw GrpcErrors.permissionDenied(
+          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", tableId.getId(), "kind", "table"));
+    }
+
+    // Preserve semantics for other non-user nodes.
+    throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+  }
+
+  private void ensureTableWritableForDelete(ResourceId tableId, String corr, boolean callerCares) {
+    GraphNode node = resolveTableNode(tableId, corr, callerCares);
+
+    // if bestEffort and overlay failed / unresolved → allow repo-based best-effort delete
+    if (node == null) return;
+
+    enforceWritableTableNode(node, tableId, corr);
+  }
+
+  private GraphNode resolveTableNode(ResourceId tableId, String corr, boolean throwOnError) {
+    if (tableId == null) {
+      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
+    }
+    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+
+    try {
+      return overlay.resolve(tableId).orElse(null);
+    } catch (RuntimeException e) {
+      if (throwOnError) {
+        throw e;
+      }
+      return null;
+    }
+  }
+
+  private GraphNode requireVisibleTableNode(ResourceId tableId, String corr) {
+    GraphNode node = resolveTableNode(tableId, corr, true);
+    if (node == null) throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+    return node;
+  }
+
+  private Table tableFromOverlayNodeOrRepo(GraphNode node, ResourceId tableId, String corr) {
+    if (!(node instanceof TableNode tn)) {
+      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+    }
+
+    if (tn.origin() == GraphNodeOrigin.SYSTEM) {
+      return tn.toTableProtoTable();
+    }
+
+    // USER (and any other future non-system): keep repo behavior
+    return tableRepo
+        .getById(tableId)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+  }
+
+  // Relative key for SYSTEM paging. Since ListTables is scoped to a namespace, leaf display name is
+  // enough.
+  // Normalize to match user table naming behavior.
+  private String relativeTableKey(TableNode tn) {
+    if (tn == null) return "";
+    String name = tn.displayName();
+    if (name == null) name = "";
+    return normalizeName(name);
+  }
+
+  private static String encodeTblToken(String resumeAfterRel) {
+    // allow an "empty" service token to mean "start SYSTEM phase"
+    if (resumeAfterRel == null) resumeAfterRel = "";
+    if (resumeAfterRel.isBlank()) {
+      return TBL_TOKEN_PREFIX; // "tbl:" only
+    }
+    return TBL_TOKEN_PREFIX
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static String decodeTblToken(String token) {
+    if (token == null || token.isBlank() || !token.startsWith(TBL_TOKEN_PREFIX)) return "";
+    if (token.length() == TBL_TOKEN_PREFIX.length()) {
+      return ""; // "tbl:" means "start SYSTEM phase"
+    }
+    var s = token.substring(TBL_TOKEN_PREFIX.length());
+    var bytes = Base64.getUrlDecoder().decode(s);
+    return new String(bytes, StandardCharsets.UTF_8);
+  }
 
   @Override
   public Uni<ListTablesResponse> listTables(ListTablesRequest request) {
@@ -106,53 +216,134 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     return mapFailures(
             run(
                 () -> {
-                  var principalContext = principal.get();
-                  authz.require(principalContext, "table.read");
+                  var pc = principal.get();
+                  authz.require(pc, "table.read");
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-                  var next = new StringBuilder();
+                  final int want = Math.max(1, pageIn.limit);
 
                   var namespaceId = request.getNamespaceId();
                   ensureKind(
                       namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
 
-                  var namespace =
-                      namespaceRepo
-                          .getById(namespaceId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      NAMESPACE,
-                                      Map.of("id", namespaceId.getId())));
+                  // Overlay is source of truth for visibility (USER + SYSTEM)
+                  NamespaceNode nsNode = requireVisibleNamespaceNode(namespaceId, correlationId());
+                  ResourceId catalogId = nsNode.catalogId();
 
-                  var catalogId = namespace.getCatalogId();
+                  final boolean isServiceToken =
+                      pageIn.token != null && pageIn.token.startsWith(TBL_TOKEN_PREFIX);
+                  final String resumeAfterRel = isServiceToken ? decodeTblToken(pageIn.token) : "";
 
-                  List<Table> tables;
-                  try {
+                  // Repo cursor only if we're not already in SYSTEM phase
+                  String repoCursor = isServiceToken ? "" : pageIn.token;
 
-                    tables =
-                        tableRepo.list(
-                            principalContext.getAccountId(),
-                            catalogId.getId(),
-                            namespaceId.getId(),
-                            Math.max(1, pageIn.limit),
-                            pageIn.token,
-                            next);
-                  } catch (IllegalArgumentException badToken) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
+                  var out = new java.util.ArrayList<Table>(want);
+                  String lastEmittedRel = "";
+
+                  //  Phase 1: repo-backed paging (user tables only)
+                  String repoNext = "";
+                  if (nsNode.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
+                    var next = new StringBuilder();
+                    final List<Table> scanned;
+                    try {
+                      scanned =
+                          tableRepo.list(
+                              pc.getAccountId(),
+                              catalogId.getId(),
+                              namespaceId.getId(),
+                              want,
+                              repoCursor,
+                              next);
+                    } catch (IllegalArgumentException badToken) {
+                      throw GrpcErrors.invalidArgument(
+                          correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
+                    }
+
+                    out.addAll(scanned);
+                    repoNext = next.toString(); // blank => repo exhausted
+                  } else {
+                    // SYSTEM namespace OR we're already in SYSTEM phase:
+                    // treat repo as exhausted for listTables()
+                    repoNext = "";
                   }
 
-                  var page =
-                      MutationOps.pageOut(
-                          next.toString(),
-                          tableRepo.count(
-                              principalContext.getAccountId(),
-                              catalogId.getId(),
-                              namespaceId.getId()));
+                  //  Phase 2: append SYSTEM tables once repo is exhausted
+                  // Overlay has no paging: we implement an in-memory "resume after rel" like
+                  // namespaces.
+                  int sysCount = 0;
+                  List<TableNode> sysNodes = List.of(); // only materialize when needed
 
-                  return ListTablesResponse.newBuilder().addAllTables(tables).setPage(page).build();
+                  final boolean repoExhausted = repoNext.isBlank();
+                  if (repoExhausted) {
+                    // Always need sysCount for totalSize.
+                    // Only need to materialize + sort if we're going to emit.
+                    var rels =
+                        overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                            .filter(TableNode.class::isInstance)
+                            .map(TableNode.class::cast)
+                            .filter(tn -> tn.origin() == GraphNodeOrigin.SYSTEM)
+                            .toList();
+
+                    sysCount = rels.size();
+
+                    if (out.size() < want && sysCount > 0) {
+                      sysNodes = rels;
+
+                      record SysItem(TableNode node, String rel) {}
+
+                      var sysItems =
+                          sysNodes.stream()
+                              .map(tn -> new SysItem(tn, relativeTableKey(tn)))
+                              .filter(it -> it.rel() != null && !it.rel().isBlank())
+                              .sorted(java.util.Comparator.comparing(SysItem::rel))
+                              .toList();
+
+                      for (var it : sysItems) {
+                        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
+                          continue;
+                        }
+                        if (out.size() >= want) {
+                          break;
+                        }
+                        out.add(it.node().toTableProtoTable());
+                        lastEmittedRel = it.rel();
+                      }
+                    }
+                  } else {
+                    // Repo not exhausted: still need sysCount for totalSize, but avoid sorting.
+                    sysCount =
+                        (int)
+                            overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                                .filter(TableNode.class::isInstance)
+                                .map(TableNode.class::cast)
+                                .filter(tn -> tn.origin() == GraphNodeOrigin.SYSTEM)
+                                .count();
+                  }
+
+                  //  nextToken
+                  // If repo still has more, return repo token.
+                  // Else if we filled the page and there may be SYSTEM continuation, return service
+                  // token.
+                  String nextToken = repoNext;
+
+                  if (nextToken.isBlank() && out.size() == want) {
+                    // Continue in SYSTEM phase.
+                    // lastEmittedRel may be blank if we haven't emitted any SYSTEM yet (bridge
+                    // case):
+                    // encodeTblToken("") => "tbl:" which means "start SYSTEM phase"
+                    nextToken = encodeTblToken(lastEmittedRel);
+                  }
+
+                  // totalSize
+                  int repoCount =
+                      (nsNode.origin() == GraphNodeOrigin.SYSTEM)
+                          ? 0
+                          : tableRepo.count(
+                              pc.getAccountId(), catalogId.getId(), namespaceId.getId());
+
+                  var page = MutationOps.pageOut(nextToken, repoCount + sysCount);
+
+                  return ListTablesResponse.newBuilder().addAllTables(out).setPage(page).build();
                 }),
             correlationId())
         .onFailure()
@@ -170,18 +361,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                 () -> {
                   var principalContext = principal.get();
                   authz.require(principalContext, "table.read");
-                  ensureKind(
-                      request.getTableId(), ResourceKind.RK_TABLE, "table_id", correlationId());
 
-                  var table =
-                      tableRepo
-                          .getById(request.getTableId())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId(),
-                                      TABLE,
-                                      Map.of("id", request.getTableId().getId())));
+                  GraphNode node = requireVisibleTableNode(request.getTableId(), correlationId());
+                  Table table =
+                      tableFromOverlayNodeOrRepo(node, request.getTableId(), correlationId());
+
                   return GetTableResponse.newBuilder().setTable(table).build();
                 }),
             correlationId())
@@ -214,32 +398,23 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       "spec.namespace_id",
                       corr);
 
-                  catalogRepo
-                      .getById(request.getSpec().getCatalogId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  corr,
-                                  CATALOG,
-                                  Map.of("id", request.getSpec().getCatalogId().getId())));
-
-                  var ns =
-                      namespaceRepo
-                          .getById(request.getSpec().getNamespaceId())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      corr,
-                                      NAMESPACE,
-                                      Map.of("id", request.getSpec().getNamespaceId().getId())));
+                  // Overlay is the source of truth for visibility (SYSTEM + user).
                   var catId = request.getSpec().getCatalogId();
-                  if (!ns.getCatalogId().getId().equals(catId.getId())) {
+                  requireVisibleCatalogNode(catId, corr);
+
+                  // Namespace must be visible and writable (SYSTEM namespaces are immutable).
+                  var nsNode =
+                      requireWritableNamespaceNode(request.getSpec().getNamespaceId(), corr);
+
+                  if (nsNode.catalogId() == null
+                      || !nsNode.catalogId().getId().equals(catId.getId())) {
                     throw GrpcErrors.invalidArgument(
                         corr,
                         NAMESPACE_CATALOG_MISMATCH,
                         Map.of(
-                            "namespace_id", ns.getResourceId().getId(),
-                            "namespace.catalog_id", ns.getCatalogId().getId(),
+                            "namespace_id", nsNode.id().getId(),
+                            "namespace.catalog_id",
+                                nsNode.catalogId() == null ? "" : nsNode.catalogId().getId(),
                             "catalog_id", catId.getId()));
                   }
 
@@ -380,7 +555,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   authz.require(pctx, "table.write");
 
                   var tableId = request.getTableId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+                  ensureTableWritable(tableId, corr);
 
                   var current =
                       tableRepo
@@ -487,7 +662,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   authz.require(principalContext, "table.write");
 
                   var tableId = request.getTableId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+                  boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                  ensureTableWritableForDelete(tableId, correlationId, callerCares);
 
                   Table existing = null;
                   try {
@@ -501,7 +677,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     meta = tableRepo.metaFor(tableId);
                   } catch (BaseResourceRepository.NotFoundException missing) {
                     var safe = tableRepo.metaForSafe(tableId);
-                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && safe.getPointerVersion() == 0L) {
                       throw GrpcErrors.notFound(
                           correlationId, TABLE, Map.of("id", tableId.getId()));
@@ -828,5 +1003,42 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private void purgeSnapshotsAndStats(ResourceId tableId) {
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(prefix);
+  }
+
+  private CatalogNode requireVisibleCatalogNode(ResourceId catalogId, String corr) {
+    if (catalogId == null) {
+      throw GrpcErrors.notFound(corr, CATALOG, Map.of("id", "<missing_catalog_id>"));
+    }
+
+    ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
+
+    return overlay
+        .resolve(catalogId)
+        .filter(CatalogNode.class::isInstance)
+        .map(CatalogNode.class::cast)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
+  }
+
+  private NamespaceNode requireVisibleNamespaceNode(ResourceId namespaceId, String corr) {
+    if (namespaceId == null) {
+      throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", "<missing_namespace_id>"));
+    }
+
+    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
+
+    return overlay
+        .resolve(namespaceId)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId())));
+  }
+
+  private NamespaceNode requireWritableNamespaceNode(ResourceId namespaceId, String corr) {
+    NamespaceNode ns = requireVisibleNamespaceNode(namespaceId, corr);
+    if (ns.origin() == GraphNodeOrigin.SYSTEM) {
+      throw GrpcErrors.permissionDenied(
+          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
+    }
+    return ns;
   }
 }

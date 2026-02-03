@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.PagingTestUtil;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -70,7 +71,7 @@ class NamespacesPagingIT {
   }
 
   @Test
-  void listNamespacesChildrenOnlyPaging() {
+  void listNamespacesChildrenOnlyPaging() throws Exception {
     PagingTestUtil.GrpcPager<Namespace> pager =
         (pageSize, token) -> {
           var req =
@@ -95,7 +96,7 @@ class NamespacesPagingIT {
     var all = collectAllNamespacesAtRootChildrenOnly(100);
     var names = toNames(all);
 
-    var expected = Set.of("a", "m", "z");
+    var expected = Set.of("a", "m", "z", "information_schema");
     assertEquals(expected, new HashSet<>(names));
 
     var totalResp =
@@ -106,11 +107,11 @@ class NamespacesPagingIT {
                 .setRecursive(false)
                 .setPage(PageRequest.newBuilder().setPageSize(1))
                 .build());
-    assertEquals(3, totalResp.getPage().getTotalSize());
+    assertEquals(4, totalResp.getPage().getTotalSize());
   }
 
   @Test
-  void listNamespaces_recursive_prefix_a() {
+  void listNamespaces_recursive_prefix_a() throws Exception {
     var resp =
         namespaces.listNamespaces(
             ListNamespacesRequest.newBuilder()
@@ -151,6 +152,62 @@ class NamespacesPagingIT {
         Status.Code.INVALID_ARGUMENT,
         ErrorCode.MC_INVALID_ARGUMENT,
         "Invalid page token: bogus-token");
+  }
+
+  @Test
+  void systemNamespace_isReadOnly_updateRejected() {
+    var all = collectAllNamespacesAtRootChildrenOnly(100);
+    Namespace sys =
+        all.stream()
+            .filter(n -> "information_schema".equals(n.getDisplayName()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("missing system namespace 'information_schema'"));
+
+    var req =
+        UpdateNamespaceRequest.newBuilder()
+            .setNamespaceId(sys.getResourceId())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("description").build())
+            .setSpec(NamespaceSpec.newBuilder().setDescription("nope").build())
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(StatusRuntimeException.class, () -> namespaces.updateNamespace(req));
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+  }
+
+  @Test
+  void systemNamespace_isReadOnly_deleteRejected() {
+    var all = collectAllNamespacesAtRootChildrenOnly(100);
+    Namespace sys =
+        all.stream()
+            .filter(n -> "information_schema".equals(n.getDisplayName()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("missing system namespace 'information_schema'"));
+
+    var req = DeleteNamespaceRequest.newBuilder().setNamespaceId(sys.getResourceId()).build();
+
+    StatusRuntimeException ex =
+        assertThrows(StatusRuntimeException.class, () -> namespaces.deleteNamespace(req));
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+  }
+
+  @Test
+  void systemNamespace_collision_createRejected() throws Exception {
+    // The overlay exposes system namespaces inside the user catalog context, so attempting
+    // to create the same name should be rejected.
+    var req =
+        CreateNamespaceRequest.newBuilder()
+            .setSpec(
+                NamespaceSpec.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setDisplayName("information_schema")
+                    .build())
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(StatusRuntimeException.class, () -> namespaces.createNamespace(req));
+
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   private List<Namespace> collectAllNamespacesAtRootChildrenOnly(int pageSize) {

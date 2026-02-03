@@ -63,15 +63,15 @@ public interface CatalogOverlay {
 
   List<TypeNode> listTypes(ResourceId catalogId);
 
-  ResourceId resolveCatalog(String correlationId, String name);
+  Optional<ResourceId> resolveCatalog(String correlationId, String name);
 
-  ResourceId resolveNamespace(String correlationId, NameRef ref);
+  Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref);
 
-  ResourceId resolveTable(String correlationId, NameRef ref);
+  Optional<ResourceId> resolveTable(String correlationId, NameRef ref);
 
-  ResourceId resolveView(String correlationId, NameRef ref);
+  Optional<ResourceId> resolveView(String correlationId, NameRef ref);
 
-  ResourceId resolveName(String correlationId, NameRef ref);
+  Optional<ResourceId> resolveName(String correlationId, NameRef ref);
 
   SnapshotPin snapshotPinFor(
       String correlationId,
@@ -79,13 +79,15 @@ public interface CatalogOverlay {
       SnapshotRef override,
       Optional<Timestamp> asOfDefault);
 
-  ResolveResult resolveTables(String correlationId, List<NameRef> items, int limit, String token);
+  ResolveResult batchResolveTables(
+      String correlationId, List<NameRef> items, int limit, String token);
 
-  ResolveResult resolveTables(String correlationId, NameRef prefix, int limit, String token);
+  ResolveResult listTablesByPrefix(String correlationId, NameRef prefix, int limit, String token);
 
-  ResolveResult resolveViews(String correlationId, List<NameRef> items, int limit, String token);
+  ResolveResult batchResolveViews(
+      String correlationId, List<NameRef> items, int limit, String token);
 
-  ResolveResult resolveViews(String correlationId, NameRef prefix, int limit, String token);
+  ResolveResult listViewsByPrefix(String correlationId, NameRef prefix, int limit, String token);
 
   Optional<NameRef> namespaceName(ResourceId id);
 

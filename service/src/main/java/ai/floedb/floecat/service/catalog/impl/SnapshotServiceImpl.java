@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotService;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -38,6 +39,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -51,6 +54,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcService;
@@ -65,14 +69,57 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotService {
 
-  @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRepository tableRepo;
   @Inject StatsRepository statsRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject CatalogOverlay overlay;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
+
+  private void ensureTableVisible(ResourceId tableId, String corr) {
+    if (tableId == null) {
+      // Be explicit for callers/logs; keep NOT_FOUND behavior to avoid changing public error
+      // semantics for missing selectors.
+      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
+    }
+
+    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+
+    // Overlay is the source of truth for visibility in the current engine context.
+    GraphNode node =
+        overlay
+            .resolve(tableId)
+            .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+
+    // Defensive: ensure the resolved node is actually a table node.
+    if (!(node instanceof TableNode)) {
+      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+    }
+  }
+
+  private String schemaJsonForTable(String corr, ResourceId tableId) {
+    // Snapshot creation must persist the schema that was current at ingest time.
+    // The table repository is the source of truth for the current mutable table schema.
+    try {
+      Table table =
+          tableRepo
+              .getById(tableId)
+              .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+
+      if (!table.getSchemaJson().isBlank()) {
+        return table.getSchemaJson();
+      }
+    } catch (Exception e) {
+      // Be defensive: if schema resolution fails, fall back to empty, but keep a breadcrumb.
+      String id = (tableId == null) ? "<null>" : tableId.getId();
+      LOG.debugf(e, "schemaJsonForTable failed (corr=%s tableId=%s)", corr, id);
+      return "";
+    }
+    return "";
+  }
 
   @Override
   public Uni<ListSnapshotsResponse> listSnapshots(ListSnapshotsRequest request) {
@@ -84,14 +131,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var principalContext = principal.get();
                   authz.require(principalContext, "table.read");
 
-                  tableRepo
-                      .getById(request.getTableId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  TABLE,
-                                  Map.of("id", request.getTableId().getId())));
+                  var tableId = request.getTableId();
+                  ensureTableVisible(tableId, correlationId());
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
 
@@ -100,13 +141,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   try {
                     snaps =
                         snapshotRepo.listByTime(
-                            request.getTableId(), Math.max(1, pageIn.limit), pageIn.token, next);
+                            tableId, Math.max(1, pageIn.limit), pageIn.token, next);
                   } catch (IllegalArgumentException badToken) {
                     throw GrpcErrors.invalidArgument(
                         correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
                   }
 
-                  int total = snapshotRepo.count(request.getTableId());
+                  int total = snapshotRepo.count(tableId);
 
                   var page = MutationOps.pageOut(next.toString(), total);
 
@@ -134,12 +175,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   authz.require(principalContext, "table.read");
 
                   final var tableId = request.getTableId();
-                  tableRepo
-                      .getById(tableId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(), TABLE, Map.of("id", tableId.getId())));
+                  ensureTableVisible(tableId, correlationId());
 
                   final var ref = request.getSnapshot();
                   if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
@@ -152,17 +188,15 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       var snapId = ref.getSnapshotId();
                       snap =
                           snapshotRepo
-                              .getById(request.getTableId(), snapId)
+                              .getById(tableId, snapId)
                               .orElseThrow(
                                   () ->
                                       GrpcErrors.notFound(
                                           correlationId(),
                                           SNAPSHOT,
                                           Map.of(
-                                              "reason",
-                                              "no_snapshots",
-                                              "table_id",
-                                              request.getTableId().getId())));
+                                              "table_id", tableId.getId(),
+                                              "snapshot_id", Long.toString(snapId))));
                     }
                     case SPECIAL -> {
                       if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
@@ -219,14 +253,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   authz.require(pc, "table.write");
 
                   var tableId = request.getSpec().getTableId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-
-                  var table =
-                      tableRepo
-                          .getById(tableId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+                  ensureTableVisible(tableId, corr);
 
                   var tsNow = nowTs();
 
@@ -246,8 +273,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           .setParentSnapshotId(spec.getParentSnapshotId());
                   if (spec.hasSchemaJson() && !spec.getSchemaJson().isBlank()) {
                     snapBuilder.setSchemaJson(spec.getSchemaJson());
-                  } else if (!table.getSchemaJson().isBlank()) {
-                    snapBuilder.setSchemaJson(table.getSchemaJson());
+                  } else {
+                    var schemaJson = schemaJsonForTable(corr, tableId);
+                    if (schemaJson != null && !schemaJson.isBlank()) {
+                      snapBuilder.setSchemaJson(schemaJson);
+                    }
                   }
                   if (spec.hasPartitionSpec()) {
                     snapBuilder.setPartitionSpec(spec.getPartitionSpec());
@@ -361,7 +391,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId);
+                  ensureTableVisible(tableId, correlationId);
 
                   MutationMeta meta;
                   try {
@@ -439,7 +469,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var tableId = spec.getTableId();
                   long snapshotId = spec.getSnapshotId();
-                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+                  ensureTableVisible(tableId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -634,7 +664,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     canonicalResourceId(c, "table_id", spec.getTableId());
     c.scalar("snapshot_id", spec.getSnapshotId());
     canonicalTimestamp(c, "upstream_created_at", spec.getUpstreamCreatedAt());
-    canonicalTimestamp(c, "ingested_at", spec.getIngestedAt());
     c.scalar("parent_snapshot_id", spec.getParentSnapshotId());
     if (spec.hasSchemaJson()) {
       c.scalar("schema_json", spec.getSchemaJson());
