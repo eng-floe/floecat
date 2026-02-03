@@ -72,6 +72,7 @@ message ResolveFQTablesResponse {
     ai.floedb.floecat.common.NameRef name = 2;
   }
   repeated Entry tables = 1;
+  // For prefix selectors, page.next_page_token is encoded as "u:<token>" and advances only the user portion of the listing.
   ai.floedb.floecat.common.PageResponse page = 2;
 }
 
@@ -103,6 +104,7 @@ message ResolveFQViewsResponse {
     ai.floedb.floecat.common.NameRef name = 2;
   }
   repeated Entry views = 1;
+  // For prefix selectors, page.next_page_token is encoded as "u:<token>" and advances only the user portion of the listing.
   ai.floedb.floecat.common.PageResponse page = 2;
 }
 

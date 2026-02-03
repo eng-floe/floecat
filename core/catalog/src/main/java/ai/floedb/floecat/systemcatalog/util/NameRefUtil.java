@@ -17,6 +17,8 @@
 package ai.floedb.floecat.systemcatalog.util;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class NameRefUtil {
   private NameRefUtil() {}
@@ -106,5 +108,21 @@ public final class NameRefUtil {
       b.addPath(parts[i]);
     }
     return b.build();
+  }
+
+  /**
+   * Builds the effective namespace path from a {@link NameRef}.
+   *
+   * <p>Matches the path semantics used by fully-qualified resolution: the name is appended to the
+   * path if present and not already included.
+   */
+  public static List<String> namespacePath(NameRef ref) {
+    List<String> out = new ArrayList<>(ref.getPathList());
+    if (ref.getName() != null && !ref.getName().isBlank()) {
+      if (out.isEmpty() || !out.get(out.size() - 1).equals(ref.getName())) {
+        out.add(ref.getName());
+      }
+    }
+    return out;
   }
 }

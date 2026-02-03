@@ -123,6 +123,8 @@ public final class SystemGraph {
   /**
    * Retrieves the pre-bucketed relations under a namespace so scanners can enumerate tables
    * quickly.
+   *
+   * @param catalogId is ignored as system objects have their own semantics for catalog
    */
   public List<GraphNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, EngineContext ctx) {
@@ -376,10 +378,6 @@ public final class SystemGraph {
     return snapshot;
   }
 
-  private GraphSnapshot snapshotFor(String engineKind, String engineVersion) {
-    return snapshotFor(EngineContext.of(engineKind, engineVersion));
-  }
-
   private GraphSnapshot snapshotForCatalog(ResourceId catalogId) {
     if (catalogId == null) return GraphSnapshot.empty();
     synchronized (snapshots) {
@@ -504,17 +502,6 @@ public final class SystemGraph {
         .setKind(ResourceKind.RK_CATALOG)
         .setId(id)
         .build();
-  }
-
-  private static Optional<ResourceId> findNamespaceId(
-      NameRef name, Map<String, ResourceId> namespaceIds) {
-    String canonical = NameRefUtil.canonical(name);
-    int idx = canonical.lastIndexOf('.');
-    String namespaceKey = idx < 0 ? canonical : canonical.substring(0, idx);
-    if (namespaceKey.isBlank()) {
-      return Optional.empty();
-    }
-    return Optional.ofNullable(namespaceIds.get(namespaceKey));
   }
 
   private static long versionFromFingerprint(String fingerprint) {

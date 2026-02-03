@@ -84,29 +84,29 @@ class NameResolverTest {
 
   @Test
   void resolveCatalogIdReturnsResource() {
-    ResourceId resolved = resolver.resolveCatalogId("corr", "account", "cat");
-    assertThat(resolved.getId()).isEqualTo("cat");
+    assertThat(resolver.resolveCatalogId("corr", "account", "cat"))
+        .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("cat"));
   }
 
   @Test
   void resolveNamespaceIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").setName("ns").build();
-    ResourceId resolved = resolver.resolveNamespaceId("corr", "account", ref);
-    assertThat(resolved.getId()).isEqualTo("ns");
+    assertThat(resolver.resolveNamespaceId("corr", "account", ref))
+        .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("ns"));
   }
 
   @Test
   void resolveTableIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders").build();
-    ResourceId resolved = resolver.resolveTableId("corr", "account", ref);
-    assertThat(resolved.getId()).isEqualTo("tbl");
+    assertThat(resolver.resolveTableId("corr", "account", ref))
+        .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("tbl"));
   }
 
   @Test
   void resolveViewIdReturnsResource() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_v").build();
-    ResourceId resolved = resolver.resolveViewId("corr", "account", ref);
-    assertThat(resolved.getId()).isEqualTo("view");
+    assertThat(resolver.resolveViewId("corr", "account", ref))
+        .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("view"));
   }
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {

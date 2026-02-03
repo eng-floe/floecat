@@ -144,27 +144,27 @@ public class TestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public ResourceId resolveCatalog(String correlationId, String name) {
+  public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
     throw unsupported();
   }
 
   @Override
-  public ResourceId resolveNamespace(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
     throw unsupported();
   }
 
   @Override
-  public ResourceId resolveTable(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
     throw unsupported();
   }
 
   @Override
-  public ResourceId resolveView(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
     throw unsupported();
   }
 
   @Override
-  public ResourceId resolveName(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
     throw unsupported();
   }
 
@@ -178,25 +178,26 @@ public class TestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public ResolveResult resolveTables(
+  public ResolveResult batchResolveTables(
       String correlationId, List<NameRef> items, int limit, String token) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult resolveTables(
+  public ResolveResult listTablesByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult resolveViews(
+  public ResolveResult batchResolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult resolveViews(String correlationId, NameRef prefix, int limit, String token) {
+  public ResolveResult listViewsByPrefix(
+      String correlationId, NameRef prefix, int limit, String token) {
     throw unsupported();
   }
 

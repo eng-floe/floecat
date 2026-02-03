@@ -24,7 +24,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -33,7 +32,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -79,80 +77,52 @@ public final class NameResolver {
   }
 
   // ----------------------------------------------------------------------
-  // Strong resolution (throws on missing)
-  // ----------------------------------------------------------------------
-
-  public ResourceId resolveCatalogId(String cid, String accountId, String catalogName) {
-    return catalogRepository
-        .getByName(accountId, catalogName)
-        .map(Catalog::getResourceId)
-        .orElseThrow(() -> GrpcErrors.notFound(cid, CATALOG, Map.of("id", catalogName)));
-  }
-
-  public ResourceId resolveNamespaceId(String cid, String accountId, NameRef ref) {
-    Catalog catalog = catalogByName(cid, accountId, ref.getCatalog());
-    List<String> fullPath = namespacePath(ref);
-
-    return namespaceRepository
-        .getByPath(accountId, catalog.getResourceId().getId(), fullPath)
-        .map(Namespace::getResourceId)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    cid,
-                    NAMESPACE_BY_PATH_MISSING,
-                    Map.of(
-                        "catalog_id", catalog.getResourceId().getId(),
-                        "path", String.join(".", fullPath))));
-  }
-
-  public ResourceId resolveTableId(String cid, String accountId, NameRef ref) {
-    Catalog catalog = catalogByName(cid, accountId, ref.getCatalog());
-    Namespace namespace = namespaceByPath(cid, accountId, catalog, ref.getPathList());
-
-    return tableRepository
-        .getByName(
-            accountId,
-            catalog.getResourceId().getId(),
-            namespace.getResourceId().getId(),
-            ref.getName())
-        .map(Table::getResourceId)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    cid,
-                    TABLE_BY_NAME_MISSING,
-                    Map.of(
-                        "catalog", ref.getCatalog(),
-                        "path", String.join(".", ref.getPathList()),
-                        "name", ref.getName())));
-  }
-
-  public ResourceId resolveViewId(String cid, String accountId, NameRef ref) {
-    Catalog catalog = catalogByName(cid, accountId, ref.getCatalog());
-    Namespace namespace = namespaceByPath(cid, accountId, catalog, ref.getPathList());
-
-    return viewRepository
-        .getByName(
-            accountId,
-            catalog.getResourceId().getId(),
-            namespace.getResourceId().getId(),
-            ref.getName())
-        .map(View::getResourceId)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    cid,
-                    VIEW_BY_NAME_MISSING,
-                    Map.of(
-                        "catalog", ref.getCatalog(),
-                        "path", String.join(".", ref.getPathList()),
-                        "name", ref.getName())));
-  }
-
-  // ----------------------------------------------------------------------
   // Weak resolution (Optional)
   // ----------------------------------------------------------------------
+
+  public Optional<ResourceId> resolveCatalogId(String cid, String accountId, String catalogName) {
+    return catalogByName(accountId, catalogName).map(Catalog::getResourceId);
+  }
+
+  public Optional<ResourceId> resolveNamespaceId(String cid, String accountId, NameRef ref) {
+    List<String> fullPath = namespacePath(ref);
+
+    return catalogByName(accountId, ref.getCatalog())
+        .flatMap(catalog -> namespaceByPath(accountId, catalog, fullPath))
+        .map(Namespace::getResourceId);
+  }
+
+  public Optional<ResourceId> resolveTableId(String cid, String accountId, NameRef ref) {
+    return catalogByName(accountId, ref.getCatalog())
+        .flatMap(
+            catalog ->
+                namespaceByPath(accountId, catalog, ref.getPathList())
+                    .flatMap(
+                        ns ->
+                            tableRepository
+                                .getByName(
+                                    accountId,
+                                    catalog.getResourceId().getId(),
+                                    ns.getResourceId().getId(),
+                                    ref.getName())
+                                .map(Table::getResourceId)));
+  }
+
+  public Optional<ResourceId> resolveViewId(String cid, String accountId, NameRef ref) {
+    return catalogByName(accountId, ref.getCatalog())
+        .flatMap(
+            catalog ->
+                namespaceByPath(accountId, catalog, ref.getPathList())
+                    .flatMap(
+                        ns ->
+                            viewRepository
+                                .getByName(
+                                    accountId,
+                                    catalog.getResourceId().getId(),
+                                    ns.getResourceId().getId(),
+                                    ref.getName())
+                                .map(View::getResourceId)));
+  }
 
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {
     if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
@@ -204,25 +174,14 @@ public final class NameResolver {
   // Repository helpers
   // ----------------------------------------------------------------------
 
-  private Catalog catalogByName(String cid, String accountId, String name) {
-    return catalogRepository
-        .getByName(accountId, name)
-        .orElseThrow(() -> GrpcErrors.notFound(cid, CATALOG, Map.of("id", name)));
+  private Optional<Catalog> catalogByName(String accountId, String name) {
+    return catalogRepository.getByName(accountId, name);
   }
 
-  private Namespace namespaceByPath(
-      String cid, String accountId, Catalog catalog, List<String> parents) {
+  private Optional<Namespace> namespaceByPath(
+      String accountId, Catalog catalog, List<String> parents) {
 
-    return namespaceRepository
-        .getByPath(accountId, catalog.getResourceId().getId(), parents)
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    cid,
-                    NAMESPACE_BY_PATH_MISSING,
-                    Map.of(
-                        "catalog_id", catalog.getResourceId().getId(),
-                        "path", String.join(".", parents))));
+    return namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), parents);
   }
 
   // ----------------------------------------------------------------------

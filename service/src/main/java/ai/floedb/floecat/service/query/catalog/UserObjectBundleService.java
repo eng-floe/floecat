@@ -59,8 +59,6 @@ import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -176,14 +174,7 @@ public class UserObjectBundleService {
       case VIEW_ID:
         return input.getViewId();
       case NAME:
-        try {
-          return overlay.resolveName(correlationId, input.getName());
-        } catch (StatusRuntimeException e) {
-          if (e.getStatus().getCode() == Status.NOT_FOUND.getCode()) {
-            return null;
-          }
-          throw e;
-        }
+        return overlay.resolveName(correlationId, input.getName()).orElse(null);
       default:
         return null;
     }

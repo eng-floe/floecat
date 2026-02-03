@@ -99,9 +99,8 @@ class FullyQualifiedResolverTest {
 
     var result = resolver.resolveTableList("corr", "account", refs, 10, "");
 
-    assertThat(result.totalSize()).isEqualTo(2);
+    assertThat(result.totalSize()).isEqualTo(1);
     assertThat(result.relations().get(0).name().getResourceId().getId()).isEqualTo("tbl1");
-    assertThat(result.relations().get(1).resourceId()).isEqualTo(ResourceId.getDefaultInstance());
   }
 
   @Test

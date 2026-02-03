@@ -144,7 +144,15 @@ public class QueryInputResolver {
 
       switch (in.getTargetCase()) {
         case NAME -> {
-          ResourceId rid = metadataGraph.resolveName(correlationId, in.getName());
+          ResourceId rid =
+              metadataGraph
+                  .resolveName(correlationId, in.getName())
+                  .orElseThrow(
+                      () ->
+                          GrpcErrors.notFound(
+                              correlationId,
+                              QUERY_INPUT_UNRESOLVED,
+                              Map.of("name", in.getName().toString())));
           addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
         }
 

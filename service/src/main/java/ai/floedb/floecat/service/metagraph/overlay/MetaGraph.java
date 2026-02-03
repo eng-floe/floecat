@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -37,13 +38,17 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 @ApplicationScoped
@@ -74,6 +79,10 @@ public final class MetaGraph implements CatalogOverlay {
     this.engine = engine;
   }
 
+  private EngineContext engineContext() {
+    return engine.isPresent() ? engine.engineContext() : EngineContext.empty();
+  }
+
   /**
    * Resolves a graph node by ID, checking system graph first, then user graph.
    *
@@ -85,7 +94,7 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public Optional<GraphNode> resolve(ResourceId id) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     Optional<GraphNode> sys = systemGraph.resolve(id, ctx);
     if (sys.isPresent()) {
       return sys;
@@ -104,7 +113,7 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<GraphNode> listRelations(ResourceId catalogId) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelations(catalogId, ctx), () -> userGraph.listRelations(catalogId));
   }
@@ -121,7 +130,7 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
         () -> userGraph.listRelationsInNamespace(catalogId, namespaceId));
@@ -138,7 +147,7 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listFunctions(namespaceId, ctx),
         () -> userGraph.listFunctions(namespaceId));
@@ -154,14 +163,14 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public List<TypeNode> listTypes(ResourceId catalogId) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listTypes(catalogId, ctx), () -> userGraph.listTypes(catalogId));
   }
 
   @Override
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listNamespaces(catalogId, ctx),
         () -> userGraph.listNamespaces(catalogId));
@@ -174,11 +183,10 @@ public final class MetaGraph implements CatalogOverlay {
    *
    * @param correlationId correlation ID for error reporting
    * @param name the catalog name to resolve
-   * @return the resolved catalog resource ID
-   * @throws GrpcErrors if the catalog cannot be resolved
+   * @return the resolved catalog resource ID, if present
    */
   @Override
-  public ResourceId resolveCatalog(String correlationId, String name) {
+  public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
     return userGraph.resolveCatalog(correlationId, name);
   }
 
@@ -190,18 +198,17 @@ public final class MetaGraph implements CatalogOverlay {
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
-   * @return the resolved namespace resource ID
-   * @throws GrpcErrors if the namespace is ambiguous or not found
+   * @return the resolved namespace resource ID, if present
+   * @throws GrpcErrors if the namespace is ambiguous
    */
   @Override
-  public ResourceId resolveNamespace(String correlationId, NameRef ref) {
-    EngineContext ctx = engine.engineContext();
+  public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
+    EngineContext ctx = engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
         () -> systemGraph.resolveNamespace(ref, ctx),
-        () -> userGraph.tryResolveNamespace(correlationId, ref),
-        GeneratedErrorMessages.MessageKey.NAMESPACE);
+        () -> userGraph.resolveNamespace(correlationId, ref));
   }
 
   /**
@@ -212,18 +219,17 @@ public final class MetaGraph implements CatalogOverlay {
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
-   * @return the resolved table resource ID
-   * @throws GrpcErrors if the table is ambiguous or not found
+   * @return the resolved table resource ID, if present
+   * @throws GrpcErrors if the table is ambiguous
    */
   @Override
-  public ResourceId resolveTable(String correlationId, NameRef ref) {
-    EngineContext ctx = engine.engineContext();
+  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
+    EngineContext ctx = engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
         () -> systemGraph.resolveTable(ref, ctx),
-        () -> userGraph.tryResolveTable(correlationId, ref),
-        GeneratedErrorMessages.MessageKey.TABLE);
+        () -> userGraph.resolveTable(correlationId, ref));
   }
 
   /**
@@ -234,18 +240,17 @@ public final class MetaGraph implements CatalogOverlay {
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
-   * @return the resolved view resource ID
-   * @throws GrpcErrors if the view is ambiguous or not found
+   * @return the resolved view resource ID, if present
+   * @throws GrpcErrors if the view is ambiguous
    */
   @Override
-  public ResourceId resolveView(String correlationId, NameRef ref) {
-    EngineContext ctx = engine.engineContext();
+  public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
+    EngineContext ctx = engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
         () -> systemGraph.resolveView(ref, ctx),
-        () -> userGraph.tryResolveView(correlationId, ref),
-        GeneratedErrorMessages.MessageKey.VIEW);
+        () -> userGraph.resolveView(correlationId, ref));
   }
 
   /**
@@ -256,18 +261,17 @@ public final class MetaGraph implements CatalogOverlay {
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
-   * @return the resolved relation resource ID
-   * @throws GrpcErrors if the relation is ambiguous or not found
+   * @return the resolved relation resource ID, if present
+   * @throws GrpcErrors if the relation is ambiguous
    */
   @Override
-  public ResourceId resolveName(String correlationId, NameRef ref) {
-    EngineContext ctx = engine.engineContext();
+  public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+    EngineContext ctx = engineContext();
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
         () -> systemGraph.resolveName(ref, ctx),
-        () -> userGraph.tryResolveName(correlationId, ref),
-        GeneratedErrorMessages.MessageKey.TABLE);
+        () -> userGraph.resolveName(correlationId, ref));
   }
 
   /**
@@ -296,74 +300,137 @@ public final class MetaGraph implements CatalogOverlay {
   }
 
   /**
-   * Resolves tables by prefix for auto-completion.
+   * Resolves tables for an explicit list of fully-qualified name references.
    *
-   * <p>Only searches user-defined tables as system tables are not typically auto-completed in
-   * queries.
+   * <p>Performs a full merge between system and user objects. System resolution is attempted first
+   * using the current engine context (kind/version), then user resolution is attempted. If both
+   * resolve to a concrete resource, the name is treated as ambiguous.
    *
-   * @param correlationId correlation ID for error reporting
-   * @param items list of name references to resolve
-   * @param limit maximum number of results to return
-   * @param token pagination token for continuing results
-   * @return resolve result containing matching tables
+   * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
+   * name so callers observe a "symlink" effect (e.g. user catalog "examples" shows {@code
+   * information_schema.schemata}).
    */
   @Override
-  public ResolveResult resolveTables(
+  public ResolveResult batchResolveTables(
       String correlationId, List<NameRef> items, int limit, String token) {
-    return toResolveResult(userGraph.resolveTables(correlationId, items, limit, token));
+
+    validateListToken(correlationId, token);
+
+    if (items == null || items.isEmpty()) {
+      return new ResolveResult(List.of(), 0, "");
+    }
+
+    EngineContext ctx = engineContext();
+    int max = Math.min(items.size(), normalizeLimit(limit));
+
+    List<NameRef> subset = items.subList(0, max);
+    Map<String, CatalogOverlay.QualifiedRelation> merged =
+        collectSystemRelationsForNames(subset, ctx, true);
+
+    ResolveResult userResult =
+        toResolveResult(userGraph.resolveTables(correlationId, subset, max, token));
+
+    for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
+      String key = canonicalName(userRelation.name());
+      if (merged.containsKey(key)) {
+        throw ambiguity(correlationId, userRelation.name());
+      }
+      merged.put(key, userRelation);
+    }
+
+    return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
   }
 
   /**
-   * Resolves tables by prefix for auto-completion.
+   * Resolves tables under a namespace prefix.
    *
-   * <p>Only searches user-defined tables as system tables are not typically auto-completed in
-   * queries.
+   * <p>Performs a full merge between system and user objects. If the prefix resolves to a system
+   * namespace under the current engine context, system relations are enumerated and returned first
+   * (aliased back to the user-facing catalog). User relations are then appended.
    *
-   * @param correlationId correlation ID for error reporting
-   * @param prefix the name prefix to match
-   * @param limit maximum number of results to return
-   * @param token pagination token for continuing results
-   * @return resolve result containing matching tables
+   * <p>This enables queries like {@code tables examples.information_schema} to surface built-in
+   * engine relations while preserving user catalog naming.
    */
   @Override
-  public ResolveResult resolveTables(
+  public ResolveResult listTablesByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
-    return toResolveResult(userGraph.resolveTables(correlationId, prefix, limit, token));
+
+    EngineContext ctx = engineContext();
+    int max = normalizeLimit(limit);
+    String userToken = decodeUserToken(token);
+    boolean firstPage = userToken.isBlank();
+
+    List<CatalogOverlay.QualifiedRelation> system =
+        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, true, max) : List.of();
+    ResolveResult user =
+        toResolveResult(userGraph.resolveTables(correlationId, prefix, max, userToken));
+
+    return mergePrefixResults(system, user, max);
   }
 
   /**
-   * Resolves views by prefix for auto-completion.
+   * Resolves views for an explicit list of fully-qualified name references.
    *
-   * <p>Only searches user-defined views as system views are not typically auto-completed in
-   * queries.
+   * <p>Performs a full merge between system and user objects. System resolution is attempted first
+   * using the current engine context (kind/version), then user resolution is attempted. If both
+   * resolve to a concrete resource, the name is treated as ambiguous.
    *
-   * @param correlationId correlation ID for error reporting
-   * @param items list of name references to resolve
-   * @param limit maximum number of results to return
-   * @param token pagination token for continuing results
-   * @return resolve result containing matching views
+   * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
+   * name so callers observe a "symlink" effect.
    */
   @Override
-  public ResolveResult resolveViews(
+  public ResolveResult batchResolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
-    return toResolveResult(userGraph.resolveViews(correlationId, items, limit, token));
+
+    validateListToken(correlationId, token);
+
+    if (items == null || items.isEmpty()) {
+      return new ResolveResult(List.of(), 0, "");
+    }
+
+    EngineContext ctx = engineContext();
+    int max = Math.min(items.size(), normalizeLimit(limit));
+
+    List<NameRef> subset = items.subList(0, max);
+    Map<String, CatalogOverlay.QualifiedRelation> merged =
+        collectSystemRelationsForNames(subset, ctx, false);
+
+    ResolveResult userResult =
+        toResolveResult(userGraph.resolveViews(correlationId, subset, max, token));
+
+    for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
+      String key = canonicalName(userRelation.name());
+      if (merged.containsKey(key)) {
+        throw ambiguity(correlationId, userRelation.name());
+      }
+      merged.put(key, userRelation);
+    }
+
+    return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
   }
 
   /**
-   * Resolves views by prefix for auto-completion.
+   * Resolves views under a namespace prefix.
    *
-   * <p>Only searches user-defined views as system views are not typically auto-completed in
-   * queries.
-   *
-   * @param correlationId correlation ID for error reporting
-   * @param prefix the name prefix to match
-   * @param limit maximum number of results to return
-   * @param token pagination token for continuing results
-   * @return resolve result containing matching views
+   * <p>Performs a full merge between system and user objects. If the prefix resolves to a system
+   * namespace under the current engine context, system relations are enumerated and returned first
+   * (aliased back to the user-facing catalog). User relations are then appended.
    */
   @Override
-  public ResolveResult resolveViews(String correlationId, NameRef prefix, int limit, String token) {
-    return toResolveResult(userGraph.resolveViews(correlationId, prefix, limit, token));
+  public ResolveResult listViewsByPrefix(
+      String correlationId, NameRef prefix, int limit, String token) {
+
+    EngineContext ctx = engineContext();
+    int max = normalizeLimit(limit);
+    String userToken = decodeUserToken(token);
+    boolean firstPage = userToken.isBlank();
+
+    List<CatalogOverlay.QualifiedRelation> system =
+        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, false, max) : List.of();
+    ResolveResult user =
+        toResolveResult(userGraph.resolveViews(correlationId, prefix, max, userToken));
+
+    return mergePrefixResults(system, user, max);
   }
 
   /**
@@ -380,7 +447,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return systemGraph.namespaceName(id, ctx);
   }
 
@@ -398,7 +465,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return systemGraph.tableName(id, ctx);
   }
 
@@ -416,7 +483,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return systemGraph.viewName(id, ctx);
   }
 
@@ -434,7 +501,7 @@ public final class MetaGraph implements CatalogOverlay {
     if (user.isPresent()) {
       return user;
     }
-    EngineContext ctx = engine.engineContext();
+    EngineContext ctx = engineContext();
     return systemGraph.catalog(id, ctx);
   }
 
@@ -479,38 +546,27 @@ public final class MetaGraph implements CatalogOverlay {
   /**
    * Resolves a name reference with system-first precedence and ambiguity checking.
    *
-   * <p>If both system and user graphs resolve the name, throws an ambiguity error. If neither
-   * resolves it, throws an unresolved error. Otherwise returns the resolved resource ID.
+   * <p>If both system and user graphs resolve the name, throws an ambiguity error. Missing names
+   * simply result in an empty optional.
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
    * @param systemResolver supplier for system graph resolution
    * @param userResolver supplier for user graph resolution
-   * @param notFoundMessageKey message key for not found errors
-   * @return the resolved resource ID
-   * @throws GrpcErrors if the name is ambiguous or not found
+   * @return the resolved resource ID, if present
+   * @throws GrpcErrors if the name is ambiguous
    */
-  private ResourceId resolveWithAmbiguityCheck(
+  private Optional<ResourceId> resolveWithAmbiguityCheck(
       String correlationId,
       NameRef ref,
       Supplier<Optional<ResourceId>> systemResolver,
-      Supplier<Optional<ResourceId>> userResolver,
-      GeneratedErrorMessages.MessageKey notFoundMessageKey) {
+      Supplier<Optional<ResourceId>> userResolver) {
     Optional<ResourceId> sys = systemResolver.get();
     Optional<ResourceId> user = userResolver.get();
     if (sys.isPresent() && user.isPresent()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId,
-          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
-          Map.of("name", ref.toString()));
+      throw ambiguity(correlationId, ref);
     }
-    if (sys.isPresent()) {
-      return sys.get();
-    }
-    if (user.isPresent()) {
-      return user.get();
-    }
-    throw GrpcErrors.notFound(correlationId, notFoundMessageKey, Map.of("id", ref.toString()));
+    return sys.or(() -> user);
   }
 
   @Override
@@ -544,5 +600,178 @@ public final class MetaGraph implements CatalogOverlay {
             .map(rel -> new CatalogOverlay.QualifiedRelation(rel.name(), rel.resourceId()))
             .toList();
     return new ResolveResult(relations, delegate.totalSize(), delegate.nextToken());
+  }
+
+  /**
+   * Normalizes list/prefix resolution limits.
+   *
+   * <p>Ensures a positive limit and applies a small default for callers that omit the limit.
+   */
+  private static final String USER_TOKEN_PREFIX = "u:";
+
+  private static int normalizeLimit(int limit) {
+    return Math.max(1, limit > 0 ? limit : 50);
+  }
+
+  private static String canonicalName(NameRef ref) {
+    return NameRefUtil.canonical(ref);
+  }
+
+  private static String decodeUserToken(String token) {
+    if (token == null || token.isBlank()) {
+      return "";
+    }
+    if (token.startsWith(USER_TOKEN_PREFIX)) {
+      return token.substring(USER_TOKEN_PREFIX.length());
+    }
+    return token;
+  }
+
+  private static String encodeUserToken(String token) {
+    if (token == null || token.isBlank()) {
+      return "";
+    }
+    return USER_TOKEN_PREFIX + token;
+  }
+
+  private void validateListToken(String correlationId, String token) {
+    if (token != null && !token.isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId,
+          GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID,
+          Map.of("page_token", token));
+    }
+  }
+
+  /**
+   * Converts a user-facing namespace reference to a system-catalog namespace reference for the
+   * current engine context.
+   */
+  private static NameRef toSystemNamespaceRef(NameRef userRef, EngineContext ctx) {
+    String sysCatalog =
+        (ctx == null || ctx.effectiveEngineKind().isBlank())
+            ? userRef.getCatalog()
+            : ctx.effectiveEngineKind();
+    List<String> nsPath = NameRefUtil.namespacePath(userRef);
+    NameRef.Builder builder = NameRef.newBuilder().setCatalog(sysCatalog);
+    if (!nsPath.isEmpty()) {
+      for (int i = 0; i < nsPath.size() - 1; i++) {
+        builder.addPath(nsPath.get(i));
+      }
+      builder.setName(nsPath.get(nsPath.size() - 1));
+    }
+    return builder.build();
+  }
+
+  /**
+   * Converts a user-facing relation reference (table/view) to a system-catalog reference for the
+   * current engine context.
+   */
+  private static NameRef toSystemRelationRef(NameRef userRef, EngineContext ctx) {
+    String sysCatalog =
+        (ctx == null || ctx.effectiveEngineKind().isBlank())
+            ? userRef.getCatalog()
+            : ctx.effectiveEngineKind();
+    return userRef.toBuilder().setCatalog(sysCatalog).build();
+  }
+
+  /**
+   * Aliases a system canonical name back to the user-facing catalog name.
+   *
+   * <p>This produces a "symlink" effect where system objects appear under the user catalog.
+   */
+  private static NameRef aliasBackToUserCatalog(NameRef input, NameRef systemName) {
+    return systemName.toBuilder().setCatalog(input.getCatalog()).build();
+  }
+
+  private Map<String, CatalogOverlay.QualifiedRelation> collectSystemRelationsForNames(
+      List<NameRef> refs, EngineContext ctx, boolean tables) {
+    Map<String, CatalogOverlay.QualifiedRelation> result = new LinkedHashMap<>();
+    for (NameRef ref : refs) {
+      Optional<ResourceId> sysId =
+          tables
+              ? systemGraph.resolveTable(toSystemRelationRef(ref, ctx), ctx)
+              : systemGraph.resolveView(toSystemRelationRef(ref, ctx), ctx);
+      if (sysId.isEmpty()) {
+        continue;
+      }
+
+      NameRef systemName =
+          tables
+              ? systemGraph.tableName(sysId.get(), ctx).orElse(ref)
+              : systemGraph.viewName(sysId.get(), ctx).orElse(ref);
+      NameRef alias = aliasBackToUserCatalog(ref, systemName);
+      CatalogOverlay.QualifiedRelation relation =
+          new CatalogOverlay.QualifiedRelation(alias, sysId.get());
+      result.put(canonicalName(alias), relation);
+    }
+    return result;
+  }
+
+  private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
+      NameRef prefix, EngineContext ctx, boolean tables, int max) {
+    Optional<ResourceId> sysNsId =
+        systemGraph.resolveNamespace(toSystemNamespaceRef(prefix, ctx), ctx);
+    if (sysNsId.isEmpty()) {
+      return List.of();
+    }
+
+    List<GraphNode> nodes =
+        systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx);
+    List<CatalogOverlay.QualifiedRelation> out = new ArrayList<>(Math.min(nodes.size(), max));
+
+    for (GraphNode n : nodes) {
+      if (out.size() >= max) {
+        break;
+      }
+      if (tables && n instanceof TableNode t) {
+        NameRef systemName =
+            systemGraph.tableName(t.id(), ctx).orElse(NameRef.getDefaultInstance());
+        NameRef alias =
+            aliasBackToUserCatalog(prefix, systemName).toBuilder().setResourceId(t.id()).build();
+        out.add(new CatalogOverlay.QualifiedRelation(alias, t.id()));
+      } else if (!tables && n instanceof ViewNode v) {
+        NameRef systemName = systemGraph.viewName(v.id(), ctx).orElse(NameRef.getDefaultInstance());
+        NameRef alias =
+            aliasBackToUserCatalog(prefix, systemName).toBuilder().setResourceId(v.id()).build();
+        out.add(new CatalogOverlay.QualifiedRelation(alias, v.id()));
+      }
+    }
+
+    return out;
+  }
+
+  private ResolveResult mergePrefixResults(
+      List<CatalogOverlay.QualifiedRelation> system, ResolveResult user, int max) {
+    List<CatalogOverlay.QualifiedRelation> merged = new ArrayList<>();
+    Set<String> seen = new LinkedHashSet<>();
+
+    for (CatalogOverlay.QualifiedRelation rel : system) {
+      if (merged.size() >= max) {
+        break;
+      }
+      if (seen.add(canonicalName(rel.name()))) {
+        merged.add(rel);
+      }
+    }
+
+    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
+      if (merged.size() >= max) {
+        break;
+      }
+      String key = canonicalName(rel.name());
+      if (seen.add(key)) {
+        merged.add(rel);
+      }
+    }
+
+    return new ResolveResult(merged, user.totalSize(), encodeUserToken(user.nextToken()));
+  }
+
+  private RuntimeException ambiguity(String correlationId, NameRef name) {
+    return GrpcErrors.invalidArgument(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
+        Map.of("name", name.toString()));
   }
 }
