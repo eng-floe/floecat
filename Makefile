@@ -278,7 +278,7 @@ localstack-restart: localstack-down localstack-up
 .PHONY: keycloak-up keycloak-down keycloak-restart
 keycloak-up:
 	@echo "==> [KEYCLOAK] starting docker compose (keycloak profile)"
-	KEYCLOAK_PORT=$(KEYCLOAK_PORT) $(DOCKER_COMPOSE_KEYCLOAK) up -d keycloak
+	KEYCLOAK_PORT=$(KEYCLOAK_PORT) KC_HOSTNAME=127.0.0.1 KC_HOSTNAME_PORT=$(KEYCLOAK_PORT) $(DOCKER_COMPOSE_KEYCLOAK) up -d keycloak
 	@echo "==> [KEYCLOAK] waiting for realm readiness"
 	@bash -c 'set -euo pipefail; \
 	for i in $$(seq 1 45); do \

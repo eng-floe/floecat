@@ -26,6 +26,8 @@ public class OidcSessionHeaderProfile implements QuarkusTestProfile {
     return Map.of(
         "floecat.auth.mode", "oidc",
         "floecat.auth.admin.account", "disabled",
+        "quarkus.oidc.enabled", "true",
+        "quarkus.oidc.discovery-enabled", "false",
         "quarkus.oidc.tenant-enabled", "true",
         "quarkus.oidc.token.audience", "floecat-client",
         "floecat.interceptor.validate.account", "false",
