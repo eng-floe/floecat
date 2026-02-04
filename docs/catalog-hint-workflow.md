@@ -64,7 +64,30 @@ When `UserObjectBundleService` builds responses it:
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.
 
-## 5. Results for the planner
+## 5. Persisting engine hints
+
+Decorators persist every hint they emit so the metadata graph can replay it later. `FloeEngineSpecificDecorator`
+pulls the configured `EngineHintPersistence` implementation from `EngineHintPersistenceRegistry`
+(which `EngineHintPersistenceRegistrar` registers during service bootstrap) and writes each payload through
+`EngineHintPersistenceImpl`. The implementation consults `EngineHintMetadata` to build the canonical
+`engine.hint.<payloadType>` or `engine.hint.column.<payloadType>.<attnum>` key, encodes `(engineKind,
+engineVersion, payload)` as a semicolon-delimited string, and updates either the table or view repository only
+when the stored value actually changes. Because column hints carry the column ordinal in their key, the loader +
+scanner flows can distinguish columns that share payload types.
+
+Those properties are loaded back into the `MetaGraph` because `NodeLoader` eventually calls
+`EngineHintMetadata.hintsFromProperties(...)` for every catalog, namespace, table, and view. Column hints are still stored
+with the same metadata format (`EngineHintMetadata.columnHints(...)` exists) but the current loader only feeds relation-level
+hints; the column pipeline will resume once we wire the decoding path through the metagraph models. After the relation
+hints are decoded, they reappear on subsequent loads even when no decorator runs, while the live request path still benefits
+from the `EngineHintManager` cache sitting on top of the provider pipeline.
+
+To keep hints alive even if someone else updates the catalog/column metadata concurrently, the persistence helpers
+now retry once with a fresh metadata snapshot when an optimistic update fails. That retry behaves exactly like a
+single re-read/Rebuild attempt—if the second update still loses the compare-and-set, the helper logs and moves on,
+so metadata writes stay best-effort while the decorators remain resilient to racing callers.
+
+## 6. Results for the planner
 
 The planner now receives two consistent views:
 
@@ -79,7 +102,7 @@ Both flows rely on:
 
 Because the resolver caches parsed schema info and the decorator is lightweight, the entire workflow scales to large catalogs without redundant recomputation.
 
-## 6. Optional relation statistics
+## 7. Optional relation statistics
 
 Catalog bundles now attach optional relation statistics via `RelationInfo.stats`
 (`core/proto/src/main/proto/query/catalog_bundle.proto`). Each `RelationStats`

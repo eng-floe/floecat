@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -56,8 +57,6 @@ import java.util.Optional;
  */
 @ApplicationScoped
 public class NodeLoader {
-
-  private static final Map<EngineHintKey, EngineHint> NO_ENGINE_HINTS = Map.of();
 
   private final CatalogRepository catalogRepository;
   private final NamespaceRepository namespaceRepository;
@@ -135,7 +134,7 @@ public class NodeLoader {
         catalog.hasConnectorRef() ? Optional.of(catalog.getConnectorRef()) : Optional.empty(),
         catalog.hasPolicyRef() ? Optional.of(catalog.getPolicyRef()) : Optional.empty(),
         Optional.empty(),
-        NO_ENGINE_HINTS);
+        loadEngineHints(catalog.getPropertiesMap()));
   }
 
   private NamespaceNode toNamespaceNode(Namespace namespace, MutationMeta meta) {
@@ -148,7 +147,7 @@ public class NodeLoader {
         namespace.getDisplayName(),
         GraphNodeOrigin.USER,
         namespace.getPropertiesMap(),
-        NO_ENGINE_HINTS);
+        loadEngineHints(namespace.getPropertiesMap()));
   }
 
   private UserTableNode toTableNode(Table table, MutationMeta meta) {
@@ -172,7 +171,7 @@ public class NodeLoader {
         Optional.empty(),
         Optional.empty(),
         List.of(),
-        NO_ENGINE_HINTS);
+        loadEngineHints(table.getPropertiesMap()));
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
@@ -191,7 +190,11 @@ public class NodeLoader {
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
-        NO_ENGINE_HINTS);
+        loadEngineHints(view.getPropertiesMap()));
+  }
+
+  private static Map<EngineHintKey, EngineHint> loadEngineHints(Map<String, String> properties) {
+    return EngineHintMetadata.hintsFromProperties(properties);
   }
 
   private static Instant toInstant(Timestamp ts) {
