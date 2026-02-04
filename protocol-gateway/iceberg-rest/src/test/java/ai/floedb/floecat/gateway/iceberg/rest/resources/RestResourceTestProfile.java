@@ -26,6 +26,8 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
   public Map<String, String> getConfigOverrides() {
     Map<String, String> overrides = new LinkedHashMap<>();
     overrides.put("floecat.gateway.default-authorization", "undefined");
+    overrides.put("floecat.gateway.default-account-id", "account1");
+    overrides.put("quarkus.smallrye-jwt.enabled", "false");
     overrides.put("floecat.gateway.default-warehouse-path", "s3://warehouse/default/");
     overrides.put("floecat.gateway.default-region", "us-east-1");
     overrides.put("floecat.gateway.storage-credential.scope", "*");

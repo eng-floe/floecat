@@ -24,6 +24,10 @@ import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
+import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.ListAccountsRequest;
+import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
@@ -101,7 +105,8 @@ import org.junit.jupiter.api.Test;
 class IcebergRestFixtureIT {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
-  private static final String DEFAULT_ACCOUNT = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
+  private static final String DEFAULT_ACCOUNT_NAME = "t-0001";
+  private static volatile String seedAccountId;
   private static final String NAMESPACE_PREFIX = "fixture_ns_";
   private static final String TABLE_PREFIX = "fixture_tbl_";
   private static final String CATALOG = "examples";
@@ -113,7 +118,7 @@ class IcebergRestFixtureIT {
   private static final Path TEST_S3_ROOT = TestS3Fixtures.bucketPath().getParent();
   private static final String STAGE_BUCKET = "staged-fixtures";
   private static final String DEFAULT_AUTH_HEADER = "Bearer integration-test";
-  private static final String ACCOUNT_HEADER_NAME = "x-tenant-id";
+  private static final String ACCOUNT_HEADER_NAME = "x-account-id";
   private static final String AUTH_HEADER_NAME = "authorization";
   private static final boolean USE_AWS_FIXTURES = TestS3Fixtures.useAwsFixtures();
 
@@ -539,9 +544,9 @@ class IcebergRestFixtureIT {
 
   @BeforeEach
   void setUp() {
+    String accountId = resolveSeedAccountId();
     spec =
         new RequestSpecBuilder()
-            .addHeader("x-tenant-id", DEFAULT_ACCOUNT)
             .addHeader("authorization", "Bearer integration-test")
             .setContentType(ContentType.JSON)
             .build();
@@ -1575,8 +1580,9 @@ class IcebergRestFixtureIT {
         ManagedChannelBuilder.forAddress(upstreamHost, serviceGrpcPort).usePlaintext().build();
     try {
       Metadata headers = new Metadata();
+      String accountId = resolveSeedAccountId();
       headers.put(
-          Metadata.Key.of(ACCOUNT_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), DEFAULT_ACCOUNT);
+          Metadata.Key.of(ACCOUNT_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), accountId);
       headers.put(
           Metadata.Key.of(AUTH_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), DEFAULT_AUTH_HEADER);
       S stub =
@@ -1603,6 +1609,33 @@ class IcebergRestFixtureIT {
   private <T> T withDirectoryClient(
       Function<DirectoryServiceGrpc.DirectoryServiceBlockingStub, T> fn) {
     return withServiceClient("Directory", DirectoryServiceGrpc::newBlockingStub, fn);
+  }
+
+  private static String resolveSeedAccountId() {
+    if (seedAccountId != null && !seedAccountId.isBlank()) {
+      return seedAccountId;
+    }
+    parseUpstreamTarget();
+    ManagedChannel channel =
+        ManagedChannelBuilder.forAddress(upstreamHost, serviceGrpcPort).usePlaintext().build();
+    try {
+      AccountServiceGrpc.AccountServiceBlockingStub accounts =
+          AccountServiceGrpc.newBlockingStub(channel);
+      ListAccountsResponse response = accounts.listAccounts(ListAccountsRequest.getDefaultInstance());
+      List<Account> accountsList = response.getAccountsList();
+      if (accountsList.isEmpty()) {
+        throw new IllegalStateException("No accounts returned by service");
+      }
+      Optional<Account> named =
+          accountsList.stream()
+              .filter(account -> DEFAULT_ACCOUNT_NAME.equals(account.getDisplayName()))
+              .findFirst();
+      Account account = named.orElseGet(() -> accountsList.get(0));
+      seedAccountId = account.getResourceId().getId();
+      return seedAccountId;
+    } finally {
+      channel.shutdownNow();
+    }
   }
 
   private <T> T withTableClient(Function<TableServiceGrpc.TableServiceBlockingStub, T> fn) {

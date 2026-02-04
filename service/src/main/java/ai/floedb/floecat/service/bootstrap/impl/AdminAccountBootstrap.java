@@ -41,6 +41,9 @@ public class AdminAccountBootstrap {
   @ConfigProperty(name = "floecat.auth.admin.account", defaultValue = "admin")
   String adminAccountName;
 
+  @ConfigProperty(name = "floecat.auth.admin.account.id")
+  java.util.Optional<String> adminAccountId;
+
   @ConfigProperty(
       name = "floecat.auth.admin.account.description",
       defaultValue = "Bootstrap admin account")
@@ -73,10 +76,23 @@ public class AdminAccountBootstrap {
       LOG.infof(
           "Admin account already exists: %s (%s)",
           existing.getDisplayName(), existing.getResourceId().getId());
+      if (adminAccountId != null
+          && adminAccountId.filter(value -> !value.isBlank()).isPresent()
+          && !adminAccountId.get().trim().equals(existing.getResourceId().getId())) {
+        LOG.warnf(
+            "Admin account id mismatch: configured=%s existing=%s",
+            adminAccountId.get().trim(), existing.getResourceId().getId());
+      }
       return;
     }
 
-    String id = AccountIds.deterministicAccountId(adminAccountName);
+    String id =
+        adminAccountId == null
+            ? AccountIds.randomAccountId()
+            : adminAccountId
+                .map(String::trim)
+                .filter(v -> !v.isBlank())
+                .orElseGet(AccountIds::randomAccountId);
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     var account =

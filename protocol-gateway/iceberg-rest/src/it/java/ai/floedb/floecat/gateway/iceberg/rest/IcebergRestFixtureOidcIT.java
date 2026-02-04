@@ -14,70 +14,58 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.it;
+package ai.floedb.floecat.gateway.iceberg.rest;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.hasItem;
 
-import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
-import ai.floedb.floecat.account.rpc.AccountSpec;
-import ai.floedb.floecat.account.rpc.CreateAccountRequest;
-import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.service.it.profiles.KeycloakOidcProfile;
-import io.grpc.Metadata;
-import io.grpc.stub.MetadataUtils;
-import io.quarkus.grpc.GrpcClient;
+import ai.floedb.floecat.gateway.iceberg.rest.common.KeycloakTestResource;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
+import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import io.restassured.builder.RequestSpecBuilder;
+import io.restassured.http.ContentType;
+import io.restassured.specification.RequestSpecification;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.List;
-import java.util.UUID;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-@TestProfile(KeycloakOidcProfile.class)
-class KeycloakBootstrapIT {
+@TestProfile(OidcGatewayProfile.class)
+@QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
+@QuarkusTestResource(value = KeycloakTestResource.class, restrictToAnnotatedClass = true)
+@EnabledIfSystemProperty(named = "floecat.test.oidc", matches = "true")
+class IcebergRestFixtureOidcIT {
 
-  private static final Metadata.Key<String> AUTH_HEADER =
-      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+  private static final String CATALOG = "examples";
+  private static RequestSpecification spec;
 
-  @GrpcClient("floecat")
-  AccountServiceGrpc.AccountServiceBlockingStub accounts;
+  @BeforeAll
+  static void setUp() throws Exception {
+    String token = fetchAccessToken();
+    spec =
+        new RequestSpecBuilder()
+            .addHeader("authorization", "Bearer " + token)
+            .setContentType(ContentType.JSON)
+            .build();
+  }
 
   @Test
-  void bootstrapAdminAccountAndCreateTenant() throws Exception {
-    String token = fetchAccessToken();
-    Metadata metadata = new Metadata();
-    metadata.put(AUTH_HEADER, "Bearer " + token);
-
-    var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    List<Account> existing =
-        stub.listAccounts(ListAccountsRequest.getDefaultInstance()).getAccountsList();
-    assertFalse(existing.isEmpty());
-    assertTrue(
-        existing.stream()
-            .anyMatch(
-                account ->
-                    "floecat-admin".equals(account.getDisplayName())
-                        && "21232f29-7a57-35a7-8389-4a0e4a801fc3"
-                            .equals(account.getResourceId().getId())),
-        "admin account should be bootstrapped with configured id");
-
-    String tenantName = "tenant-" + UUID.randomUUID();
-    var created =
-        stub.createAccount(
-            CreateAccountRequest.newBuilder()
-                .setSpec(AccountSpec.newBuilder().setDisplayName(tenantName).build())
-                .build());
-    assertNotNull(created.getAccount().getResourceId().getId());
-    assertTrue(created.getAccount().getDisplayName().equals(tenantName));
+  void listsNamespacesFromSeededService() {
+    given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200)
+        .body("namespaces*.get(0)", hasItem("iceberg"));
   }
 
   private static String fetchAccessToken() throws IOException, InterruptedException {

@@ -14,20 +14,18 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.it.profiles;
+package ai.floedb.floecat.gateway.iceberg.rest;
 
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-public class KeycloakOidcProfile implements QuarkusTestProfile {
+public class OidcGatewayProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.ofEntries(
-        Map.entry("floecat.auth.mode", "oidc"),
-        Map.entry("floecat.auth.admin.account", "floecat-admin"),
-        Map.entry("floecat.auth.admin.account.id", "21232f29-7a57-35a7-8389-4a0e4a801fc3"),
-        Map.entry("floecat.interceptor.validate.account", "false"),
-        Map.entry("floecat.interceptor.authorization.header", "authorization"),
+        Map.entry("floecat.gateway.auth-mode", "oidc"),
+        Map.entry("floecat.gateway.account-claim", "account_id"),
+        Map.entry("quarkus.oidc.enabled", "true"),
         Map.entry("quarkus.oidc.tenant-enabled", "true"),
         Map.entry("quarkus.oidc.auth-server-url", "http://127.0.0.1:12221/realms/floecat"),
         Map.entry("quarkus.oidc.token.audience", "floecat-client"));
@@ -35,6 +33,6 @@ public class KeycloakOidcProfile implements QuarkusTestProfile {
 
   @Override
   public String getConfigProfile() {
-    return "keycloak-oidc";
+    return null;
   }
 }

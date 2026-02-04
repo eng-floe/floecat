@@ -25,6 +25,7 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.OidcSessionHeaderProfile;
 import ai.floedb.floecat.service.it.util.TestKeyPair;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Metadata;
@@ -46,15 +47,15 @@ import org.junit.jupiter.api.Test;
 @TestProfile(OidcSessionHeaderProfile.class)
 class AccountSessionHeaderIT {
 
-  private static final String ACCOUNT_ID =
-      TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-
   private static final Metadata.Key<String> SESSION_HEADER =
       Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
+  private String accountId;
+
+  @Inject AccountRepository accountRepository;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -62,6 +63,12 @@ class AccountSessionHeaderIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    accountId =
+        accountRepository
+            .getByName(TestSupport.DEFAULT_SEED_ACCOUNT)
+            .orElseThrow()
+            .getResourceId()
+            .getId();
   }
 
   @Test
@@ -217,20 +224,20 @@ class AccountSessionHeaderIT {
     assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
   }
 
-  private static String sessionJwt() throws Exception {
+  private String sessionJwt() throws Exception {
     return sessionJwtWithKey(TestKeyPair.privateKey());
   }
 
-  private static String sessionJwtWithKey(PrivateKey privateKey) throws Exception {
+  private String sessionJwtWithKey(PrivateKey privateKey) throws Exception {
     return sessionJwtWithKeyAndAudience(privateKey, "floecat-client");
   }
 
-  private static String sessionJwtWithKeyAndAudience(PrivateKey privateKey, String audience)
+  private String sessionJwtWithKeyAndAudience(PrivateKey privateKey, String audience)
       throws Exception {
     return sessionJwtWithKeyAndTiming(privateKey, audience, 0, 7L * 365 * 24 * 3600, 0);
   }
 
-  private static String sessionJwtWithKeyAndTiming(
+  private String sessionJwtWithKeyAndTiming(
       PrivateKey privateKey,
       long issuedAtOffsetSeconds,
       long expiresInSeconds,
@@ -240,7 +247,7 @@ class AccountSessionHeaderIT {
         privateKey, "floecat-client", issuedAtOffsetSeconds, expiresInSeconds, notBeforeOffset);
   }
 
-  private static String sessionJwtWithKeyAndTiming(
+  private String sessionJwtWithKeyAndTiming(
       PrivateKey privateKey,
       String audience,
       long issuedAtOffsetSeconds,
@@ -252,7 +259,7 @@ class AccountSessionHeaderIT {
         Jwt.claims()
             .issuer("https://floecat.test")
             .subject("it-user")
-            .claim("account_id", ACCOUNT_ID)
+            .claim("account_id", accountId)
             .issuedAt(now.plusSeconds(issuedAtOffsetSeconds))
             .expiresAt(now.plusSeconds(expiresInSeconds));
     if (audience != null) {

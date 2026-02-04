@@ -650,7 +650,7 @@ cli-docker-token:
 	  -d "client_id=floecat-client" \
 	  -d "client_secret=floecat-secret" \
 	  -d "grant_type=client_credentials" \
-	  http://keycloak:8080/realms/floecat/protocol/openid-connect/token | jq -r .access_token
+	  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token | jq -r .access_token
 
 .PHONY: cli-docker
 cli-docker:
@@ -659,24 +659,24 @@ cli-docker:
 	  -d "client_id=floecat-client" \
 	  -d "client_secret=floecat-secret" \
 	  -d "grant_type=client_credentials" \
-	  http://keycloak:8080/realms/floecat/protocol/openid-connect/token | jq -r .access_token); \
-	FLOECAT_ENV_FILE=./env.inmem-keycloak \
+	  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token | jq -r .access_token); \
+	FLOECAT_ENV_FILE=./env.localstack \
 	$(DOCKER_COMPOSE_MAIN) run --rm \
 	  -e FLOECAT_TOKEN=$$TOKEN \
-	  -e FLOECAT_ACCOUNT=21232f29-7a57-35a7-8389-4a0e4a801fc3 \
+	  -e FLOECAT_ACCOUNT=$$FLOECAT_ACCOUNT \
 	  cli
 
 .PHONY: oidc-up
 oidc-up:
 	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.inmem-keycloak \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak up -d
+	@FLOECAT_ENV_FILE=./env.localstack \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack up -d
 
 .PHONY: oidc-down
 oidc-down:
 	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.inmem-keycloak \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak down --remove-orphans
+	@FLOECAT_ENV_FILE=./env.localstack \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)

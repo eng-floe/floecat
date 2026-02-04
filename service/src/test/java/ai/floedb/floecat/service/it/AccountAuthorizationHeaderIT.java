@@ -25,6 +25,7 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.OidcAuthorizationHeaderProfile;
 import ai.floedb.floecat.service.it.util.TestKeyPair;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Metadata;
@@ -44,9 +45,6 @@ import org.junit.jupiter.api.Test;
 @TestProfile(OidcAuthorizationHeaderProfile.class)
 class AccountAuthorizationHeaderIT {
 
-  private static final String ACCOUNT_ID =
-      TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-
   private static final Metadata.Key<String> AUTH_HEADER =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ACCOUNT_HEADER =
@@ -55,6 +53,9 @@ class AccountAuthorizationHeaderIT {
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
+  private String accountId;
+
+  @Inject AccountRepository accountRepository;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -62,13 +63,19 @@ class AccountAuthorizationHeaderIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    accountId =
+        accountRepository
+            .getByName(TestSupport.DEFAULT_SEED_ACCOUNT)
+            .orElseThrow()
+            .getResourceId()
+            .getId();
   }
 
   @Test
   void listAccountsAcceptsAuthorizationHeaderJwt() throws Exception {
     Metadata metadata = new Metadata();
     metadata.put(AUTH_HEADER, "Bearer " + sessionJwt());
-    metadata.put(ACCOUNT_HEADER, ACCOUNT_ID);
+    metadata.put(ACCOUNT_HEADER, accountId);
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     var response = stub.listAccounts(ListAccountsRequest.getDefaultInstance());
@@ -118,12 +125,12 @@ class AccountAuthorizationHeaderIT {
     assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
   }
 
-  private static String sessionJwt() throws Exception {
+  private String sessionJwt() throws Exception {
     var now = Instant.now();
     return Jwt.claims()
         .issuer("https://floecat.test")
         .subject("it-user")
-        .claim("account_id", ACCOUNT_ID)
+        .claim("account_id", accountId)
         .issuedAt(now)
         .expiresAt(now.plusSeconds(7L * 365 * 24 * 3600))
         .audience("floecat-client")

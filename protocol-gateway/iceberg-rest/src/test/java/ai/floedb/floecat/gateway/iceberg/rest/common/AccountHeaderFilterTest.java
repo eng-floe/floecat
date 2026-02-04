@@ -51,10 +51,11 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
+    when(config.authMode()).thenReturn("dev");
+    when(config.accountHeader()).thenReturn("x-account-id");
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAccountId()).thenReturn("account-default");
-    when(config.defaultAuthorization()).thenReturn("Bearer default");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
 
     filter.setConfigInstance(configInstance);
     AccountContext accountContext = mock(AccountContext.class);
@@ -64,7 +65,7 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString("x-tenant-id")).thenReturn(null);
+    when(ctx.getHeaderString("x-account-id")).thenReturn(null);
     when(ctx.getHeaderString("authorization")).thenReturn(null);
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
@@ -80,7 +81,7 @@ class AccountHeaderFilterTest {
     filter.filter(ctx);
 
     assertFalse(aborted.get());
-    assertEquals("account-default", headers.getFirst("x-tenant-id"));
+    assertEquals("account-default", headers.getFirst("x-account-id"));
     assertEquals("Bearer default", headers.getFirst("authorization"));
     verify(accountContext).setAccountId("account-default");
   }
@@ -120,10 +121,10 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
-    when(config.defaultAccountId()).thenReturn("account-default");
+    when(config.accountHeader()).thenReturn("x-account-id");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAuthorization()).thenReturn("undefined");
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("undefined"));
     filter.setConfigInstance(configInstance);
     filter.setAccountContext(mock(AccountContext.class));
 
@@ -131,7 +132,8 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString(Mockito.anyString())).thenReturn(null);
+    when(ctx.getHeaderString("x-account-id")).thenReturn("account-default");
+    when(ctx.getHeaderString("authorization")).thenReturn(null);
     when(ctx.getHeaders()).thenReturn(new MultivaluedHashMap<>());
     AtomicBoolean aborted = new AtomicBoolean(false);
     doAnswer(
@@ -154,10 +156,10 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
+    when(config.accountHeader()).thenReturn("x-account-id");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAccountId()).thenReturn("account-default");
-    when(config.defaultAuthorization()).thenReturn("Bearer default");
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
     when(config.defaultPrefix()).thenReturn(Optional.of("sales"));
     filter.setConfigInstance(configInstance);
     AccountContext accountContext = mock(AccountContext.class);
@@ -179,7 +181,7 @@ class AccountHeaderFilterTest {
 
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
-    when(ctx.getHeaderString("x-tenant-id")).thenReturn("account-default");
+    when(ctx.getHeaderString("x-account-id")).thenReturn("account-default");
     when(ctx.getHeaderString("authorization")).thenReturn("Bearer default");
 
     AtomicReference<URI> rewrittenUri = new AtomicReference<>();

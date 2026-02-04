@@ -143,7 +143,6 @@ class TableResourceTest extends AbstractRestResourceTest {
                 .build());
 
     given()
-        .header("x-tenant-id", "account1")
         .when()
         .get("/v1/foo/namespaces/db/tables?pageSize=2&pageToken=tok")
         .then()
@@ -317,7 +316,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job-1").build());
 
     given()
-        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -364,7 +362,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
 
     given()
-        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -432,7 +429,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(UpdateConnectorResponse.newBuilder().setConnector(connector).build());
 
     given()
-        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -472,7 +468,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
     given()
-        .header("x-tenant-id", "account1")
         .contentType(MediaType.APPLICATION_JSON)
         .body(
             """
@@ -884,7 +879,6 @@ class TableResourceTest extends AbstractRestResourceTest {
   void missingAuthHeaderReturns401() {
     RestAssured.requestSpecification = null;
     given()
-        .header("x-tenant-id", "account1")
         .when()
         .get("/v1/foo/namespaces/db/tables")
         .then()

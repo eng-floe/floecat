@@ -11,7 +11,8 @@ Auth modes:
 Default is `oidc`; dev mode must be explicitly configured.
 
 When `floecat.auth.mode=oidc`, Floecat will ensure an admin account exists on startup. Configure:
-- `floecat.auth.admin.account=admin` (display name for the admin account)
+- `floecat.auth.admin.account=floecat-admin` (display name for the admin account)
+- `floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3` (optional fixed ID)
 - `floecat.auth.admin.account.description=...` (optional description)
 
 ## Local Keycloak (dev)
@@ -27,29 +28,29 @@ KEYCLOAK_PORT=12221 docker compose --profile keycloak up
 The realm import defines:
 - realm: `floecat`
 - client: `floecat-client`
-- user: `admin` / password `admin`
+- user: `floecat-admin` / password `floecat-admin`
 - role: `administrator`
 - hardcoded claim: `account_id=21232f29-7a57-35a7-8389-4a0e4a801fc3`
 
 Note: the realm config uses a service-account client (`client_credentials` flow). Password grant is
 disabled.
 
-Important: the hardcoded account id is derived from the admin account display name `admin` using
-`AccountIds.deterministicAccountId("admin")`. If you change `floecat.auth.admin.account`, update
-`docker/keycloak/realm-floecat.json` with the new deterministic id.
+Important: if you change the admin account ID, update
+`docker/keycloak/realm-floecat.json` so the `account_id` claim matches.
 
 Example service config (dev, running service on the host):
 ```
 floecat.auth.mode=oidc
-floecat.auth.admin.account=admin
+floecat.auth.admin.account=floecat-admin
+floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3
 floecat.interceptor.authorization.header=authorization
 quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat
 quarkus.oidc.token.audience=floecat-client
 ```
 
-If the service runs in Docker, set the issuer to the Docker network hostname:
+If the service runs in Docker, set the issuer to the Docker Desktop hostname:
 ```
-quarkus.oidc.auth-server-url=http://keycloak:8080/realms/floecat
+quarkus.oidc.auth-server-url=http://host.docker.internal:12221/realms/floecat
 ```
 
 Example token request:
@@ -63,14 +64,15 @@ curl -s \
 
 ## OIDC Quickstart (Local + Shell CLI)
 
-1) Enable local OIDC in `docker/env.inmem`:
+1) Enable local OIDC in `docker/env.localstack` (the only OIDC-enabled env file):
 ```
 FLOECAT_AUTH_MODE=oidc
-FLOECAT_AUTH_ADMIN_ACCOUNT=admin
+FLOECAT_AUTH_ADMIN_ACCOUNT=floecat-admin
+FLOECAT_AUTH_ADMIN_ACCOUNT_ID=21232f29-7a57-35a7-8389-4a0e4a801fc3
 FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER=authorization
 QUARKUS_OIDC_TENANT_ENABLED=true
-QUARKUS_OIDC_AUTH_SERVER_URL=http://keycloak:8080/realms/floecat
-QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client
+QUARKUS_OIDC_AUTH_SERVER_URL=http://host.docker.internal:12221/realms/floecat
+QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client
 ```
 
 2) Start Keycloak + service:
@@ -78,36 +80,34 @@ QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client
 make oidc-up
 ```
 
-3) Fetch a token on the Docker network (issuer must be `http://keycloak:8080/...`):
+3) Fetch a token on the host (issuer must be `http://host.docker.internal:12221/...`):
 ```
-TOKEN=$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+TOKEN=$(curl -s \
   -d "client_id=floecat-client" \
   -d "client_secret=floecat-secret" \
   -d "grant_type=client_credentials" \
-  http://keycloak:8080/realms/floecat/protocol/openid-connect/token \
+  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token \
   | jq -r .access_token)
 ```
-Note: `docker_floecat` is the default Compose network name for this repo. If your compose project
-name is different, use the network name shown in `docker network ls`.
 
 4) Run the Shell CLI in Docker (interactive):
 ```
 FLOECAT_TOKEN=$TOKEN \
-FLOECAT_ACCOUNT=21232f29-7a57-35a7-8389-4a0e4a801fc3 \
+FLOECAT_ACCOUNT=<admin_account_id> \
 make cli-docker
 ```
 
 Inside the shell:
 ```
-account 21232f29-7a57-35a7-8389-4a0e4a801fc3
+account <admin_account_id>
 account list
 ```
 
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
 - `floecat.interceptor.session.header=x-floe-session` to enable the header.
-- `floecat.interceptor.account.header=x-account-id` to provide the account identifier (optional but
-  recommended when multi-tenant IdP routing is enabled).
+- `floecat.interceptor.account.header=x-account-id` to provide the account identifier (internal;
+  not part of Iceberg REST).
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
   trusted account id.
 - `quarkus.oidc.token.audience=...` to set the `aud` claim value expected.
@@ -120,6 +120,8 @@ One of:
 Environment equivalents:
 - QUARKUS_OIDC_TENANT_ENABLED
 - FLOECAT_AUTH_MODE
+- FLOECAT_AUTH_ADMIN_ACCOUNT
+- FLOECAT_AUTH_ADMIN_ACCOUNT_ID
 - FLOECAT_INTERCEPTOR_SESSION_HEADER
 - FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
@@ -134,13 +136,14 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
 
 ### Development (local)
 - Use `docker/env.inmem` with `docker/docker-compose.yml` (via `env_file`) for local defaults.
-- For OIDC + Keycloak, use `docker/env.inmem-keycloak` by setting `FLOECAT_ENV_FILE=./env.inmem-keycloak`
-  (or run `make oidc-up`).
+- For OIDC + Keycloak, use `docker/env.localstack` by setting `FLOECAT_ENV_FILE=./env.localstack`
+  (or run `make oidc-up`). This is the only OIDC-enabled env file.
 - `floecat.auth.mode=oidc` (or `dev` for fully local use).
 - Use Keycloak dev realm or another local IdP.
 - `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`
-- `quarkus.oidc.token.audience=floecat-client`
-- `floecat.auth.admin.account=admin`
+- `quarkus.oidc.token.audience=floecat-client` (or `floecat-client,trino-client` if using Trino).
+- `floecat.auth.admin.account=floecat-admin`
+- `floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3`
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
 - Consider `floecat.interceptor.validate.account=false` if account ids are trusted in dev.
 
@@ -166,8 +169,8 @@ of via an upstream engine session token.
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
 - `floecat.interceptor.authorization.header=authorization` to enable the header.
-- `floecat.interceptor.account.header=x-account-id` to provide the account identifier (optional but
-  recommended when multi-tenant IdP routing is enabled).
+- `floecat.interceptor.account.header=x-account-id` to provide the account identifier (internal;
+  not part of Iceberg REST).
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
   trusted account id.
 - `quarkus.oidc.token.audience=...` to set the `aud` claim value expected.
@@ -180,6 +183,8 @@ One of:
 Environment equivalents:
 - QUARKUS_OIDC_TENANT_ENABLED
 - FLOECAT_AUTH_MODE
+- FLOECAT_AUTH_ADMIN_ACCOUNT
+- FLOECAT_AUTH_ADMIN_ACCOUNT_ID
 - FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER
 - FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT

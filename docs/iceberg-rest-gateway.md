@@ -185,6 +185,12 @@ fs.native-s3.enabled=true
 s3.aws-access-key=<access-key>
 s3.aws-secret-key=<secret-key>
 s3.region=<AWS region>
+
+# OIDC (Keycloak)
+iceberg.rest-catalog.security=OAUTH2
+iceberg.rest-catalog.oauth2.credential=trino-client:trino-secret
+iceberg.rest-catalog.oauth2.server-uri=http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token
+iceberg.rest-catalog.oauth2.scope=openid
 ```
 
 Restart Trino and run:

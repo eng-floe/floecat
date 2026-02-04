@@ -159,7 +159,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   final var normalizedSpec = spec.toBuilder().setDisplayName(normName).build();
                   final byte[] fingerprint = canonicalFingerprint(normalizedSpec);
 
-                  final var resourceId = resolveAccountId(request, accountId, normName, corr);
+                  final var resourceId = resolveAccountId(request, accountId, corr);
 
                   final var desiredAccount =
                       Account.newBuilder()
@@ -233,7 +233,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   }
 
   private ResourceId resolveAccountId(
-      CreateAccountRequest request, String principalAccountId, String displayName, String corr) {
+      CreateAccountRequest request, String principalAccountId, String corr) {
     if (request.hasAccountId()) {
       var candidate = ResourceId.newBuilder(request.getAccountId());
       if (candidate.getId().isBlank()) {
@@ -252,7 +252,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       return candidate.build();
     }
 
-    final String accountUuid = AccountIds.deterministicAccountId(displayName);
+    final String accountUuid = AccountIds.randomAccountId();
     return ResourceId.newBuilder()
         .setAccountId(principalAccountId)
         .setId(accountUuid)

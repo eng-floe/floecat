@@ -501,7 +501,12 @@ public class InboundContextInterceptor {
   }
 
   private PrincipalContext devContext() {
-    var id = AccountIds.deterministicAccountId("/account:t-0001");
+    String displayName = "t-0001";
+    String id =
+        accountRepository
+            .getByName(displayName)
+            .map(account -> account.getResourceId().getId())
+            .orElseGet(AccountIds::randomAccountId);
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     PrincipalContext.Builder builder =

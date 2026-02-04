@@ -20,11 +20,13 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.container.PreMatching;
+import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.PathSegment;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriBuilder;
@@ -35,6 +37,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
 @Provider
@@ -42,6 +45,8 @@ import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 public class AccountHeaderFilter implements ContainerRequestFilter {
   @Inject Instance<IcebergGatewayConfig> config;
   @Inject AccountContext accountContext;
+  @Inject SecurityIdentity identity;
+  @Inject JsonWebToken jwt;
 
   public void setConfigInstance(Instance<IcebergGatewayConfig> config) {
     this.config = config;
@@ -51,7 +56,7 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     this.accountContext = accountContext;
   }
 
-  private static final String DEFAULT_ACCOUNT_HEADER = "x-tenant-id";
+  private static final String DEFAULT_ACCOUNT_HEADER = "x-account-id";
   private static final String DEFAULT_AUTH_HEADER = "authorization";
 
   @Override
@@ -61,18 +66,19 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     if (requestContext.getUriInfo().getPath().equals("v1/config")) {
       return;
     }
+    boolean devMode = isDevMode();
     String accountHeader = resolveAccountHeaderName();
-    String account = headerValue(requestContext, accountHeader);
-    if (account == null || account.isBlank()) {
+    String account;
+    if (devMode) {
       account = defaultAccount().orElse(null);
-      if (account != null) {
-        requestContext.getHeaders().putSingle(accountHeader, account);
-      }
+    } else {
+      account = resolveAccountFromAuthClaim(requestContext, accountHeader);
     }
     if (account == null || account.isBlank()) {
       requestContext.abortWith(unauthorized("missing account header"));
       return;
     }
+    requestContext.getHeaders().putSingle(accountHeader, account);
     accountContext.setAccountId(account.trim());
 
     String authHeader = resolveAuthHeaderName();
@@ -84,6 +90,9 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       }
     }
     if (auth == null || auth.isBlank()) {
+      if (devMode && allowMissingAuthInDev()) {
+        return;
+      }
       requestContext.abortWith(unauthorized("missing authorization header"));
     }
   }
@@ -144,6 +153,8 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
 
   private Response unauthorized(String message) {
     return Response.status(Response.Status.UNAUTHORIZED)
+        .type(MediaType.APPLICATION_JSON)
+        .header("Content-Type", MediaType.APPLICATION_JSON)
         .entity(new IcebergErrorResponse(new IcebergError(message, "UnauthorizedException", 401)))
         .build();
   }
@@ -153,11 +164,7 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       return Optional.empty();
     }
     try {
-      String value = config.get().defaultAccountId();
-      if (value == null || value.isBlank()) {
-        return Optional.empty();
-      }
-      return Optional.of(value.trim());
+      return config.get().defaultAccountId().map(String::trim).filter(v -> !v.isBlank());
     } catch (Exception ignored) {
       return Optional.empty();
     }
@@ -168,13 +175,64 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       return Optional.empty();
     }
     try {
-      String value = config.get().defaultAuthorization();
-      if (value == null || value.isBlank() || isPlaceholder(value)) {
-        return Optional.empty();
-      }
-      return Optional.of(value.trim());
+      return config
+          .get()
+          .defaultAuthorization()
+          .map(String::trim)
+          .filter(value -> !value.isBlank())
+          .filter(value -> !isPlaceholder(value));
     } catch (Exception ignored) {
       return Optional.empty();
+    }
+  }
+
+  private String resolveAccountFromAuthClaim(
+      ContainerRequestContext requestContext, String accountHeader) {
+    String claimName = resolveAccountClaimName();
+    if (identity == null || identity.isAnonymous()) {
+      return null;
+    }
+    Object claim = jwt != null ? jwt.getClaim(claimName) : null;
+    String account = claim == null ? null : claim.toString();
+    if (account != null && !account.isBlank()) {
+      requestContext.getHeaders().putSingle(accountHeader, account);
+      return account;
+    }
+    return null;
+  }
+
+  private String resolveAccountClaimName() {
+    if (config.isUnsatisfied()) {
+      return "account_id";
+    }
+    try {
+      String claim = config.get().accountClaim();
+      return claim == null || claim.isBlank() ? "account_id" : claim.trim();
+    } catch (Exception ignored) {
+      return "account_id";
+    }
+  }
+
+  private boolean allowMissingAuthInDev() {
+    if (config.isUnsatisfied()) {
+      return false;
+    }
+    try {
+      return config.get().devAllowMissingAuth();
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private boolean isDevMode() {
+    if (config.isUnsatisfied()) {
+      return false;
+    }
+    try {
+      String mode = config.get().authMode();
+      return mode != null && !mode.isBlank() && mode.trim().equalsIgnoreCase("dev");
+    } catch (Exception ignored) {
+      return false;
     }
   }
 

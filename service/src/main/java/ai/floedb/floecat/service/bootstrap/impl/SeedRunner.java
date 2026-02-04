@@ -219,7 +219,7 @@ public class SeedRunner {
     if (existing != null) {
       return existing.getResourceId();
     }
-    String id = uuidFor("/account:" + displayName);
+    String id = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     var account =
