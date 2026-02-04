@@ -23,9 +23,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import org.jboss.logging.Logger;
 
 /** Utility that converts engine-specific rules to metagraph hint maps. */
 public final class EngineHintsMapper {
+
+  private static final Logger LOG = Logger.getLogger(EngineHintsMapper.class);
 
   private EngineHintsMapper() {}
 
@@ -55,18 +58,9 @@ public final class EngineHintsMapper {
       String normalizedVersion = engineVersion == null ? "" : engineVersion;
       EngineHintKey key = new EngineHintKey(normalizedKind, normalizedVersion, rule.payloadType());
       if (hints.containsKey(key)) {
-        throw new IllegalStateException(
-            "Duplicate engine hint for "
-                + key
-                + " (payload="
-                + rule.payloadType()
-                + ", engine="
-                + key.engineKind()
-                + ":"
-                + key.engineVersion()
-                + ", context="
-                + (objectContext == null || objectContext.isBlank() ? "<unknown>" : objectContext)
-                + ")");
+        LOG.warnf(
+            "Duplicate engine hint for %s in %s; overwriting previous value",
+            key, (objectContext == null || objectContext.isBlank()) ? "<unknown>" : objectContext);
       }
       hints.put(key, hint);
     }

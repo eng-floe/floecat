@@ -17,7 +17,6 @@
 package ai.floedb.floecat.systemcatalog.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Map;
@@ -26,14 +25,16 @@ import org.junit.jupiter.api.Test;
 class EngineHintsMapperTest {
 
   @Test
-  void duplicateHintKeyThrows() {
+  void duplicateHintKeyOverwritesPreviousEntry() {
     var rule1 =
         new EngineSpecificRule("pg", "1.0", "", "hint", new byte[] {1, 2}, Map.of("x", "1"));
     var rule2 =
         new EngineSpecificRule("pg", "1.0", "", "hint", new byte[] {3, 4}, Map.of("x", "2"));
-    assertThatThrownBy(() -> EngineHintsMapper.toHints("pg", "1.0", List.of(rule1, rule2)))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("Duplicate engine hint");
+    var hints = EngineHintsMapper.toHints("pg", "1.0", List.of(rule1, rule2));
+    assertThat(hints).hasSize(1);
+    var entry = hints.values().iterator().next();
+    assertThat(entry.payload()).containsExactly(3, 4);
+    assertThat(entry.metadata()).containsEntry("x", "2");
   }
 
   @Test
