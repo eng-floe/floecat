@@ -19,19 +19,24 @@ package ai.floedb.floecat.extensions.floedb;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.extensions.floedb.hints.FloeHintClearPolicy;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
 import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
 import ai.floedb.floecat.extensions.floedb.validation.FloeSystemCatalogValidator;
 import ai.floedb.floecat.extensions.floedb.validation.ValidationScope;
+import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
+import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
@@ -39,6 +44,7 @@ import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.Message;
 import com.google.protobuf.TextFormat;
+import jakarta.inject.Inject;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +62,9 @@ import java.util.Optional;
  * serialized into payload bytes.
  */
 public abstract class FloeCatalogExtension implements EngineSystemCatalogExtension {
+
+  private final FloeHintClearPolicy hintClearPolicy = new FloeHintClearPolicy();
+  @Inject EngineHintPersistence persistence;
 
   @Override
   public final SystemCatalogData loadSystemCatalog() {
@@ -417,7 +426,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public Optional<EngineMetadataDecorator> decorator() {
-    return Optional.of(FloeEngineSpecificDecorator.INSTANCE);
+    return Optional.of(new FloeEngineSpecificDecorator(persistence));
   }
 
   @Override
@@ -451,5 +460,13 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
     public String engineKind() {
       return "floe-demo";
     }
+  }
+
+  @Override
+  public HintClearDecision decideHintClear(EngineContext ctx, HintClearContext context) {
+    if (!supportsEngine(ctx.engineKind())) {
+      return HintClearDecision.dropAll();
+    }
+    return hintClearPolicy.decide(context);
   }
 }

@@ -31,17 +31,17 @@ class NodeLoaderColumnHintsTest {
   private static final String ENGINE_VERSION = "1.0";
 
   @Test
-  void loadColumnHintsConvertsOrdinalStrings() {
+  void loadColumnHintsConvertsIdsStrings() {
     Map<String, String> props = new LinkedHashMap<>();
     props.put(
-        EngineHintMetadata.columnHintKey("floe.column+proto", 1),
+        EngineHintMetadata.columnHintKey("floe.column+proto", 1L),
         EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, new byte[] {1}));
     props.put(
-        EngineHintMetadata.columnHintKey("floe.column+proto", 2),
+        EngineHintMetadata.columnHintKey("floe.column+proto", 2L),
         EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, new byte[] {2}));
     props.put("engine.hint.column.floe.column+proto.invalid", "junk"); // ignored
 
-    Map<Long, Map<EngineHintKey, EngineHint>> hints = NodeLoader.loadColumnHints(props);
+    Map<Long, Map<EngineHintKey, EngineHint>> hints = NodeLoader.relationHints(props).columnHints();
     assertThat(hints).containsKeys(1L, 2L).doesNotContainKey(0L);
     EngineHintKey key = new EngineHintKey(ENGINE_KIND, ENGINE_VERSION, "floe.column+proto");
     assertThat(hints.get(1L)).containsKey(key);

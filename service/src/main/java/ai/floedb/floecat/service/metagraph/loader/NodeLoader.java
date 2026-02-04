@@ -45,7 +45,6 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -135,7 +134,7 @@ public class NodeLoader {
         catalog.hasConnectorRef() ? Optional.of(catalog.getConnectorRef()) : Optional.empty(),
         catalog.hasPolicyRef() ? Optional.of(catalog.getPolicyRef()) : Optional.empty(),
         Optional.empty(),
-        loadEngineHints(catalog.getPropertiesMap()));
+        Map.of());
   }
 
   private NamespaceNode toNamespaceNode(Namespace namespace, MutationMeta meta) {
@@ -148,13 +147,14 @@ public class NodeLoader {
         namespace.getDisplayName(),
         GraphNodeOrigin.USER,
         namespace.getPropertiesMap(),
-        loadEngineHints(namespace.getPropertiesMap()));
+        Map.of());
   }
 
   private UserTableNode toTableNode(Table table, MutationMeta meta) {
     UpstreamRef upstream =
         table.hasUpstream() ? table.getUpstream() : UpstreamRef.getDefaultInstance();
     TableFormat format = upstream.getFormat();
+    RelationHints hints = relationHints(table.getPropertiesMap());
     return new UserTableNode(
         table.getResourceId(),
         meta.getPointerVersion(),
@@ -172,11 +172,12 @@ public class NodeLoader {
         Optional.empty(),
         Optional.empty(),
         List.of(),
-        loadEngineHints(table.getPropertiesMap()),
-        loadColumnHints(table.getPropertiesMap()));
+        hints.engineHints(),
+        hints.columnHints());
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
+    RelationHints hints = relationHints(view.getPropertiesMap());
     return new ViewNode(
         view.getResourceId(),
         meta.getPointerVersion(),
@@ -192,27 +193,36 @@ public class NodeLoader {
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
-        loadEngineHints(view.getPropertiesMap()));
+        hints.columnHints(),
+        hints.engineHints());
   }
 
-  private static Map<EngineHintKey, EngineHint> loadEngineHints(Map<String, String> properties) {
-    return EngineHintMetadata.hintsFromProperties(properties);
+  static RelationHints relationHints(Map<String, String> properties) {
+    Map<EngineHintKey, EngineHint> engineHints =
+        containsHintKey(properties, "engine.hint.")
+            ? EngineHintMetadata.hintsFromProperties(properties)
+            : Map.of();
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints =
+        containsHintKey(properties, "engine.hint.column.")
+            ? EngineHintMetadata.columnHints(properties)
+            : Map.of();
+    return new RelationHints(engineHints, columnHints);
   }
 
-  static Map<Long, Map<EngineHintKey, EngineHint>> loadColumnHints(Map<String, String> properties) {
-    Map<String, Map<EngineHintKey, EngineHint>> hints = EngineHintMetadata.columnHints(properties);
-    if (hints.isEmpty()) {
-      return Map.of();
+  static record RelationHints(
+      Map<EngineHintKey, EngineHint> engineHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints) {}
+
+  private static boolean containsHintKey(Map<String, String> properties, String prefix) {
+    if (properties == null || properties.isEmpty()) {
+      return false;
     }
-    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
-    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
-      try {
-        long columnId = Long.parseLong(entry.getKey());
-        normalized.put(columnId, Map.copyOf(entry.getValue()));
-      } catch (NumberFormatException ignored) {
+    for (String key : properties.keySet()) {
+      if (key != null && key.startsWith(prefix)) {
+        return true;
       }
     }
-    return Map.copyOf(normalized);
+    return false;
   }
 
   private static Instant toInstant(Timestamp ts) {

@@ -16,9 +16,12 @@
 
 package ai.floedb.floecat.systemcatalog.spi;
 
+import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
+import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
+import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import java.util.List;
 import java.util.Optional;
@@ -52,5 +55,12 @@ public interface EngineSystemCatalogExtension extends SystemObjectScannerProvide
   /** Optional decorator for engine metadata sinks. */
   default Optional<EngineMetadataDecorator> decorator() {
     return Optional.empty();
+  }
+
+  /**
+   * Optional hook that lets the engine decide how to clear persisted hints for a particular update.
+   */
+  default HintClearDecision decideHintClear(EngineContext ctx, HintClearContext context) {
+    return HintClearDecision.dropAll();
   }
 }

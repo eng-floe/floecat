@@ -31,7 +31,6 @@ import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
@@ -124,10 +123,9 @@ public final class PgAttributeScanner implements SystemObjectScanner {
     LogicalType logicalType = FloeHintResolver.parseLogicalType(column);
     FloeHintResolver.ColumnMetadata metadata =
         FloeHintResolver.columnMetadata(ctx, resolver, column, logicalType);
-    Optional<FloeColumnSpecific> persisted =
-        ScannerUtils.columnPayload(ctx, tableId, column.getId(), FloePayloads.COLUMN);
     FloeColumnSpecific attribute =
-        persisted.orElseGet(() -> FloeHintResolver.buildColumnSpecific(column, attnum, metadata));
+        FloeHintResolver.columnSpecific(
+            ctx, resolver, tableId, relOid, attnum, column, logicalType);
     return new SystemObjectRow(
         new Object[] {
           relOid,

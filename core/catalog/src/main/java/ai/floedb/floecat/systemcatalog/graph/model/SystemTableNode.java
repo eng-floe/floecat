@@ -19,12 +19,13 @@ package ai.floedb.floecat.systemcatalog.graph.model;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -58,8 +59,8 @@ public sealed interface SystemTableNode extends TableNode
 
     public FloeCatSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       scannerId = scannerId == null ? "" : scannerId;
     }
@@ -90,8 +91,8 @@ public sealed interface SystemTableNode extends TableNode
 
     public StorageSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       storagePath = storagePath == null ? "" : storagePath;
     }
@@ -121,8 +122,8 @@ public sealed interface SystemTableNode extends TableNode
 
     public EngineSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
 
@@ -152,8 +153,8 @@ public sealed interface SystemTableNode extends TableNode
 
     public GenericSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
 
@@ -161,30 +162,5 @@ public sealed interface SystemTableNode extends TableNode
     public GraphNodeOrigin origin() {
       return GraphNodeOrigin.SYSTEM;
     }
-  }
-
-  static Map<Long, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
-      Map<String, Map<EngineHintKey, EngineHint>> hints) {
-    if (hints == null || hints.isEmpty()) {
-      return Map.of();
-    }
-    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
-    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
-      try {
-        long columnId = Long.parseLong(entry.getKey());
-        Map<EngineHintKey, EngineHint> value =
-            entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
-        normalized.put(columnId, value);
-      } catch (NumberFormatException ignored) {
-      }
-    }
-    return Map.copyOf(normalized);
-  }
-
-  static Map<EngineHintKey, EngineHint> normalizeEngineHints(Map<EngineHintKey, EngineHint> hints) {
-    if (hints == null || hints.isEmpty()) {
-      return Map.of();
-    }
-    return Map.copyOf(hints);
   }
 }

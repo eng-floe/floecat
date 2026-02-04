@@ -265,10 +265,8 @@ public class SystemNodeRegistry {
         continue;
       }
       ResourceId tableId = resourceId(normalizedKind, table);
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints =
-          buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
       Map<Long, Map<EngineHintKey, EngineHint>> normalizedColumnHints =
-          SystemTableNode.normalizeColumnHints(columnHints);
+          buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
       List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
       Map<EngineHintKey, EngineHint> tableHints =
           EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.engineSpecific());
@@ -357,6 +355,7 @@ public class SystemNodeRegistry {
               GraphNodeOrigin.SYSTEM,
               Map.of(),
               Optional.empty(),
+              Map.of(), // TODO(mrouvroy): hook columnHints when we add them for views
               viewHints);
       viewNodes.add(node);
       viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
@@ -902,17 +901,18 @@ public class SystemNodeRegistry {
     }
   }
 
-  private static Map<String, Map<EngineHintKey, EngineHint>> buildColumnHints(
+  private static Map<Long, Map<EngineHintKey, EngineHint>> buildColumnHints(
       List<SystemColumnDef> columns, String engineKind, String engineVersion) {
     if (columns == null || columns.isEmpty()) {
       return Map.of();
     }
-    Map<String, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
+    Map<Long, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
     for (SystemColumnDef column : columns) {
       Map<EngineHintKey, EngineHint> columnHints =
           EngineHintsMapper.toHints(engineKind, engineVersion, column.engineSpecific());
       if (!columnHints.isEmpty()) {
-        hints.put(column.name(), columnHints);
+        long columnId = column.hasId() ? column.id() : column.ordinal();
+        hints.put(columnId, columnHints);
       }
     }
     return hints.isEmpty() ? Map.of() : hints;

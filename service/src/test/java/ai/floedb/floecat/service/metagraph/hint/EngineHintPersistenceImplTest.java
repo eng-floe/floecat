@@ -34,6 +34,7 @@ import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -138,6 +139,63 @@ class EngineHintPersistenceImplTest {
     Table updated = tableCaptor.getValue();
     String key = EngineHintMetadata.columnHintKey("floe.column+proto", 5L);
     assertThat(updated.getPropertiesMap()).containsEntry(key, encode());
+  }
+
+  @Test
+  void persistColumnHints_writesMultiplePayloadTypesPerColumn() {
+    Table table = Table.newBuilder().setResourceId(TABLE_ID).build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    when(tableRepository.metaForSafe(TABLE_ID)).thenReturn(meta(77L));
+    when(tableRepository.update(any(Table.class), eq(77L))).thenReturn(true);
+
+    List<EngineHintPersistence.ColumnHint> hints =
+        List.of(
+            new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD),
+            new EngineHintPersistence.ColumnHint("floe.column+proto2", 5L, new byte[] {7}));
+    persistence.persistColumnHints(TABLE_ID, ENGINE_KIND, ENGINE_VERSION, hints);
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepository).update(tableCaptor.capture(), eq(77L));
+    Table updated = tableCaptor.getValue();
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode());
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(
+            EngineHintMetadata.columnHintKey("floe.column+proto2", 5L),
+            EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, new byte[] {7}));
+  }
+
+  @Test
+  void persistColumnHints_writesViewProperties() {
+    View view = View.newBuilder().setResourceId(VIEW_ID).build();
+    when(viewRepository.getById(VIEW_ID)).thenReturn(Optional.of(view));
+    when(viewRepository.metaForSafe(VIEW_ID)).thenReturn(meta(55L));
+    when(viewRepository.update(any(View.class), eq(55L))).thenReturn(true);
+
+    persistence.persistColumnHints(
+        VIEW_ID,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 3L, PAYLOAD)));
+
+    ArgumentCaptor<View> viewCaptor = ArgumentCaptor.forClass(View.class);
+    verify(viewRepository).update(viewCaptor.capture(), eq(55L));
+    View updated = viewCaptor.getValue();
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 3L), encode());
+  }
+
+  @Test
+  void deduplicateColumnHints_keepsSingleEntryPerColumnType() {
+    List<EngineHintPersistence.ColumnHint> hints =
+        List.of(
+            new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD),
+            new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD));
+
+    Map<String, EngineHintPersistence.ColumnHint> deduped =
+        EngineHintPersistenceImpl.deduplicateColumnHints(hints);
+    String key = EngineHintMetadata.columnHintKey("floe.column+proto", 5L);
+    assertThat(deduped).containsKey(key).hasSize(1);
   }
 
   private static MutationMeta meta(long version) {

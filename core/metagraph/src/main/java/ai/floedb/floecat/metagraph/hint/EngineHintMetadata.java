@@ -20,9 +20,12 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import org.jboss.logging.Logger;
 
 /**
  * Helper for encoding/decoding persisted engine hint metadata inside relation properties.
@@ -38,9 +41,25 @@ public final class EngineHintMetadata {
   private static final String ENGINE_KIND_KV = "engineKind=";
   private static final String ENGINE_VERSION_KV = "engineVersion=";
   private static final String PAYLOAD_KV = "payload=";
-  public static final String COLUMN_HINT_COLUMN_KEY = "columnId";
+  public static final String COLUMN_HINT_COLUMN_KEY = "engine.hint.columnId";
+  private static final Pattern PAYLOAD_TYPE_PATTERN = Pattern.compile("^[a-z0-9._+-]+$");
+  private static final Logger LOG = Logger.getLogger(EngineHintMetadata.class);
 
   private EngineHintMetadata() {}
+
+  private static String normalizePayloadType(String payloadType) {
+    if (payloadType == null) {
+      return "";
+    }
+    String normalized = payloadType.trim().toLowerCase(Locale.ROOT);
+    if (normalized.isEmpty()) {
+      return "";
+    }
+    if (!PAYLOAD_TYPE_PATTERN.matcher(normalized).matches()) {
+      throw new IllegalArgumentException("invalid payload type: " + payloadType);
+    }
+    return normalized;
+  }
 
   public static String tableHintKey(String payloadType) {
     return HintType.RELATION.keyFor(payloadType, null);
@@ -71,6 +90,11 @@ public final class EngineHintMetadata {
     }
     String[] segments = value.split(PARTITION, -1);
     if (segments.length < 3) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Engine hint value [%s] did not split into enough segments (expected >=3, got %d)",
+            value, segments.length);
+      }
       return Optional.empty();
     }
     String engineKind = null;
@@ -86,14 +110,53 @@ public final class EngineHintMetadata {
       }
     }
     if (engineKind == null || engineVersion == null || payloadValue == null) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf("Engine hint value [%s] missing required key-value segments", value);
+      }
       return Optional.empty();
     }
     try {
       byte[] payload = Base64.getDecoder().decode(payloadValue);
       return Optional.of(new DecodedValue(engineKind, engineVersion, payload));
     } catch (IllegalArgumentException e) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(e, "Engine hint value [%s] contains invalid base64 payload", value);
+      }
       return Optional.empty();
     }
+  }
+
+  public static Optional<HintValueHeader> peekHeader(String value) {
+    if (value == null || value.isBlank()) {
+      return Optional.empty();
+    }
+    String[] segments = value.split(PARTITION, -1);
+    if (segments.length < 2) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf("Engine hint value [%s] did not split into enough segments for header", value);
+      }
+      return Optional.empty();
+    }
+    String engineKind = null;
+    String engineVersion = null;
+    for (String segment : segments) {
+      if (segment.startsWith(ENGINE_KIND_KV)) {
+        engineKind = segment.substring(ENGINE_KIND_KV.length()).trim();
+      } else if (segment.startsWith(ENGINE_VERSION_KV)) {
+        engineVersion = segment.substring(ENGINE_VERSION_KV.length()).trim();
+      }
+      if (engineKind != null && engineVersion != null) {
+        break;
+      }
+    }
+    if (engineKind == null || engineVersion == null) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Engine hint value [%s] missing header segments (engineKind/engineVersion)", value);
+      }
+      return Optional.empty();
+    }
+    return Optional.of(new HintValueHeader(engineKind, engineVersion));
   }
 
   /**
@@ -125,9 +188,9 @@ public final class EngineHintMetadata {
    * whose hint type reports {@link HintKind#COLUMN}. The resulting map is nested so callers can
    * quickly look up the hints for a specific column ordinal.
    */
-  public static Map<String, Map<EngineHintKey, EngineHint>> columnHints(
+  public static Map<Long, Map<EngineHintKey, EngineHint>> columnHints(
       Map<String, String> properties) {
-    Map<String, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
+    Map<Long, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
     visitProperties(
         properties,
         (header, decoded) -> {
@@ -136,22 +199,30 @@ public final class EngineHintMetadata {
           }
           EngineHintKey hintKey =
               new EngineHintKey(decoded.engineKind(), decoded.engineVersion(), header.payloadType);
-          Map<String, String> meta = Map.of(COLUMN_HINT_COLUMN_KEY, header.columnId);
+          Long columnId = header.columnId;
+          if (columnId == null) {
+            return;
+          }
+          Map<String, String> meta = Map.of(COLUMN_HINT_COLUMN_KEY, Long.toString(columnId));
           hints
-              .computeIfAbsent(header.columnId, ignored -> new LinkedHashMap<>())
+              .computeIfAbsent(columnId, ignored -> new LinkedHashMap<>())
               .put(
                   hintKey,
                   new EngineHint(
                       header.payloadType, decoded.payload(), decoded.payload().length, meta));
         });
-    Map<String, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
-    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
+    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    for (Map.Entry<Long, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
       normalized.put(entry.getKey(), Map.copyOf(entry.getValue()));
     }
     return Map.copyOf(normalized);
   }
 
   public record DecodedValue(String engineKind, String engineVersion, byte[] payload) {}
+
+  public record HintValueHeader(String engineKind, String engineVersion) {}
+
+  public record HintKeyInfo(boolean relationHint, String payloadType, Long columnId) {}
 
   /**
    * Shared traversal that handles prefix parsing, base64 decoding, and dispatching.
@@ -190,6 +261,21 @@ public final class EngineHintMetadata {
     return Optional.empty();
   }
 
+  public static Optional<HintKeyInfo> parseHintKey(String key) {
+    if (key == null || key.isBlank()) {
+      return Optional.empty();
+    }
+    for (HintType type : HintType.values()) {
+      Optional<HintHeader> header = type.parse(key);
+      if (header.isPresent()) {
+        HintHeader h = header.get();
+        return Optional.of(
+            new HintKeyInfo(h.type.kind == HintKind.RELATION, h.payloadType, h.columnId));
+      }
+    }
+    return Optional.empty();
+  }
+
   /** Tracks whether a hint is stored at relation level or per-column. */
   private enum HintKind {
     RELATION,
@@ -215,15 +301,17 @@ public final class EngineHintMetadata {
         if (lastDot <= 0) {
           return Optional.empty();
         }
-        String payloadType = suffix.substring(0, lastDot);
+        String payloadType = normalizePayloadType(suffix.substring(0, lastDot));
         String ordinal = suffix.substring(lastDot + 1);
         if (payloadType.isBlank() || ordinal.isBlank()) {
           return Optional.empty();
         }
-        if (!ordinal.chars().allMatch(Character::isDigit)) {
+        try {
+          long columnId = Long.parseLong(ordinal);
+          return Optional.of(new HintHeader(this, payloadType, columnId));
+        } catch (NumberFormatException e) {
           return Optional.empty();
         }
-        return Optional.of(new HintHeader(this, payloadType, ordinal));
       }
     },
     RELATION("engine.hint.", HintKind.RELATION) {
@@ -232,11 +320,15 @@ public final class EngineHintMetadata {
         if (!key.startsWith(prefix)) {
           return Optional.empty();
         }
+        // Never treat column-hint keys as relation hints.
+        if (key.startsWith(COLUMN.prefix)) {
+          return Optional.empty();
+        }
         String suffix = key.substring(prefix.length());
         if (suffix.isBlank()) {
           return Optional.empty();
         }
-        return Optional.of(new HintHeader(this, suffix, null));
+        return Optional.of(new HintHeader(this, normalizePayloadType(suffix), null));
       }
     };
 
@@ -251,7 +343,7 @@ public final class EngineHintMetadata {
     abstract Optional<HintHeader> parse(String key);
 
     String keyFor(String payloadType, String ordinal) {
-      String normalizedPayload = Objects.requireNonNull(payloadType, "payloadType");
+      String normalizedPayload = normalizePayloadType(payloadType);
       if (kind == HintKind.COLUMN) {
         if (ordinal == null || ordinal.isBlank()) {
           throw new IllegalArgumentException("column ordinal required for column hints");
@@ -269,5 +361,5 @@ public final class EngineHintMetadata {
    * columnId is only populated for column hints, keeping the format compatible with the
    * `engine.hint.column...` naming scheme.
    */
-  private record HintHeader(HintType type, String payloadType, String columnId) {}
+  private record HintHeader(HintType type, String payloadType, Long columnId) {}
 }

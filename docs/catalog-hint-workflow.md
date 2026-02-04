@@ -67,20 +67,45 @@ The decorator is a pure sink: it never parses schemas nor recomputes defaults, s
 ## 5. Persisting engine hints
 
 Decorators persist every hint they emit so the metadata graph can replay it later. `FloeEngineSpecificDecorator`
-pulls the configured `EngineHintPersistence` implementation from `EngineHintPersistenceRegistry`
-(which `EngineHintPersistenceRegistrar` registers during service bootstrap) and writes each payload through
+receives the configured `EngineHintPersistence` bean via CDI injection (the service layer wires
+`EngineHintPersistenceImpl` as the implementation) and writes each payload through
 `EngineHintPersistenceImpl`. The implementation consults `EngineHintMetadata` to build the canonical
-`engine.hint.<payloadType>` or `engine.hint.column.<payloadType>.<attnum>` key, encodes `(engineKind,
+`engine.hint.<payloadType>` or `engine.hint.column.<payloadType>.<columnId>` key, encodes `(engineKind,
 engineVersion, payload)` as a semicolon-delimited string, and updates either the table or view repository only
-when the stored value actually changes. Because column hints carry the column ordinal in their key, the loader +
-scanner flows can distinguish columns that share payload types.
+when the stored value actually changes. Because column hints now carry the stable `columnId`, the loader +
+scanner flows can distinguish columns that share payload types even when new columns shift the ordinals.
+Payload types are normalized (trimmed and lower-cased) and limited to `[a-z0-9._+-]` to keep the key format
+stable; semicolons are forbidden because they would break the encoded `(engineKind;engineVersion;payload)` value.
 
 Those properties are loaded back into the `MetaGraph` because `NodeLoader` eventually calls
-`EngineHintMetadata.hintsFromProperties(...)` for every catalog, namespace, table, and view. Column hints are still stored
-with the same metadata format (`EngineHintMetadata.columnHints(...)` exists) but the current loader only feeds relation-level
-hints; the column pipeline will resume once we wire the decoding path through the metagraph models. After the relation
-hints are decoded, they reappear on subsequent loads even when no decorator runs, while the live request path still benefits
-from the `EngineHintManager` cache sitting on top of the provider pipeline.
+`EngineHintMetadata.hintsFromProperties(...)` and `EngineHintMetadata.columnHints(...)` for every catalog, namespace, table, and view, so both relation- and column-level hints reappear even when no decorator runs. Column payloads now key by the stable `columnId` from `SchemaColumn`/`ColumnIdAlgorithm` rather than the ordinal/attnum, so loaders and decorators agree on the identifier. The live request path still benefits from the `EngineHintManager` cache that sits atop the provider pipeline.
+
+Because persisted hints must stay in sync with the schema they describe, any update that touches the logical
+definition (e.g., `schema_json`, `upstream`, or any `upstream.*` field) now clears the `engine.hint.*` entries before the
+service writes the table/view metadata. That forces the next decorator run to treat the object as new, recomputing
+fresh OIDs and payloads rather than reusing stale values. These change paths cover the current schema API—the cleaner
+looks for the canonical schema payload (`schema_json`) and upstream definitions that drive column layout. If you add other
+schema-affecting paths (e.g., column lists, format changes, partitioning metadata), include them in the mask or invoke the
+clear helper directly. Likewise, upstream may contain metadata unrelated to column layout (credentials, location, notes), so
+the cleaner can regenerate hints even when only those fields change; refine the mask if you want to avoid that extra churn.
+
+### Compatibility & normalization guarantees
+
+`engine.hint.*` is persistent metadata, so its format is part of the public contract:
+
+* Relation keys use `engine.hint.<payloadType>` and column keys use `engine.hint.column.<payloadType>.<columnId>`.
+  Payload types are trimmed, lower-cased (Locale.ROOT), and restricted to the `[a-z0-9._+-]` character set, which makes
+  the stored keys effectively case-insensitive. Any deviation (e.g., a legacy builder that emits uppercase or extra
+  whitespace) is normalized when reading via `EngineHintMetadata`.
+* Column hints are scoped by the stable `columnId` instead of the ordinal (`attnum`), so adding/removing columns or
+  reordering them no longer shifts the stored key. The id comes from the catalog's `ColumnIdAlgorithm`, so it survives
+  common column mutations.
+* Changing a payload type (for example, introducing `floe.relation+proto.v2`) simply writes to a new key; the old
+  hint stays in metadata until the schema cleaner removes it, but the runtime flow couples new payloads to the new key,
+  so scanners/decorators never mix versions.
+* Schema updates that run through the cleaner (schema_json, upstream definitions) clear every `engine.hint.*` entry
+  before other metadata writes, ensuring stale hints don't survive even if the stored payloads drift away from the actual
+  schema.
 
 To keep hints alive even if someone else updates the catalog/column metadata concurrently, the persistence helpers
 now retry once with a fresh metadata snapshot when an optimistic update fails. That retry behaves exactly like a

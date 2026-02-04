@@ -17,6 +17,7 @@
 package ai.floedb.floecat.metagraph.hint;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -67,9 +68,9 @@ class EngineHintMetadataTest {
     Map<String, String> props = new LinkedHashMap<>();
     props.put(key, value);
 
-    Map<String, Map<EngineHintKey, EngineHint>> columnHints = EngineHintMetadata.columnHints(props);
-    assertThat(columnHints).containsKey("3");
-    Map<EngineHintKey, EngineHint> hintsForColumn = columnHints.get("3");
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints = EngineHintMetadata.columnHints(props);
+    assertThat(columnHints).containsKey(3L);
+    Map<EngineHintKey, EngineHint> hintsForColumn = columnHints.get(3L);
     EngineHintKey hintKey = new EngineHintKey(ENGINE_KIND, ENGINE_VERSION, "floe.column+proto");
     assertThat(hintsForColumn).containsKey(hintKey);
     assertThat(hintsForColumn.get(hintKey).payload()).containsExactly(payload);
@@ -85,12 +86,35 @@ class EngineHintMetadataTest {
     props.put(key1, EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, payload1));
     props.put(key2, EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, payload2));
 
-    Map<String, Map<EngineHintKey, EngineHint>> columnHints = EngineHintMetadata.columnHints(props);
-    assertThat(columnHints).containsKeys("4", "5");
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints = EngineHintMetadata.columnHints(props);
+    assertThat(columnHints).containsKeys(4L, 5L);
     EngineHintKey hintKey = new EngineHintKey(ENGINE_KIND, ENGINE_VERSION, "floe.column+proto");
-    assertThat(columnHints.get("4").get(hintKey).payload()).containsExactly(payload1);
-    assertThat(columnHints.get("5").get(hintKey).payload()).containsExactly(payload2);
-    assertThat(columnHints.get("5").get(hintKey).metadata())
+    assertThat(columnHints.get(4L).get(hintKey).payload()).containsExactly(payload1);
+    assertThat(columnHints.get(5L).get(hintKey).payload()).containsExactly(payload2);
+    assertThat(columnHints.get(5L).get(hintKey).metadata())
         .containsEntry(EngineHintMetadata.COLUMN_HINT_COLUMN_KEY, "5");
+  }
+
+  @Test
+  void parseHintKey_defensiveForMalformedColumnSuffix() {
+    assertThat(EngineHintMetadata.parseHintKey("engine.hint.column.floe.column+proto.NOT_AN_INT"))
+        .isEmpty();
+    EngineHintMetadata.HintKeyInfo info =
+        EngineHintMetadata.parseHintKey("engine.hint.column.floe.column+proto.3").orElseThrow();
+    assertThat(info.relationHint()).isFalse();
+    assertThat(info.columnId()).isEqualTo(3L);
+  }
+
+  @Test
+  void payloadTypeNormalizationLowercasesAndAllowsDots() {
+    String key = EngineHintMetadata.tableHintKey("FLOE.RELATION+PROTO");
+    assertThat(key).contains("floe.relation+proto");
+    assertThat(key).doesNotContain("FLOE");
+  }
+
+  @Test
+  void payloadTypePatternRejectsIllegalCharacters() {
+    assertThatIllegalArgumentException()
+        .isThrownBy(() -> EngineHintMetadata.tableHintKey("bad;payload"));
   }
 }

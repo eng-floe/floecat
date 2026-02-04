@@ -24,7 +24,7 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
-import ai.floedb.floecat.metagraph.hint.EngineHintPersistenceRegistry;
+import ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -44,18 +44,18 @@ import org.jboss.logging.Logger;
 /** Decorator that attaches Floe engine-specific column metadata. */
 public final class FloeEngineSpecificDecorator implements EngineMetadataDecorator {
 
-  private static final String COLUMN_HINTS_KEY =
-      "ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator.columnHints";
-
   private static final Logger LOG = Logger.getLogger(FloeEngineSpecificDecorator.class);
   private static final String RESOLVER_KEY = "floe.typeResolver";
   private static final String RELATION_OID_KEY = "floe.relOid";
 
-  public static final FloeEngineSpecificDecorator INSTANCE = new FloeEngineSpecificDecorator();
-
   private final EngineTypeMapper typeMapper = new FloeTypeMapper();
+  private static final String COLUMN_HINTS_KEY =
+      "ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator.columnHints";
+  private final EngineHintPersistence persistence;
 
-  private FloeEngineSpecificDecorator() {}
+  public FloeEngineSpecificDecorator(EngineHintPersistence persistence) {
+    this.persistence = persistence == null ? EngineHintPersistence.NOOP : persistence;
+  }
 
   @Override
   public void decorateColumn(EngineContext engineContext, ColumnDecoration column) {
@@ -91,7 +91,12 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
               schema,
               column.logicalType());
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
-      storeColumnHint(relation, column.id(), FloePayloads.COLUMN.type(), attribute.toByteArray());
+      bufferColumnHint(
+          relation,
+          relation.relationId(),
+          column.id(),
+          FloePayloads.COLUMN.type(),
+          attribute.toByteArray());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -127,7 +132,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
           engineContext.engineKind(),
           engineContext.engineVersion());
     } finally {
-      flushColumnHints(engineContext, relation);
+      flushColumnHints(engineContext, relation, relation.relationId());
     }
   }
 
@@ -207,7 +212,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         .build();
   }
 
-  private static void persistRelationHint(
+  private void persistRelationHint(
       EngineContext ctx,
       ResourceId relationId,
       FloeRelationSpecific relationSpecific,
@@ -215,9 +220,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     persistHint(ctx, relationId, relationSpecific.toByteArray(), payloadType);
   }
 
-  private static void persistHint(
+  private void persistHint(
       EngineContext ctx, ResourceId relationId, byte[] payload, String payloadType) {
-    EngineHintPersistence persistence = EngineHintPersistenceRegistry.get();
     if (persistence == null || persistence == EngineHintPersistence.NOOP) {
       return;
     }
@@ -229,42 +233,49 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     }
   }
 
-  private static void storeColumnHint(
-      RelationDecoration relation, long column_id, String payloadType, byte[] payload) {
+  private void bufferColumnHint(
+      RelationDecoration relation,
+      ResourceId relationId,
+      long columnId,
+      String payloadType,
+      byte[] payload) {
+    if (relationId == null || columnId <= 0) {
+      if (columnId <= 0 && LOG.isDebugEnabled()) {
+        LOG.debugf("Skipping column hint for %s: column id missing or zero", relationId);
+      }
+      return;
+    }
     @SuppressWarnings("unchecked")
-    List<EngineHintPersistence.ColumnHint> hints =
-        (List<EngineHintPersistence.ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
+    List<ColumnHint> hints = (List<ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
     if (hints == null) {
       hints = new ArrayList<>();
       relation.attribute(COLUMN_HINTS_KEY, hints);
     }
-    hints.add(new EngineHintPersistence.ColumnHint(payloadType, column_id, payload));
+    hints.add(new ColumnHint(payloadType, columnId, payload));
   }
 
-  private static void flushColumnHints(EngineContext ctx, RelationDecoration relation) {
-    List<EngineHintPersistence.ColumnHint> hints = columnHints(relation);
-    if (hints.isEmpty()) {
+  private void flushColumnHints(
+      EngineContext ctx, RelationDecoration relation, ResourceId relationId) {
+    if (relationId == null) {
       return;
     }
-    persistColumnHints(ctx, relation.relationId(), hints);
-    relation.attribute(COLUMN_HINTS_KEY, null);
-  }
-
-  private static List<EngineHintPersistence.ColumnHint> columnHints(RelationDecoration relation) {
     @SuppressWarnings("unchecked")
     List<EngineHintPersistence.ColumnHint> hints =
         (List<EngineHintPersistence.ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
-    return hints == null ? List.of() : hints;
+    if (hints == null || hints.isEmpty()) {
+      return;
+    }
+    persistColumnHints(ctx, relationId, hints);
+    relation.attribute(COLUMN_HINTS_KEY, null);
   }
 
-  private static void persistColumnHints(
+  private void persistColumnHints(
       EngineContext ctx,
       ResourceId relationId,
       List<EngineHintPersistence.ColumnHint> columnHints) {
     if (columnHints == null || columnHints.isEmpty()) {
       return;
     }
-    EngineHintPersistence persistence = EngineHintPersistenceRegistry.get();
     if (persistence == null || persistence == EngineHintPersistence.NOOP) {
       return;
     }

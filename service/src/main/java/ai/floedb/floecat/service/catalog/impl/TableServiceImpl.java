@@ -42,6 +42,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
+import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -88,6 +89,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
@@ -583,6 +585,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
+                  if (hintCleaner.shouldClearHints(mask)) {
+                    Table.Builder builder = desired.toBuilder();
+                    hintCleaner.cleanTableHints(builder, mask, current, builder.build());
+                    desired = builder.build();
+                  }
 
                   if (desired.equals(current)) {
                     var metaNoop = tableRepo.metaFor(tableId);

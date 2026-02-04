@@ -17,10 +17,10 @@
 package ai.floedb.floecat.extensions.floedb.utils;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.extensions.floedb.engine.oid.EngineOidGeneratorHolder;
+import ai.floedb.floecat.extensions.floedb.engine.oid.EngineOidGeneratorProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
-import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -93,17 +93,17 @@ public final class ScannerUtils {
   }
 
   /**
-   * Decode a per-column engine hint payload stored on a {@link TableNode}.
+   * Decode a per-column engine hint payload stored on a {@link RelationNode}.
    *
    * <p>The overlay must resolve the owning table so the column-specific hint map can be accessed.
    */
   public static <T> Optional<T> columnPayload(
       CatalogOverlay overlay,
-      ResourceId tableId,
+      ResourceId relationId,
       long columnId,
       PayloadDescriptor<T> descriptor,
       EngineContext engineContext) {
-    return columnHint(overlay, tableId, columnId, engineContext, descriptor.type())
+    return columnHint(overlay, relationId, columnId, engineContext, descriptor.type())
         .flatMap(
             hint -> {
               try {
@@ -116,30 +116,30 @@ public final class ScannerUtils {
 
   public static <T> Optional<T> columnPayload(
       SystemObjectScanContext ctx,
-      ResourceId tableId,
+      ResourceId relationId,
       long columnId,
       PayloadDescriptor<T> descriptor) {
     if (ctx == null) {
       return Optional.empty();
     }
-    return columnPayload(ctx.overlay(), tableId, columnId, descriptor, ctx.engineContext());
+    return columnPayload(ctx.overlay(), relationId, columnId, descriptor, ctx.engineContext());
   }
 
   private static Optional<EngineHint> columnHint(
       CatalogOverlay overlay,
-      ResourceId tableId,
+      ResourceId relationId,
       long columnId,
       EngineContext engineContext,
       String payloadType) {
-    if (overlay == null || tableId == null) {
+    if (overlay == null || relationId == null) {
       return Optional.empty();
     }
     EngineContext ctx = engineContext == null ? EngineContext.empty() : engineContext;
     return overlay
-        .resolve(tableId)
-        .filter(TableNode.class::isInstance)
-        .map(TableNode.class::cast)
-        .map(table -> table.columnHints().get(columnId))
+        .resolve(relationId)
+        .filter(RelationNode.class::isInstance)
+        .map(RelationNode.class::cast)
+        .map(relation -> relation.columnHints().get(columnId))
         .filter(Objects::nonNull)
         .map(
             hints ->
@@ -182,7 +182,7 @@ public final class ScannerUtils {
    * unrelated hints may collide.
    */
   public static int fallbackOid(ResourceId id, String payloadType) {
-    return EngineOidGeneratorHolder.instance().generate(id, payloadType);
+    return EngineOidGeneratorProvider.getInstance().generate(id, payloadType);
   }
 
   /** Default system owner (postgres-compatible) */

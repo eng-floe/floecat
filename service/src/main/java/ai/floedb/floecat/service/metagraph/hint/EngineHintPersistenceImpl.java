@@ -112,38 +112,74 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
       String engineKind,
       String engineVersion,
       List<EngineHintPersistence.ColumnHint> hints) {
-    if (relationId == null
-        || hints == null
-        || hints.isEmpty()
-        || relationId.getKind() != ResourceKind.RK_TABLE) {
+    if (relationId == null || hints == null || hints.isEmpty()) {
       return;
     }
-    persistTable(
-        relationId,
-        builder -> {
-          Map<String, byte[]> deduped = new LinkedHashMap<>();
-          for (EngineHintPersistence.ColumnHint hint : hints) {
-            String key = EngineHintMetadata.columnHintKey(hint.payloadType(), hint.columnId());
-            deduped.put(key, hint.payload());
-          }
-          boolean changed = false;
-          for (Map.Entry<String, byte[]> entry : deduped.entrySet()) {
-            String key = entry.getKey();
-            byte[] payload = entry.getValue();
-            String encoded = EngineHintMetadata.encodeValue(engineKind, engineVersion, payload);
-            String current = builder.getPropertiesMap().get(key);
-            if (encoded.equals(current)) {
-              continue;
-            }
-            builder.putProperties(key, encoded);
-            changed = true;
-          }
-          return changed;
-        });
+    Map<String, EngineHintPersistence.ColumnHint> deduped = deduplicateColumnHints(hints);
+    if (deduped.isEmpty()) {
+      return;
+    }
+    ResourceKind kind = relationId.getKind();
+    if (kind == ResourceKind.RK_TABLE) {
+      persistTable(
+          relationId,
+          builder ->
+              applyColumnHints(
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
+      return;
+    }
+    if (kind == ResourceKind.RK_VIEW) {
+      persistView(
+          relationId,
+          builder ->
+              applyColumnHints(
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
+      return;
+    }
+  }
+
+  private boolean applyColumnHints(
+      Map<String, EngineHintPersistence.ColumnHint> deduped,
+      Map<String, String> properties,
+      java.util.function.BiConsumer<String, String> setter,
+      String engineKind,
+      String engineVersion) {
+    boolean changed = false;
+    for (EngineHintPersistence.ColumnHint hint : deduped.values()) {
+      String key = EngineHintMetadata.columnHintKey(hint.payloadType(), hint.columnId());
+      byte[] payload = hint.payload();
+      String encoded = EngineHintMetadata.encodeValue(engineKind, engineVersion, payload);
+      String current = properties.get(key);
+      if (encoded.equals(current)) {
+        continue;
+      }
+      setter.accept(key, encoded);
+      changed = true;
+    }
+    return changed;
+  }
+
+  static Map<String, EngineHintPersistence.ColumnHint> deduplicateColumnHints(
+      List<EngineHintPersistence.ColumnHint> hints) {
+    Map<String, EngineHintPersistence.ColumnHint> deduped = new LinkedHashMap<>();
+    for (EngineHintPersistence.ColumnHint hint : hints) {
+      String key = EngineHintMetadata.columnHintKey(hint.payloadType(), hint.columnId());
+      deduped.put(key, hint);
+    }
+    return deduped;
   }
 
   private void persistTable(ResourceId tableId, Function<Table.Builder, Boolean> modifier) {
     final int maxAttempts = 2;
+    boolean attempted = false;
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         Optional<Table> tableOpt = tableRepository.getById(tableId);
@@ -155,6 +191,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         if (!Boolean.TRUE.equals(changed)) {
           return;
         }
+        attempted = true;
         long version = tableRepository.metaForSafe(tableId).getPointerVersion();
         if (tableRepository.update(builder.build(), version)) {
           return;
@@ -170,10 +207,14 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         return;
       }
     }
+    if (attempted) {
+      LOG.warnf("Could not persist engine hint for %s after %d attempts", tableId, maxAttempts);
+    }
   }
 
   private void persistView(ResourceId viewId, Function<View.Builder, Boolean> modifier) {
     final int maxAttempts = 2;
+    boolean attempted = false;
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         Optional<View> viewOpt = viewRepository.getById(viewId);
@@ -185,6 +226,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         if (!Boolean.TRUE.equals(changed)) {
           return;
         }
+        attempted = true;
         long version = viewRepository.metaForSafe(viewId).getPointerVersion();
         if (viewRepository.update(builder.build(), version)) {
           return;
@@ -199,6 +241,9 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         LOG.debugf(e, "Failed to persist engine hint for %s", viewId);
         return;
       }
+    }
+    if (attempted) {
+      LOG.warnf("Could not persist engine hint for %s after %d attempts", viewId, maxAttempts);
     }
   }
 }

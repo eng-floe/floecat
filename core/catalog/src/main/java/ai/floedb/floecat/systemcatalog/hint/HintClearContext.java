@@ -14,25 +14,17 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.metagraph.hint;
+package ai.floedb.floecat.systemcatalog.hint;
 
-import ai.floedb.floecat.metagraph.hint.EngineHintPersistenceRegistry;
-import jakarta.annotation.PostConstruct;
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import com.google.protobuf.FieldMask;
 
-@ApplicationScoped
-public class EngineHintPersistenceRegistrar {
-
-  private final EngineHintPersistenceImpl persistence;
-
-  @Inject
-  public EngineHintPersistenceRegistrar(EngineHintPersistenceImpl persistence) {
-    this.persistence = persistence;
-  }
-
-  @PostConstruct
-  void register() {
-    EngineHintPersistenceRegistry.register(persistence);
-  }
-}
+public record HintClearContext(
+    ResourceId resourceId,
+    FieldMask mask,
+    Table beforeTable,
+    Table afterTable,
+    View beforeView,
+    View afterView) {}
