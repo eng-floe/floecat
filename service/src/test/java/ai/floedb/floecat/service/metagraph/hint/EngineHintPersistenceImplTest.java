@@ -131,12 +131,12 @@ class EngineHintPersistenceImplTest {
         TABLE_ID,
         ENGINE_KIND,
         ENGINE_VERSION,
-        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5, PAYLOAD)));
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
 
     ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
     verify(tableRepository).update(tableCaptor.capture(), eq(77L));
     Table updated = tableCaptor.getValue();
-    String key = EngineHintMetadata.columnHintKey("floe.column+proto", 5);
+    String key = EngineHintMetadata.columnHintKey("floe.column+proto", 5L);
     assertThat(updated.getPropertiesMap()).containsEntry(key, encode());
   }
 

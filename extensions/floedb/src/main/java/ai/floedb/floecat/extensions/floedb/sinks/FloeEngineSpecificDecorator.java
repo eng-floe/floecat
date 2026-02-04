@@ -83,10 +83,15 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       int relOid = relationOid(relation);
       FloeColumnSpecific attribute =
           FloeHintResolver.columnSpecific(
-              context, resolver, relOid, column.ordinal(), schema, column.logicalType());
+              context,
+              resolver,
+              relation.relationId(),
+              relOid,
+              column.ordinal(),
+              schema,
+              column.logicalType());
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
-      storeColumnHint(
-          relation, column.ordinal(), FloePayloads.COLUMN.type(), attribute.toByteArray());
+      storeColumnHint(relation, column.id(), FloePayloads.COLUMN.type(), attribute.toByteArray());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -225,7 +230,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
   }
 
   private static void storeColumnHint(
-      RelationDecoration relation, int ordinal, String payloadType, byte[] payload) {
+      RelationDecoration relation, long column_id, String payloadType, byte[] payload) {
     @SuppressWarnings("unchecked")
     List<EngineHintPersistence.ColumnHint> hints =
         (List<EngineHintPersistence.ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
@@ -233,7 +238,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       hints = new ArrayList<>();
       relation.attribute(COLUMN_HINTS_KEY, hints);
     }
-    hints.add(new EngineHintPersistence.ColumnHint(payloadType, ordinal, payload));
+    hints.add(new EngineHintPersistence.ColumnHint(payloadType, column_id, payload));
   }
 
   private static void flushColumnHints(EngineContext ctx, RelationDecoration relation) {

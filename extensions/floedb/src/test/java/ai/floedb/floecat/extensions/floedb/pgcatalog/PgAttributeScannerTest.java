@@ -269,7 +269,7 @@ final class PgAttributeScannerTest {
   private static TableNode table(
       String name,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> hints) {
     ResourceId id =
         ResourceId.newBuilder()

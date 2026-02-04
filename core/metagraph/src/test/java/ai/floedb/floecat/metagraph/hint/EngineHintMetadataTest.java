@@ -59,9 +59,9 @@ class EngineHintMetadataTest {
   }
 
   @Test
-  void columnHintsGroupByOrdinal() {
+  void columnHintsGroupById() {
     byte[] payload = new byte[] {9, 10};
-    String key = EngineHintMetadata.columnHintKey("floe.column+proto", 3);
+    String key = EngineHintMetadata.columnHintKey("floe.column+proto", 3L);
     String value = EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, payload);
 
     Map<String, String> props = new LinkedHashMap<>();
@@ -73,5 +73,24 @@ class EngineHintMetadataTest {
     EngineHintKey hintKey = new EngineHintKey(ENGINE_KIND, ENGINE_VERSION, "floe.column+proto");
     assertThat(hintsForColumn).containsKey(hintKey);
     assertThat(hintsForColumn.get(hintKey).payload()).containsExactly(payload);
+  }
+
+  @Test
+  void columnHintsKeepAllIdsWithMetadata() {
+    byte[] payload1 = new byte[] {9, 10};
+    byte[] payload2 = new byte[] {11, 12};
+    String key1 = EngineHintMetadata.columnHintKey("floe.column+proto", 4L);
+    String key2 = EngineHintMetadata.columnHintKey("floe.column+proto", 5L);
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put(key1, EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, payload1));
+    props.put(key2, EngineHintMetadata.encodeValue(ENGINE_KIND, ENGINE_VERSION, payload2));
+
+    Map<String, Map<EngineHintKey, EngineHint>> columnHints = EngineHintMetadata.columnHints(props);
+    assertThat(columnHints).containsKeys("4", "5");
+    EngineHintKey hintKey = new EngineHintKey(ENGINE_KIND, ENGINE_VERSION, "floe.column+proto");
+    assertThat(columnHints.get("4").get(hintKey).payload()).containsExactly(payload1);
+    assertThat(columnHints.get("5").get(hintKey).payload()).containsExactly(payload2);
+    assertThat(columnHints.get("5").get(hintKey).metadata())
+        .containsEntry(EngineHintMetadata.COLUMN_HINT_COLUMN_KEY, "5");
   }
 }

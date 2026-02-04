@@ -80,7 +80,8 @@ class SystemObjectScanContextTest {
             Optional.empty(), // resolvedSnapshots
             Optional.empty(), // statsSummary
             List.of(), // dependentViews
-            Map.of()); // engineHints
+            Map.of(), // engineHints
+            Map.of()); // columnHints
 
     TestCatalogOverlay view = new TestCatalogOverlay();
     view.addNode(node);
@@ -115,7 +116,8 @@ class SystemObjectScanContextTest {
             Optional.empty(), // resolvedSnapshots
             Optional.empty(), // statsSummary
             List.of(), // dependentViews
-            Map.of()); // engineHints
+            Map.of(), // engineHints
+            Map.of()); // columnHints
 
     TestCatalogOverlay view = new TestCatalogOverlay();
     view.addNode(node);
@@ -174,6 +176,7 @@ class SystemObjectScanContextTest {
             Optional.empty(),
             Optional.empty(),
             List.of(),
+            Map.of(),
             Map.of());
 
     TestCatalogOverlay view = new TestCatalogOverlay();

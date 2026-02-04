@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -48,7 +49,8 @@ public record UserTableNode(
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
     Optional<TableStatsSummary> statsSummary,
     List<ResourceId> dependentViews,
-    Map<EngineHintKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints,
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints)
     implements TableNode {
 
   public UserTableNode {
@@ -60,10 +62,30 @@ public record UserTableNode(
     statsSummary = statsSummary == null ? Optional.empty() : statsSummary;
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+    columnHints = normalizeColumnHints(columnHints);
+  }
+
+  @Override
+  public Map<Long, Map<EngineHintKey, EngineHint>> columnHints() {
+    return columnHints;
   }
 
   @Override
   public GraphNodeOrigin origin() {
     return GraphNodeOrigin.USER;
+  }
+
+  private static Map<Long, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
+      Map<Long, Map<EngineHintKey, EngineHint>> hints) {
+    if (hints == null || hints.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    for (Map.Entry<Long, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
+      Map<EngineHintKey, EngineHint> value =
+          entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
+      normalized.put(entry.getKey(), value);
+    }
+    return Map.copyOf(normalized);
   }
 }

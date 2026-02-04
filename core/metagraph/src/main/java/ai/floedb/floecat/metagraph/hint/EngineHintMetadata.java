@@ -29,8 +29,8 @@ import java.util.Optional;
  *
  * <p>Properties follow the pattern: `engine.hint.<payloadType> =
  * engineKind=<engineKind>;engineVersion=<engineVersion>;payload=<base64>` for relation-level hints
- * and `engine.hint.column.<payloadType>.<attnum>` for column hints. `encodeValue` centralizes this
- * format so `persistHint`/`NodeLoader` can read/write consistently.
+ * and `engine.hint.column.<payloadType>.<columnId>` for column hints. `encodeValue` centralizes
+ * this format so `persistHint`/`NodeLoader` can read/write consistently.
  */
 public final class EngineHintMetadata {
 
@@ -38,6 +38,7 @@ public final class EngineHintMetadata {
   private static final String ENGINE_KIND_KV = "engineKind=";
   private static final String ENGINE_VERSION_KV = "engineVersion=";
   private static final String PAYLOAD_KV = "payload=";
+  public static final String COLUMN_HINT_COLUMN_KEY = "columnId";
 
   private EngineHintMetadata() {}
 
@@ -45,8 +46,8 @@ public final class EngineHintMetadata {
     return HintType.RELATION.keyFor(payloadType, null);
   }
 
-  public static String columnHintKey(String payloadType, int attnum) {
-    return HintType.COLUMN.keyFor(payloadType, Integer.toString(attnum));
+  public static String columnHintKey(String payloadType, long columnId) {
+    return HintType.COLUMN.keyFor(payloadType, Long.toString(columnId));
   }
 
   public static String encodeValue(String engineKind, String engineVersion, byte[] payload) {
@@ -114,11 +115,11 @@ public final class EngineHintMetadata {
               new EngineHintKey(decoded.engineKind(), decoded.engineVersion(), header.payloadType);
           hints.put(hintKey, new EngineHint(header.payloadType, decoded.payload()));
         });
-    return hints;
+    return Map.copyOf(hints);
   }
 
   /**
-   * Extracts column hints grouped by attribute ordinal.
+   * Extracts column hints grouped by column id.
    *
    * <p>We again share the decoding logic through {@link #visitProperties} and only process keys
    * whose hint type reports {@link HintKind#COLUMN}. The resulting map is nested so callers can
@@ -135,11 +136,19 @@ public final class EngineHintMetadata {
           }
           EngineHintKey hintKey =
               new EngineHintKey(decoded.engineKind(), decoded.engineVersion(), header.payloadType);
+          Map<String, String> meta = Map.of(COLUMN_HINT_COLUMN_KEY, header.columnId);
           hints
-              .computeIfAbsent(header.columnOrdinal, ignored -> new LinkedHashMap<>())
-              .put(hintKey, new EngineHint(header.payloadType, decoded.payload()));
+              .computeIfAbsent(header.columnId, ignored -> new LinkedHashMap<>())
+              .put(
+                  hintKey,
+                  new EngineHint(
+                      header.payloadType, decoded.payload(), decoded.payload().length, meta));
         });
-    return hints;
+    Map<String, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
+      normalized.put(entry.getKey(), Map.copyOf(entry.getValue()));
+    }
+    return Map.copyOf(normalized);
   }
 
   public record DecodedValue(String engineKind, String engineVersion, byte[] payload) {}
@@ -257,8 +266,8 @@ public final class EngineHintMetadata {
    * Describes the parsed header of a property key.
    *
    * <p>The payloadType is the canonical descriptor that gets stored after the prefix, and the
-   * columnOrdinal is only populated for column hints, keeping the format compatible with the
+   * columnId is only populated for column hints, keeping the format compatible with the
    * `engine.hint.column...` naming scheme.
    */
-  private record HintHeader(HintType type, String payloadType, String columnOrdinal) {}
+  private record HintHeader(HintType type, String payloadType, String columnId) {}
 }

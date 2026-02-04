@@ -94,7 +94,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
   @Override
   public void persistColumnHint(
       ResourceId relationId,
-      int attnum,
+      long columnId,
       String payloadType,
       String engineKind,
       String engineVersion,
@@ -103,7 +103,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         relationId,
         engineKind,
         engineVersion,
-        List.of(new EngineHintPersistence.ColumnHint(payloadType, attnum, payload)));
+        List.of(new EngineHintPersistence.ColumnHint(payloadType, columnId, payload)));
   }
 
   @Override
@@ -123,7 +123,7 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
         builder -> {
           Map<String, byte[]> deduped = new LinkedHashMap<>();
           for (EngineHintPersistence.ColumnHint hint : hints) {
-            String key = EngineHintMetadata.columnHintKey(hint.payloadType(), hint.attnum());
+            String key = EngineHintMetadata.columnHintKey(hint.payloadType(), hint.columnId());
             deduped.put(key, hint.payload());
           }
           boolean changed = false;

@@ -37,7 +37,7 @@ public sealed interface SystemTableNode extends TableNode
 
   List<SchemaColumn> columns();
 
-  Map<String, Map<EngineHintKey, EngineHint>> columnHints();
+  Map<Long, Map<EngineHintKey, EngineHint>> columnHints();
 
   Map<EngineHintKey, EngineHint> engineHints();
 
@@ -51,14 +51,14 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       String scannerId)
       implements SystemTableNode {
 
     public FloeCatSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
+      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
       engineHints = normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       scannerId = scannerId == null ? "" : scannerId;
@@ -83,14 +83,14 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       String storagePath)
       implements SystemTableNode {
 
     public StorageSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
+      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
       engineHints = normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       storagePath = storagePath == null ? "" : storagePath;
@@ -115,13 +115,13 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints)
       implements SystemTableNode {
 
     public EngineSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
+      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
       engineHints = normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
@@ -145,14 +145,14 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       TableBackendKind backendKind)
       implements SystemTableNode {
 
     public GenericSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
+      columnHints = columnHints == null ? Map.of() : Map.copyOf(columnHints);
       engineHints = normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
@@ -163,16 +163,20 @@ public sealed interface SystemTableNode extends TableNode
     }
   }
 
-  static Map<String, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
+  static Map<Long, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
       Map<String, Map<EngineHintKey, EngineHint>> hints) {
     if (hints == null || hints.isEmpty()) {
       return Map.of();
     }
-    Map<String, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
     for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
-      Map<EngineHintKey, EngineHint> value =
-          entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
-      normalized.put(entry.getKey(), value);
+      try {
+        long columnId = Long.parseLong(entry.getKey());
+        Map<EngineHintKey, EngineHint> value =
+            entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
+        normalized.put(columnId, value);
+      } catch (NumberFormatException ignored) {
+      }
     }
     return Map.copyOf(normalized);
   }

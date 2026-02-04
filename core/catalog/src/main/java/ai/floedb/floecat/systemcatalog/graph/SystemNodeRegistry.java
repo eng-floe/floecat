@@ -267,6 +267,8 @@ public class SystemNodeRegistry {
       ResourceId tableId = resourceId(normalizedKind, table);
       Map<String, Map<EngineHintKey, EngineHint>> columnHints =
           buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
+      Map<Long, Map<EngineHintKey, EngineHint>> normalizedColumnHints =
+          SystemTableNode.normalizeColumnHints(columnHints);
       List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
       Map<EngineHintKey, EngineHint> tableHints =
           EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.engineSpecific());
@@ -282,7 +284,7 @@ public class SystemNodeRegistry {
                     table.displayName(),
                     namespaceId.get(),
                     tableColumns,
-                    columnHints,
+                    normalizedColumnHints,
                     tableHints,
                     table.scannerId());
         case TABLE_BACKEND_KIND_STORAGE ->
@@ -295,7 +297,7 @@ public class SystemNodeRegistry {
                     table.displayName(),
                     namespaceId.get(),
                     tableColumns,
-                    columnHints,
+                    normalizedColumnHints,
                     tableHints,
                     table.storagePath());
         case TABLE_BACKEND_KIND_ENGINE ->
@@ -308,7 +310,7 @@ public class SystemNodeRegistry {
                     table.displayName(),
                     namespaceId.get(),
                     tableColumns,
-                    columnHints,
+                    normalizedColumnHints,
                     tableHints);
         default ->
             node =
@@ -320,7 +322,7 @@ public class SystemNodeRegistry {
                     table.displayName(),
                     namespaceId.get(),
                     tableColumns,
-                    columnHints,
+                    normalizedColumnHints,
                     tableHints,
                     table.backendKind());
       }

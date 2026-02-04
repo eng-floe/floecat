@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
@@ -104,7 +106,8 @@ public final class PgAttributeScanner implements SystemObjectScanner {
 
     AtomicInteger attnum = new AtomicInteger(1);
 
-    return columns.stream().map(col -> row(ctx, resolver, relOid, attnum.getAndIncrement(), col));
+    return columns.stream()
+        .map(col -> row(ctx, resolver, table.id(), relOid, attnum.getAndIncrement(), col));
   }
 
   // ----------------------------------------------------------------------
@@ -114,13 +117,17 @@ public final class PgAttributeScanner implements SystemObjectScanner {
   private SystemObjectRow row(
       SystemObjectScanContext ctx,
       TypeResolver resolver,
+      ResourceId tableId,
       int relOid,
       int attnum,
       SchemaColumn column) {
     LogicalType logicalType = FloeHintResolver.parseLogicalType(column);
     FloeHintResolver.ColumnMetadata metadata =
         FloeHintResolver.columnMetadata(ctx, resolver, column, logicalType);
-    FloeColumnSpecific attribute = FloeHintResolver.buildColumnSpecific(column, attnum, metadata);
+    Optional<FloeColumnSpecific> persisted =
+        ScannerUtils.columnPayload(ctx, tableId, column.getId(), FloePayloads.COLUMN);
+    FloeColumnSpecific attribute =
+        persisted.orElseGet(() -> FloeHintResolver.buildColumnSpecific(column, attnum, metadata));
     return new SystemObjectRow(
         new Object[] {
           relOid,

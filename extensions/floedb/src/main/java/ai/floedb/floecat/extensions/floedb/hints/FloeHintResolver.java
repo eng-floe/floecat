@@ -91,10 +91,19 @@ public final class FloeHintResolver {
   public static FloeColumnSpecific columnSpecific(
       MetadataResolutionContext ctx,
       TypeResolver resolver,
+      ResourceId tableId,
       int relationOid,
       int attnum,
       SchemaColumn column,
       LogicalType logicalType) {
+    if (ctx != null && tableId != null) {
+      Optional<FloeColumnSpecific> stored =
+          ScannerUtils.columnPayload(
+              ctx.overlay(), tableId, column.getId(), COLUMN, ctx.engineContext());
+      if (stored.isPresent()) {
+        return stored.get();
+      }
+    }
     ColumnMetadata metadata = columnMetadata(ctx, resolver, column, logicalType);
     return buildColumnSpecific(column, attnum, metadata);
   }

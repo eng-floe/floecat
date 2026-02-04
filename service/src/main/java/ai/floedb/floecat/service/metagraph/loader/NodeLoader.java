@@ -45,6 +45,7 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -171,7 +172,8 @@ public class NodeLoader {
         Optional.empty(),
         Optional.empty(),
         List.of(),
-        loadEngineHints(table.getPropertiesMap()));
+        loadEngineHints(table.getPropertiesMap()),
+        loadColumnHints(table.getPropertiesMap()));
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
@@ -195,6 +197,22 @@ public class NodeLoader {
 
   private static Map<EngineHintKey, EngineHint> loadEngineHints(Map<String, String> properties) {
     return EngineHintMetadata.hintsFromProperties(properties);
+  }
+
+  static Map<Long, Map<EngineHintKey, EngineHint>> loadColumnHints(Map<String, String> properties) {
+    Map<String, Map<EngineHintKey, EngineHint>> hints = EngineHintMetadata.columnHints(properties);
+    if (hints.isEmpty()) {
+      return Map.of();
+    }
+    Map<Long, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
+    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
+      try {
+        long columnId = Long.parseLong(entry.getKey());
+        normalized.put(columnId, Map.copyOf(entry.getValue()));
+      } catch (NumberFormatException ignored) {
+      }
+    }
+    return Map.copyOf(normalized);
   }
 
   private static Instant toInstant(Timestamp ts) {

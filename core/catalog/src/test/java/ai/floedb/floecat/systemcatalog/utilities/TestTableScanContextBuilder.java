@@ -110,6 +110,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
             Optional.empty(),
             Optional.empty(),
             List.of(),
+            Map.of(),
             Map.of());
 
     overlay.addRelation(ns.id(), table);

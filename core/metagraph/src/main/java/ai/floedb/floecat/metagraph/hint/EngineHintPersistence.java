@@ -35,7 +35,7 @@ public interface EngineHintPersistence {
         @Override
         public void persistColumnHint(
             ResourceId relationId,
-            int attnum,
+            long columnId,
             String payloadType,
             String engineKind,
             String engineVersion,
@@ -58,7 +58,7 @@ public interface EngineHintPersistence {
 
   void persistColumnHint(
       ResourceId relationId,
-      int attnum,
+      long columnId,
       String payloadType,
       String engineKind,
       String engineVersion,
@@ -71,9 +71,14 @@ public interface EngineHintPersistence {
     }
     for (ColumnHint hint : hints) {
       persistColumnHint(
-          relationId, hint.attnum(), hint.payloadType(), engineKind, engineVersion, hint.payload());
+          relationId,
+          hint.columnId(),
+          hint.payloadType(),
+          engineKind,
+          engineVersion,
+          hint.payload());
     }
   }
 
-  record ColumnHint(String payloadType, int attnum, byte[] payload) {}
+  record ColumnHint(String payloadType, long columnId, byte[] payload) {}
 }
