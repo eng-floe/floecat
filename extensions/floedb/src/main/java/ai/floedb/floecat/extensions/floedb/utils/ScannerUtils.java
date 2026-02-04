@@ -17,6 +17,7 @@
 package ai.floedb.floecat.extensions.floedb.utils;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.extensions.floedb.engine.oid.EngineOidGeneratorHolder;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -46,7 +47,7 @@ public final class ScannerUtils {
       PayloadDescriptor<T> desc,
       java.util.function.ToIntFunction<T> extractor) {
     if (ctx == null) {
-      return fallbackOid(id);
+      return fallbackOid(id, desc.type());
     }
     return oid(ctx.overlay(), id, desc, extractor, ctx.engineContext());
   }
@@ -97,7 +98,7 @@ public final class ScannerUtils {
     return payload(overlay, id, desc, engineContext)
         .map(extractor::applyAsInt)
         .filter(v -> v > 0)
-        .orElseGet(() -> fallbackOid(id));
+        .orElseGet(() -> fallbackOid(id, desc.type()));
   }
 
   /** Resolve an int[] field using a typed payload descriptor via overlay. */
@@ -113,9 +114,15 @@ public final class ScannerUtils {
         .orElseGet(() -> new int[0]);
   }
 
-  /** Stable, deterministic fallback OID */
-  public static int fallbackOid(ResourceId id) {
-    return Math.abs(id.hashCode());
+  /**
+   * Stable, deterministic fallback OID with payload hint.
+   *
+   * <p>The generator hashes the canonical {@link ResourceId} together with a normalized payload
+   * type so callers should pass the exact descriptor string they plan to persist; otherwise
+   * unrelated hints may collide.
+   */
+  public static int fallbackOid(ResourceId id, String payloadType) {
+    return EngineOidGeneratorHolder.instance().generate(id, payloadType);
   }
 
   /** Default system owner (postgres-compatible) */

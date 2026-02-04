@@ -82,7 +82,7 @@ public final class FloeHintResolver {
             .map(FloeTypeSpecific::toBuilder)
             .orElse(FloeTypeSpecific.newBuilder());
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(type.id()));
+      builder.setOid(ScannerUtils.fallbackOid(type.id(), TYPE.type()));
     }
     applyTypeDefaults(builder, type);
     return builder.build();
@@ -110,7 +110,7 @@ public final class FloeHintResolver {
     // This keeps pg_attribute rows well-formed even when upstream logical types are
     // missing/invalid.
     if (resolved == null) {
-      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column));
+      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
       return new ColumnMetadata(typeOid, -1, -1, "i", false, "p", 0, 0);
     }
 
@@ -142,7 +142,7 @@ public final class FloeHintResolver {
   private static void applyNamespaceDefaults(
       FloeNamespaceSpecific.Builder builder, NamespaceNode namespace) {
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(namespace.id()));
+      builder.setOid(ScannerUtils.fallbackOid(namespace.id(), NAMESPACE.type()));
     }
     if (!builder.hasNspname()) {
       builder.setNspname(namespace.displayName());
@@ -151,7 +151,7 @@ public final class FloeHintResolver {
 
   private static void applyRelationDefaults(FloeRelationSpecific.Builder builder, GraphNode node) {
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(node.id()));
+      builder.setOid(ScannerUtils.fallbackOid(node.id(), RELATION.type()));
     }
     if (!builder.hasRelname()) {
       builder.setRelname(node.displayName());
@@ -266,11 +266,11 @@ public final class FloeHintResolver {
       SchemaColumn column,
       LogicalType logical) {
     if (ctx == null || resolver == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column));
+      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
     }
     LogicalType logicalType = logical == null ? parseLogicalType(column) : logical;
     if (logicalType == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column));
+      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
     }
     Optional<TypeNode> resolved = resolver.resolve(logicalType);
     return resolved
@@ -278,7 +278,7 @@ public final class FloeHintResolver {
             type ->
                 ScannerUtils.oid(
                     ctx.overlay(), type.id(), TYPE, FloeTypeSpecific::getOid, ctx.engineContext()))
-        .orElseGet(() -> ScannerUtils.fallbackOid(fallbackTypeId(column)));
+        .orElseGet(() -> ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type()));
   }
 
   public static LogicalType parseLogicalType(SchemaColumn column) {

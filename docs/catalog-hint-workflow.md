@@ -38,7 +38,7 @@ The resolver:
 
 * looks for existing Floe payloads via `ScannerUtils`.
 * applies overlay values if present.
-* fills deterministic defaults for OIDs, typmods, lengths, collision, etc.
+* fills deterministic defaults for OIDs, typmods, lengths, collision, etc. When overlays are missing, ScannerUtils now defers to a pluggable `EngineOidGenerator` (currently configured through `floecat.extensions.floedb.engine.oid-generator=default`), and there is a payload-aware `fallbackOid(id, payloadType)` overload so different hint categories for the same resource hash to distinct values. The default generator compresses its UUID into ~31 bits, so collisions can still occur at scale; any persistence layer that stores generated OIDs may need to detect duplicates and retry with a new payload tag or salt. If you retry with a new salt (or payload tag), be sure to persist the resulting OID alongside the object before you rely on it again—otherwise you break the deterministic guarantee that future scans expect.
 * returns the canonical `Floe*Specific` proto (e.g., `FloeColumnSpecific`, `FloeRelationSpecific`).
 
 It never mutates scan builders or catalog responses, and all callers share the same defaults.
