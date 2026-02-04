@@ -22,9 +22,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class LogicalTypeFormat {
+  // Accept common SQL spellings for decimals (e.g., DECIMAL(10,2), NUMERIC(10,2)).
   private static final Pattern DECIMAL_RE =
       Pattern.compile(
-          "^\\s*DECIMAL\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)\\s*$", Pattern.CASE_INSENSITIVE);
+          "^\\s*(DECIMAL|NUMERIC)\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)\\s*$",
+          Pattern.CASE_INSENSITIVE);
+
+  // Strip optional type parameters like VARCHAR(10), TIMESTAMP(6), DECIMAL(10,2).
+  // Keeps the base type name (including spaces, e.g., "DOUBLE PRECISION").
+  private static final Pattern BASE_TYPE_WITH_PARAMS_RE =
+      Pattern.compile("^\\s*([A-Z0-9_ ]+?)\\s*(?:\\(.*\\))?\\s*$");
 
   public static String format(LogicalType t) {
     Objects.requireNonNull(t, "LogicalType");
@@ -37,22 +44,41 @@ public final class LogicalTypeFormat {
   public static LogicalType parse(String s) {
     Objects.requireNonNull(s, "logical type string");
     String trimmed = s.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException("Unrecognized logical type: \"\" ");
+    }
 
-    Matcher m = DECIMAL_RE.matcher(trimmed);
+    // Normalize: uppercase + collapse internal whitespace so inputs like "double   precision" work.
+    String normalized = trimmed.toUpperCase(Locale.ROOT).replaceAll("\\s+", " ");
+
+    // First, handle DECIMAL/NUMERIC with precision+scale (LogicalType needs parameters).
+    Matcher m = DECIMAL_RE.matcher(normalized);
     if (m.matches()) {
-      int p = Integer.parseInt(m.group(1));
-      int sc = Integer.parseInt(m.group(2));
+      int p = Integer.parseInt(m.group(2));
+      int sc = Integer.parseInt(m.group(3));
       return LogicalType.decimal(p, sc);
     }
 
-    String upper = trimmed.toUpperCase(Locale.ROOT);
-    try {
-      LogicalKind k = LogicalKind.valueOf(upper);
-      return LogicalType.of(k);
-    } catch (IllegalArgumentException ignore) {
-      // ignore
+    // For all other types, strip optional parameters like VARCHAR(10), TIMESTAMP(6), etc.
+    Matcher base = BASE_TYPE_WITH_PARAMS_RE.matcher(normalized);
+    String baseName = normalized;
+    if (base.matches()) {
+      baseName = base.group(1).trim();
     }
 
-    throw new IllegalArgumentException("Unrecognized logical type: \"" + s + "\"");
+    LogicalKind k;
+    try {
+      k = LogicalKind.fromName(baseName);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Unrecognized logical type: \"" + s + "\"", e);
+    }
+
+    // A bare DECIMAL without parameters is not a fully specified logical type in this model.
+    if (k == LogicalKind.DECIMAL) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \"" + s + "\" (DECIMAL requires precision and scale)");
+    }
+
+    return LogicalType.of(k);
   }
 }

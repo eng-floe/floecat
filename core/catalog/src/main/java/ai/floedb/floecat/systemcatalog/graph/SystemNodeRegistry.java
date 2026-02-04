@@ -175,7 +175,9 @@ public class SystemNodeRegistry {
             .toList();
     List<FunctionNode> functionNodes =
         functionDefs.stream()
-            .map(def -> toFunctionNode(normalizedKind, version, def, namespaceIds))
+            .map(
+                def ->
+                    toFunctionNode(normalizedKind, normalizedVersion, version, def, namespaceIds))
             .toList();
 
     // --- Operators ---
@@ -185,7 +187,9 @@ public class SystemNodeRegistry {
             .map(def -> withOperatorRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<OperatorNode> operatorNodes =
-        operatorDefs.stream().map(def -> toOperatorNode(normalizedKind, version, def)).toList();
+        operatorDefs.stream()
+            .map(def -> toOperatorNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
 
     // --- Types ---
     List<SystemTypeDef> typeDefs =
@@ -194,7 +198,9 @@ public class SystemNodeRegistry {
             .map(def -> withTypeRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<TypeNode> typeNodes =
-        typeDefs.stream().map(def -> toTypeNode(normalizedKind, version, def)).toList();
+        typeDefs.stream()
+            .map(def -> toTypeNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
 
     // --- Casts ---
     List<SystemCastDef> castDefs =
@@ -203,7 +209,9 @@ public class SystemNodeRegistry {
             .map(def -> withCastRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<CastNode> castNodes =
-        castDefs.stream().map(def -> toCastNode(normalizedKind, version, def)).toList();
+        castDefs.stream()
+            .map(def -> toCastNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
 
     // --- Collations ---
     List<SystemCollationDef> collationDefs =
@@ -212,7 +220,9 @@ public class SystemNodeRegistry {
             .map(def -> withCollationRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<CollationNode> collationNodes =
-        collationDefs.stream().map(def -> toCollationNode(normalizedKind, version, def)).toList();
+        collationDefs.stream()
+            .map(def -> toCollationNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
 
     // --- Aggregates ---
     List<SystemAggregateDef> aggregateDefs =
@@ -221,7 +231,9 @@ public class SystemNodeRegistry {
             .map(def -> withAggregateRules(def, normalizedKind, normalizedVersion))
             .toList();
     List<AggregateNode> aggregateNodes =
-        aggregateDefs.stream().map(def -> toAggregateNode(normalizedKind, version, def)).toList();
+        aggregateDefs.stream()
+            .map(def -> toAggregateNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
 
     // --- Tables ---
     List<SystemTableDef> tableDefs =
@@ -609,12 +621,15 @@ public class SystemNodeRegistry {
 
   private FunctionNode toFunctionNode(
       String engineKind,
+      String engineVersion,
       long version,
       SystemFunctionDef def,
       Map<String, ResourceId> namespaceIds) {
 
     ResourceId nsId = findNamespaceId(def.name(), namespaceIds).orElse(null);
 
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
     return new FunctionNode(
         resourceId(engineKind, def),
         version,
@@ -628,10 +643,13 @@ public class SystemNodeRegistry {
         resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType()),
         def.isAggregate(),
         def.isWindow(),
-        Map.of());
+        hints);
   }
 
-  private OperatorNode toOperatorNode(String engineKind, long version, SystemOperatorDef def) {
+  private OperatorNode toOperatorNode(
+      String engineKind, String engineVersion, long version, SystemOperatorDef def) {
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
 
     return new OperatorNode(
         resourceId(engineKind, def),
@@ -644,10 +662,13 @@ public class SystemNodeRegistry {
         resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType()),
         def.isCommutative(),
         def.isAssociative(),
-        Map.of());
+        hints);
   }
 
-  private TypeNode toTypeNode(String engineKind, long version, SystemTypeDef def) {
+  private TypeNode toTypeNode(
+      String engineKind, String engineVersion, long version, SystemTypeDef def) {
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
     return new TypeNode(
         resourceId(engineKind, def),
         version,
@@ -659,10 +680,13 @@ public class SystemNodeRegistry {
         def.elementType() == null
             ? null
             : resourceId(engineKind, ResourceKind.RK_TYPE, def.elementType()),
-        Map.of());
+        hints);
   }
 
-  private CastNode toCastNode(String engineKind, long version, SystemCastDef def) {
+  private CastNode toCastNode(
+      String engineKind, String engineVersion, long version, SystemCastDef def) {
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
     return new CastNode(
         resourceId(engineKind, def),
         version,
@@ -671,10 +695,13 @@ public class SystemNodeRegistry {
         resourceId(engineKind, ResourceKind.RK_TYPE, def.sourceType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.targetType()),
         def.method().wireValue(),
-        Map.of());
+        hints);
   }
 
-  private CollationNode toCollationNode(String engineKind, long version, SystemCollationDef def) {
+  private CollationNode toCollationNode(
+      String engineKind, String engineVersion, long version, SystemCollationDef def) {
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
 
     return new CollationNode(
         resourceId(engineKind, def),
@@ -683,10 +710,13 @@ public class SystemNodeRegistry {
         engineKind,
         safeName(def.name()),
         def.locale(),
-        Map.of());
+        hints);
   }
 
-  private AggregateNode toAggregateNode(String engineKind, long version, SystemAggregateDef def) {
+  private AggregateNode toAggregateNode(
+      String engineKind, String engineVersion, long version, SystemAggregateDef def) {
+    Map<EngineHintKey, EngineHint> hints =
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
 
     return new AggregateNode(
         resourceId(engineKind, def),
@@ -699,7 +729,7 @@ public class SystemNodeRegistry {
             .toList(),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.stateType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType()),
-        Map.of());
+        hints);
   }
 
   // =======================================================================

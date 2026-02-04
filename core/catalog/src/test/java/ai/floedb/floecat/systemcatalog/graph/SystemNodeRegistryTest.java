@@ -20,9 +20,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
+import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
@@ -56,6 +60,13 @@ class SystemNodeRegistryTest {
   private static final String FLOE_KIND = "floe-demo"; // main engine under test
   private static final String PG_KIND = "pg"; // alternate engine
   private static final String TEST_PAYLOAD_TYPE = "test.payload";
+  private static final String HINT_ENGINE = "hint-engine";
+  private static final String FUNCTION_HINT = "hint.function";
+  private static final String OPERATOR_HINT = "hint.operator";
+  private static final String TYPE_HINT = "hint.type";
+  private static final String CAST_HINT = "hint.cast";
+  private static final String COLLATION_HINT = "hint.collation";
+  private static final String AGGREGATE_HINT = "hint.aggregate";
 
   // helper to build NameRef the same way pbtxt does
   private static NameRef nr(String full) {
@@ -550,6 +561,84 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void systemNodesRetainEngineHints() {
+    NameRef int4 = NameRefUtil.name("pg_catalog", "int4");
+    NameRef text = NameRefUtil.name("pg_catalog", "text");
+
+    EngineSpecificRule functionRule = hintRule(FUNCTION_HINT);
+    EngineSpecificRule operatorRule = hintRule(OPERATOR_HINT);
+    EngineSpecificRule typeRule = hintRule(TYPE_HINT);
+    EngineSpecificRule castRule = hintRule(CAST_HINT);
+    EngineSpecificRule collationRule = hintRule(COLLATION_HINT);
+    EngineSpecificRule aggregateRule = hintRule(AGGREGATE_HINT);
+
+    SystemFunctionDef function =
+        new SystemFunctionDef(
+            NameRefUtil.name("pg_catalog", "hint_fn"),
+            List.of(int4),
+            int4,
+            false,
+            false,
+            List.of(functionRule));
+    SystemOperatorDef operator =
+        new SystemOperatorDef(
+            NameRefUtil.name("pg_catalog", "hint_op"),
+            int4,
+            int4,
+            int4,
+            false,
+            false,
+            List.of(operatorRule));
+    SystemTypeDef type =
+        new SystemTypeDef(
+            NameRefUtil.name("pg_catalog", "hint_type"), "N", false, null, List.of(typeRule));
+    SystemTypeDef textType =
+        new SystemTypeDef(
+            NameRefUtil.name("pg_catalog", "text"), "T", false, null, List.of(typeRule));
+    SystemCastDef cast =
+        new SystemCastDef(
+            NameRefUtil.name("pg_catalog", "text_cast"),
+            int4,
+            text,
+            SystemCastMethod.EXPLICIT,
+            List.of(castRule));
+    SystemCollationDef collation =
+        new SystemCollationDef(
+            NameRefUtil.name("pg_catalog", "hint_collation"), "en_US", List.of(collationRule));
+    SystemAggregateDef aggregate =
+        new SystemAggregateDef(
+            NameRefUtil.name("pg_catalog", "hint_agg"),
+            List.of(int4),
+            int4,
+            int4,
+            List.of(aggregateRule));
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(function),
+            List.of(operator),
+            List.of(type, textType),
+            List.of(cast),
+            List.of(collation),
+            List.of(aggregate),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    var defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(HINT_ENGINE, catalog)));
+    var nodes = registryWith(defs).nodesFor(HINT_ENGINE, "1.0");
+
+    assertHasHint(nodes.functions(), FUNCTION_HINT);
+    assertHasHint(nodes.operators(), OPERATOR_HINT);
+    assertHasHint(nodes.types(), TYPE_HINT);
+    assertHasHint(nodes.casts(), CAST_HINT);
+    assertHasHint(nodes.collations(), COLLATION_HINT);
+    assertHasHint(nodes.aggregates(), AGGREGATE_HINT);
+  }
+
+  @Test
   void registryEngineSpecific_hintsLayeredAndOverridden() {
     var internalRule =
         new EngineSpecificRule(
@@ -716,6 +805,23 @@ class SystemNodeRegistryTest {
   private static SystemColumnDef column(String name) {
     return new SystemColumnDef(
         name, NameRef.newBuilder().setName("INT").build(), false, 1, null, List.of());
+  }
+
+  private static void assertHasHint(List<? extends GraphNode> nodes, String payloadType) {
+    boolean found =
+        nodes.stream()
+            .map(GraphNode::engineHints)
+            .flatMap(map -> map.keySet().stream())
+            .map(EngineHintKey::payloadType)
+            .anyMatch(payloadType::equals);
+    assertThat(found)
+        .describedAs("engine hint %s must exist on at least one node", payloadType)
+        .isTrue();
+  }
+
+  private static EngineSpecificRule hintRule(String payloadType) {
+    return new EngineSpecificRule(
+        HINT_ENGINE, "", "", payloadType, new byte[] {1}, Map.of("payload_type", payloadType));
   }
 
   private static FloecatInternalProvider internalProvider() {
