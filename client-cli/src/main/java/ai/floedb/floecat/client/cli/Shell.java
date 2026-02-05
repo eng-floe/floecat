@@ -205,7 +205,7 @@ public class Shell implements Runnable {
 
   @CommandLine.Option(
       names = {"--account-id"},
-      description = "Account ID header value (or set FLOECAT_ACCOUNT)")
+      description = "Default account id (or set FLOECAT_ACCOUNT)")
   String accountId;
 
   @CommandLine.Option(
@@ -217,11 +217,6 @@ public class Shell implements Runnable {
       names = {"--session-header"},
       description = "Session header name (default: x-floe-session)")
   String sessionHeaderName;
-
-  @CommandLine.Option(
-      names = {"--account-header"},
-      description = "Account header name (default: x-account-id)")
-  String accountHeaderName;
 
   @Inject
   @GrpcClient("floecat")
@@ -500,10 +495,9 @@ public class Shell implements Runnable {
          --port <port>   gRPC port (default: 9100)
          --token <jwt>   Authorization token (default: FLOECAT_TOKEN)
          --session-token <jwt>  Session token (default: FLOECAT_SESSION_TOKEN)
-         --account-id <id>      Account id header value (default: FLOECAT_ACCOUNT)
+         --account-id <id>      Default account id (default: FLOECAT_ACCOUNT)
          --auth-header <name>   Authorization header name
          --session-header <name>  Session header name
-         --account-header <name>  Account header name
 
          Commands:
          account <id>
@@ -618,9 +612,6 @@ public class Shell implements Runnable {
     }
     if (sessionHeaderName == null || sessionHeaderName.isBlank()) {
       sessionHeaderName = "x-floe-session";
-    }
-    if (accountHeaderName == null || accountHeaderName.isBlank()) {
-      accountHeaderName = "x-account-id";
     }
     if (currentAccountId == null || currentAccountId.isBlank()) {
       currentAccountId = accountId;
@@ -3651,11 +3642,6 @@ public class Shell implements Runnable {
           if (!session.isBlank()) {
             headers.put(
                 Metadata.Key.of(sessionHeaderName, Metadata.ASCII_STRING_MARSHALLER), session);
-          }
-
-          String acct = currentAccountId == null ? "" : currentAccountId.trim();
-          if (!acct.isBlank()) {
-            headers.put(Metadata.Key.of(accountHeaderName, Metadata.ASCII_STRING_MARSHALLER), acct);
           }
 
           super.start(responseListener, headers);

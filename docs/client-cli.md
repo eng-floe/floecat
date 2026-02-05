@@ -65,7 +65,7 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 
 ```
 User command → Picocli parser → Shell subcommand → gRPC stub call
-  → Interceptors attach account/auth headers → Service executes request
+  → Interceptors attach auth headers → Service executes request
   ← Response printed (tables/JSON summaries)
 ```
 

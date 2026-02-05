@@ -60,7 +60,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     this.accountContext = accountContext;
   }
 
-  private static final String DEFAULT_ACCOUNT_HEADER = "x-account-id";
   private static final String DEFAULT_AUTH_HEADER = "authorization";
 
   @Override
@@ -71,21 +70,19 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       return;
     }
     boolean devMode = isDevMode();
-    String accountHeader = resolveAccountHeaderName();
     String account;
     if (devMode) {
       account = defaultAccount().orElse(null);
     } else {
-      account = resolveAccountFromAuthClaim(requestContext, accountHeader);
+      account = resolveAccountFromAuthClaim(requestContext);
     }
     if (requestContext.getProperty("authAbort") != null) {
       return;
     }
     if (account == null || account.isBlank()) {
-      requestContext.abortWith(unauthorized("missing account header"));
+      requestContext.abortWith(unauthorized("missing account claim"));
       return;
     }
-    requestContext.getHeaders().putSingle(accountHeader, account);
     accountContext.setAccountId(account.trim());
 
     String authHeader = resolveAuthHeaderName();
@@ -132,18 +129,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
         UriBuilder.fromUri(uriInfo.getRequestUri()).replacePath(newPath.toString()).build();
     context.setRequestUri(newUri);
     context.setProperty("rewrittenPath", newPath.toString());
-  }
-
-  private String resolveAccountHeaderName() {
-    if (config.isUnsatisfied()) {
-      return DEFAULT_ACCOUNT_HEADER;
-    }
-    try {
-      String header = config.get().accountHeader();
-      return header == null || header.isBlank() ? DEFAULT_ACCOUNT_HEADER : header;
-    } catch (Exception ignored) {
-      return DEFAULT_ACCOUNT_HEADER;
-    }
   }
 
   private String resolveAuthHeaderName() {
@@ -193,8 +178,7 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     }
   }
 
-  private String resolveAccountFromAuthClaim(
-      ContainerRequestContext requestContext, String accountHeader) {
+  private String resolveAccountFromAuthClaim(ContainerRequestContext requestContext) {
     String claimName = resolveAccountClaimName();
     SecurityIdentity resolvedIdentity = identity;
     if (resolvedIdentity == null || resolvedIdentity.isAnonymous()) {
@@ -215,7 +199,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
     Object claim = extractClaim(resolvedIdentity, claimName);
     String account = claim == null ? null : claim.toString();
     if (account != null && !account.isBlank()) {
-      requestContext.getHeaders().putSingle(accountHeader, account);
       return account;
     }
     return null;

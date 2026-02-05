@@ -25,10 +25,6 @@ public final class AuthMetadata {
 
   public static Metadata fromHeaders(IcebergGatewayConfig config, HttpHeaders headers) {
     Metadata md = new Metadata();
-    String account = header(headers, config.accountHeader());
-    if (account != null && !account.isBlank()) {
-      md.put(key(config.accountHeader()), account);
-    }
     String auth = header(headers, config.authHeader());
     if (auth == null || auth.isBlank()) {
       auth = config.defaultAuthorization().orElse(null);

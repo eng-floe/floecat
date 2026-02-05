@@ -47,8 +47,6 @@ class AccountAuthorizationHeaderIT {
 
   private static final Metadata.Key<String> AUTH_HEADER =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-  private static final Metadata.Key<String> ACCOUNT_HEADER =
-      Metadata.Key.of("x-account-id", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
@@ -75,7 +73,6 @@ class AccountAuthorizationHeaderIT {
   void listAccountsAcceptsAuthorizationHeaderJwt() throws Exception {
     Metadata metadata = new Metadata();
     metadata.put(AUTH_HEADER, "Bearer " + sessionJwt());
-    metadata.put(ACCOUNT_HEADER, accountId);
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     var response = stub.listAccounts(ListAccountsRequest.getDefaultInstance());
@@ -100,21 +97,6 @@ class AccountAuthorizationHeaderIT {
   void listAccountsRejectsMalformedJwt() {
     Metadata metadata = new Metadata();
     metadata.put(AUTH_HEADER, "not-a-jwt");
-
-    var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> stub.listAccounts(ListAccountsRequest.getDefaultInstance()));
-
-    assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
-  }
-
-  @Test
-  void listAccountsRejectsAccountHeaderMismatch() throws Exception {
-    Metadata metadata = new Metadata();
-    metadata.put(AUTH_HEADER, "Bearer " + sessionJwt());
-    metadata.put(ACCOUNT_HEADER, "other-account");
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     StatusRuntimeException ex =

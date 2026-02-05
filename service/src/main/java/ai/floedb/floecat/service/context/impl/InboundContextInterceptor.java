@@ -81,7 +81,6 @@ public class InboundContextInterceptor {
   private final boolean validateAccount;
   private final Optional<String> sessionHeader;
   private final Optional<String> authorizationHeader;
-  private final Optional<String> accountHeader;
   private final AuthMode authMode;
   private final String accountClaimName;
   private final String roleClaimName;
@@ -92,7 +91,6 @@ public class InboundContextInterceptor {
       boolean validateAccount,
       Optional<String> sessionHeader,
       Optional<String> authorizationHeader,
-      Optional<String> accountHeader,
       String authMode,
       String accountClaimName,
       String roleClaimName) {
@@ -101,20 +99,17 @@ public class InboundContextInterceptor {
     this.validateAccount = validateAccount;
     this.sessionHeader = sessionHeader.filter(header -> !header.isBlank());
     this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
-    this.accountHeader = accountHeader.filter(header -> !header.isBlank());
     this.authMode = AuthMode.fromString(authMode);
     this.accountClaimName = accountClaimName;
     this.roleClaimName = roleClaimName;
 
     String header = this.sessionHeader.orElse("");
     String authHeader = this.authorizationHeader.orElse("");
-    String acctHeader = this.accountHeader.orElse("");
     LOG.infof(
         "InboundContextInterceptor ready: sessionHeader=%s authorizationHeader=%s"
-            + " accountHeader=%s authMode=%s validateAccount=%s",
+            + " authMode=%s validateAccount=%s",
         header.isBlank() ? "<disabled>" : header,
         authHeader.isBlank() ? "<disabled>" : authHeader,
-        acctHeader.isBlank() ? "<disabled>" : acctHeader,
         this.authMode.name().toLowerCase(),
         validateAccount);
   }
@@ -199,22 +194,9 @@ public class InboundContextInterceptor {
   }
 
   private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {
-    Optional<String> accountHeaderValue = readHeaderValue(headers, accountHeader);
-
     switch (authMode) {
       case DEV -> {
         PrincipalContext dev = devContext();
-        if (accountHeaderValue.isPresent()
-            && !accountHeaderValue.orElseThrow().equals(dev.getAccountId())) {
-          throw Status.UNAUTHENTICATED
-              .withDescription(
-                  "account header does not match principal (header="
-                      + accountHeaderValue.orElseThrow()
-                      + ", principal="
-                      + dev.getAccountId()
-                      + "). In dev mode, unset FLOECAT_ACCOUNT or set it to the principal id.")
-              .asRuntimeException();
-        }
         return new ResolvedContext(dev, "");
       }
       case OIDC -> {
@@ -224,8 +206,7 @@ public class InboundContextInterceptor {
         if (this.authorizationHeader.isPresent()) {
           ensureOidcConfigured("authorization");
         }
-        PrincipalContext principal =
-            resolveOidcPrincipal(headers, queryIdHeader, accountHeaderValue);
+        PrincipalContext principal = resolveOidcPrincipal(headers, queryIdHeader);
         return new ResolvedContext(principal, queryIdHeader);
       }
     }
@@ -233,8 +214,7 @@ public class InboundContextInterceptor {
     if (this.sessionHeader.isPresent() && hasHeader(headers, this.sessionHeader.orElseThrow())) {
       String headerName = this.sessionHeader.orElseThrow();
       SecurityIdentity identity = validateOidcHeader(headers, headerName, "session");
-      PrincipalContext principal =
-          buildPrincipalFromIdentity(identity, queryIdHeader, accountHeaderValue);
+      PrincipalContext principal = buildPrincipalFromIdentity(identity, queryIdHeader);
       return new ResolvedContext(principal, queryIdHeader);
     }
 
@@ -242,8 +222,7 @@ public class InboundContextInterceptor {
         && hasHeader(headers, this.authorizationHeader.orElseThrow())) {
       String headerName = this.authorizationHeader.orElseThrow();
       SecurityIdentity identity = validateOidcHeader(headers, headerName, "authorization");
-      PrincipalContext principal =
-          buildPrincipalFromIdentity(identity, queryIdHeader, accountHeaderValue);
+      PrincipalContext principal = buildPrincipalFromIdentity(identity, queryIdHeader);
       return new ResolvedContext(principal, queryIdHeader);
     }
 
@@ -256,10 +235,8 @@ public class InboundContextInterceptor {
         .asRuntimeException();
   }
 
-  private PrincipalContext resolveOidcPrincipal(
-      Metadata headers, String queryIdHeader, Optional<String> accountHeaderValue) {
-    Optional<PrincipalContext> principal =
-        resolveOidcPrincipalOptional(headers, queryIdHeader, accountHeaderValue);
+  private PrincipalContext resolveOidcPrincipal(Metadata headers, String queryIdHeader) {
+    Optional<PrincipalContext> principal = resolveOidcPrincipalOptional(headers, queryIdHeader);
     if (principal.isPresent()) {
       return principal.get();
     }
@@ -279,17 +256,17 @@ public class InboundContextInterceptor {
   }
 
   private Optional<PrincipalContext> resolveOidcPrincipalOptional(
-      Metadata headers, String queryIdHeader, Optional<String> accountHeaderValue) {
+      Metadata headers, String queryIdHeader) {
     if (this.sessionHeader.isPresent() && hasHeader(headers, this.sessionHeader.orElseThrow())) {
       String headerName = this.sessionHeader.orElseThrow();
       SecurityIdentity identity = validateOidcHeader(headers, headerName, "session");
-      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader, accountHeaderValue));
+      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader));
     }
     if (this.authorizationHeader.isPresent()
         && hasHeader(headers, this.authorizationHeader.orElseThrow())) {
       String headerName = this.authorizationHeader.orElseThrow();
       SecurityIdentity identity = validateOidcHeader(headers, headerName, "authorization");
-      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader, accountHeaderValue));
+      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader));
     }
     return Optional.empty();
   }
@@ -487,30 +464,10 @@ public class InboundContextInterceptor {
   }
 
   private PrincipalContext buildPrincipalFromIdentity(
-      SecurityIdentity identity, String queryIdHeader, Optional<String> accountHeaderValue) {
+      SecurityIdentity identity, String queryIdHeader) {
     String subject = requireSubjectClaim(identity);
     var roles = extractRoles(identity);
     String accountId = requireAccountIdClaim(identity, roles);
-    if (accountHeaderValue.isPresent()) {
-      String headerValue = accountHeaderValue.orElseThrow();
-      if (accountId.isBlank()) {
-        throw Status.UNAUTHENTICATED
-            .withDescription(
-                "account header provided without account_id claim; remove the header or include"
-                    + " account_id in the token")
-            .asRuntimeException();
-      }
-      if (!headerValue.equals(accountId)) {
-        throw Status.UNAUTHENTICATED
-            .withDescription(
-                "account header does not match principal (header="
-                    + headerValue
-                    + ", principal="
-                    + accountId
-                    + "). Ensure the account_id claim matches the header value.")
-            .asRuntimeException();
-      }
-    }
     if (validateAccount && !accountId.isBlank()) {
       validateAccount(accountId);
     }

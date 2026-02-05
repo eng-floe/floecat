@@ -118,7 +118,6 @@ class IcebergRestFixtureIT {
   private static final Path TEST_S3_ROOT = TestS3Fixtures.bucketPath().getParent();
   private static final String STAGE_BUCKET = "staged-fixtures";
   private static final String DEFAULT_AUTH_HEADER = "Bearer integration-test";
-  private static final String ACCOUNT_HEADER_NAME = "x-account-id";
   private static final String AUTH_HEADER_NAME = "authorization";
   private static final boolean USE_AWS_FIXTURES = TestS3Fixtures.useAwsFixtures();
 
@@ -1580,9 +1579,6 @@ class IcebergRestFixtureIT {
         ManagedChannelBuilder.forAddress(upstreamHost, serviceGrpcPort).usePlaintext().build();
     try {
       Metadata headers = new Metadata();
-      String accountId = resolveSeedAccountId();
-      headers.put(
-          Metadata.Key.of(ACCOUNT_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), accountId);
       headers.put(
           Metadata.Key.of(AUTH_HEADER_NAME, Metadata.ASCII_STRING_MARSHALLER), DEFAULT_AUTH_HEADER);
       S stub =

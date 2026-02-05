@@ -11,12 +11,6 @@ Floecat supports two client authentication modes:
   set `--session-header` (default `x-floe-session`). This is functionally equivalent to
   authorization header auth but uses a custom header name.
 
-Optional **account header**:
-
-- If you provide `--account-id` (or `FLOECAT_ACCOUNT`), the CLI sends `x-account-id` by default
-  (overridable via `--account-header`). The server will reject the request if the header does not
-  match the `account_id` claim in the JWT.
-
 How to tell if you have permission:
 
 - If a command succeeds, you have the required permission.
@@ -69,12 +63,6 @@ context-aware rendering. After building it (`make cli` or `make cli-run`), launc
 ```bash
 java --enable-native-access=ALL-UNNAMED \
   -jar client-cli/target/quarkus-app/quarkus-run.jar
-```
-
-Set the account context first (only if you intend to send the account header):
-
-```
-account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
 ```
 
 If you use bearer-token auth, provide it via `--token` or `FLOECAT_TOKEN`:

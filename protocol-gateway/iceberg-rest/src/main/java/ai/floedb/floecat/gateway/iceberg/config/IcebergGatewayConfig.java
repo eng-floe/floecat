@@ -33,9 +33,6 @@ public interface IcebergGatewayConfig {
   @WithDefault("true")
   boolean upstreamPlaintext();
 
-  @WithDefault("x-account-id")
-  String accountHeader();
-
   @WithDefault("authorization")
   String authHeader();
 

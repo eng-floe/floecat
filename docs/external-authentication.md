@@ -121,9 +121,6 @@ Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
 - `floecat.seed.oidc.client-id=floecat-client`
 - `floecat.seed.oidc.client-secret=floecat-secret`
-- `floecat.interceptor.account.header=x-account-id` to validate the account identifier (internal;
-  not part of Iceberg REST). The service does not derive the account from this header; it must
-  match the `account_id` claim in the JWT.
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
   trusted account id.
 - `quarkus.oidc.token.audience=...` to set the `aud` claim value expected.
@@ -138,7 +135,6 @@ Environment equivalents:
 - FLOECAT_AUTH_MODE
 - FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_SESSION_HEADER
-- FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
 - FLOECAT_SEED_OIDC_ISSUER
 - FLOECAT_SEED_OIDC_CLIENT_ID
@@ -191,9 +187,6 @@ Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
 - `floecat.seed.oidc.client-id=floecat-client`
 - `floecat.seed.oidc.client-secret=floecat-secret`
-- `floecat.interceptor.account.header=x-account-id` to validate the account identifier (internal;
-  not part of Iceberg REST). The service does not derive the account from this header; it must
-  match the `account_id` claim in the JWT.
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
   trusted account id.
 - `quarkus.oidc.token.audience=...` to set the `aud` claim value expected.
@@ -208,7 +201,6 @@ Environment equivalents:
 - FLOECAT_AUTH_MODE
 - FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER
-- FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
 - FLOECAT_SEED_OIDC_ISSUER
 - FLOECAT_SEED_OIDC_CLIENT_ID

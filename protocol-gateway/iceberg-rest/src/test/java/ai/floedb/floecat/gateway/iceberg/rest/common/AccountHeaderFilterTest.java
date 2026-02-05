@@ -56,7 +56,6 @@ class AccountHeaderFilterTest {
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
     when(config.authMode()).thenReturn("dev");
-    when(config.accountHeader()).thenReturn("x-account-id");
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
@@ -69,7 +68,6 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString("x-account-id")).thenReturn(null);
     when(ctx.getHeaderString("authorization")).thenReturn(null);
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
@@ -85,7 +83,6 @@ class AccountHeaderFilterTest {
     filter.filter(ctx);
 
     assertFalse(aborted.get());
-    assertEquals("account-default", headers.getFirst("x-account-id"));
     assertEquals("Bearer default", headers.getFirst("authorization"));
     verify(accountContext).setAccountId("account-default");
   }
@@ -125,7 +122,7 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-account-id");
+    when(config.authMode()).thenReturn("dev");
     when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("undefined"));
@@ -136,7 +133,6 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString("x-account-id")).thenReturn("account-default");
     when(ctx.getHeaderString("authorization")).thenReturn(null);
     when(ctx.getHeaders()).thenReturn(new MultivaluedHashMap<>());
     AtomicBoolean aborted = new AtomicBoolean(false);
@@ -160,7 +156,7 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-account-id");
+    when(config.authMode()).thenReturn("dev");
     when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
@@ -185,7 +181,6 @@ class AccountHeaderFilterTest {
 
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
-    when(ctx.getHeaderString("x-account-id")).thenReturn("account-default");
     when(ctx.getHeaderString("authorization")).thenReturn("Bearer default");
 
     AtomicReference<URI> rewrittenUri = new AtomicReference<>();
@@ -214,6 +209,7 @@ class AccountHeaderFilterTest {
         "http://localhost:9200/v1/sales/namespaces/db/tables", rewrittenUri.get().toString());
     assertEquals("/v1/sales/namespaces/db/tables", properties.get("rewrittenPath"));
     verify(ctx).setRequestUri(Mockito.any(URI.class));
+    verify(accountContext).setAccountId("account-default");
   }
 
   @Test
@@ -228,11 +224,11 @@ class AccountHeaderFilterTest {
       when(configInstance.isUnsatisfied()).thenReturn(false);
       when(configInstance.get()).thenReturn(config);
       when(config.authMode()).thenReturn("oidc");
-      when(config.accountHeader()).thenReturn("x-account-id");
       when(config.authHeader()).thenReturn("x-floe-session");
       when(config.accountClaim()).thenReturn("account_id");
       filter.setConfigInstance(configInstance);
-      filter.setAccountContext(mock(AccountContext.class));
+      AccountContext accountContext = mock(AccountContext.class);
+      filter.setAccountContext(accountContext);
 
       TenantIdentityProvider identityProvider = mock(TenantIdentityProvider.class);
       @SuppressWarnings("unchecked")
@@ -257,7 +253,6 @@ class AccountHeaderFilterTest {
       when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
       when(ctx.getUriInfo()).thenReturn(uriInfo);
       when(ctx.getHeaderString("x-floe-session")).thenReturn("Bearer token");
-      when(ctx.getHeaderString("x-account-id")).thenReturn(null);
       MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
       when(ctx.getHeaders()).thenReturn(headers);
       AtomicBoolean aborted = new AtomicBoolean(false);
@@ -272,7 +267,7 @@ class AccountHeaderFilterTest {
       filter.filter(ctx);
 
       assertFalse(aborted.get());
-      assertEquals("acct-123", headers.getFirst("x-account-id"));
+      verify(accountContext).setAccountId("acct-123");
     } finally {
       System.clearProperty("quarkus.oidc.public-key");
       System.clearProperty("quarkus.oidc.auth-server-url");

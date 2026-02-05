@@ -50,8 +50,6 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
       @ConfigProperty(name = "floecat.interceptor.session.header") Optional<String> sessionHeader,
       @ConfigProperty(name = "floecat.interceptor.authorization.header")
           Optional<String> authorizationHeader,
-      @ConfigProperty(name = "floecat.interceptor.account.header", defaultValue = "x-account-id")
-          String accountHeader,
       @ConfigProperty(name = "floecat.auth.mode", defaultValue = "oidc") String authMode,
       @ConfigProperty(
               name = "floecat.interceptor.session.account-claim",
@@ -69,7 +67,6 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
             validateAccount,
             sessionHeader,
             authorizationHeader,
-            Optional.ofNullable(accountHeader),
             authMode,
             accountClaimName,
             roleClaimName);
