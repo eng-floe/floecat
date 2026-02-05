@@ -216,6 +216,7 @@ final class PgClassScannerTest {
         List.of(),
         List.of(),
         List.of(),
+        GraphNodeOrigin.SYSTEM,
         Map.of(),
         Optional.empty(),
         hints);

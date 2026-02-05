@@ -41,6 +41,7 @@ public record ViewNode(
     List<SchemaColumn> outputColumns,
     List<ResourceId> baseRelations,
     List<String> creationSearchPath,
+    GraphNodeOrigin origin,
     Map<String, String> properties,
     Optional<String> owner,
     Map<EngineHintKey, EngineHint> engineHints)
@@ -62,6 +63,6 @@ public record ViewNode(
 
   @Override
   public GraphNodeOrigin origin() {
-    return GraphNodeOrigin.USER;
+    return origin;
   }
 }
