@@ -161,7 +161,7 @@ Notable `application.properties` keys:
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
-| `floecat.auth.mode` | Auth enforcement mode (`auto`, `oidc`, `dev`). |
+| `floecat.auth.mode` | Auth enforcement mode (`oidc`, `dev`). |
 | `floecat.auth.platform-admin.role` | IdP role name granted permission to manage accounts (default `platform-admin`). |
 
 Extension points:

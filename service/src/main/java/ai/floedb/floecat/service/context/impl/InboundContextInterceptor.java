@@ -207,7 +207,12 @@ public class InboundContextInterceptor {
         if (accountHeaderValue.isPresent()
             && !accountHeaderValue.orElseThrow().equals(dev.getAccountId())) {
           throw Status.UNAUTHENTICATED
-              .withDescription("account header does not match principal")
+              .withDescription(
+                  "account header does not match principal (header="
+                      + accountHeaderValue.orElseThrow()
+                      + ", principal="
+                      + dev.getAccountId()
+                      + "). In dev mode, unset FLOECAT_ACCOUNT or set it to the principal id.")
               .asRuntimeException();
         }
         return new ResolvedContext(dev, "");
@@ -490,12 +495,19 @@ public class InboundContextInterceptor {
       String headerValue = accountHeaderValue.orElseThrow();
       if (accountId.isBlank()) {
         throw Status.UNAUTHENTICATED
-            .withDescription("account header provided without account_id claim")
+            .withDescription(
+                "account header provided without account_id claim; remove the header or include"
+                    + " account_id in the token")
             .asRuntimeException();
       }
       if (!headerValue.equals(accountId)) {
         throw Status.UNAUTHENTICATED
-            .withDescription("account header does not match principal")
+            .withDescription(
+                "account header does not match principal (header="
+                    + headerValue
+                    + ", principal="
+                    + accountId
+                    + "). Ensure the account_id claim matches the header value.")
             .asRuntimeException();
       }
     }
