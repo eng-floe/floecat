@@ -82,6 +82,9 @@ If your images run as a non-root user, mount `~/.aws` into that user’s home in
 ## OIDC Notes
 
 - Only `docker/env.localstack` enables OIDC by default.
-- The Keycloak issuer for Docker runs is `http://host.docker.internal:12221/realms/floecat`.
+- Services running **inside** the Docker network must use the Keycloak service name:
+  `http://keycloak:8080/realms/floecat`.
+- Clients running on the **host** (or external containers not on the `docker_floecat` network)
+  must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
 - If you use Trino with the REST catalog, ensure the gateway audience list includes both
   `floecat-client` and `trino-client` (see `docker/env.localstack`).

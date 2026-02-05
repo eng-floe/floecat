@@ -189,9 +189,13 @@ s3.region=<AWS region>
 # OIDC (Keycloak)
 iceberg.rest-catalog.security=OAUTH2
 iceberg.rest-catalog.oauth2.credential=trino-client:trino-secret
-iceberg.rest-catalog.oauth2.server-uri=http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token
+iceberg.rest-catalog.oauth2.server-uri=http://host.docker.internal:8080/realms/floecat/protocol/openid-connect/token
 iceberg.rest-catalog.oauth2.scope=openid
 ```
+
+Note: if Trino runs on the same Docker network as Keycloak (`docker_floecat`), you can use
+`http://keycloak:8080/realms/floecat/protocol/openid-connect/token` instead. If it does not share
+the network, use `host.docker.internal`.
 
 Restart Trino and run:
 

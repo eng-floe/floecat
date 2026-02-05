@@ -55,7 +55,7 @@ class OidcAccountClaimTest extends AbstractRestResourceTest {
                 .setPage(PageResponse.newBuilder().build())
                 .build());
 
-    String token = jwtToken("21232f29-7a57-35a7-8389-4a0e4a801fc3");
+    String token = jwtToken("5eaa9cd5-7d08-3750-9457-cfe800b0b9d2");
     RestAssured.requestSpecification = null;
     given()
         .header("authorization", "Bearer " + token)

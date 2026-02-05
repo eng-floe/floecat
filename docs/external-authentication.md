@@ -10,10 +10,8 @@ Auth modes:
 - `floecat.auth.mode=dev`: require dev context (for local-only use).
 Default is `oidc`; dev mode must be explicitly configured.
 
-When `floecat.auth.mode=oidc`, Floecat will ensure an admin account exists on startup. Configure:
-- `floecat.auth.admin.account=floecat-admin` (display name for the admin account)
-- `floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3` (optional fixed ID)
-- `floecat.auth.admin.account.description=...` (optional description)
+Account management is authorized via a global IdP role (see below). Floecat does not auto-create
+an admin account on startup.
 
 ## Local Keycloak (dev)
 
@@ -29,28 +27,35 @@ The realm import defines:
 - realm: `floecat`
 - client: `floecat-client`
 - user: `floecat-admin` / password `floecat-admin`
-- role: `administrator`
-- hardcoded claim: `account_id=21232f29-7a57-35a7-8389-4a0e4a801fc3`
+- roles: `administrator`, `platform-admin`
+- hardcoded claim: `account_id=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2` (seed account `t-0001`)
+
+Role intent:
+- `platform-admin` grants account management (`account.write`) and is intended for platform operators.
+- `administrator` grants full tenant‑scoped access (catalogs/namespaces/tables/connectors) but does
+  not grant account management.
 
 Note: the realm config uses a service-account client (`client_credentials` flow). Password grant is
 disabled.
 
-Important: if you change the admin account ID, update
+Important: if you change the seed account ID, update
 `docker/keycloak/realm-floecat.json` so the `account_id` claim matches.
 
 Example service config (dev, running service on the host):
 ```
 floecat.auth.mode=oidc
-floecat.auth.admin.account=floecat-admin
-floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3
 floecat.interceptor.authorization.header=authorization
 quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat
 quarkus.oidc.token.audience=floecat-client
 ```
 
-If the service runs in Docker, set the issuer to the Docker Desktop hostname:
+If the service runs in Docker, set the issuer to the Keycloak service name on the Docker network:
 ```
-quarkus.oidc.auth-server-url=http://host.docker.internal:12221/realms/floecat
+quarkus.oidc.auth-server-url=http://keycloak:8080/realms/floecat
+```
+If you run the service on the host, keep the host issuer:
+```
+quarkus.oidc.auth-server-url=http://host.docker.internal:8080/realms/floecat  # or KEYCLOAK_PORT override
 ```
 
 Example token request:
@@ -67,11 +72,13 @@ curl -s \
 1) Enable local OIDC in `docker/env.localstack` (the only OIDC-enabled env file):
 ```
 FLOECAT_AUTH_MODE=oidc
-FLOECAT_AUTH_ADMIN_ACCOUNT=floecat-admin
-FLOECAT_AUTH_ADMIN_ACCOUNT_ID=21232f29-7a57-35a7-8389-4a0e4a801fc3
+FLOECAT_AUTH_PLATFORM_ADMIN_ROLE=platform-admin
 FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER=authorization
+FLOECAT_SEED_OIDC_ISSUER=http://keycloak:8080/realms/floecat
+FLOECAT_SEED_OIDC_CLIENT_ID=floecat-client
+FLOECAT_SEED_OIDC_CLIENT_SECRET=floecat-secret
 QUARKUS_OIDC_TENANT_ENABLED=true
-QUARKUS_OIDC_AUTH_SERVER_URL=http://host.docker.internal:12221/realms/floecat
+QUARKUS_OIDC_AUTH_SERVER_URL=http://keycloak:8080/realms/floecat
 QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client
 ```
 
@@ -80,32 +87,40 @@ QUARKUS_OIDC_TOKEN_AUDIENCE=floecat-client,trino-client
 make oidc-up
 ```
 
-3) Fetch a token on the host (issuer must be `http://host.docker.internal:12221/...`):
+3) Fetch a token on the host (issuer must be `http://host.docker.internal:8080/...` unless you
+   override `KEYCLOAK_PORT`):
 ```
 TOKEN=$(curl -s \
   -d "client_id=floecat-client" \
   -d "client_secret=floecat-secret" \
   -d "grant_type=client_credentials" \
-  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token \
+  http://host.docker.internal:8080/realms/floecat/protocol/openid-connect/token \
   | jq -r .access_token)
 ```
 
 4) Run the Shell CLI in Docker (interactive):
 ```
 FLOECAT_TOKEN=$TOKEN \
-FLOECAT_ACCOUNT=<admin_account_id> \
+FLOECAT_ACCOUNT=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2 \
 make cli-docker
 ```
+Note: `make cli-docker` now fetches its own token inside the Docker network via
+`http://keycloak:8080/...` (see `KEYCLOAK_TOKEN_URL_DOCKER` in the Makefile).
 
 Inside the shell:
 ```
-account <admin_account_id>
+account 5eaa9cd5-7d08-3750-9457-cfe800b0b9d2
 account list
 ```
 
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
+- `floecat.auth.platform-admin.role=platform-admin` to authorize account management.
 - `floecat.interceptor.session.header=x-floe-session` to enable the header.
+Seed fixture sync in OIDC mode (optional):
+- `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
+- `floecat.seed.oidc.client-id=floecat-client`
+- `floecat.seed.oidc.client-secret=floecat-secret`
 - `floecat.interceptor.account.header=x-account-id` to provide the account identifier (internal;
   not part of Iceberg REST).
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
@@ -120,11 +135,13 @@ One of:
 Environment equivalents:
 - QUARKUS_OIDC_TENANT_ENABLED
 - FLOECAT_AUTH_MODE
-- FLOECAT_AUTH_ADMIN_ACCOUNT
-- FLOECAT_AUTH_ADMIN_ACCOUNT_ID
+- FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_SESSION_HEADER
 - FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_SEED_OIDC_ISSUER
+- FLOECAT_SEED_OIDC_CLIENT_ID
+- FLOECAT_SEED_OIDC_CLIENT_SECRET
 - QUARKUS_OIDC_TOKEN_AUDIENCE
 - QUARKUS_OIDC_AUTH_SERVER_URL
 - QUARKUS_OIDC_PUBLIC_KEY
@@ -142,8 +159,7 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
 - Use Keycloak dev realm or another local IdP.
 - `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`
 - `quarkus.oidc.token.audience=floecat-client` (or `floecat-client,trino-client` if using Trino).
-- `floecat.auth.admin.account=floecat-admin`
-- `floecat.auth.admin.account.id=21232f29-7a57-35a7-8389-4a0e4a801fc3`
+- Use the IdP role `platform-admin` for account management.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
 - Consider `floecat.interceptor.validate.account=false` if account ids are trusted in dev.
 
@@ -155,7 +171,7 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
   - `quarkus.oidc.auth-server-url=https://<issuer>/realms/<realm>`
   - `quarkus.oidc.public-key=...` (offline JWT validation)
 - `quarkus.oidc.token.audience=<audience>`
-- `floecat.auth.admin.account=<admin display name>`
+- Use the IdP role `platform-admin` for account management.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
 - `floecat.interceptor.validate.account=true` (recommended in prod)
 - Ensure transport security (TLS) at the edge and IdP issuer URLs use HTTPS.
@@ -168,7 +184,12 @@ of via an upstream engine session token.
 
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
+- `floecat.auth.platform-admin.role=platform-admin` to authorize account management.
 - `floecat.interceptor.authorization.header=authorization` to enable the header.
+Seed fixture sync in OIDC mode (optional):
+- `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
+- `floecat.seed.oidc.client-id=floecat-client`
+- `floecat.seed.oidc.client-secret=floecat-secret`
 - `floecat.interceptor.account.header=x-account-id` to provide the account identifier (internal;
   not part of Iceberg REST).
 - `floecat.interceptor.validate.account=false` to skip account lookup when the caller supplies a
@@ -183,11 +204,13 @@ One of:
 Environment equivalents:
 - QUARKUS_OIDC_TENANT_ENABLED
 - FLOECAT_AUTH_MODE
-- FLOECAT_AUTH_ADMIN_ACCOUNT
-- FLOECAT_AUTH_ADMIN_ACCOUNT_ID
+- FLOECAT_AUTH_PLATFORM_ADMIN_ROLE
 - FLOECAT_INTERCEPTOR_AUTHORIZATION_HEADER
 - FLOECAT_INTERCEPTOR_ACCOUNT_HEADER
 - FLOECAT_INTERCEPTOR_VALIDATE_ACCOUNT
+- FLOECAT_SEED_OIDC_ISSUER
+- FLOECAT_SEED_OIDC_CLIENT_ID
+- FLOECAT_SEED_OIDC_CLIENT_SECRET
 - QUARKUS_OIDC_TOKEN_AUDIENCE
 - QUARKUS_OIDC_AUTH_SERVER_URL
 - QUARKUS_OIDC_PUBLIC_KEY

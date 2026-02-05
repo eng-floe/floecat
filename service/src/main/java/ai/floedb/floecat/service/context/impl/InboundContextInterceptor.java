@@ -355,8 +355,25 @@ public class InboundContextInterceptor {
   }
 
   private String requireAccountIdClaim(SecurityIdentity identity) {
+    return requireAccountIdClaim(identity, List.of());
+  }
+
+  private String requireAccountIdClaim(SecurityIdentity identity, List<String> roles) {
     JsonWebToken jwt = requireJwt(identity);
     Object claim = jwt.getClaim(accountClaimName);
+    String accountId = extractAccountIdClaim(claim);
+    if (!isBlank(accountId)) {
+      return accountId;
+    }
+    if (hasPlatformAdminRole(roles)) {
+      return "";
+    }
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing " + accountClaimName + " claim")
+        .asRuntimeException();
+  }
+
+  private String extractAccountIdClaim(Object claim) {
     if (claim instanceof String value && !value.isBlank()) {
       return value;
     }
@@ -370,9 +387,15 @@ public class InboundContextInterceptor {
         }
       }
     }
-    throw Status.UNAUTHENTICATED
-        .withDescription("missing " + accountClaimName + " claim")
-        .asRuntimeException();
+    return null;
+  }
+
+  private static boolean hasPlatformAdminRole(List<String> roles) {
+    if (roles == null || roles.isEmpty()) {
+      return false;
+    }
+    String platformRole = RolePermissions.platformAdminRole();
+    return roles.stream().anyMatch(role -> role.equalsIgnoreCase(platformRole));
   }
 
   private String requireSubjectClaim(SecurityIdentity identity) {
@@ -460,23 +483,36 @@ public class InboundContextInterceptor {
 
   private PrincipalContext buildPrincipalFromIdentity(
       SecurityIdentity identity, String queryIdHeader, Optional<String> accountHeaderValue) {
-    String accountId = requireAccountIdClaim(identity);
-    if (accountHeaderValue.isPresent() && !accountHeaderValue.orElseThrow().equals(accountId)) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("account header does not match principal")
-          .asRuntimeException();
-    }
-    if (validateAccount) {
-      validateAccount(accountId);
-    }
     String subject = requireSubjectClaim(identity);
     var roles = extractRoles(identity);
+    String accountId = requireAccountIdClaim(identity, roles);
+    if (accountHeaderValue.isPresent()) {
+      String headerValue = accountHeaderValue.orElseThrow();
+      if (accountId.isBlank()) {
+        throw Status.UNAUTHENTICATED
+            .withDescription("account header provided without account_id claim")
+            .asRuntimeException();
+      }
+      if (!headerValue.equals(accountId)) {
+        throw Status.UNAUTHENTICATED
+            .withDescription("account header does not match principal")
+            .asRuntimeException();
+      }
+    }
+    if (validateAccount && !accountId.isBlank()) {
+      validateAccount(accountId);
+    }
     PrincipalContext.Builder builder =
         PrincipalContext.newBuilder().setAccountId(accountId).setSubject(subject);
     if (!isBlank(queryIdHeader)) {
       builder.setQueryId(queryIdHeader);
     }
-    RolePermissions.permissionsForRoles(roles, authMode == AuthMode.DEV)
+    List<String> effectiveRoles = roles;
+    if (accountId.isBlank()) {
+      String platformRole = RolePermissions.platformAdminRole();
+      effectiveRoles = roles.stream().filter(role -> role.equalsIgnoreCase(platformRole)).toList();
+    }
+    RolePermissions.permissionsForRoles(effectiveRoles, authMode == AuthMode.DEV)
         .forEach(builder::addPermissions);
     return builder.build();
   }

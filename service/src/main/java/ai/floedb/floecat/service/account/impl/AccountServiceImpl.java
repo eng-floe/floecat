@@ -144,6 +144,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   final var pc = principal.get();
                   final var corr = pc.getCorrelationId();
                   final var accountId = pc.getAccountId();
+                  final var idempotencyAccount =
+                      (accountId == null || accountId.isBlank()) ? "platform" : accountId;
                   authz.require(pc, "account.write");
 
                   final var tsNow = nowTs();
@@ -188,7 +190,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                       runIdempotentCreate(
                           () ->
                               MutationOps.createProto(
-                                  accountId,
+                                  idempotencyAccount,
                                   "CreateAccount",
                                   idempotencyKey,
                                   () -> fingerprint,
@@ -247,14 +249,22 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
             corr, ACCOUNT_ID_KIND_INVALID, Map.of("kind", candidate.getKind().name()));
       }
       if (candidate.getAccountId().isBlank()) {
-        candidate.setAccountId(principalAccountId);
+        if (principalAccountId != null && !principalAccountId.isBlank()) {
+          candidate.setAccountId(principalAccountId);
+        } else {
+          candidate.setAccountId(candidate.getId());
+        }
       }
       return candidate.build();
     }
 
     final String accountUuid = AccountIds.randomAccountId();
+    final String accountId =
+        (principalAccountId == null || principalAccountId.isBlank())
+            ? accountUuid
+            : principalAccountId;
     return ResourceId.newBuilder()
-        .setAccountId(principalAccountId)
+        .setAccountId(accountId)
         .setId(accountUuid)
         .setKind(ResourceKind.RK_ACCOUNT)
         .build();

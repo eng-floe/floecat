@@ -7,6 +7,9 @@
     "realm": [
       {
         "name": "administrator"
+      },
+      {
+        "name": "platform-admin"
       }
     ]
   },
@@ -48,7 +51,7 @@
           "consentRequired": false,
           "config": {
             "claim.name": "account_id",
-            "claim.value": "21232f29-7a57-35a7-8389-4a0e4a801fc3",
+            "claim.value": "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true"
@@ -106,7 +109,7 @@
           "consentRequired": false,
           "config": {
             "claim.name": "account_id",
-            "claim.value": "21232f29-7a57-35a7-8389-4a0e4a801fc3",
+            "claim.value": "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true"
@@ -143,7 +146,8 @@
       ],
       "requiredActions": [],
       "realmRoles": [
-        "administrator"
+        "administrator",
+        "platform-admin"
       ]
     },
     {
@@ -152,7 +156,8 @@
       "serviceAccountClientId": "floecat-client",
       "requiredActions": [],
       "realmRoles": [
-        "administrator"
+        "administrator",
+        "platform-admin"
       ]
     },
     {
@@ -161,7 +166,8 @@
       "serviceAccountClientId": "trino-client",
       "requiredActions": [],
       "realmRoles": [
-        "administrator"
+        "administrator",
+        "platform-admin"
       ]
     }
   ]

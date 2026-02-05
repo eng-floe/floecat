@@ -88,6 +88,7 @@ DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --prof
 KEYCLOAK_PORT ?= 12221
 KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
 KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
+KEYCLOAK_TOKEN_URL_DOCKER ?= http://keycloak:8080/realms/floecat/protocol/openid-connect/token
 JIB_PLATFORMS ?=
 JIB_BASE_IMAGE ?= eclipse-temurin:25-jre
 UNAME_M := $(shell uname -m)
@@ -650,7 +651,7 @@ cli-docker-token:
 	  -d "client_id=floecat-client" \
 	  -d "client_secret=floecat-secret" \
 	  -d "grant_type=client_credentials" \
-	  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token | jq -r .access_token
+	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token
 
 .PHONY: cli-docker
 cli-docker:
@@ -659,7 +660,7 @@ cli-docker:
 	  -d "client_id=floecat-client" \
 	  -d "client_secret=floecat-secret" \
 	  -d "grant_type=client_credentials" \
-	  http://host.docker.internal:12221/realms/floecat/protocol/openid-connect/token | jq -r .access_token); \
+	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token); \
 	FLOECAT_ENV_FILE=./env.localstack \
 	$(DOCKER_COMPOSE_MAIN) run --rm \
 	  -e FLOECAT_TOKEN=$$TOKEN \
