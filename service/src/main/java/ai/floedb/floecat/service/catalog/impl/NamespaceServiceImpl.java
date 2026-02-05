@@ -424,9 +424,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       throw GrpcErrors.conflict(
                           correlationId,
                           GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
-                          Map.of(
-                              "catalog", catalogName,
-                              "path", String.join(".", fullPath)));
+                          Map.of("catalog", catalogName, "path", String.join(".", fullPath)));
                     }
                   }
 
@@ -498,8 +496,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                           GeneratedErrorMessages.MessageKey
                                               .NAMESPACE_ALREADY_EXISTS,
                                           Map.of(
-                                              "catalog", catalogName,
-                                              "path", String.join(".", fullPath)));
+                                              "catalog",
+                                              catalogName,
+                                              "path",
+                                              String.join(".", fullPath)));
                                     }
                                     markerStore.bumpCatalogMarker(spec.getCatalogId());
                                     bumpParentNamespaceMarker(
@@ -634,9 +634,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   conflictPath.add(desired.getDisplayName());
                   String conflictCatalog = resolveCatalogName(desired.getCatalogId());
                   var conflictInfo =
-                      Map.of(
-                          "catalog", conflictCatalog,
-                          "path", String.join(".", conflictPath));
+                      Map.of("catalog", conflictCatalog, "path", String.join(".", conflictPath));
 
                   try {
                     boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
