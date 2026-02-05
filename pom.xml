@@ -211,6 +211,7 @@
             <inputExclude>log/*</inputExclude>
             <inputExclude>service/log/*</inputExclude>
             <inputExclude>.gitignore</inputExclude>
+            <inputExclude>.gitleaks.toml</inputExclude>
             <inputExclude>**/target/**</inputExclude>
             <inputExclude>**/*.md</inputExclude>
             <inputExclude>**/org.mockito.plugins.MockMaker</inputExclude>
