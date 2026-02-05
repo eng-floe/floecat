@@ -48,11 +48,14 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
       if (withTtl) {
         ensureTtlEnabled(tableName, ATTR_TTL);
       }
-    } catch (ResourceInUseException rie) {
+    } catch (Throwable t) {
+      if (!isResourceInUse(t)) {
+        rethrow(t);
+      }
       log.warn(
           "DynamoDB table bootstrap found table already exists for {}: {}",
           tableName,
-          rie.toString());
+          t.toString());
     }
   }
 
@@ -96,7 +99,15 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
                     .build())
             .build();
 
-    ddb.createTable(req).join();
+    try {
+      ddb.createTable(req).join();
+    } catch (Throwable t) {
+      if (isResourceInUse(t)) {
+        log.warn("DynamoDB table already exists or is being created: {}", tableName);
+      } else {
+        rethrow(t);
+      }
+    }
 
     if (waitSeconds > 0) {
       DynamoDbAsyncWaiter waiter = ddb.waiter();
@@ -115,6 +126,10 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
   }
 
   private void ensureTtlEnabled(String tableName, String ttlAttrName) {
+    if (!enabled) {
+      log.info("DynamoDB table bootstrap is disabled.");
+      return;
+    }
     try {
       var current =
           ddb.describeTimeToLive(DescribeTimeToLiveRequest.builder().tableName(tableName).build())
@@ -184,6 +199,15 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     Throwable cur = t;
     while (cur != null) {
       if (cur instanceof ResourceNotFoundException) return true;
+      cur = cur.getCause();
+    }
+    return false;
+  }
+
+  private static boolean isResourceInUse(Throwable t) {
+    Throwable cur = t;
+    while (cur != null) {
+      if (cur instanceof ResourceInUseException) return true;
       cur = cur.getCause();
     }
     return false;
