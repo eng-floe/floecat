@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
@@ -374,14 +375,16 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       ResourceKind.RK_CATALOG,
                       "spec.catalog_id",
                       correlationId);
-                  catalogRepo
-                      .getById(spec.getCatalogId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId,
-                                  GeneratedErrorMessages.MessageKey.CATALOG,
-                                  Map.of("id", spec.getCatalogId().getId())));
+                  var catalog =
+                      catalogRepo
+                          .getById(spec.getCatalogId())
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId,
+                                      GeneratedErrorMessages.MessageKey.CATALOG,
+                                      Map.of("id", spec.getCatalogId().getId())));
+                  String catalogName = catalog.getDisplayName();
 
                   var tsNow = nowTs();
 
@@ -422,8 +425,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           correlationId,
                           GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                           Map.of(
-                              "display_name", display,
-                              "catalog_id", spec.getCatalogId().getId(),
+                              "catalog", catalogName,
                               "path", String.join(".", fullPath)));
                     }
                   }
@@ -496,8 +498,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                           GeneratedErrorMessages.MessageKey
                                               .NAMESPACE_ALREADY_EXISTS,
                                           Map.of(
-                                              "display_name", display,
-                                              "catalog_id", spec.getCatalogId().getId(),
+                                              "catalog", catalogName,
                                               "path", String.join(".", fullPath)));
                                     }
                                     markerStore.bumpCatalogMarker(spec.getCatalogId());
@@ -629,10 +630,13 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         .build();
                   }
 
+                  var conflictPath = new ArrayList<>(desired.getParentsList());
+                  conflictPath.add(desired.getDisplayName());
+                  String conflictCatalog = resolveCatalogName(desired.getCatalogId());
                   var conflictInfo =
                       Map.of(
-                          "display_name", desired.getDisplayName(),
-                          "catalog_id", desired.getCatalogId().getId());
+                          "catalog", conflictCatalog,
+                          "path", String.join(".", conflictPath));
 
                   try {
                     boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
@@ -938,6 +942,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       }
     }
     return out.build();
+  }
+
+  private String resolveCatalogName(ResourceId catalogId) {
+    return catalogRepo
+        .getById(catalogId)
+        .map(Catalog::getDisplayName)
+        .filter(name -> !name.isBlank())
+        .orElse(catalogId.getId());
   }
 
   private void bumpParentNamespaceMarker(
