@@ -204,6 +204,7 @@ class SystemObjectScanContextTest {
             List.of(), // outputColumns
             List.of(), // baseRelations
             List.of(), // creationSearchPath
+            GraphNodeOrigin.USER, // origin
             Map.of(), // properties
             Optional.empty(), // owner
             Map.of()); // engineHints

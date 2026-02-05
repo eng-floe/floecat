@@ -352,6 +352,7 @@ public class SystemNodeRegistry {
               viewColumns,
               List.of(),
               List.of(),
+              GraphNodeOrigin.SYSTEM,
               Map.of(),
               Optional.empty(),
               viewHints);

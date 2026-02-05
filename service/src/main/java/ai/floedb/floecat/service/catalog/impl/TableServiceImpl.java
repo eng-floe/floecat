@@ -326,7 +326,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   // token.
                   String nextToken = repoNext;
 
-                  if (nextToken.isBlank() && out.size() == want) {
+                  if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
                     // Continue in SYSTEM phase.
                     // lastEmittedRel may be blank if we haven't emitted any SYSTEM yet (bridge
                     // case):

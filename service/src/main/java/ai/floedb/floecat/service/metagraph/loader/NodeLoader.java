@@ -188,6 +188,7 @@ public class NodeLoader {
         List.<SchemaColumn>of(),
         List.<ResourceId>of(),
         List.of(),
+        GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
         NO_ENGINE_HINTS);

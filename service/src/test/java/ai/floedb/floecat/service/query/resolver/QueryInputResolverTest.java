@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -643,6 +644,7 @@ public class QueryInputResolverTest {
         List.of(),
         baseRelations,
         List.of(),
+        GraphNodeOrigin.USER,
         Map.of(),
         Optional.empty(),
         Map.of());
