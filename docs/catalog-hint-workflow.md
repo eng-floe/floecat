@@ -59,7 +59,7 @@ When `UserObjectBundleService` builds responses it:
 
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.
-* the decorator calls `FloeHintResolver`, wraps the resulting proto in `EngineSpecific` via `FloePayloads`, and attaches it to the bundle.
+* the decorator calls `FloeHintResolver`, asks the matching `FloePayloads.Descriptor` for the payloadType string (`Descriptor.type()`) and, when replaying overlays, optionally decodes persisted bytes via `Descriptor.decode()`, uses `toEngineSpecific` to build the wrapper, and attaches the `EngineSpecific` blob to the bundle.
 * if snapshot-aware stats exist for the relation, the bundle includes them in `RelationInfo.stats` (a new `RelationStats` proto carrying best-effort `row_count` and `total_size_bytes`). This field is optional: resolvers may see `RelationInfo.stats` unset for views, system tables, or any unpinned relation, and should treat missing stats as a best-effort decoration rather than required data.
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.
@@ -81,13 +81,14 @@ Those properties are loaded back into the `MetaGraph` because `NodeLoader` event
 `EngineHintMetadata.hintsFromProperties(...)` and `EngineHintMetadata.columnHints(...)` for every catalog, namespace, table, and view, so both relation- and column-level hints reappear even when no decorator runs. Column payloads now key by the stable `columnId` from `SchemaColumn`/`ColumnIdAlgorithm` rather than the ordinal/attnum, so loaders and decorators agree on the identifier. The live request path still benefits from the `EngineHintManager` cache that sits atop the provider pipeline.
 
 Because persisted hints must stay in sync with the schema they describe, any update that touches the logical
-definition (e.g., `schema_json`, `upstream`, or any `upstream.*` field) now clears the `engine.hint.*` entries before the
+definition (currently `schema_json` and `upstream`/`upstream.*` fields) clears the `engine.hint.*` entries before the
 service writes the table/view metadata. That forces the next decorator run to treat the object as new, recomputing
 fresh OIDs and payloads rather than reusing stale values. These change paths cover the current schema API—the cleaner
-looks for the canonical schema payload (`schema_json`) and upstream definitions that drive column layout. If you add other
-schema-affecting paths (e.g., column lists, format changes, partitioning metadata), include them in the mask or invoke the
-clear helper directly. Likewise, upstream may contain metadata unrelated to column layout (credentials, location, notes), so
-the cleaner can regenerate hints even when only those fields change; refine the mask if you want to avoid that extra churn.
+runs when one of those canonical fields is present in the request mask, so other schema-affecting updates (e.g., column
+lists, format changes, partitioning metadata) need to include `schema_json` or `upstream.*` in their mask (or call the
+cleaner directly) for hints to be cleared. Upstream may also carry metadata unrelated to column layout (credentials,
+location, notes), so the cleaner can regenerate hints even when only those fields change; refine the mask if you want
+to avoid that extra churn.
 
 ### Compatibility & normalization guarantees
 
@@ -123,7 +124,7 @@ Both flows rely on:
 
 * Normalized `EngineContext` (kind+version),
 * `FloeHintResolver` for overlay/default fusion,
-* A shared `FloePayloads` registry that knows how to wrap protos into `EngineSpecific`.
+* A shared `FloePayloads.Descriptor` registry that exposes the payloadType string and decoder for every hint.
 
 Because the resolver caches parsed schema info and the decorator is lightweight, the entire workflow scales to large catalogs without redundant recomputation.
 

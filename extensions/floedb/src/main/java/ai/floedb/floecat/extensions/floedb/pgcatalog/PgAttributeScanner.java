@@ -16,11 +16,12 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -98,7 +99,8 @@ public final class PgAttributeScanner implements SystemObjectScanner {
 
     // Resolve table OID (stable, deterministic)
     int relOid =
-        ScannerUtils.oid(ctx, table.id(), FloePayloads.RELATION, FloeRelationSpecific::getOid);
+        ScannerUtils.oid(
+            ctx, table.id(), RELATION, FloeRelationSpecific.class, FloeRelationSpecific::getOid);
 
     // Get logical schema (already normalized by LogicalSchemaMapper)
     List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());

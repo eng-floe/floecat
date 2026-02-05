@@ -66,6 +66,10 @@ class EngineHintSchemaCleanerTest {
     return FieldMask.newBuilder().addPaths("schema_json").build();
   }
 
+  private static FieldMask schemaColumnsMask() {
+    return FieldMask.newBuilder().addPaths("schema_json.columns").build();
+  }
+
   private static FieldMask upstreamMask() {
     return FieldMask.newBuilder().addPaths("upstream.pointer").build();
   }
@@ -127,6 +131,7 @@ class EngineHintSchemaCleanerTest {
   void shouldClearHints_schemaAndUpstreamPaths() {
     assertThat(cleaner.shouldClearHints(schemaMask())).isTrue();
     assertThat(cleaner.shouldClearHints(upstreamMask())).isTrue();
+    assertThat(cleaner.shouldClearHints(schemaColumnsMask())).isTrue();
     assertThat(cleaner.shouldClearHints(nonSchemaMask())).isFalse();
   }
 

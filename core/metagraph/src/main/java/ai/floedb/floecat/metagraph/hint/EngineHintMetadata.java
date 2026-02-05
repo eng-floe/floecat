@@ -61,6 +61,18 @@ public final class EngineHintMetadata {
     return normalized;
   }
 
+  private static Optional<String> tryNormalizePayloadType(String payloadType) {
+    try {
+      String normalized = normalizePayloadType(payloadType);
+      return normalized.isEmpty() ? Optional.empty() : Optional.of(normalized);
+    } catch (IllegalArgumentException e) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(e, "Ignoring invalid payload type [%s]", payloadType);
+      }
+      return Optional.empty();
+    }
+  }
+
   public static String tableHintKey(String payloadType) {
     return HintType.RELATION.keyFor(payloadType, null);
   }
@@ -301,14 +313,18 @@ public final class EngineHintMetadata {
         if (lastDot <= 0) {
           return Optional.empty();
         }
-        String payloadType = normalizePayloadType(suffix.substring(0, lastDot));
+        Optional<String> payloadType = tryNormalizePayloadType(suffix.substring(0, lastDot));
+        if (payloadType.isEmpty()) {
+          return Optional.empty();
+        }
         String ordinal = suffix.substring(lastDot + 1);
-        if (payloadType.isBlank() || ordinal.isBlank()) {
+        String normalizedPayloadType = payloadType.get();
+        if (normalizedPayloadType.isBlank() || ordinal.isBlank()) {
           return Optional.empty();
         }
         try {
           long columnId = Long.parseLong(ordinal);
-          return Optional.of(new HintHeader(this, payloadType, columnId));
+          return Optional.of(new HintHeader(this, normalizedPayloadType, columnId));
         } catch (NumberFormatException e) {
           return Optional.empty();
         }
@@ -328,7 +344,8 @@ public final class EngineHintMetadata {
         if (suffix.isBlank()) {
           return Optional.empty();
         }
-        return Optional.of(new HintHeader(this, normalizePayloadType(suffix), null));
+        Optional<String> payloadType = tryNormalizePayloadType(suffix);
+        return payloadType.map(pt -> new HintHeader(this, pt, null));
       }
     };
 

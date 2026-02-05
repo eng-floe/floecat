@@ -17,7 +17,7 @@
 package ai.floedb.floecat.extensions.floedb.validation;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
@@ -130,9 +130,19 @@ final class ValidationSupport {
       ValidationRunContext runContext,
       ValidationScope scope,
       List<EngineSpecificRule> rules,
-      PayloadDescriptor<T> descriptor,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass,
       String context,
       List<ValidationIssue> issues) {
+    if (!descriptor.messageClass().equals(messageClass)) {
+      throw new IllegalArgumentException(
+          "Descriptor "
+              + descriptor.name()
+              + " requires "
+              + descriptor.messageClass().getSimpleName()
+              + ", got "
+              + messageClass.getSimpleName());
+    }
     Objects.requireNonNull(runContext, "runContext");
     if (rules == null || rules.isEmpty()) {
       return List.of();
@@ -169,6 +179,16 @@ final class ValidationSupport {
       PayloadCacheKey cacheKey = new PayloadCacheKey(rule, descriptor.type());
       Message cached = runContext.get(cacheKey);
       if (cached != null) {
+        if (!messageClass.isInstance(cached)) {
+          err(
+              issues,
+              "floe.payload.decode_failed",
+              context,
+              descriptor.type(),
+              formatInterval(interval),
+              "cached-type-mismatch");
+          continue;
+        }
         @SuppressWarnings("unchecked")
         T typed = (T) cached;
         decoded.add(new DecodedRule<>(rule, interval, typed));
@@ -177,7 +197,7 @@ final class ValidationSupport {
       }
 
       try {
-        T payload = descriptor.decoder().apply(rule.extensionPayload());
+        T payload = messageClass.cast(descriptor.decode(rule.extensionPayload()));
         runContext.put(cacheKey, payload);
         decoded.add(new DecodedRule<>(rule, interval, payload));
         matchedIntervals.add(interval);

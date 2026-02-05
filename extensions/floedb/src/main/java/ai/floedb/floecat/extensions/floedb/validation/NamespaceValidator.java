@@ -16,10 +16,11 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -66,7 +67,13 @@ final class NamespaceValidator implements SectionValidator<SimpleValidationResul
     String normalizedName = normalizedName(name);
     List<ValidationSupport.DecodedRule<FloeNamespaceSpecific>> decoded =
         ValidationSupport.decodeAllPayloads(
-            runContext, scope, ns.engineSpecific(), FloePayloads.NAMESPACE, ctx, errors);
+            runContext,
+            scope,
+            ns.engineSpecific(),
+            NAMESPACE,
+            FloeNamespaceSpecific.class,
+            ctx,
+            errors);
     for (ValidationSupport.DecodedRule<FloeNamespaceSpecific> dr : decoded) {
       FloeNamespaceSpecific payload = dr.payload();
       if (!ValidationSupport.requirePositiveOid(errors, CODE_OID_REQUIRED, ctx, payload.getOid())) {

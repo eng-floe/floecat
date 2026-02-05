@@ -16,9 +16,10 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -64,11 +65,17 @@ final class OperatorValidator implements SectionValidator<OperatorValidationResu
       String ctx = ValidationSupport.context("operator", op.name());
       List<ValidationSupport.DecodedRule<FloeOperatorSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, op.engineSpecific(), FloePayloads.OPERATOR, ctx, errors);
+              runContext,
+              scope,
+              op.engineSpecific(),
+              OPERATOR,
+              FloeOperatorSpecific.class,
+              ctx,
+              errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.OPERATOR.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, OPERATOR.type(), ctx, errors);
       for (ValidationSupport.DecodedRule<FloeOperatorSpecific> decodedRule : decoded) {
         rows.add(new OperatorRow(ctx, op, decodedRule));
         decodedRules.add(decodedRule);

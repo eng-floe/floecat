@@ -41,7 +41,7 @@ public final class EngineOidGeneratorProvider {
     return generator;
   }
 
-  public static EngineOidGenerator getInstance() {
+  public static EngineOidGenerator instance() {
     return instance;
   }
 

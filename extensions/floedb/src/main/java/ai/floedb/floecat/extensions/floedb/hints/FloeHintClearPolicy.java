@@ -124,7 +124,8 @@ public final class FloeHintClearPolicy {
       if (path == null) {
         continue;
       }
-      if (path.trim().equalsIgnoreCase(SCHEMA_FIELD)) {
+      String normalized = path.trim().toLowerCase();
+      if (normalized.equals(SCHEMA_FIELD) || normalized.startsWith(SCHEMA_FIELD + ".")) {
         return true;
       }
     }

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.extensions.floedb.utils;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -54,7 +55,7 @@ class ScannerUtilsColumnPayloadTest {
 
     long columnId = 5L;
     FloeColumnSpecific expected = FloeColumnSpecific.newBuilder().setAttnum(42).build();
-    String payloadType = FloePayloads.COLUMN.type();
+    String payloadType = COLUMN.type();
     EngineHintKey key = new EngineHintKey("floedb", "1", payloadType);
     EngineHint hint = new EngineHint(payloadType, expected.toByteArray());
 
@@ -75,7 +76,12 @@ class ScannerUtilsColumnPayloadTest {
 
     Optional<FloeColumnSpecific> persisted =
         ScannerUtils.columnPayload(
-            overlay, tableId, column.getId(), FloePayloads.COLUMN, EngineContext.of("floedb", "1"));
+            overlay,
+            tableId,
+            column.getId(),
+            COLUMN,
+            FloeColumnSpecific.class,
+            EngineContext.of("floedb", "1"));
 
     assertThat(persisted).isPresent().contains(expected);
   }

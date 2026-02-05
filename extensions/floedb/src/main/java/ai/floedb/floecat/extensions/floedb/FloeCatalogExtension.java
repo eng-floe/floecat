@@ -16,13 +16,13 @@
 
 package ai.floedb.floecat.extensions.floedb;
 
-import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintClearPolicy;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
-import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.validation.FloeSystemCatalogValidator;
 import ai.floedb.floecat.extensions.floedb.validation.ValidationScope;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
@@ -329,8 +329,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
         new ExtensionInfo<>(EngineFloeExtensions.floeRelation, RELATION),
         new ExtensionInfo<>(EngineFloeExtensions.floeColumn, COLUMN),
         new ExtensionInfo<>(EngineFloeExtensions.floeCast, CAST),
-        new ExtensionInfo<>(
-            EngineFloeExtensions.floeTypePlanningSemantics, TYPE_PLANNING_SEMANTICS),
+        new ExtensionInfo<>(EngineFloeExtensions.floeTypePlanningSemantics, TYPE_PLANNING),
         new ExtensionInfo<>(EngineFloeExtensions.floeAccessMethods, ACCESS_METHODS),
         new ExtensionInfo<>(EngineFloeExtensions.floeOperatorFamilies, OPERATOR_FAMILIES),
         new ExtensionInfo<>(EngineFloeExtensions.floeOperatorClasses, OPERATOR_CLASSES),
@@ -343,7 +342,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   /** Extension registry entry with proto extension and payload descriptor */
   private record ExtensionInfo<T extends com.google.protobuf.Message>(
       com.google.protobuf.GeneratedMessage.GeneratedExtension<EngineSpecific, T> extension,
-      PayloadDescriptor<T> descriptor) {}
+      FloePayloads.Descriptor descriptor) {}
 
   // ---------------------------------------------------------------------
   // Convert readable PBtxt → opaque payload bytes
@@ -376,7 +375,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
 
   /** Rewrite a proto2 extension into opaque payload bytes. */
   protected <T extends Message> EngineSpecific rewriteExtension(
-      EngineSpecific es, T extension, PayloadDescriptor<T> descriptor) {
+      EngineSpecific es, T extension, FloePayloads.Descriptor descriptor) {
 
     try {
       return es.toBuilder()

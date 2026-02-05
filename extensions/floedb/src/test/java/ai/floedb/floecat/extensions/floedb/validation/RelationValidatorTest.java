@@ -16,11 +16,11 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -148,12 +148,7 @@ class RelationValidatorTest {
     builder.setOid(oid);
     builder.setNspname(canonical);
     return new EngineSpecificRule(
-        "floedb",
-        "1.0",
-        "",
-        FloePayloads.NAMESPACE.type(),
-        builder.build().toByteArray(),
-        Map.of());
+        "floedb", "1.0", "", NAMESPACE.type(), builder.build().toByteArray(), Map.of());
   }
 
   private EngineSpecificRule relationRule(
@@ -164,7 +159,7 @@ class RelationValidatorTest {
     builder.setRelkind(relkind);
     builder.setRelname(relname == null ? lastSegment(canonicalName) : relname);
     return new EngineSpecificRule(
-        "floedb", "1.0", "", FloePayloads.RELATION.type(), builder.build().toByteArray(), Map.of());
+        "floedb", "1.0", "", RELATION.type(), builder.build().toByteArray(), Map.of());
   }
 
   private int canonicalUuid(String canonical) {

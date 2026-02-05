@@ -117,4 +117,11 @@ class EngineHintMetadataTest {
     assertThatIllegalArgumentException()
         .isThrownBy(() -> EngineHintMetadata.tableHintKey("bad;payload"));
   }
+
+  @Test
+  void columnHintsIgnoreInvalidPayloadType() {
+    Map<String, String> props =
+        Map.of("engine.hint.column.bad;payload.3", "engineKind=x;engineVersion=y;payload=z");
+    assertThat(EngineHintMetadata.columnHints(props)).isEmpty();
+  }
 }

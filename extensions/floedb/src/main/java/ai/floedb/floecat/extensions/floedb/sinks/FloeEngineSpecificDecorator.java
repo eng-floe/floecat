@@ -16,12 +16,13 @@
 
 package ai.floedb.floecat.extensions.floedb.sinks;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint;
@@ -76,7 +77,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         relation.attribute(RESOLVER_KEY, resolver);
       }
       Optional<EngineSpecific> existing =
-          findExistingMetadata(column.builder(), normalizedKind, FloePayloads.COLUMN.type());
+          findExistingMetadata(column.builder(), normalizedKind, COLUMN.type());
       if (existing.isPresent()) {
         return;
       }
@@ -92,11 +93,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
               column.logicalType());
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
       bufferColumnHint(
-          relation,
-          relation.relationId(),
-          column.id(),
-          FloePayloads.COLUMN.type(),
-          attribute.toByteArray());
+          relation, relation.relationId(), column.id(), COLUMN.type(), attribute.toByteArray());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -115,15 +112,14 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       return;
     }
     RelationInfo.Builder builder = relation.builder();
-    if (findExistingMetadata(builder, normalizedKind, FloePayloads.RELATION.type()).isPresent()) {
+    if (findExistingMetadata(builder, normalizedKind, RELATION.type()).isPresent()) {
       return;
     }
     try {
       FloeRelationSpecific relationSpecific =
           FloeHintResolver.relationSpecific(relation.resolutionContext(), relation.node());
       builder.addEngineSpecific(toEngineSpecific(normalizedKind, relationSpecific));
-      persistRelationHint(
-          engineContext, relation.relationId(), relationSpecific, FloePayloads.RELATION.type());
+      persistRelationHint(engineContext, relation.relationId(), relationSpecific, RELATION.type());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -146,7 +142,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         ScannerUtils.oid(
             context.overlay(),
             relation.node().id(),
-            FloePayloads.RELATION,
+            RELATION,
+            FloeRelationSpecific.class,
             FloeRelationSpecific::getOid,
             context.engineContext());
     relation.attribute(RELATION_OID_KEY, oid);
@@ -177,7 +174,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     }
     return EngineSpecific.newBuilder()
         .setEngineKind(engineKind)
-        .setPayloadType(FloePayloads.COLUMN.type())
+        .setPayloadType(COLUMN.type())
         .setPayload(column.toByteString())
         .build();
   }
@@ -207,7 +204,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     }
     return EngineSpecific.newBuilder()
         .setEngineKind(engineKind)
-        .setPayloadType(FloePayloads.RELATION.type())
+        .setPayloadType(RELATION.type())
         .setPayload(relationSpecific.toByteString())
         .build();
   }

@@ -59,7 +59,10 @@ public class EngineHintSchemaCleaner {
   }
 
   private boolean isSchemaPath(String path) {
-    return path.equals("schema_json") || path.equals("upstream") || path.startsWith("upstream.");
+    return path.equals("schema_json")
+        || path.startsWith("schema_json.")
+        || path.equals("upstream")
+        || path.startsWith("upstream.");
   }
 
   private Set<String> normalizedMaskPaths(FieldMask mask) {

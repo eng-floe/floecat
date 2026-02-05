@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.extensions.floedb.proto.FloeAggregateSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -80,11 +81,17 @@ final class AggregateValidator implements SectionValidator<SimpleValidationResul
       String ctx = ValidationSupport.context("aggregate", agg.name());
       List<ValidationSupport.DecodedRule<FloeAggregateSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, agg.engineSpecific(), FloePayloads.AGGREGATE, ctx, errors);
+              runContext,
+              scope,
+              agg.engineSpecific(),
+              AGGREGATE,
+              FloeAggregateSpecific.class,
+              ctx,
+              errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.AGGREGATE.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, AGGREGATE.type(), ctx, errors);
       for (ValidationSupport.DecodedRule<FloeAggregateSpecific> decodedRule : decoded) {
         rows.add(new AggregateRow(ctx, agg, decodedRule));
       }
