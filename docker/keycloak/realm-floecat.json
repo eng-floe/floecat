@@ -1,0 +1,174 @@
+{
+  "realm": "floecat",
+  "enabled": true,
+  "displayName": "Floecat",
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      {
+        "name": "administrator"
+      },
+      {
+        "name": "platform-admin"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "floecat-client",
+      "enabled": true,
+      "publicClient": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "floecat-secret",
+      "fullScopeAllowed": true,
+      "standardFlowEnabled": true,
+      "defaultClientScopes": [
+        "roles"
+      ],
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "floecat-client",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "account_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "account_id",
+            "claim.value": "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "trino-client",
+      "enabled": true,
+      "publicClient": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "trino-secret",
+      "fullScopeAllowed": true,
+      "standardFlowEnabled": true,
+      "defaultClientScopes": [
+        "roles"
+      ],
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "trino-client",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "account_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "account_id",
+            "claim.value": "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "floecat-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "floecat-admin@floecat.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "floecat-admin",
+          "temporary": false
+        }
+      ],
+      "requiredActions": [],
+      "realmRoles": [
+        "administrator",
+        "platform-admin"
+      ]
+    },
+    {
+      "username": "service-account-floecat-client",
+      "enabled": true,
+      "serviceAccountClientId": "floecat-client",
+      "requiredActions": [],
+      "realmRoles": [
+        "administrator",
+        "platform-admin"
+      ]
+    },
+    {
+      "username": "service-account-trino-client",
+      "enabled": true,
+      "serviceAccountClientId": "trino-client",
+      "requiredActions": [],
+      "realmRoles": [
+        "administrator",
+        "platform-admin"
+      ]
+    }
+  ]
+}

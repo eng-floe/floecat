@@ -24,11 +24,30 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import io.grpc.Metadata;
+import io.grpc.stub.AbstractStub;
+import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Optional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class GrpcClients {
+  private static final Metadata.Key<String> AUTHORIZATION =
+      Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+  private final Optional<String> headerName;
+  private final Optional<String> staticToken;
+
+  public GrpcClients(
+      @ConfigProperty(name = "floecat.reconciler.authorization.header") Optional<String> headerName,
+      @ConfigProperty(name = "floecat.reconciler.authorization.token")
+          Optional<String> staticToken) {
+    this.headerName = headerName.map(String::trim).filter(v -> !v.isBlank());
+    this.staticToken = staticToken.map(String::trim).filter(v -> !v.isBlank());
+  }
+
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
@@ -54,34 +73,66 @@ public class GrpcClients {
   ConnectorsGrpc.ConnectorsBlockingStub connector;
 
   public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
-    return directory;
+    return withAuth(directory);
   }
 
   public CatalogServiceGrpc.CatalogServiceBlockingStub catalog() {
-    return catalog;
+    return withAuth(catalog);
   }
 
   public NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace() {
-    return namespace;
+    return withAuth(namespace);
   }
 
   public TableServiceGrpc.TableServiceBlockingStub table() {
-    return table;
+    return withAuth(table);
   }
 
   public SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot() {
-    return snapshot;
+    return withAuth(snapshot);
   }
 
   public TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics() {
-    return statistics;
+    return withAuth(statistics);
   }
 
   public MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statisticsMutiny() {
-    return statisticsMutiny;
+    return withAuth(statisticsMutiny);
   }
 
   public ConnectorsGrpc.ConnectorsBlockingStub connector() {
-    return connector;
+    return withAuth(connector);
+  }
+
+  private Metadata.Key<String> authHeaderKey() {
+    if (headerName.isPresent() && !"authorization".equalsIgnoreCase(headerName.get())) {
+      return Metadata.Key.of(headerName.get(), Metadata.ASCII_STRING_MARSHALLER);
+    }
+    return AUTHORIZATION;
+  }
+
+  private String withBearerPrefix(String token) {
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      return token;
+    }
+    return "Bearer " + token;
+  }
+
+  private String authorizationToken() {
+    String contextToken = ReconcilerAuthContext.AUTHORIZATION_HEADER_VALUE_KEY.get();
+    if (contextToken != null && !contextToken.isBlank()) {
+      return contextToken;
+    }
+    return staticToken.orElse(null);
+  }
+
+  private <T extends AbstractStub<T>> T withAuth(T stub) {
+    String token = authorizationToken();
+    if (token == null || token.isBlank()) {
+      return stub;
+    }
+    Metadata metadata = new Metadata();
+    metadata.put(authHeaderKey(), withBearerPrefix(token));
+    return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 }

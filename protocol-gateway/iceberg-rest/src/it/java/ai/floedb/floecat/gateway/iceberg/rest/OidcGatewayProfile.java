@@ -14,28 +14,25 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.it.profiles;
+package ai.floedb.floecat.gateway.iceberg.rest;
 
-import ai.floedb.floecat.service.it.util.TestKeyPair;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-public class OidcSessionHeaderProfile implements QuarkusTestProfile {
+public class OidcGatewayProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
-    return Map.of(
-        "floecat.auth.mode", "oidc",
-        "quarkus.oidc.enabled", "true",
-        "quarkus.oidc.discovery-enabled", "false",
-        "quarkus.oidc.tenant-enabled", "true",
-        "quarkus.oidc.token.audience", "floecat-client",
-        "floecat.interceptor.validate.account", "false",
-        "floecat.interceptor.session.header", "x-floe-session",
-        "quarkus.oidc.public-key", TestKeyPair.publicKeyBase64());
+    return Map.ofEntries(
+        Map.entry("floecat.gateway.auth-mode", "oidc"),
+        Map.entry("floecat.gateway.account-claim", "account_id"),
+        Map.entry("quarkus.oidc.enabled", "true"),
+        Map.entry("quarkus.oidc.tenant-enabled", "true"),
+        Map.entry("quarkus.oidc.auth-server-url", "http://127.0.0.1:12221/realms/floecat"),
+        Map.entry("quarkus.oidc.token.audience", "floecat-client"));
   }
 
   @Override
   public String getConfigProfile() {
-    return "oidc-session-header";
+    return null;
   }
 }

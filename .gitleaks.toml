@@ -1,0 +1,10 @@
+[allowlist]
+description = "Allow known non-secret bootstrap UUID from history"
+paths = [
+  '''docs/external-authentication.md''',
+  '''docker/env.localstack''',
+  '''service/src/test/java/ai/floedb/floecat/service/it/profiles/KeycloakOidcProfile.java'''
+]
+regexes = [
+  '''21232f29-7a57-35a7-8389-4a0e4a801fc3'''
+]

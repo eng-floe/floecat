@@ -41,6 +41,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.*;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
@@ -79,6 +80,7 @@ public class ConnectorIT {
 
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerScheduler scheduler;
+  @Inject AccountRepository accountRepository;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
@@ -86,10 +88,14 @@ public class ConnectorIT {
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
+  private ResourceId seedAccountId;
+
   @BeforeEach
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    seedAccountId =
+        accountRepository.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId();
   }
 
   @Test
@@ -110,7 +116,7 @@ public class ConnectorIT {
 
   @Test
   void connectorEndToEnd() throws Exception {
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-e2e", "");
     var conn =
         TestSupport.createConnector(
@@ -202,7 +208,7 @@ public class ConnectorIT {
 
   @Test
   void dummyConnectorStatsRoundTrip() throws Exception {
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-stats", "");
 
     var conn =
@@ -267,7 +273,7 @@ public class ConnectorIT {
   void icebergFixtureFileStatsIncludeSequenceNumber() throws Exception {
     TestS3Fixtures.seedFixturesOnce();
 
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-iceberg-fixture", "");
 
     var dest =
@@ -334,7 +340,7 @@ public class ConnectorIT {
 
   @Test
   void dummyConnectorRespectsDestinationTableDisplayName() throws Exception {
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-dest-table", "");
 
     var dest =
@@ -395,7 +401,7 @@ public class ConnectorIT {
 
     TestDeltaFixtures.seedFixturesOnce();
 
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-delta", "");
 
     try (UcStubServer uc = UcStubServer.start(TestDeltaFixtures.tableUri())) {
@@ -451,7 +457,7 @@ public class ConnectorIT {
             .orElse(false);
     Assumptions.assumeTrue(enabled, "Disabled by test.glue.enabled=false");
 
-    var accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var accountId = seedAccountId;
 
     TestSupport.createCatalog(catalogService, "glue-iceberg-rest", "");
 

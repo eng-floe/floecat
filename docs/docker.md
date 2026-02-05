@@ -78,3 +78,13 @@ If `AWS_PROFILE` is unset, the SDK falls back to env vars or the instance/contai
 
 If your images run as a non-root user, mount `~/.aws` into that user’s home in
 `docker/docker-compose.yml`.
+
+## OIDC Notes
+
+- Only `docker/env.localstack` enables OIDC by default.
+- Services running **inside** the Docker network must use the Keycloak service name:
+  `http://keycloak:8080/realms/floecat`.
+- Clients running on the **host** (or external containers not on the `docker_floecat` network)
+  must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
+- If you use Trino with the REST catalog, ensure the gateway audience list includes both
+  `floecat-client` and `trino-client` (see `docker/env.localstack`).

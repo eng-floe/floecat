@@ -1,4 +1,4 @@
-# Copyright 2026 Yellowbrick Data, Inc
+﻿# Copyright 2026 Yellowbrick Data, Inc
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@ services:
   service:
     image: floecat-service:local
     pull_policy: never
+    env_file:
+      - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
       - "9100:9100"
     environment:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
-      FLOECAT_SEED_ENABLED: ${FLOECAT_SEED_ENABLED:-true}
-      FLOECAT_SEED_MODE: ${FLOECAT_SEED_MODE:-fake}
       FLOECAT_CONNECTOR_FILEIO_OVERRIDES: ${FLOECAT_CONNECTOR_FILEIO_OVERRIDES:-true}
       AWS_REGION: ${FLOECAT_S3_REGION:-us-east-1}
       AWS_DEFAULT_REGION: ${FLOECAT_S3_REGION:-us-east-1}
@@ -63,6 +63,8 @@ services:
   iceberg-rest:
     image: floecat-iceberg-rest:local
     pull_policy: never
+    env_file:
+      - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
       - "9200:9200"
     environment:
@@ -103,8 +105,6 @@ services:
     stdin_open: true
     tty: true
     command: ["--host", "service", "--port", "9100"]
-    profiles:
-      - cli
     networks:
       - floecat
 
@@ -127,6 +127,26 @@ services:
       - ./localstack-init.sh:/etc/localstack/init/ready.d/localstack-init.sh:ro
     profiles:
       - localstack
+    networks:
+      - floecat
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5.2
+    pull_policy: if_not_present
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: ${KC_HOSTNAME:-host.docker.internal}
+      KC_HOSTNAME_PORT: ${KC_HOSTNAME_PORT:-${KEYCLOAK_PORT:-8080}}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    command: ["start-dev", "--import-realm"]
+    volumes:
+      - ./keycloak/realm-floecat.json:/opt/keycloak/data/import/realm-floecat.json:ro
+    profiles:
+      - keycloak
     networks:
       - floecat
 

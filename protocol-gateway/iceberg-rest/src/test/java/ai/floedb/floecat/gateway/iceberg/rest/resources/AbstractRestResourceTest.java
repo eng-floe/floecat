@@ -77,6 +77,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.Mockito;
 
@@ -242,13 +243,16 @@ public abstract class AbstractRestResourceTest {
                       request.getRef().getName());
               return ResolveViewResponse.newBuilder().setResourceId(id).build();
             });
-    defaultSpec =
-        new RequestSpecBuilder()
-            .addHeader("x-tenant-id", "account1")
-            .addHeader("authorization", "Bearer token")
-            .build();
+    defaultSpec = new RequestSpecBuilder().addHeader("authorization", "Bearer token").build();
     RestAssured.requestSpecification = defaultSpec;
     stageRepository.clear();
+  }
+
+  @AfterEach
+  void restoreRestAssured() {
+    if (defaultSpec != null) {
+      RestAssured.requestSpecification = defaultSpec;
+    }
   }
 
   private ResourceId buildResourceId(String catalog, List<String> path, String leafName) {

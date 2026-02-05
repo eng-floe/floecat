@@ -22,11 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.OidcSessionHeaderProfile;
 import ai.floedb.floecat.service.it.util.TestKeyPair;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Metadata;
@@ -48,17 +47,15 @@ import org.junit.jupiter.api.Test;
 @TestProfile(OidcSessionHeaderProfile.class)
 class AccountSessionHeaderIT {
 
-  private static final String ACCOUNT_ID =
-      TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-
-  private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> SESSION_HEADER =
       Metadata.Key.of("x-floe-session", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
+  private String accountId;
+
+  @Inject AccountRepository accountRepository;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -66,12 +63,17 @@ class AccountSessionHeaderIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    accountId =
+        accountRepository
+            .getByName(TestSupport.DEFAULT_SEED_ACCOUNT)
+            .orElseThrow()
+            .getResourceId()
+            .getId();
   }
 
   @Test
   void listAccountsAcceptsSessionHeaderJwt() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwt());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -83,7 +85,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMissingSessionHeader() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
     StatusRuntimeException ex =
@@ -97,7 +98,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsWrongSessionHeaderName() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         Metadata.Key.of("x-floe-session-typo", Metadata.ASCII_STRING_MARSHALLER),
         "eyJhbGciOiJIUzI1NiJ9");
@@ -125,7 +125,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMalformedJwt() {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, "not-a-jwt");
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -140,7 +139,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsMissingAudience() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwtWithKeyAndAudience(TestKeyPair.privateKey(), null));
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -155,7 +153,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsInvalidSignature() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(SESSION_HEADER, sessionJwtWithKey(generatePrivateKey()));
 
     var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
@@ -170,7 +167,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsWrongAudience() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndAudience(TestKeyPair.privateKey(), "wrong-audience"));
 
@@ -186,7 +182,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsInvalidExpiration() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), -300, -600, 0));
 
@@ -202,7 +197,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsExpiredToken() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), -3600, -300, 0));
 
@@ -218,7 +212,6 @@ class AccountSessionHeaderIT {
   @Test
   void listAccountsRejectsTokenNotYetValid() throws Exception {
     Metadata metadata = new Metadata();
-    metadata.put(PRINCIPAL_BIN, principal().toByteArray());
     metadata.put(
         SESSION_HEADER, sessionJwtWithKeyAndTiming(TestKeyPair.privateKey(), 0, 3600, 300));
 
@@ -231,29 +224,20 @@ class AccountSessionHeaderIT {
     assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
   }
 
-  private static PrincipalContext principal() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    return PrincipalContext.newBuilder()
-        .setAccountId(accountId.getId())
-        .setSubject("it-user")
-        .addPermissions("account.read")
-        .build();
-  }
-
-  private static String sessionJwt() throws Exception {
+  private String sessionJwt() throws Exception {
     return sessionJwtWithKey(TestKeyPair.privateKey());
   }
 
-  private static String sessionJwtWithKey(PrivateKey privateKey) throws Exception {
+  private String sessionJwtWithKey(PrivateKey privateKey) throws Exception {
     return sessionJwtWithKeyAndAudience(privateKey, "floecat-client");
   }
 
-  private static String sessionJwtWithKeyAndAudience(PrivateKey privateKey, String audience)
+  private String sessionJwtWithKeyAndAudience(PrivateKey privateKey, String audience)
       throws Exception {
     return sessionJwtWithKeyAndTiming(privateKey, audience, 0, 7L * 365 * 24 * 3600, 0);
   }
 
-  private static String sessionJwtWithKeyAndTiming(
+  private String sessionJwtWithKeyAndTiming(
       PrivateKey privateKey,
       long issuedAtOffsetSeconds,
       long expiresInSeconds,
@@ -263,7 +247,7 @@ class AccountSessionHeaderIT {
         privateKey, "floecat-client", issuedAtOffsetSeconds, expiresInSeconds, notBeforeOffset);
   }
 
-  private static String sessionJwtWithKeyAndTiming(
+  private String sessionJwtWithKeyAndTiming(
       PrivateKey privateKey,
       String audience,
       long issuedAtOffsetSeconds,
@@ -275,7 +259,7 @@ class AccountSessionHeaderIT {
         Jwt.claims()
             .issuer("https://floecat.test")
             .subject("it-user")
-            .claim("account_id", ACCOUNT_ID)
+            .claim("account_id", accountId)
             .issuedAt(now.plusSeconds(issuedAtOffsetSeconds))
             .expiresAt(now.plusSeconds(expiresInSeconds));
     if (audience != null) {

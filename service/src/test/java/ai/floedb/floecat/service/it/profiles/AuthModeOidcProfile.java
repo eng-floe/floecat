@@ -16,20 +16,26 @@
 
 package ai.floedb.floecat.service.it.profiles;
 
+import ai.floedb.floecat.service.it.util.TestKeyPair;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-public class PrincipalHeaderDisabledProfile implements QuarkusTestProfile {
+public class AuthModeOidcProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "floecat.interceptor.allow.principal-header", "false",
-        "floecat.interceptor.allow.dev-context", "false",
-        "quarkus.oidc.tenant-enabled", "false");
+        "floecat.auth.mode", "oidc",
+        "quarkus.oidc.enabled", "true",
+        "quarkus.oidc.discovery-enabled", "false",
+        "quarkus.oidc.tenant-enabled", "true",
+        "quarkus.oidc.token.audience", "floecat-client",
+        "floecat.interceptor.validate.account", "false",
+        "floecat.interceptor.authorization.header", "authorization",
+        "quarkus.oidc.public-key", TestKeyPair.publicKeyBase64());
   }
 
   @Override
   public String getConfigProfile() {
-    return "principal-header-disabled";
+    return "auth-mode-oidc";
   }
 }

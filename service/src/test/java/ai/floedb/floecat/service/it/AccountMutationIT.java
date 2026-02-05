@@ -32,7 +32,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.floecat.service.common.AccountIds;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
@@ -55,7 +55,9 @@ class AccountMutationIT {
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   String accountPrefix = this.getClass().getSimpleName() + "_";
+  String seedAccountId;
 
+  @Inject AccountRepository accountRepository;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -63,6 +65,12 @@ class AccountMutationIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+    seedAccountId =
+        accountRepository
+            .getByName(TestSupport.DEFAULT_SEED_ACCOUNT)
+            .orElseThrow()
+            .getResourceId()
+            .getId();
   }
 
   @Test
@@ -209,7 +217,12 @@ class AccountMutationIT {
             () ->
                 tenancy.deleteAccount(
                     DeleteAccountRequest.newBuilder()
-                        .setAccountId(TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT))
+                        .setAccountId(
+                            ResourceId.newBuilder()
+                                .setAccountId(seedAccountId)
+                                .setId(seedAccountId)
+                                .setKind(ResourceKind.RK_ACCOUNT)
+                                .build())
                         .setPrecondition(
                             Precondition.newBuilder()
                                 .setExpectedVersion(m2.getPointerVersion())
@@ -313,8 +326,7 @@ class AccountMutationIT {
             .setDisplayName(accountPrefix + "explicit-id")
             .setDescription("explicit")
             .build();
-    String principalId =
-        AccountIds.deterministicAccountId("/account:" + TestSupport.DEFAULT_SEED_ACCOUNT);
+    String principalId = seedAccountId;
     var accountId =
         ResourceId.newBuilder()
             .setAccountId(principalId)

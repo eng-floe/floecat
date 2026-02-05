@@ -24,25 +24,29 @@ import java.util.Optional;
 
 @ConfigMapping(prefix = "floecat.gateway")
 public interface IcebergGatewayConfig {
+  @WithDefault("oidc")
+  String authMode();
+
   @WithDefault("localhost:9000")
   String upstreamTarget();
 
   @WithDefault("true")
   boolean upstreamPlaintext();
 
-  @WithDefault("x-tenant-id")
-  String accountHeader();
-
   @WithDefault("authorization")
   String authHeader();
 
-  @WithDefault("")
-  String defaultAccountId();
+  Optional<String> defaultAccountId();
 
-  @WithDefault("")
-  String defaultAuthorization();
+  @WithDefault("account_id")
+  String accountClaim();
+
+  Optional<String> defaultAuthorization();
 
   Map<String, String> catalogMapping();
+
+  @WithDefault("false")
+  boolean devAllowMissingAuth();
 
   Optional<String> defaultPrefix();
 

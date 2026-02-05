@@ -46,8 +46,6 @@ class PropagationIT {
 
   @Inject QueryContextStore queryStore;
 
-  private static final Metadata.Key<byte[]> PRINCIPAL_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION =
@@ -80,7 +78,6 @@ class PropagationIT {
     String corr = "it-corr-" + UUID.randomUUID();
 
     Metadata m = new Metadata();
-    m.put(PRINCIPAL_BIN, pc().toByteArray());
     m.put(CORR, corr);
 
     RespHeadersCaptureInterceptor capture = new RespHeadersCaptureInterceptor();
@@ -171,16 +168,12 @@ class PropagationIT {
   void engineVersionPropagatesToOutboundCalls() {
     String corr = "it-corr-" + UUID.randomUUID();
 
-    Metadata principalMeta = new Metadata();
-    principalMeta.put(PRINCIPAL_BIN, pc().toByteArray());
-    principalMeta.put(CORR, corr);
-
     Metadata engineMeta = new Metadata();
     engineMeta.put(ENGINE_VERSION, "it-engine");
+    engineMeta.put(CORR, corr);
 
     catalog
         .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(engineMeta))
-        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(principalMeta))
         .listCatalogs(ListCatalogsRequest.getDefaultInstance());
 
     assertEquals("it-engine", TestEngineVersionCaptureInterceptor.captured());

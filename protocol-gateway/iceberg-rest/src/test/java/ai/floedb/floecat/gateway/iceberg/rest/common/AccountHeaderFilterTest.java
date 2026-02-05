@@ -27,6 +27,9 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import io.quarkus.oidc.TenantIdentityProvider;
+import io.quarkus.security.identity.SecurityIdentity;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -40,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -51,10 +55,10 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
+    when(config.authMode()).thenReturn("dev");
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAccountId()).thenReturn("account-default");
-    when(config.defaultAuthorization()).thenReturn("Bearer default");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
 
     filter.setConfigInstance(configInstance);
     AccountContext accountContext = mock(AccountContext.class);
@@ -64,7 +68,6 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString("x-tenant-id")).thenReturn(null);
     when(ctx.getHeaderString("authorization")).thenReturn(null);
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
@@ -80,7 +83,6 @@ class AccountHeaderFilterTest {
     filter.filter(ctx);
 
     assertFalse(aborted.get());
-    assertEquals("account-default", headers.getFirst("x-tenant-id"));
     assertEquals("Bearer default", headers.getFirst("authorization"));
     verify(accountContext).setAccountId("account-default");
   }
@@ -120,10 +122,10 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
-    when(config.defaultAccountId()).thenReturn("account-default");
+    when(config.authMode()).thenReturn("dev");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAuthorization()).thenReturn("undefined");
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("undefined"));
     filter.setConfigInstance(configInstance);
     filter.setAccountContext(mock(AccountContext.class));
 
@@ -131,7 +133,7 @@ class AccountHeaderFilterTest {
     UriInfo uriInfo = mock(UriInfo.class);
     when(uriInfo.getPath()).thenReturn("v1/foo");
     when(ctx.getUriInfo()).thenReturn(uriInfo);
-    when(ctx.getHeaderString(Mockito.anyString())).thenReturn(null);
+    when(ctx.getHeaderString("authorization")).thenReturn(null);
     when(ctx.getHeaders()).thenReturn(new MultivaluedHashMap<>());
     AtomicBoolean aborted = new AtomicBoolean(false);
     doAnswer(
@@ -154,10 +156,10 @@ class AccountHeaderFilterTest {
     IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
     when(configInstance.isUnsatisfied()).thenReturn(false);
     when(configInstance.get()).thenReturn(config);
-    when(config.accountHeader()).thenReturn("x-tenant-id");
+    when(config.authMode()).thenReturn("dev");
+    when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
-    when(config.defaultAccountId()).thenReturn("account-default");
-    when(config.defaultAuthorization()).thenReturn("Bearer default");
+    when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
     when(config.defaultPrefix()).thenReturn(Optional.of("sales"));
     filter.setConfigInstance(configInstance);
     AccountContext accountContext = mock(AccountContext.class);
@@ -179,7 +181,6 @@ class AccountHeaderFilterTest {
 
     MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
     when(ctx.getHeaders()).thenReturn(headers);
-    when(ctx.getHeaderString("x-tenant-id")).thenReturn("account-default");
     when(ctx.getHeaderString("authorization")).thenReturn("Bearer default");
 
     AtomicReference<URI> rewrittenUri = new AtomicReference<>();
@@ -208,10 +209,80 @@ class AccountHeaderFilterTest {
         "http://localhost:9200/v1/sales/namespaces/db/tables", rewrittenUri.get().toString());
     assertEquals("/v1/sales/namespaces/db/tables", properties.get("rewrittenPath"));
     verify(ctx).setRequestUri(Mockito.any(URI.class));
+    verify(accountContext).setAccountId("account-default");
+  }
+
+  @Test
+  void oidcModeUsesCustomAuthHeaderForJwtClaim() throws Exception {
+    System.setProperty("quarkus.oidc.public-key", "test-key");
+    System.setProperty("quarkus.oidc.auth-server-url", "http://issuer.example.com/realms/test");
+    System.setProperty("quarkus.oidc.tenant-enabled", "true");
+    try {
+      AccountHeaderFilter filter = new AccountHeaderFilter();
+      Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
+      IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
+      when(configInstance.isUnsatisfied()).thenReturn(false);
+      when(configInstance.get()).thenReturn(config);
+      when(config.authMode()).thenReturn("oidc");
+      when(config.authHeader()).thenReturn("x-floe-session");
+      when(config.accountClaim()).thenReturn("account_id");
+      filter.setConfigInstance(configInstance);
+      AccountContext accountContext = mock(AccountContext.class);
+      filter.setAccountContext(accountContext);
+
+      TenantIdentityProvider identityProvider = mock(TenantIdentityProvider.class);
+      @SuppressWarnings("unchecked")
+      Instance<TenantIdentityProvider> identityProviderInstance = mock(Instance.class);
+      when(identityProviderInstance.isUnsatisfied()).thenReturn(false);
+      when(identityProviderInstance.get()).thenReturn(identityProvider);
+      SecurityIdentity identity = mock(SecurityIdentity.class);
+      when(identity.isAnonymous()).thenReturn(true);
+      JsonWebToken jwt = mock(JsonWebToken.class);
+      when(jwt.getClaim("account_id")).thenReturn("acct-123");
+      SecurityIdentity validated = mock(SecurityIdentity.class);
+      when(validated.isAnonymous()).thenReturn(false);
+      when(validated.getPrincipal()).thenReturn(jwt);
+      when(identityProvider.authenticate(any())).thenReturn(Uni.createFrom().item(validated));
+
+      setField(filter, "identityProvider", identityProviderInstance);
+      setField(filter, "identity", identity);
+      setField(filter, "jwt", null);
+
+      ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+      UriInfo uriInfo = mock(UriInfo.class);
+      when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
+      when(ctx.getUriInfo()).thenReturn(uriInfo);
+      when(ctx.getHeaderString("x-floe-session")).thenReturn("Bearer token");
+      MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
+      when(ctx.getHeaders()).thenReturn(headers);
+      AtomicBoolean aborted = new AtomicBoolean(false);
+      doAnswer(
+              inv -> {
+                aborted.set(true);
+                return null;
+              })
+          .when(ctx)
+          .abortWith(any());
+
+      filter.filter(ctx);
+
+      assertFalse(aborted.get());
+      verify(accountContext).setAccountId("acct-123");
+    } finally {
+      System.clearProperty("quarkus.oidc.public-key");
+      System.clearProperty("quarkus.oidc.auth-server-url");
+      System.clearProperty("quarkus.oidc.tenant-enabled");
+    }
   }
 
   private PathSegment pathSegment(String path) {
     return new SimplePathSegment(path);
+  }
+
+  private static void setField(Object target, String name, Object value) throws Exception {
+    var field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    field.set(target, value);
   }
 
   private static final class SimplePathSegment implements PathSegment {

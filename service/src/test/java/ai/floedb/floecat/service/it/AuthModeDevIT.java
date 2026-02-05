@@ -16,35 +16,39 @@
 
 package ai.floedb.floecat.service.it;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
-import ai.floedb.floecat.service.it.profiles.PrincipalHeaderDisabledProfile;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
+import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.it.profiles.AuthModeDevProfile;
+import ai.floedb.floecat.service.util.TestDataResetter;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-@TestProfile(PrincipalHeaderDisabledProfile.class)
-class PrincipalHeaderDisabledIT {
+@TestProfile(AuthModeDevProfile.class)
+class AuthModeDevIT {
 
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
-  @Test
-  void listAccountsRejectsMissingPrincipalHeaderWithExplicitMessage() {
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> accounts.listAccounts(ListAccountsRequest.getDefaultInstance()));
+  @Inject TestDataResetter resetter;
+  @Inject SeedRunner seeder;
 
-    assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
-    assertEquals(
-        "missing session header and x-principal-bin disabled", ex.getStatus().getDescription());
+  @BeforeEach
+  void resetStores() {
+    resetter.wipeAll();
+    seeder.seedData();
+  }
+
+  @Test
+  void listAccountsAcceptsDevContext() {
+    var response = accounts.listAccounts(ListAccountsRequest.getDefaultInstance());
+    assertFalse(response.getAccountsList().isEmpty());
   }
 }

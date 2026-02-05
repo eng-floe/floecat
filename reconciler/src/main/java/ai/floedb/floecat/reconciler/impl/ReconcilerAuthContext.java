@@ -14,22 +14,13 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.it.profiles;
+package ai.floedb.floecat.reconciler.impl;
 
-import io.quarkus.test.junit.QuarkusTestProfile;
-import java.util.Map;
+import io.grpc.Context;
 
-public class OidcTenantDisabledProfile implements QuarkusTestProfile {
-  @Override
-  public Map<String, String> getConfigOverrides() {
-    return Map.of(
-        "floecat.auth.mode", "oidc",
-        "floecat.interceptor.session.header", "x-floe-session",
-        "quarkus.oidc.tenant-enabled", "false");
-  }
+public final class ReconcilerAuthContext {
+  private ReconcilerAuthContext() {}
 
-  @Override
-  public String getConfigProfile() {
-    return "oidc-tenant-disabled";
-  }
+  public static final Context.Key<String> AUTHORIZATION_HEADER_VALUE_KEY =
+      Context.key("reconciler_authorization_header_value");
 }

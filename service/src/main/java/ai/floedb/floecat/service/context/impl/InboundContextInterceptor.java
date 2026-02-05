@@ -55,8 +55,6 @@ import org.jboss.logging.MDC;
 public class InboundContextInterceptor {
   private static final Logger LOG = Logger.getLogger(InboundContextInterceptor.class);
 
-  private static final Metadata.Key<byte[]> PRINC_BIN =
-      Metadata.Key.of("x-principal-bin", Metadata.BINARY_BYTE_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID_HEADER =
       Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
@@ -72,42 +70,47 @@ public class InboundContextInterceptor {
   public static final Context.Key<String> ENGINE_KIND_KEY = Context.key("engine_kind");
   public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
+  public static final Context.Key<String> SESSION_HEADER_VALUE_KEY =
+      Context.key("session_header_value");
+  public static final Context.Key<String> AUTHORIZATION_HEADER_VALUE_KEY =
+      Context.key("authorization_header_value");
 
   private final AccountRepository accountRepository;
   private final TenantIdentityProvider identityProvider;
 
   private final boolean validateAccount;
   private final Optional<String> sessionHeader;
-  private final boolean allowDevContext;
+  private final Optional<String> authorizationHeader;
+  private final AuthMode authMode;
   private final String accountClaimName;
   private final String roleClaimName;
-  private final boolean allowPrincipalHeader;
 
   public InboundContextInterceptor(
       AccountRepository accountRepository,
       TenantIdentityProvider identityProvider,
       boolean validateAccount,
       Optional<String> sessionHeader,
-      boolean allowDevContext,
+      Optional<String> authorizationHeader,
+      String authMode,
       String accountClaimName,
-      String roleClaimName,
-      boolean allowPrincipalHeader) {
+      String roleClaimName) {
     this.accountRepository = accountRepository;
     this.identityProvider = identityProvider;
     this.validateAccount = validateAccount;
-    this.sessionHeader = sessionHeader;
-    this.allowDevContext = allowDevContext;
+    this.sessionHeader = sessionHeader.filter(header -> !header.isBlank());
+    this.authorizationHeader = authorizationHeader.filter(header -> !header.isBlank());
+    this.authMode = AuthMode.fromString(authMode);
     this.accountClaimName = accountClaimName;
     this.roleClaimName = roleClaimName;
-    this.allowPrincipalHeader = allowPrincipalHeader;
 
-    String header = sessionHeader.orElse("");
+    String header = this.sessionHeader.orElse("");
+    String authHeader = this.authorizationHeader.orElse("");
     LOG.infof(
-        "InboundContextInterceptor ready: sessionHeader=%s allowPrincipalHeader=%s"
-            + " allowDevContext=%s validateAccount=%s",
+        "InboundContextInterceptor ready: sessionHeader=%s authorizationHeader=%s"
+            + " authMode=%s validateAccount=%s",
         header.isBlank() ? "<disabled>" : header,
-        allowPrincipalHeader,
-        allowDevContext,
+        authHeader.isBlank() ? "<disabled>" : authHeader,
+        this.authMode.name().toLowerCase(),
         validateAccount);
   }
 
@@ -128,6 +131,8 @@ public class InboundContextInterceptor {
     PrincipalContext principalContext = resolvedContext.pc();
     String queryId = resolvedContext.queryId();
     EngineContext engineContext = EngineContext.of(engineKind, engineVersion);
+    String sessionHeaderValue = readHeaderValue(headers, sessionHeader).orElse(null);
+    String authorizationHeaderValue = readHeaderValue(headers, authorizationHeader).orElse(null);
 
     Context context =
         Context.current()
@@ -137,6 +142,12 @@ public class InboundContextInterceptor {
             .withValue(ENGINE_KIND_KEY, engineKind)
             .withValue(ENGINE_CONTEXT_KEY, engineContext)
             .withValue(CORR_KEY, correlationId);
+    if (sessionHeaderValue != null) {
+      context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
+    }
+    if (authorizationHeaderValue != null) {
+      context = context.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
+    }
 
     MDC.put("query_id", queryId);
     MDC.put("correlation_id", correlationId);
@@ -183,45 +194,116 @@ public class InboundContextInterceptor {
   }
 
   private ResolvedContext resolvePrincipalAndQuery(Metadata headers, String queryIdHeader) {
+    switch (authMode) {
+      case DEV -> {
+        PrincipalContext dev = devContext();
+        return new ResolvedContext(dev, "");
+      }
+      case OIDC -> {
+        if (this.sessionHeader.isPresent()) {
+          ensureOidcConfigured("session");
+        }
+        if (this.authorizationHeader.isPresent()) {
+          ensureOidcConfigured("authorization");
+        }
+        PrincipalContext principal = resolveOidcPrincipal(headers, queryIdHeader);
+        return new ResolvedContext(principal, queryIdHeader);
+      }
+    }
 
-    if (this.sessionHeader.isPresent()) {
-      SecurityIdentity identity = validateSessionHeader(headers);
+    if (this.sessionHeader.isPresent() && hasHeader(headers, this.sessionHeader.orElseThrow())) {
+      String headerName = this.sessionHeader.orElseThrow();
+      SecurityIdentity identity = validateOidcHeader(headers, headerName, "session");
       PrincipalContext principal = buildPrincipalFromIdentity(identity, queryIdHeader);
       return new ResolvedContext(principal, queryIdHeader);
     }
 
-    if (allowPrincipalHeader && headers.containsKey(PRINC_BIN)) {
-      byte[] pcBytes = headers.get(PRINC_BIN);
-      PrincipalContext pc = parsePrincipal(pcBytes);
-
-      if (this.validateAccount) {
-        validateAccount(pc.getAccountId());
-      }
-
-      if (!isBlank(queryIdHeader)
-          && !isBlank(pc.getQueryId())
-          && !pc.getQueryId().equals(queryIdHeader)) {
-        throw Status.FAILED_PRECONDITION
-            .withDescription("query_id mismatch between header and principal")
-            .asRuntimeException();
-      }
-
-      String canonicalQueryId = !isBlank(pc.getQueryId()) ? pc.getQueryId() : queryIdHeader;
-      return new ResolvedContext(pc, canonicalQueryId);
+    if (this.authorizationHeader.isPresent()
+        && hasHeader(headers, this.authorizationHeader.orElseThrow())) {
+      String headerName = this.authorizationHeader.orElseThrow();
+      SecurityIdentity identity = validateOidcHeader(headers, headerName, "authorization");
+      PrincipalContext principal = buildPrincipalFromIdentity(identity, queryIdHeader);
+      return new ResolvedContext(principal, queryIdHeader);
     }
 
-    if (allowDevContext) {
-      return new ResolvedContext(devContext(), "");
+    if (this.sessionHeader.isPresent()) {
+      throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
     }
 
-    String message =
-        allowPrincipalHeader
-            ? "missing x-principal-bin"
-            : "missing session header and x-principal-bin disabled";
-    throw Status.UNAUTHENTICATED.withDescription(message).asRuntimeException();
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing session or authorization token")
+        .asRuntimeException();
   }
 
-  private SecurityIdentity validateSessionHeader(Metadata headers) {
+  private PrincipalContext resolveOidcPrincipal(Metadata headers, String queryIdHeader) {
+    Optional<PrincipalContext> principal = resolveOidcPrincipalOptional(headers, queryIdHeader);
+    if (principal.isPresent()) {
+      return principal.get();
+    }
+    boolean hasSessionHeader = this.sessionHeader.isPresent();
+    boolean hasAuthorizationHeader = this.authorizationHeader.isPresent();
+    if (hasSessionHeader && hasAuthorizationHeader) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("missing session or authorization token")
+          .asRuntimeException();
+    }
+    if (hasSessionHeader) {
+      throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
+    }
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing authorization token")
+        .asRuntimeException();
+  }
+
+  private Optional<PrincipalContext> resolveOidcPrincipalOptional(
+      Metadata headers, String queryIdHeader) {
+    if (this.sessionHeader.isPresent() && hasHeader(headers, this.sessionHeader.orElseThrow())) {
+      String headerName = this.sessionHeader.orElseThrow();
+      SecurityIdentity identity = validateOidcHeader(headers, headerName, "session");
+      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader));
+    }
+    if (this.authorizationHeader.isPresent()
+        && hasHeader(headers, this.authorizationHeader.orElseThrow())) {
+      String headerName = this.authorizationHeader.orElseThrow();
+      SecurityIdentity identity = validateOidcHeader(headers, headerName, "authorization");
+      return Optional.of(buildPrincipalFromIdentity(identity, queryIdHeader));
+    }
+    return Optional.empty();
+  }
+
+  private SecurityIdentity validateOidcHeader(
+      Metadata headers, String headerName, String headerLabel) {
+    ensureOidcConfigured(headerLabel);
+    var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
+    String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      token = token.substring(7).trim();
+    }
+    if (token.isBlank()) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("missing " + headerLabel + " token")
+          .asRuntimeException();
+    }
+    try {
+      AccessTokenCredential credential = new AccessTokenCredential(token);
+      SecurityIdentity identity = identityProvider.authenticate(credential).await().indefinitely();
+      if (identity == null || identity.isAnonymous()) {
+        LOG.warnf("%s token inactive", headerLabel);
+        throw Status.UNAUTHENTICATED
+            .withDescription("inactive " + headerLabel + " token")
+            .asRuntimeException();
+      }
+      return identity;
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "%s token validation failed: %s", headerLabel, e.getMessage());
+      throw Status.UNAUTHENTICATED
+          .withDescription("invalid " + headerLabel + " token")
+          .withCause(e)
+          .asRuntimeException();
+    }
+  }
+
+  private void ensureOidcConfigured(String headerLabel) {
     var config = ConfigProvider.getConfig();
     boolean tenantEnabled =
         config.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
@@ -237,44 +319,43 @@ public class InboundContextInterceptor {
             .isPresent();
     if (!tenantEnabled) {
       throw Status.UNAUTHENTICATED
-          .withDescription("session header configured but OIDC tenant is disabled")
+          .withDescription(headerLabel + " header configured but OIDC tenant is disabled")
           .asRuntimeException();
     }
     if (!hasPublicKey && !hasAuthServerUrl) {
       throw Status.UNAUTHENTICATED
           .withDescription(
-              "session header configured but no OIDC public key or auth server URL configured")
-          .asRuntimeException();
-    }
-    var headerName = this.sessionHeader.orElseThrow();
-    var key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
-    String token = Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
-    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
-      token = token.substring(7).trim();
-    }
-    if (token.isBlank()) {
-      throw Status.UNAUTHENTICATED.withDescription("missing session token").asRuntimeException();
-    }
-    try {
-      AccessTokenCredential credential = new AccessTokenCredential(token);
-      SecurityIdentity identity = identityProvider.authenticate(credential).await().indefinitely();
-      if (identity == null || identity.isAnonymous()) {
-        LOG.warn("Session token inactive");
-        throw Status.UNAUTHENTICATED.withDescription("inactive session token").asRuntimeException();
-      }
-      return identity;
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "Session token validation failed: %s", e.getMessage());
-      throw Status.UNAUTHENTICATED
-          .withDescription("invalid session token")
-          .withCause(e)
+              headerLabel
+                  + " header configured but no OIDC public key or auth server URL configured")
           .asRuntimeException();
     }
   }
 
+  private static boolean hasHeader(Metadata headers, String headerName) {
+    Metadata.Key<String> key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
+    return headers.containsKey(key);
+  }
+
   private String requireAccountIdClaim(SecurityIdentity identity) {
+    return requireAccountIdClaim(identity, List.of());
+  }
+
+  private String requireAccountIdClaim(SecurityIdentity identity, List<String> roles) {
     JsonWebToken jwt = requireJwt(identity);
     Object claim = jwt.getClaim(accountClaimName);
+    String accountId = extractAccountIdClaim(claim);
+    if (!isBlank(accountId)) {
+      return accountId;
+    }
+    if (hasPlatformAdminRole(roles)) {
+      return "";
+    }
+    throw Status.UNAUTHENTICATED
+        .withDescription("missing " + accountClaimName + " claim")
+        .asRuntimeException();
+  }
+
+  private String extractAccountIdClaim(Object claim) {
     if (claim instanceof String value && !value.isBlank()) {
       return value;
     }
@@ -288,9 +369,15 @@ public class InboundContextInterceptor {
         }
       }
     }
-    throw Status.UNAUTHENTICATED
-        .withDescription("missing " + accountClaimName + " claim")
-        .asRuntimeException();
+    return null;
+  }
+
+  private static boolean hasPlatformAdminRole(List<String> roles) {
+    if (roles == null || roles.isEmpty()) {
+      return false;
+    }
+    String platformRole = RolePermissions.platformAdminRole();
+    return roles.stream().anyMatch(role -> role.equalsIgnoreCase(platformRole));
   }
 
   private String requireSubjectClaim(SecurityIdentity identity) {
@@ -315,47 +402,88 @@ public class InboundContextInterceptor {
   private List<String> extractRoles(SecurityIdentity identity) {
     JsonWebToken jwt = requireJwt(identity);
     Object claim = jwt.getClaim(roleClaimName);
-    if (claim instanceof String value) {
-      return List.of(value);
+    List<String> roles = extractRolesFromClaim(claim);
+    if (!roles.isEmpty()) {
+      return roles;
     }
-    if (claim instanceof Iterable<?> items) {
-      List<String> roles = new ArrayList<>();
-      for (Object item : items) {
-        if (item instanceof String value) {
-          roles.add(value);
-        }
-      }
+    Object realmAccess = jwt.getClaim("realm_access");
+    roles = extractRolesFromClaim(realmAccess);
+    if (!roles.isEmpty()) {
       return roles;
     }
     return List.of();
   }
 
+  private static List<String> extractRolesFromClaim(Object claim) {
+    if (claim instanceof String value) {
+      String trimmed = value.trim();
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+          io.vertx.core.json.JsonArray jsonArray = new io.vertx.core.json.JsonArray(trimmed);
+          return extractRolesFromIterable(jsonArray.getList());
+        } catch (RuntimeException ignored) {
+          // Fall through to treat as a single role string.
+        }
+      }
+      return List.of(value);
+    }
+    if (claim instanceof io.vertx.core.json.JsonArray jsonArray) {
+      return extractRolesFromIterable(jsonArray.getList());
+    }
+    if (claim instanceof io.vertx.core.json.JsonObject jsonObject) {
+      Object rolesValue = jsonObject.getValue("roles");
+      return extractRolesFromClaim(rolesValue);
+    }
+    if (claim instanceof jakarta.json.JsonArray jsonArray) {
+      List<String> roles = new ArrayList<>();
+      for (jakarta.json.JsonValue value : jsonArray) {
+        if (value.getValueType() == jakarta.json.JsonValue.ValueType.STRING) {
+          roles.add(((jakarta.json.JsonString) value).getString());
+        }
+      }
+      return roles;
+    }
+    if (claim instanceof Iterable<?> items) {
+      return extractRolesFromIterable(items);
+    }
+    if (claim instanceof java.util.Map<?, ?> map) {
+      Object rolesValue = map.get("roles");
+      return extractRolesFromClaim(rolesValue);
+    }
+    return List.of();
+  }
+
+  private static List<String> extractRolesFromIterable(Iterable<?> items) {
+    List<String> roles = new ArrayList<>();
+    for (Object item : items) {
+      if (item instanceof String value) {
+        roles.add(value);
+      }
+    }
+    return roles;
+  }
+
   private PrincipalContext buildPrincipalFromIdentity(
       SecurityIdentity identity, String queryIdHeader) {
-    String accountId = requireAccountIdClaim(identity);
-    if (validateAccount) {
-      validateAccount(accountId);
-    }
     String subject = requireSubjectClaim(identity);
     var roles = extractRoles(identity);
+    String accountId = requireAccountIdClaim(identity, roles);
+    if (validateAccount && !accountId.isBlank()) {
+      validateAccount(accountId);
+    }
     PrincipalContext.Builder builder =
         PrincipalContext.newBuilder().setAccountId(accountId).setSubject(subject);
     if (!isBlank(queryIdHeader)) {
       builder.setQueryId(queryIdHeader);
     }
-    RolePermissions.permissionsForRoles(roles, allowDevContext).forEach(builder::addPermissions);
-    return builder.build();
-  }
-
-  private static PrincipalContext parsePrincipal(byte[] encoded) {
-    try {
-      return PrincipalContext.parseFrom(encoded);
-    } catch (Exception e) {
-      throw Status.UNAUTHENTICATED
-          .withDescription("invalid x-principal-bin")
-          .withCause(e)
-          .asRuntimeException();
+    List<String> effectiveRoles = roles;
+    if (accountId.isBlank()) {
+      String platformRole = RolePermissions.platformAdminRole();
+      effectiveRoles = roles.stream().filter(role -> role.equalsIgnoreCase(platformRole)).toList();
     }
+    RolePermissions.permissionsForRoles(effectiveRoles, authMode == AuthMode.DEV)
+        .forEach(builder::addPermissions);
+    return builder.build();
   }
 
   private static boolean isBlank(String inputString) {
@@ -366,8 +494,24 @@ public class InboundContextInterceptor {
     return Optional.ofNullable(headers.get(key)).map(String::trim).orElse("");
   }
 
+  private static Optional<String> readHeaderValue(Metadata headers, Optional<String> headerName) {
+    if (headerName.isEmpty()) {
+      return Optional.empty();
+    }
+    Metadata.Key<String> key =
+        Metadata.Key.of(headerName.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
+    return Optional.ofNullable(headers.get(key))
+        .map(String::trim)
+        .filter(value -> !value.isBlank());
+  }
+
   private PrincipalContext devContext() {
-    var id = AccountIds.deterministicAccountId("/account:t-0001");
+    String displayName = "t-0001";
+    String id =
+        accountRepository
+            .getByName(displayName)
+            .map(account -> account.getResourceId().getId())
+            .orElseGet(AccountIds::randomAccountId);
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     PrincipalContext.Builder builder =
@@ -392,4 +536,22 @@ public class InboundContextInterceptor {
   }
 
   private record ResolvedContext(PrincipalContext pc, String queryId) {}
+
+  private enum AuthMode {
+    DEV,
+    OIDC;
+
+    static AuthMode fromString(String value) {
+      if (value == null || value.isBlank()) {
+        return OIDC;
+      }
+      return switch (value.trim().toLowerCase()) {
+        case "dev" -> DEV;
+        case "oidc" -> OIDC;
+        default ->
+            throw new IllegalArgumentException(
+                "unknown floecat.auth.mode: " + value + " (expected dev|oidc)");
+      };
+    }
+  }
 }

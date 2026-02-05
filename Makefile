@@ -40,6 +40,8 @@
 #   make logs                    # tail -f service log
 #   make localstack-up           # start LocalStack container
 #   make localstack-down         # stop LocalStack container (if running)
+#   make keycloak-up            # start Keycloak container
+#   make keycloak-down          # stop Keycloak container (if running)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -50,6 +52,10 @@
 # CLI:
 #   make cli                     # build client CLI (fast-jar, skip tests)
 #   make cli-run                 # run client CLI (use ARGS=...)
+#   make cli-docker              # run client CLI in docker network (OIDC-friendly)
+#   make cli-docker-token        # print OIDC token for docker network issuer
+#   make oidc-up                 # start docker stack with Keycloak + OIDC env
+#   make oidc-down               # stop docker stack started by oidc-up
 #   make cli-test                # run CLI tests
 #
 # Utilities:
@@ -78,6 +84,11 @@ MVN_TESTALL := --no-transfer-progress
 DOCKER_COMPOSE ?= docker compose
 DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
 DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
+DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --profile keycloak
+KEYCLOAK_PORT ?= 12221
+KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
+KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
+KEYCLOAK_TOKEN_URL_DOCKER ?= http://keycloak:8080/realms/floecat/protocol/openid-connect/token
 JIB_PLATFORMS ?=
 JIB_BASE_IMAGE ?= eclipse-temurin:25-jre
 UNAME_M := $(shell uname -m)
@@ -244,7 +255,7 @@ $(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.jav
 # ===================================================
 .PHONY: test test-localstack unit-test integration-test verify
 
-test: $(PROTO_JAR)
+test: $(PROTO_JAR) keycloak-up
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"
@@ -253,7 +264,7 @@ test: $(PROTO_JAR)
 	  verify
 
 .PHONY: test-localstack
-test-localstack: $(PROTO_JAR) localstack-down localstack-up
+test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] full suite (service + REST + CLI) upstream LocalStack -> catalog LocalStack"
@@ -265,6 +276,30 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up
 .PHONY: localstack-restart
 localstack-restart: localstack-down localstack-up
 
+.PHONY: keycloak-up keycloak-down keycloak-restart
+keycloak-up:
+	@echo "==> [KEYCLOAK] starting docker compose (keycloak profile)"
+	KEYCLOAK_PORT=$(KEYCLOAK_PORT) KC_HOSTNAME=127.0.0.1 KC_HOSTNAME_PORT=$(KEYCLOAK_PORT) $(DOCKER_COMPOSE_KEYCLOAK) up -d keycloak
+	@echo "==> [KEYCLOAK] waiting for realm readiness"
+	@bash -c 'set -euo pipefail; \
+	for i in $$(seq 1 45); do \
+	  if curl -fs $(KEYCLOAK_ENDPOINT)/ >/dev/null 2>&1; then break; fi; \
+	  sleep 1; \
+	done; \
+	for i in $$(seq 1 45); do \
+	  if curl -fs $(KEYCLOAK_HEALTH) | grep -q "\"issuer\""; then exit 0; fi; \
+	  sleep 1; \
+	done; \
+	echo "Keycloak failed to start at $(KEYCLOAK_ENDPOINT)" >&2; \
+	exit 1'
+	@echo "Keycloak running at $(KEYCLOAK_ENDPOINT)"
+
+keycloak-down:
+	@echo "==> [KEYCLOAK] stopping docker compose (keycloak profile)"
+	$(DOCKER_COMPOSE_KEYCLOAK) down --remove-orphans
+
+keycloak-restart: keycloak-down keycloak-up
+
 unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
@@ -272,14 +307,14 @@ unit-test:
 	  -DskipITs=true \
 	  test
 
-integration-test:
+integration-test: keycloak-up
 	@echo "==> [TEST] integration tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  -DskipUTs=true -DfailIfNoTests=false \
 	  verify
 
-verify:
+verify: keycloak-up
 	@echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
@@ -608,6 +643,41 @@ cli:
 cli-run: cli
 	@echo "==> [RUN] client CLI"
 	@java -jar $(CLI_JAR) $(ARGS)
+
+.PHONY: cli-docker-token
+cli-docker-token:
+	@echo "==> [TOKEN] client credentials via docker network"
+	@docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+	  -d "client_id=floecat-client" \
+	  -d "client_secret=floecat-secret" \
+	  -d "grant_type=client_credentials" \
+	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token
+
+.PHONY: cli-docker
+cli-docker:
+	@echo "==> [RUN] client CLI (docker)"
+	@TOKEN=$$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
+	  -d "client_id=floecat-client" \
+	  -d "client_secret=floecat-secret" \
+	  -d "grant_type=client_credentials" \
+	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token); \
+	FLOECAT_ENV_FILE=./env.localstack \
+	$(DOCKER_COMPOSE_MAIN) run --rm \
+	  -e FLOECAT_TOKEN=$$TOKEN \
+	  -e FLOECAT_ACCOUNT=$$FLOECAT_ACCOUNT \
+	  cli
+
+.PHONY: oidc-up
+oidc-up:
+	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
+	@FLOECAT_ENV_FILE=./env.localstack \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack up -d
+
+.PHONY: oidc-down
+oidc-down:
+	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
+	@FLOECAT_ENV_FILE=./env.localstack \
+	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)

@@ -46,6 +46,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.runtime.StartupEvent;
@@ -53,7 +54,12 @@ import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +79,9 @@ public class SeedRunner {
   private static final int SEED_SYNC_MAX_ATTEMPTS = 6;
   private static final long SEED_SYNC_INITIAL_BACKOFF_MS = 250L;
   private static final long SEED_SYNC_MAX_BACKOFF_MS = 5_000L;
+  private static final int SEED_TOKEN_MAX_ATTEMPTS = 6;
+  private static final long SEED_TOKEN_INITIAL_BACKOFF_MS = 250L;
+  private static final long SEED_TOKEN_MAX_BACKOFF_MS = 5_000L;
 
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
@@ -89,6 +98,23 @@ public class SeedRunner {
 
   @ConfigProperty(name = "floecat.seed.mode", defaultValue = "iceberg")
   String seedMode;
+
+  @ConfigProperty(name = "floecat.seed.oidc.token")
+  java.util.Optional<String> seedOidcToken;
+
+  @ConfigProperty(name = "floecat.seed.oidc.issuer")
+  java.util.Optional<String> seedOidcIssuer;
+
+  @ConfigProperty(name = "floecat.seed.oidc.client-id")
+  java.util.Optional<String> seedOidcClientId;
+
+  @ConfigProperty(name = "floecat.seed.oidc.client-secret")
+  java.util.Optional<String> seedOidcClientSecret;
+
+  @ConfigProperty(name = "floecat.seed.oidc.timeout", defaultValue = "10s")
+  Duration seedOidcTimeout;
+
+  private volatile java.util.Optional<String> seedAuthorizationHeader;
 
   void onStart(@Observes StartupEvent ev) {
     if (!enabled) {
@@ -219,7 +245,7 @@ public class SeedRunner {
     if (existing != null) {
       return existing.getResourceId();
     }
-    String id = uuidFor("/account:" + displayName);
+    String id = "5eaa9cd5-7d08-3750-9457-cfe800b0b9d2";
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     var account =
@@ -602,9 +628,7 @@ public class SeedRunner {
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
-        var result =
-            reconciler.reconcile(
-                connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+        var result = reconcileWithSeedAuth(connectorId, scope);
         if (result.ok()) {
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",
@@ -620,6 +644,11 @@ public class SeedRunner {
                 result.message());
             return;
           }
+          if (Thread.currentThread().isInterrupted()) {
+            LOG.warnf(
+                "Seed sync thread interrupted for %s; clearing interrupt and retrying", tableName);
+            Thread.interrupted();
+          }
           LOG.warnf(
               "Retrying fixture sync for %s (attempt %d/%d) after %dms due to: %s",
               tableName, attempt, SEED_SYNC_MAX_ATTEMPTS, backoffMs, result.message());
@@ -631,6 +660,13 @@ public class SeedRunner {
             result.error, "Failed to populate fixture table {0}: {1}", tableName, result.message());
         return;
       } catch (RuntimeException e) {
+        // gRPC blocking calls may set the interrupt flag (e.g., CANCELLED: Thread interrupted).
+        // During startup seeding we treat this as transient; clear the flag so retries can proceed.
+        if (Thread.currentThread().isInterrupted()) {
+          LOG.warnf(
+              "Seed sync thread interrupted for %s; clearing interrupt and retrying", tableName);
+          Thread.interrupted(); // clears interrupt status
+        }
         if (!isRetryableSeedSyncError(e) || attempt == SEED_SYNC_MAX_ATTEMPTS) {
           throw e;
         }
@@ -646,13 +682,176 @@ public class SeedRunner {
   private static boolean isRetryableSeedSyncError(Throwable error) {
     Throwable current = error;
     while (current != null) {
-      if (current instanceof StatusRuntimeException statusEx
-          && statusEx.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-        return true;
+      // Retry transient gRPC startup conditions.
+      if (current instanceof StatusRuntimeException statusEx) {
+        var code = statusEx.getStatus().getCode();
+        if (code == Status.Code.UNAVAILABLE || code == Status.Code.NOT_FOUND) {
+          return true;
+        }
+        // If the call was cancelled but the thread wasn't interrupted, treat it as transient.
+        if (code == Status.Code.CANCELLED && !Thread.currentThread().isInterrupted()) {
+          return true;
+        }
       }
+
+      // Reconciler wraps getConnector failures as IllegalArgumentException; treat that as
+      // retryable.
+      if (current instanceof IllegalArgumentException iae) {
+        String msg = iae.getMessage();
+        if (msg != null
+            && (msg.startsWith("Connector not found:") || msg.startsWith("getConnector failed"))) {
+          return true;
+        }
+      }
+
       current = current.getCause();
     }
     return false;
+  }
+
+  private ReconcilerService.Result reconcileWithSeedAuth(
+      ResourceId connectorId, ReconcileScope scope) {
+    var header = seedAuthorizationHeader();
+    if (header.isEmpty()) {
+      return reconciler.reconcile(
+          connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+    }
+    var ctx =
+        Context.current()
+            .withValue(
+                ai.floedb.floecat.reconciler.impl.ReconcilerAuthContext
+                    .AUTHORIZATION_HEADER_VALUE_KEY,
+                header.get());
+    final ReconcilerService.Result[] result = new ReconcilerService.Result[1];
+    ctx.run(
+        () ->
+            result[0] =
+                reconciler.reconcile(
+                    connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS));
+    return result[0];
+  }
+
+  private java.util.Optional<String> seedAuthorizationHeader() {
+    if (seedAuthorizationHeader != null) {
+      return seedAuthorizationHeader;
+    }
+    synchronized (this) {
+      if (seedAuthorizationHeader != null) {
+        return seedAuthorizationHeader;
+      }
+      var built = buildSeedAuthorizationHeader();
+      if (built.isPresent()) {
+        seedAuthorizationHeader = built;
+        return seedAuthorizationHeader;
+      }
+      // Do not cache failures; allow retry on next fixture sync attempt.
+      return built;
+    }
+  }
+
+  private java.util.Optional<String> buildSeedAuthorizationHeader() {
+    var explicit = seedOidcToken.map(String::trim).filter(v -> !v.isBlank());
+    if (explicit.isPresent()) {
+      LOG.info("Using configured seed OIDC token for fixture sync.");
+      return java.util.Optional.of(withBearerPrefix(explicit.get()));
+    }
+
+    var issuer = seedOidcIssuer.map(String::trim).filter(v -> !v.isBlank());
+    var clientId = seedOidcClientId.map(String::trim).filter(v -> !v.isBlank());
+    var clientSecret = seedOidcClientSecret.map(String::trim).filter(v -> !v.isBlank());
+
+    if (issuer.isEmpty() || clientId.isEmpty() || clientSecret.isEmpty()) {
+      LOG.info(
+          "Seed OIDC token not configured; fixture sync may fail in OIDC mode. "
+              + "Set floecat.seed.oidc.token or floecat.seed.oidc.issuer/client-id/client-secret.");
+      return java.util.Optional.empty();
+    }
+
+    String tokenEndpoint =
+        issuer.get().endsWith("/")
+            ? issuer.get() + "protocol/openid-connect/token"
+            : issuer.get() + "/protocol/openid-connect/token";
+
+    String body =
+        "client_id="
+            + urlEncode(clientId.get())
+            + "&client_secret="
+            + urlEncode(clientSecret.get())
+            + "&grant_type=client_credentials";
+
+    HttpRequest request =
+        HttpRequest.newBuilder()
+            .uri(URI.create(tokenEndpoint))
+            .timeout(seedOidcTimeout)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .POST(HttpRequest.BodyPublishers.ofString(body))
+            .build();
+
+    return fetchSeedTokenWithRetry(request);
+  }
+
+  private java.util.Optional<String> fetchSeedTokenWithRetry(HttpRequest request) {
+    long backoffMs = SEED_TOKEN_INITIAL_BACKOFF_MS;
+    for (int attempt = 1; attempt <= SEED_TOKEN_MAX_ATTEMPTS; attempt++) {
+      var result = fetchSeedTokenOnce(request);
+      if (result.isPresent()) {
+        return result;
+      }
+      if (attempt < SEED_TOKEN_MAX_ATTEMPTS) {
+        LOG.infof(
+            "Retrying seed OIDC token request (attempt %d/%d) after %dms",
+            attempt, SEED_TOKEN_MAX_ATTEMPTS, backoffMs);
+        LockSupport.parkNanos(backoffMs * 1_000_000L);
+        backoffMs = Math.min(backoffMs * 2, SEED_TOKEN_MAX_BACKOFF_MS);
+      }
+    }
+    return java.util.Optional.empty();
+  }
+
+  private java.util.Optional<String> fetchSeedTokenOnce(HttpRequest request) {
+    try {
+      HttpResponse<String> response =
+          HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() / 100 != 2) {
+        LOG.warnf("Seed OIDC token request failed: %d %s", response.statusCode(), response.body());
+        return java.util.Optional.empty();
+      }
+      String token = extractJsonValue(response.body(), "access_token");
+      LOG.info("Seed OIDC token acquired for fixture sync.");
+      return java.util.Optional.of(withBearerPrefix(token));
+    } catch (Exception e) {
+      LOG.warn("Seed OIDC token request failed", e);
+      return java.util.Optional.empty();
+    }
+  }
+
+  private static String extractJsonValue(String json, String key) {
+    String needle = "\"" + key + "\":\"";
+    int start = json.indexOf(needle);
+    if (start < 0) {
+      throw new IllegalStateException("Missing key " + key + " in response: " + json);
+    }
+    start += needle.length();
+    int end = json.indexOf('"', start);
+    if (end < 0) {
+      throw new IllegalStateException("Malformed JSON response: " + json);
+    }
+    return json.substring(start, end);
+  }
+
+  private static String withBearerPrefix(String token) {
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      return token;
+    }
+    return "Bearer " + token;
+  }
+
+  private static String urlEncode(String value) {
+    try {
+      return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to URL-encode value", e);
+    }
   }
 
   private static List<String> namespaceSegments(String namespaceFq) {

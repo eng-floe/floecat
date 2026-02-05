@@ -18,6 +18,13 @@ package ai.floedb.floecat.client.cli;
 
 import static java.lang.System.out;
 
+import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.AccountSpec;
+import ai.floedb.floecat.account.rpc.CreateAccountRequest;
+import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
+import ai.floedb.floecat.account.rpc.GetAccountRequest;
+import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
@@ -131,8 +138,14 @@ import com.google.protobuf.FieldMask;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.JsonFormat;
+import io.grpc.CallOptions;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
+import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -180,6 +193,31 @@ public class Shell implements Runnable {
       description = "gRPC port (default: 9100)")
   Integer grpcPort;
 
+  @CommandLine.Option(
+      names = {"--token"},
+      description = "Authorization bearer token (or set FLOECAT_TOKEN)")
+  String authToken;
+
+  @CommandLine.Option(
+      names = {"--session-token"},
+      description = "Session token header value (or set FLOECAT_SESSION_TOKEN)")
+  String sessionToken;
+
+  @CommandLine.Option(
+      names = {"--account-id"},
+      description = "Default account id (or set FLOECAT_ACCOUNT)")
+  String accountId;
+
+  @CommandLine.Option(
+      names = {"--auth-header"},
+      description = "Authorization header name (default: authorization)")
+  String authHeaderName;
+
+  @CommandLine.Option(
+      names = {"--session-header"},
+      description = "Session header name (default: x-floe-session)")
+  String sessionHeaderName;
+
   @Inject
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
@@ -224,6 +262,10 @@ public class Shell implements Runnable {
   @GrpcClient("floecat")
   QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
 
+  @Inject
+  @GrpcClient("floecat")
+  AccountServiceGrpc.AccountServiceBlockingStub accounts;
+
   private ManagedChannel overrideChannel;
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
@@ -231,17 +273,18 @@ public class Shell implements Runnable {
   private final boolean debugErrors =
       Boolean.getBoolean("floecat.shell.debug") || System.getenv("FLOECAT_SHELL_DEBUG") != null;
 
-  private volatile String currentAccountId =
-      System.getenv().getOrDefault("FLOECAT_ACCOUNT", "").trim();
+  private volatile String currentAccountId = "";
 
   private volatile String currentCatalog =
       System.getenv().getOrDefault("FLOECAT_CATALOG", "").trim();
 
   @Override
   public void run() {
+    initAuthConfig();
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
     try {
       configureGrpcChannel();
+      applyAuthInterceptors();
       Terminal terminal = TerminalBuilder.builder().system(true).build();
       Path historyPath = Paths.get(System.getProperty("user.home"), ".floecat_shell_history");
       var parser = new DefaultParser();
@@ -450,9 +493,18 @@ public class Shell implements Runnable {
          Options:
          --host <host>   gRPC host (default: localhost)
          --port <port>   gRPC port (default: 9100)
+         --token <jwt>   Authorization token (default: FLOECAT_TOKEN)
+         --session-token <jwt>  Session token (default: FLOECAT_SESSION_TOKEN)
+         --account-id <id>      Default account id (default: FLOECAT_ACCOUNT)
+         --auth-header <name>   Authorization header name
+         --session-header <name>  Session header name
 
          Commands:
          account <id>
+         account list
+         account get <id>
+         account create <display_name> [--desc <text>]
+         account delete <id> (or omit id to use current account)
          catalogs
          catalog create <display_name> [--desc <text>] [--connector <id>] [--policy <id>] [--props k=v ...]
          catalog get <display_name|id>
@@ -542,6 +594,44 @@ public class Shell implements Runnable {
     queries = QueryServiceGrpc.newBlockingStub(overrideChannel);
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
+    accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
+  }
+
+  private void initAuthConfig() {
+    if (authToken == null || authToken.isBlank()) {
+      authToken = System.getenv().getOrDefault("FLOECAT_TOKEN", "").trim();
+    }
+    if (sessionToken == null || sessionToken.isBlank()) {
+      sessionToken = System.getenv().getOrDefault("FLOECAT_SESSION_TOKEN", "").trim();
+    }
+    if (accountId == null || accountId.isBlank()) {
+      accountId = System.getenv().getOrDefault("FLOECAT_ACCOUNT", "").trim();
+    }
+    if (authHeaderName == null || authHeaderName.isBlank()) {
+      authHeaderName = "authorization";
+    }
+    if (sessionHeaderName == null || sessionHeaderName.isBlank()) {
+      sessionHeaderName = "x-floe-session";
+    }
+    if (currentAccountId == null || currentAccountId.isBlank()) {
+      currentAccountId = accountId;
+    }
+  }
+
+  private void applyAuthInterceptors() {
+    ClientInterceptor authInterceptor = new AuthHeaderInterceptor();
+    catalogs = catalogs.withInterceptors(authInterceptor);
+    namespaces = namespaces.withInterceptors(authInterceptor);
+    tables = tables.withInterceptors(authInterceptor);
+    directory = directory.withInterceptors(authInterceptor);
+    statistics = statistics.withInterceptors(authInterceptor);
+    snapshots = snapshots.withInterceptors(authInterceptor);
+    viewService = viewService.withInterceptors(authInterceptor);
+    connectors = connectors.withInterceptors(authInterceptor);
+    queries = queries.withInterceptors(authInterceptor);
+    queryScan = queryScan.withInterceptors(authInterceptor);
+    querySchema = querySchema.withInterceptors(authInterceptor);
+    accounts = accounts.withInterceptors(authInterceptor);
   }
 
   private void dispatch(String inputLine) {
@@ -610,13 +700,77 @@ public class Shell implements Runnable {
               : ("account: " + currentAccountId));
       return;
     }
-    String t = args.get(0).trim();
-    if (t.isEmpty()) {
-      out.println("usage: account <accountId>");
+    String sub = args.get(0);
+    switch (sub) {
+      case "list" -> cmdAccountList();
+      case "get" -> cmdAccountGet(tail(args));
+      case "create" -> cmdAccountCreate(tail(args));
+      case "delete" -> cmdAccountDelete(tail(args));
+      default -> {
+        String t = sub.trim();
+        if (t.isEmpty()) {
+          out.println("usage: account <accountId>");
+          return;
+        }
+        currentAccountId = t;
+        out.println("account set: " + currentAccountId);
+      }
+    }
+  }
+
+  private void cmdAccountList() {
+    List<Account> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
+            r -> r.getAccountsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    printAccounts(all);
+  }
+
+  private void cmdAccountGet(List<String> args) {
+    if (args.size() < 1) {
+      out.println("usage: account get <id>");
       return;
     }
-    currentAccountId = t;
-    out.println("account set: " + currentAccountId);
+    String id = Quotes.unquote(args.get(0));
+    var resp =
+        accounts.getAccount(
+            GetAccountRequest.newBuilder()
+                .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
+                .build());
+    printAccounts(List.of(resp.getAccount()));
+  }
+
+  private void cmdAccountCreate(List<String> args) {
+    if (args.size() < 1) {
+      out.println("usage: account create <display_name> [--desc <text>]");
+      return;
+    }
+    String display = Quotes.unquote(args.get(0));
+    String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
+    var spec =
+        AccountSpec.newBuilder().setDisplayName(display).setDescription(nvl(desc, "")).build();
+    var resp = accounts.createAccount(CreateAccountRequest.newBuilder().setSpec(spec).build());
+    printAccounts(List.of(resp.getAccount()));
+  }
+
+  private void cmdAccountDelete(List<String> args) {
+    String id =
+        args.isEmpty() ? (currentAccountId == null ? "" : currentAccountId.trim()) : args.get(0);
+    id = Quotes.unquote(id);
+    if (id.isBlank()) {
+      out.println("usage: account delete <id>");
+      return;
+    }
+    accounts.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
+            .build());
+    if (currentAccountId != null && currentAccountId.trim().equals(id)) {
+      currentAccountId = null;
+    }
+    out.println("account deleted: " + id);
   }
 
   private List<String> tail(List<String> list) {
@@ -2759,6 +2913,19 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printAccounts(List<Account> rows) {
+    out.printf(
+        "%-40s  %-24s  %-24s  %s%n", "ACCOUNT_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
+    for (var a : rows) {
+      out.printf(
+          "%-40s  %-24s  %-24s  %s%n",
+          rid(a.getResourceId()),
+          ts(a.getCreatedAt()),
+          Quotes.quoteIfNeeded(a.getDisplayName()),
+          a.hasDescription() ? a.getDescription() : "");
+    }
+  }
+
   private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
     StringBuilder sb = new StringBuilder();
     sb.append(Quotes.quoteIfNeeded(catalog));
@@ -3451,6 +3618,36 @@ public class Shell implements Runnable {
     return directory
         .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
         .getResourceId();
+  }
+
+  private final class AuthHeaderInterceptor implements ClientInterceptor {
+    @Override
+    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
+        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, io.grpc.Channel next) {
+      return new ForwardingClientCall.SimpleForwardingClientCall<>(
+          next.newCall(method, callOptions)) {
+        @Override
+        public void start(Listener<RespT> responseListener, Metadata headers) {
+          String token = authToken == null ? "" : authToken.trim();
+          if (!token.isBlank()) {
+            String headerValue = token;
+            if (!token.regionMatches(true, 0, "bearer ", 0, 7)) {
+              headerValue = "Bearer " + token;
+            }
+            headers.put(
+                Metadata.Key.of(authHeaderName, Metadata.ASCII_STRING_MARSHALLER), headerValue);
+          }
+
+          String session = sessionToken == null ? "" : sessionToken.trim();
+          if (!session.isBlank()) {
+            headers.put(
+                Metadata.Key.of(sessionHeaderName, Metadata.ASCII_STRING_MARSHALLER), session);
+          }
+
+          super.start(responseListener, headers);
+        }
+      };
+    }
   }
 
   static final class Quotes {

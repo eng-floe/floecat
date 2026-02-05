@@ -51,7 +51,7 @@ query lifecycle / scan bundle logic.
 
 ## Public API / Surface Area
 Each gRPC implementation derives from `BaseServiceImpl`, gaining retry semantics, error mapping, and
-helpers like `randomResourceId` (UUIDv7). Highlights:
+helpers like `randomResourceId` (UUIDv4). Highlights:
 
 - **CatalogServiceImpl** – Enforces `catalog.read`/`catalog.write` permissions, canonicalises names,
   uses `IdempotencyGuard` for Create, and ensures namespace cascading checks during Delete.
@@ -96,10 +96,11 @@ Each repository extends `BaseResourceRepository<T>`:
 implementations.
 
 ### Security and Context
-`InboundContextInterceptor` reads `x-principal-bin`, `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
-validates account membership, hydrates MDC/OpenTelemetry attributes, and falls back to a development
-principal (full permissions) if no credentials exist. `OutboundContextClientInterceptor` mirrors the
-same headers for internal gRPC calls (service-to-service).
+`InboundContextInterceptor` reads `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
+plus optional OIDC session/authorization headers, validates account membership, hydrates
+MDC/OpenTelemetry attributes, and enforces the configured `floecat.auth.mode`.
+`OutboundContextClientInterceptor` mirrors the same headers for internal gRPC calls
+(service-to-service).
 
 `Authorizer` currently performs simple list membership checks on `PrincipalContext.permissions`; it
 can be replaced by injecting a custom implementation.
@@ -160,6 +161,8 @@ Notable `application.properties` keys:
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
+| `floecat.auth.mode` | Auth enforcement mode (`oidc`, `dev`). |
+| `floecat.auth.platform-admin.role` | IdP role name granted permission to manage accounts (default `platform-admin`). |
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
@@ -170,7 +173,7 @@ Extension points:
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, allocates a
-  UUIDv7 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
+  UUIDv4 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
   pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the caller supplies an
   `IdempotencyKey`, the repository short-circuits duplicates.
 - **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via

@@ -76,6 +76,18 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ---
 
+## Authentication Notes
+
+- The gateway uses `floecat.gateway.auth-mode=oidc` to require a JWT and derives the account from the configured claim (`floecat.gateway.account-claim`, default `account_id`).
+- The JWT is read from `floecat.gateway.authHeader` (default `authorization`) and is validated by Quarkus OIDC.
+- For OIDC validation you must enable/configure Quarkus OIDC in the gateway:
+  - `quarkus.oidc.tenant-enabled=true`
+  - One of: `quarkus.oidc.auth-server-url=...` or `quarkus.oidc.public-key=...`
+  - Optional: `quarkus.oidc.token.audience=...`
+- If you customize the auth header, continue sending `Bearer <jwt>` as the value.
+
+---
+
 ## Stage-create & Commit Flow
 
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
@@ -185,7 +197,17 @@ fs.native-s3.enabled=true
 s3.aws-access-key=<access-key>
 s3.aws-secret-key=<secret-key>
 s3.region=<AWS region>
+
+# OIDC (Keycloak)
+iceberg.rest-catalog.security=OAUTH2
+iceberg.rest-catalog.oauth2.credential=trino-client:trino-secret
+iceberg.rest-catalog.oauth2.server-uri=http://host.docker.internal:8080/realms/floecat/protocol/openid-connect/token
+iceberg.rest-catalog.oauth2.scope=openid
 ```
+
+Note: if Trino runs on the same Docker network as Keycloak (`docker_floecat`), you can use
+`http://keycloak:8080/realms/floecat/protocol/openid-connect/token` instead. If it does not share
+the network, use `host.docker.internal`.
 
 Restart Trino and run:
 

@@ -79,7 +79,7 @@ public final class TestSupport {
   }
 
   public static ResourceId createAccountId(String tid) {
-    String tidUUID = AccountIds.deterministicAccountId("/account:" + tid);
+    String tidUUID = AccountIds.randomAccountId();
     ResourceId accountId =
         ResourceId.newBuilder()
             .setAccountId(tidUUID)

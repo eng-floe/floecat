@@ -23,7 +23,7 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 Responsibilities:
 
 - Provide a REPL for catalog CRUD operations.
-- Manage gRPC connections and propagate `PrincipalContext` headers (via Quarkus client interceptors).
+- Manage gRPC connections and propagate auth headers (via Quarkus client interceptors).
 - Perform minimal validation before sending requests (for example verifying namespace path syntax).
 
 ## Public API / Surface Area
@@ -65,7 +65,7 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 
 ```
 User command → Picocli parser → Shell subcommand → gRPC stub call
-  → Interceptors attach account/principal headers → Service executes request
+  → Interceptors attach auth headers → Service executes request
   ← Response printed (tables/JSON summaries)
 ```
 

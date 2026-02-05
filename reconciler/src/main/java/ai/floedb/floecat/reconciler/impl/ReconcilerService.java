@@ -106,7 +106,11 @@ public class ReconcilerService {
               .getConnector();
     } catch (StatusRuntimeException e) {
       return new Result(
-          0, 0, 1, new IllegalArgumentException("Connector not found: " + connectorId.getId(), e));
+          0,
+          0,
+          1,
+          new IllegalArgumentException(
+              "getConnector failed (" + e.getStatus().getCode() + "): " + connectorId.getId(), e));
     }
 
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
