@@ -27,6 +27,9 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import io.quarkus.oidc.TenantIdentityProvider;
+import io.quarkus.security.identity.SecurityIdentity;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.inject.Instance;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.MultivaluedHashMap;
@@ -40,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -212,8 +216,78 @@ class AccountHeaderFilterTest {
     verify(ctx).setRequestUri(Mockito.any(URI.class));
   }
 
+  @Test
+  void oidcModeUsesCustomAuthHeaderForJwtClaim() throws Exception {
+    System.setProperty("quarkus.oidc.public-key", "test-key");
+    System.setProperty("quarkus.oidc.auth-server-url", "http://issuer.example.com/realms/test");
+    System.setProperty("quarkus.oidc.tenant-enabled", "true");
+    try {
+      AccountHeaderFilter filter = new AccountHeaderFilter();
+      Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
+      IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
+      when(configInstance.isUnsatisfied()).thenReturn(false);
+      when(configInstance.get()).thenReturn(config);
+      when(config.authMode()).thenReturn("oidc");
+      when(config.accountHeader()).thenReturn("x-account-id");
+      when(config.authHeader()).thenReturn("x-floe-session");
+      when(config.accountClaim()).thenReturn("account_id");
+      filter.setConfigInstance(configInstance);
+      filter.setAccountContext(mock(AccountContext.class));
+
+      TenantIdentityProvider identityProvider = mock(TenantIdentityProvider.class);
+      @SuppressWarnings("unchecked")
+      Instance<TenantIdentityProvider> identityProviderInstance = mock(Instance.class);
+      when(identityProviderInstance.isUnsatisfied()).thenReturn(false);
+      when(identityProviderInstance.get()).thenReturn(identityProvider);
+      SecurityIdentity identity = mock(SecurityIdentity.class);
+      when(identity.isAnonymous()).thenReturn(true);
+      JsonWebToken jwt = mock(JsonWebToken.class);
+      when(jwt.getClaim("account_id")).thenReturn("acct-123");
+      SecurityIdentity validated = mock(SecurityIdentity.class);
+      when(validated.isAnonymous()).thenReturn(false);
+      when(validated.getPrincipal()).thenReturn(jwt);
+      when(identityProvider.authenticate(any())).thenReturn(Uni.createFrom().item(validated));
+
+      setField(filter, "identityProvider", identityProviderInstance);
+      setField(filter, "identity", identity);
+      setField(filter, "jwt", null);
+
+      ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+      UriInfo uriInfo = mock(UriInfo.class);
+      when(uriInfo.getPath()).thenReturn("v1/foo/namespaces/db/tables");
+      when(ctx.getUriInfo()).thenReturn(uriInfo);
+      when(ctx.getHeaderString("x-floe-session")).thenReturn("Bearer token");
+      when(ctx.getHeaderString("x-account-id")).thenReturn(null);
+      MultivaluedHashMap<String, String> headers = new MultivaluedHashMap<>();
+      when(ctx.getHeaders()).thenReturn(headers);
+      AtomicBoolean aborted = new AtomicBoolean(false);
+      doAnswer(
+              inv -> {
+                aborted.set(true);
+                return null;
+              })
+          .when(ctx)
+          .abortWith(any());
+
+      filter.filter(ctx);
+
+      assertFalse(aborted.get());
+      assertEquals("acct-123", headers.getFirst("x-account-id"));
+    } finally {
+      System.clearProperty("quarkus.oidc.public-key");
+      System.clearProperty("quarkus.oidc.auth-server-url");
+      System.clearProperty("quarkus.oidc.tenant-enabled");
+    }
+  }
+
   private PathSegment pathSegment(String path) {
     return new SimplePathSegment(path);
+  }
+
+  private static void setField(Object target, String name, Object value) throws Exception {
+    var field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    field.set(target, value);
   }
 
   private static final class SimplePathSegment implements PathSegment {

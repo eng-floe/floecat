@@ -20,6 +20,8 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import io.quarkus.oidc.AccessTokenCredential;
+import io.quarkus.oidc.TenantIdentityProvider;
 import io.quarkus.security.identity.SecurityIdentity;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -37,6 +39,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
@@ -47,6 +50,7 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
   @Inject AccountContext accountContext;
   @Inject SecurityIdentity identity;
   @Inject JsonWebToken jwt;
+  @Inject Instance<TenantIdentityProvider> identityProvider;
 
   public void setConfigInstance(Instance<IcebergGatewayConfig> config) {
     this.config = config;
@@ -73,6 +77,9 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
       account = defaultAccount().orElse(null);
     } else {
       account = resolveAccountFromAuthClaim(requestContext, accountHeader);
+    }
+    if (requestContext.getProperty("authAbort") != null) {
+      return;
     }
     if (account == null || account.isBlank()) {
       requestContext.abortWith(unauthorized("missing account header"));
@@ -189,16 +196,85 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
   private String resolveAccountFromAuthClaim(
       ContainerRequestContext requestContext, String accountHeader) {
     String claimName = resolveAccountClaimName();
-    if (identity == null || identity.isAnonymous()) {
-      return null;
+    SecurityIdentity resolvedIdentity = identity;
+    if (resolvedIdentity == null || resolvedIdentity.isAnonymous()) {
+      String authHeader = resolveAuthHeaderName();
+      String token = headerValue(requestContext, authHeader);
+      if (token != null && !token.isBlank()) {
+        String oidcError = ensureOidcConfigured(authHeader);
+        if (oidcError != null) {
+          requestContext.abortWith(unauthorized(oidcError));
+          requestContext.setProperty("authAbort", Boolean.TRUE);
+          return null;
+        }
+        resolvedIdentity = validateOidcHeader(token);
+      } else {
+        return null;
+      }
     }
-    Object claim = jwt != null ? jwt.getClaim(claimName) : null;
+    Object claim = extractClaim(resolvedIdentity, claimName);
     String account = claim == null ? null : claim.toString();
     if (account != null && !account.isBlank()) {
       requestContext.getHeaders().putSingle(accountHeader, account);
       return account;
     }
     return null;
+  }
+
+  private SecurityIdentity validateOidcHeader(String headerValue) {
+    if (identityProvider == null || identityProvider.isUnsatisfied()) {
+      return null;
+    }
+    String token = headerValue.trim();
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      token = token.substring(7).trim();
+    }
+    if (token.isBlank()) {
+      return null;
+    }
+    try {
+      AccessTokenCredential credential = new AccessTokenCredential(token);
+      SecurityIdentity validated =
+          identityProvider.get().authenticate(credential).await().indefinitely();
+      if (validated == null || validated.isAnonymous()) {
+        return null;
+      }
+      return validated;
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  private String ensureOidcConfigured(String headerLabel) {
+    var cfg = ConfigProvider.getConfig();
+    boolean tenantEnabled =
+        cfg.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
+    boolean hasPublicKey =
+        cfg.getOptionalValue("quarkus.oidc.public-key", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    boolean hasAuthServerUrl =
+        cfg.getOptionalValue("quarkus.oidc.auth-server-url", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    if (!tenantEnabled) {
+      return headerLabel + " header configured but OIDC tenant is disabled";
+    }
+    if (!hasPublicKey && !hasAuthServerUrl) {
+      return headerLabel
+          + " header configured but no OIDC public key or auth server URL configured";
+    }
+    return null;
+  }
+
+  private Object extractClaim(SecurityIdentity resolvedIdentity, String claimName) {
+    if (resolvedIdentity == null || resolvedIdentity.isAnonymous()) {
+      return null;
+    }
+    if (resolvedIdentity.getPrincipal() instanceof JsonWebToken jwtPrincipal) {
+      return jwtPrincipal.getClaim(claimName);
+    }
+    return jwt != null ? jwt.getClaim(claimName) : null;
   }
 
   private String resolveAccountClaimName() {

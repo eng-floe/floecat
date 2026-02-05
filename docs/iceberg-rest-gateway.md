@@ -76,6 +76,18 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ---
 
+## Authentication Notes
+
+- The gateway uses `floecat.gateway.auth-mode=oidc` to require a JWT and derives the account from the configured claim (`floecat.gateway.account-claim`, default `account_id`).
+- The JWT is read from `floecat.gateway.authHeader` (default `authorization`) and is validated by Quarkus OIDC.
+- For OIDC validation you must enable/configure Quarkus OIDC in the gateway:
+  - `quarkus.oidc.tenant-enabled=true`
+  - One of: `quarkus.oidc.auth-server-url=...` or `quarkus.oidc.public-key=...`
+  - Optional: `quarkus.oidc.token.audience=...`
+- If you customize the auth header, continue sending `Bearer <jwt>` as the value.
+
+---
+
 ## Stage-create & Commit Flow
 
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)

@@ -99,6 +99,8 @@ implementations.
 `InboundContextInterceptor` reads `x-query-id`, `x-engine-version`, `x-correlation-id`, and optional
 `x-account-id` headers, plus optional OIDC session/authorization headers, validates account
 membership, hydrates MDC/OpenTelemetry attributes, and enforces the configured `floecat.auth.mode`.
+When OIDC is enabled, `x-account-id` is only used to validate it matches the token’s `account_id`
+claim; the service does not derive the account from the header.
 `OutboundContextClientInterceptor` mirrors the same headers for internal gRPC calls
 (service-to-service).
 
