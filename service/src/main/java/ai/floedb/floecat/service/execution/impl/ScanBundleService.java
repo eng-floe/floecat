@@ -20,21 +20,20 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import io.quarkus.grpc.GrpcClient;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -43,60 +42,70 @@ import java.util.stream.IntStream;
 @ApplicationScoped
 public class ScanBundleService {
 
-  @GrpcClient("floecat")
-  TableServiceGrpc.TableServiceBlockingStub tables;
+  private final TableRepository tables;
+  private final SnapshotRepository snapshots;
+  private final StatsRepository stats;
 
-  public FloecatConnector.ScanBundle fetch(
-      String correlationId,
-      ResourceId tableId,
-      SnapshotPin snapshotPin,
-      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
+  @Inject
+  public ScanBundleService(
+      TableRepository tables, SnapshotRepository snapshots, StatsRepository stats) {
+    this.tables = tables;
+    this.snapshots = snapshots;
+    this.stats = stats;
+  }
 
-    // Load table metadata
+  public ScanBundleWithInfo fetch(
+      String correlationId, ResourceId tableId, SnapshotPin snapshotPin) {
+
     Table table =
-        tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+        tables
+            .getById(tableId)
+            .orElseThrow(
+                () -> GrpcErrors.notFound(correlationId, TABLE, Map.of("id", tableId.getId())));
 
-    // SnapshotPin: snapshot_id is a proto3 scalar, no hasSnapshotId()
     long snapshotId = snapshotPin.getSnapshotId();
     if (snapshotId == 0L) {
       throw GrpcErrors.invalidArgument(
           correlationId, QUERY_SNAPSHOT_REQUIRED, Map.of("table_id", tableId.getId()));
     }
 
-    // Build bundle based on statistics
-    FloecatConnector.ScanBundle bundle = buildFromStats(table, snapshotId, stats);
+    Snapshot snapshot =
+        snapshots
+            .getById(tableId, snapshotId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId,
+                        SNAPSHOT,
+                        Map.of(
+                            "table_id",
+                            tableId.getId(),
+                            "snapshot_id",
+                            Long.toString(snapshotId))));
+
+    FloecatConnector.ScanBundle bundle = buildFromStats(table, snapshotId);
 
     if (bundle == null) {
       throw GrpcErrors.internal(
           correlationId,
           SCANBUNDLE_STATS_UNAVAILABLE,
-          Map.of(
-              "table_id", tableId.getId(),
-              "snapshot_id", Long.toString(snapshotId)));
+          Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
     }
 
-    return bundle;
+    TableInfo info = buildTableInfo(table, snapshot);
+    return new ScanBundleWithInfo(bundle, info);
   }
 
-  public FloecatConnector.ScanBundle buildFromStats(
-      Table table,
-      long snapshotId,
-      TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats) {
+  private FloecatConnector.ScanBundle buildFromStats(Table table, long snapshotId) {
     var data = new ArrayList<ScanFile>();
     var deletes = new ArrayList<ScanFile>();
 
     String pageToken = "";
     do {
-      var req =
-          ListFileColumnStatsRequest.newBuilder()
-              .setTableId(table.getResourceId())
-              .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-              .setPage(PageRequest.newBuilder().setPageSize(1000).setPageToken(pageToken))
-              .build();
+      StringBuilder next = new StringBuilder();
+      var resp = stats.listFileStats(table.getResourceId(), snapshotId, 1000, pageToken, next);
 
-      var resp = stats.listFileColumnStats(req);
-
-      for (FileColumnStats fcs : resp.getFileColumnsList()) {
+      for (FileColumnStats fcs : resp) {
         var builder =
             ScanFile.newBuilder()
                 .setFilePath(fcs.getFilePath())
@@ -120,7 +129,7 @@ public class ScanBundleService {
         }
       }
 
-      pageToken = resp.hasPage() ? resp.getPage().getNextPageToken() : "";
+      pageToken = next.toString();
     } while (!pageToken.isBlank());
 
     List<ScanFile> linkedData =
@@ -138,6 +147,33 @@ public class ScanBundleService {
     return new FloecatConnector.ScanBundle(linkedData, deletes);
   }
 
+  private TableInfo buildTableInfo(Table table, Snapshot snapshot) {
+    TableInfo.Builder builder = TableInfo.newBuilder().setTableId(table.getResourceId());
+
+    String schemaJson = snapshot.getSchemaJson();
+    if (schemaJson == null || schemaJson.isBlank()) {
+      schemaJson = table.getSchemaJson();
+    }
+    if (schemaJson != null && !schemaJson.isBlank()) {
+      builder.setSchemaJson(schemaJson);
+    }
+
+    if (snapshot.hasPartitionSpec()) {
+      builder.setPartitionSpecs(snapshot.getPartitionSpec());
+    }
+
+    if (table.getPropertiesCount() > 0) {
+      builder.putAllProperties(table.getPropertiesMap());
+    }
+
+    String metadataLocation = table.getPropertiesMap().getOrDefault("metadata-location", "");
+    if (!metadataLocation.isBlank()) {
+      builder.setMetadataLocation(metadataLocation);
+    }
+
+    return builder.build();
+  }
+
   //  Direct mapping from catalog FileContent -> execution ScanFileContent
   private ScanFileContent mapContent(FileContent fc) {
     return switch (fc) {
@@ -146,4 +182,6 @@ public class ScanBundleService {
       default -> ScanFileContent.SCAN_FILE_CONTENT_DATA;
     };
   }
+
+  public record ScanBundleWithInfo(FloecatConnector.ScanBundle bundle, TableInfo tableInfo) {}
 }

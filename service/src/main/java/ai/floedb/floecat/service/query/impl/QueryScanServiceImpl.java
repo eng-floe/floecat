@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
@@ -33,7 +32,6 @@ import ai.floedb.floecat.service.execution.impl.ScanBundleService;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import io.quarkus.grpc.GrpcClient;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -61,10 +59,6 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
 
   @Inject QueryContextStore queryStore;
   @Inject ScanBundleService scanBundles;
-
-  @Inject
-  @GrpcClient("floecat")
-  TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   private static final Logger LOG = Logger.getLogger(QueryScanServiceGrpc.class);
 
@@ -104,15 +98,20 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                   var pin = ctx.requireSnapshotPin(tableId, correlationId);
 
                   try {
-                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin, stats);
+                    var raw = scanBundles.fetch(correlationId, request.getTableId(), pin);
 
                     ScanBundle pruned =
                         ScanPruningUtils.pruneBundle(
-                            raw, request.getRequiredColumnsList(), request.getPredicatesList());
+                            raw.bundle(),
+                            request.getRequiredColumnsList(),
+                            request.getPredicatesList());
 
                     ctx.markPlanningCompleted();
 
-                    return FetchScanBundleResponse.newBuilder().setBundle(pruned).build();
+                    return FetchScanBundleResponse.newBuilder()
+                        .setBundle(pruned)
+                        .setTableInfo(raw.tableInfo())
+                        .build();
 
                   } catch (RuntimeException e) {
                     ctx.markPlanningFailed();

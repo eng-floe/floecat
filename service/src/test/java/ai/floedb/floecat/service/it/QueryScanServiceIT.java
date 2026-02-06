@@ -146,6 +146,82 @@ class QueryScanServiceIT {
     assertEquals(0, resp.getBundle().getDeleteFilesCount());
   }
 
+  @Test
+  void fetchScanBundleReturnsTableInfo() throws Exception {
+
+    var catName = catalogPrefix + "scan_info";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "scan_info", List.of("scan"), "");
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "scan_meta",
+            "s3://bucket/scan_meta",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "table with metadata");
+
+    var metadataLocation = "s3://bucket/meta/scan_meta.metadata.json";
+    FieldMask mask = FieldMask.newBuilder().addPaths("properties").build();
+    tbl =
+        table
+            .updateTable(
+                UpdateTableRequest.newBuilder()
+                    .setTableId(tbl.getResourceId())
+                    .setSpec(
+                        TableSpec.newBuilder().putProperties("metadata-location", metadataLocation))
+                    .setUpdateMask(mask)
+                    .build())
+            .getTable();
+
+    var snap =
+        TestSupport.createSnapshot(
+            snapshot, tbl.getResourceId(), 602L, System.currentTimeMillis() - 2000L);
+
+    var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "meta");
+    attachConnectorToTable(tbl.getResourceId(), connector);
+
+    var name =
+        NameRef.newBuilder().setCatalog(catName).addPath("scan").setName("scan_meta").build();
+
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
+
+    var queryId = begin.getQuery().getQueryId();
+
+    schema.describeInputs(
+        DescribeInputsRequest.newBuilder()
+            .setQueryId(queryId)
+            .addInputs(
+                QueryInput.newBuilder()
+                    .setName(name)
+                    .setTableId(tbl.getResourceId())
+                    .setSnapshot(
+                        SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()).build())
+                    .build())
+            .build());
+
+    var resp =
+        scan.fetchScanBundle(
+            FetchScanBundleRequest.newBuilder()
+                .setQueryId(queryId)
+                .setTableId(tbl.getResourceId())
+                .build());
+
+    assertTrue(resp.hasTableInfo());
+    var info = resp.getTableInfo();
+    assertEquals(tbl.getResourceId(), info.getTableId());
+    assertEquals(tbl.getSchemaJson(), info.getSchemaJson());
+    assertEquals(metadataLocation, info.getMetadataLocation());
+    assertEquals(1, info.getPropertiesCount());
+    assertEquals(metadataLocation, info.getPropertiesMap().get("metadata-location"));
+  }
+
   /** Ensures FetchScanBundle rejects unpinned tables. */
   @Test
   void fetchScanBundleRejectsUnpinnedTables() throws Exception {
