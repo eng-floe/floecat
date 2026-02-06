@@ -47,6 +47,10 @@ public final class ColumnDecoration extends AbstractDecoration {
     return builder;
   }
 
+  public long id() {
+    return builder.getId();
+  }
+
   public SchemaColumn schemaColumn() {
     return schemaColumn;
   }

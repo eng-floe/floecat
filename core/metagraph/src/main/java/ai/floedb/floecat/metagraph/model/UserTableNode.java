@@ -48,7 +48,8 @@ public record UserTableNode(
     Optional<ResolvedSnapshotInfo> resolvedSnapshots,
     Optional<TableStatsSummary> statsSummary,
     List<ResourceId> dependentViews,
-    Map<EngineHintKey, EngineHint> engineHints)
+    Map<EngineHintKey, EngineHint> engineHints,
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints)
     implements TableNode {
 
   public UserTableNode {
@@ -60,6 +61,12 @@ public record UserTableNode(
     statsSummary = statsSummary == null ? Optional.empty() : statsSummary;
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+    columnHints = RelationNode.normalizeColumnHints(columnHints);
+  }
+
+  @Override
+  public Map<Long, Map<EngineHintKey, EngineHint>> columnHints() {
+    return columnHints;
   }
 
   @Override

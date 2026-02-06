@@ -103,4 +103,12 @@ public interface GraphNode {
                 Map.Entry::getValue,
                 (first, second) -> second));
   }
+
+  /** Normalizes an engine hint map, returning an immutable empty map if input is null/empty. */
+  static Map<EngineHintKey, EngineHint> normalizeEngineHints(Map<EngineHintKey, EngineHint> hints) {
+    if (hints == null || hints.isEmpty()) {
+      return Map.of();
+    }
+    return Map.copyOf(hints);
+  }
 }

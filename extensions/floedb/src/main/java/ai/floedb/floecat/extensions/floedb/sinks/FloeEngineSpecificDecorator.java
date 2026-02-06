@@ -16,12 +16,16 @@
 
 package ai.floedb.floecat.extensions.floedb.sinks;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
+import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
+import ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -33,6 +37,8 @@ import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import org.jboss.logging.Logger;
 
@@ -43,11 +49,14 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
   private static final String RESOLVER_KEY = "floe.typeResolver";
   private static final String RELATION_OID_KEY = "floe.relOid";
 
-  public static final FloeEngineSpecificDecorator INSTANCE = new FloeEngineSpecificDecorator();
-
   private final EngineTypeMapper typeMapper = new FloeTypeMapper();
+  private static final String COLUMN_HINTS_KEY =
+      "ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator.columnHints";
+  private final EngineHintPersistence persistence;
 
-  private FloeEngineSpecificDecorator() {}
+  public FloeEngineSpecificDecorator(EngineHintPersistence persistence) {
+    this.persistence = persistence == null ? EngineHintPersistence.NOOP : persistence;
+  }
 
   @Override
   public void decorateColumn(EngineContext engineContext, ColumnDecoration column) {
@@ -68,15 +77,23 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         relation.attribute(RESOLVER_KEY, resolver);
       }
       Optional<EngineSpecific> existing =
-          findExistingMetadata(column.builder(), normalizedKind, FloePayloads.COLUMN.type());
+          findExistingMetadata(column.builder(), normalizedKind, COLUMN.type());
       if (existing.isPresent()) {
         return;
       }
       int relOid = relationOid(relation);
       FloeColumnSpecific attribute =
           FloeHintResolver.columnSpecific(
-              context, resolver, relOid, column.ordinal(), schema, column.logicalType());
+              context,
+              resolver,
+              relation.relationId(),
+              relOid,
+              column.ordinal(),
+              schema,
+              column.logicalType());
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
+      bufferColumnHint(
+          relation, relation.relationId(), column.id(), COLUMN.type(), attribute.toByteArray());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -95,13 +112,14 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       return;
     }
     RelationInfo.Builder builder = relation.builder();
-    if (findExistingMetadata(builder, normalizedKind, FloePayloads.RELATION.type()).isPresent()) {
+    if (findExistingMetadata(builder, normalizedKind, RELATION.type()).isPresent()) {
       return;
     }
     try {
       FloeRelationSpecific relationSpecific =
           FloeHintResolver.relationSpecific(relation.resolutionContext(), relation.node());
       builder.addEngineSpecific(toEngineSpecific(normalizedKind, relationSpecific));
+      persistRelationHint(engineContext, relation.relationId(), relationSpecific, RELATION.type());
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
@@ -109,6 +127,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
           relation.relationId(),
           engineContext.engineKind(),
           engineContext.engineVersion());
+    } finally {
+      flushColumnHints(engineContext, relation, relation.relationId());
     }
   }
 
@@ -122,7 +142,8 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         ScannerUtils.oid(
             context.overlay(),
             relation.node().id(),
-            FloePayloads.RELATION,
+            RELATION,
+            FloeRelationSpecific.class,
             FloeRelationSpecific::getOid,
             context.engineContext());
     relation.attribute(RELATION_OID_KEY, oid);
@@ -153,7 +174,7 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     }
     return EngineSpecific.newBuilder()
         .setEngineKind(engineKind)
-        .setPayloadType(FloePayloads.COLUMN.type())
+        .setPayloadType(COLUMN.type())
         .setPayload(column.toByteString())
         .build();
   }
@@ -183,8 +204,83 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     }
     return EngineSpecific.newBuilder()
         .setEngineKind(engineKind)
-        .setPayloadType(FloePayloads.RELATION.type())
+        .setPayloadType(RELATION.type())
         .setPayload(relationSpecific.toByteString())
         .build();
+  }
+
+  private void persistRelationHint(
+      EngineContext ctx,
+      ResourceId relationId,
+      FloeRelationSpecific relationSpecific,
+      String payloadType) {
+    persistHint(ctx, relationId, relationSpecific.toByteArray(), payloadType);
+  }
+
+  private void persistHint(
+      EngineContext ctx, ResourceId relationId, byte[] payload, String payloadType) {
+    if (persistence == null || persistence == EngineHintPersistence.NOOP) {
+      return;
+    }
+    try {
+      persistence.persistRelationHint(
+          relationId, payloadType, ctx.normalizedKind(), ctx.normalizedVersion(), payload);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Failed to persist relation engine hint for relation %s", relationId);
+    }
+  }
+
+  private void bufferColumnHint(
+      RelationDecoration relation,
+      ResourceId relationId,
+      long columnId,
+      String payloadType,
+      byte[] payload) {
+    if (relationId == null || columnId <= 0) {
+      if (columnId <= 0 && LOG.isDebugEnabled()) {
+        LOG.debugf("Skipping column hint for %s: column id missing or zero", relationId);
+      }
+      return;
+    }
+    @SuppressWarnings("unchecked")
+    List<ColumnHint> hints = (List<ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
+    if (hints == null) {
+      hints = new ArrayList<>();
+      relation.attribute(COLUMN_HINTS_KEY, hints);
+    }
+    hints.add(new ColumnHint(payloadType, columnId, payload));
+  }
+
+  private void flushColumnHints(
+      EngineContext ctx, RelationDecoration relation, ResourceId relationId) {
+    if (relationId == null) {
+      return;
+    }
+    @SuppressWarnings("unchecked")
+    List<EngineHintPersistence.ColumnHint> hints =
+        (List<EngineHintPersistence.ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
+    if (hints == null || hints.isEmpty()) {
+      return;
+    }
+    persistColumnHints(ctx, relationId, hints);
+    relation.attribute(COLUMN_HINTS_KEY, null);
+  }
+
+  private void persistColumnHints(
+      EngineContext ctx,
+      ResourceId relationId,
+      List<EngineHintPersistence.ColumnHint> columnHints) {
+    if (columnHints == null || columnHints.isEmpty()) {
+      return;
+    }
+    if (persistence == null || persistence == EngineHintPersistence.NOOP) {
+      return;
+    }
+    try {
+      persistence.persistColumnHints(
+          relationId, ctx.normalizedKind(), ctx.normalizedVersion(), columnHints);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Failed to persist column engine hints for relation %s", relationId);
+    }
   }
 }

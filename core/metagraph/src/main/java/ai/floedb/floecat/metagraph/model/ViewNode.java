@@ -44,8 +44,9 @@ public record ViewNode(
     GraphNodeOrigin origin,
     Map<String, String> properties,
     Optional<String> owner,
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
     Map<EngineHintKey, EngineHint> engineHints)
-    implements GraphNode {
+    implements RelationNode {
 
   public ViewNode {
     outputColumns = List.copyOf(outputColumns);
@@ -53,6 +54,7 @@ public record ViewNode(
     creationSearchPath = List.copyOf(creationSearchPath);
     properties = Map.copyOf(properties);
     owner = owner == null ? Optional.empty() : owner;
+    columnHints = RelationNode.normalizeColumnHints(columnHints);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 
@@ -64,5 +66,10 @@ public record ViewNode(
   @Override
   public GraphNodeOrigin origin() {
     return origin;
+  }
+
+  @Override
+  public Map<Long, Map<EngineHintKey, EngineHint>> columnHints() {
+    return columnHints;
   }
 }

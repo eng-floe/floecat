@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -56,8 +57,6 @@ import java.util.Optional;
  */
 @ApplicationScoped
 public class NodeLoader {
-
-  private static final Map<EngineHintKey, EngineHint> NO_ENGINE_HINTS = Map.of();
 
   private final CatalogRepository catalogRepository;
   private final NamespaceRepository namespaceRepository;
@@ -135,7 +134,7 @@ public class NodeLoader {
         catalog.hasConnectorRef() ? Optional.of(catalog.getConnectorRef()) : Optional.empty(),
         catalog.hasPolicyRef() ? Optional.of(catalog.getPolicyRef()) : Optional.empty(),
         Optional.empty(),
-        NO_ENGINE_HINTS);
+        Map.of());
   }
 
   private NamespaceNode toNamespaceNode(Namespace namespace, MutationMeta meta) {
@@ -148,13 +147,14 @@ public class NodeLoader {
         namespace.getDisplayName(),
         GraphNodeOrigin.USER,
         namespace.getPropertiesMap(),
-        NO_ENGINE_HINTS);
+        Map.of());
   }
 
   private UserTableNode toTableNode(Table table, MutationMeta meta) {
     UpstreamRef upstream =
         table.hasUpstream() ? table.getUpstream() : UpstreamRef.getDefaultInstance();
     TableFormat format = upstream.getFormat();
+    RelationHints hints = relationHints(table.getPropertiesMap());
     return new UserTableNode(
         table.getResourceId(),
         meta.getPointerVersion(),
@@ -172,10 +172,12 @@ public class NodeLoader {
         Optional.empty(),
         Optional.empty(),
         List.of(),
-        NO_ENGINE_HINTS);
+        hints.engineHints(),
+        hints.columnHints());
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
+    RelationHints hints = relationHints(view.getPropertiesMap());
     return new ViewNode(
         view.getResourceId(),
         meta.getPointerVersion(),
@@ -191,7 +193,36 @@ public class NodeLoader {
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
-        NO_ENGINE_HINTS);
+        hints.columnHints(),
+        hints.engineHints());
+  }
+
+  static RelationHints relationHints(Map<String, String> properties) {
+    Map<EngineHintKey, EngineHint> engineHints =
+        containsHintKey(properties, "engine.hint.")
+            ? EngineHintMetadata.hintsFromProperties(properties)
+            : Map.of();
+    Map<Long, Map<EngineHintKey, EngineHint>> columnHints =
+        containsHintKey(properties, "engine.hint.column.")
+            ? EngineHintMetadata.columnHints(properties)
+            : Map.of();
+    return new RelationHints(engineHints, columnHints);
+  }
+
+  static record RelationHints(
+      Map<EngineHintKey, EngineHint> engineHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints) {}
+
+  private static boolean containsHintKey(Map<String, String> properties, String prefix) {
+    if (properties == null || properties.isEmpty()) {
+      return false;
+    }
+    for (String key : properties.keySet()) {
+      if (key != null && key.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static Instant toInstant(Timestamp ts) {

@@ -16,12 +16,12 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.TypeNode;
@@ -58,7 +58,7 @@ final class PgTypeScannerTest {
         type(
             "int4",
             Map.of(
-                new EngineHintKey("floedb", "1.0", FloePayloads.TYPE.type()),
+                new EngineHintKey("floedb", "1.0", TYPE.type()),
                 new EngineHint(
                     "floe.type+proto",
                     FloeTypeSpecific.newBuilder()

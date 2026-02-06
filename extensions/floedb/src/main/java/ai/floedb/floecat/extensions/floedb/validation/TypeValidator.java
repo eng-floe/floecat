@@ -16,9 +16,10 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -74,11 +75,11 @@ final class TypeValidator implements SectionValidator<TypeValidationResult> {
 
       List<ValidationSupport.DecodedRule<FloeTypeSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, type.engineSpecific(), FloePayloads.TYPE, ctx, errors);
+              runContext, scope, type.engineSpecific(), TYPE, FloeTypeSpecific.class, ctx, errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.TYPE.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, TYPE.type(), ctx, errors);
       for (ValidationSupport.DecodedRule<FloeTypeSpecific> decodedRule : decoded) {
         FloeTypeSpecific spec = decodedRule.payload();
         int oid = spec.getOid();

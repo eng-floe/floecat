@@ -647,6 +647,7 @@ public class QueryInputResolverTest {
         GraphNodeOrigin.USER,
         Map.of(),
         Optional.empty(),
+        Map.of(),
         Map.of());
   }
 }

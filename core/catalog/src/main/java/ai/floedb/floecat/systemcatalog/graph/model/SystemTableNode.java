@@ -19,12 +19,13 @@ package ai.floedb.floecat.systemcatalog.graph.model;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,7 +38,7 @@ public sealed interface SystemTableNode extends TableNode
 
   List<SchemaColumn> columns();
 
-  Map<String, Map<EngineHintKey, EngineHint>> columnHints();
+  Map<Long, Map<EngineHintKey, EngineHint>> columnHints();
 
   Map<EngineHintKey, EngineHint> engineHints();
 
@@ -51,15 +52,15 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       String scannerId)
       implements SystemTableNode {
 
     public FloeCatSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       scannerId = scannerId == null ? "" : scannerId;
     }
@@ -83,15 +84,15 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       String storagePath)
       implements SystemTableNode {
 
     public StorageSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       storagePath = storagePath == null ? "" : storagePath;
     }
@@ -115,14 +116,14 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints)
       implements SystemTableNode {
 
     public EngineSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
 
@@ -145,15 +146,15 @@ public sealed interface SystemTableNode extends TableNode
       String displayName,
       ResourceId namespaceId,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       TableBackendKind backendKind)
       implements SystemTableNode {
 
     public GenericSystemTableNode {
       columns = List.copyOf(columns);
-      columnHints = normalizeColumnHints(columnHints);
-      engineHints = normalizeEngineHints(engineHints);
+      columnHints = RelationNode.normalizeColumnHints(columnHints);
+      engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
     }
 
@@ -161,26 +162,5 @@ public sealed interface SystemTableNode extends TableNode
     public GraphNodeOrigin origin() {
       return GraphNodeOrigin.SYSTEM;
     }
-  }
-
-  static Map<String, Map<EngineHintKey, EngineHint>> normalizeColumnHints(
-      Map<String, Map<EngineHintKey, EngineHint>> hints) {
-    if (hints == null || hints.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, Map<EngineHintKey, EngineHint>> normalized = new LinkedHashMap<>();
-    for (Map.Entry<String, Map<EngineHintKey, EngineHint>> entry : hints.entrySet()) {
-      Map<EngineHintKey, EngineHint> value =
-          entry.getValue() == null ? Map.of() : Map.copyOf(entry.getValue());
-      normalized.put(entry.getKey(), value);
-    }
-    return Map.copyOf(normalized);
-  }
-
-  static Map<EngineHintKey, EngineHint> normalizeEngineHints(Map<EngineHintKey, EngineHint> hints) {
-    if (hints == null || hints.isEmpty()) {
-      return Map.of();
-    }
-    return Map.copyOf(hints);
   }
 }

@@ -77,6 +77,7 @@ class HintCacheTest {
         Optional.empty(),
         Optional.empty(),
         java.util.List.of(),
+        Map.of(),
         Map.of());
   }
 

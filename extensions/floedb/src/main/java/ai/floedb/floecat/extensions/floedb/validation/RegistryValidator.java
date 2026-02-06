@@ -16,12 +16,13 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorAccessMethods;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorClasses;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies;
 import ai.floedb.floecat.extensions.floedb.proto.FloeProcedureAccessMethods;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -65,7 +66,8 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.ACCESS_METHODS,
+            ACCESS_METHODS,
+            FloeAccessMethods.class,
             CONTEXT_ACCESS_METHODS,
             errors);
     IntervalIndex<Integer> accessIndex = processAccessMethods(accessRules, errors);
@@ -75,7 +77,8 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.OPERATOR_FAMILIES,
+            OPERATOR_FAMILIES,
+            FloeOperatorFamilies.class,
             CONTEXT_OPERATOR_FAMILIES,
             errors);
     IntervalIndex<Integer> familyIndex = processOperatorFamilies(familyRules, accessIndex, errors);
@@ -85,7 +88,8 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.OPERATOR_CLASSES,
+            OPERATOR_CLASSES,
+            FloeOperatorClasses.class,
             CONTEXT_OPERATOR_CLASSES,
             errors);
     IntervalIndex<Integer> classIndex = processOperatorClasses(classRules, familyIndex, errors);
@@ -95,7 +99,8 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.OPERATOR_ACCESS_METHODS,
+            OPERATOR_ACCESS_METHODS,
+            FloeOperatorAccessMethods.class,
             CONTEXT_OPERATOR_STRATEGIES,
             errors);
     processOperatorStrategies(strategyRules, familyIndex, accessIndex, classIndex, errors);
@@ -105,7 +110,8 @@ final class RegistryValidator implements SectionValidator<SimpleValidationResult
             runContext,
             scope,
             catalog.registryEngineSpecific(),
-            FloePayloads.PROCEDURE_ACCESS_METHODS,
+            PROCEDURE_ACCESS_METHODS,
+            FloeProcedureAccessMethods.class,
             CONTEXT_SUPPORT_PROCEDURES,
             errors);
     processSupportProcedures(procRules, familyIndex, errors);

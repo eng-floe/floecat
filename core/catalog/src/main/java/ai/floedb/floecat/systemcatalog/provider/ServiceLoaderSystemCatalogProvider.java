@@ -204,6 +204,18 @@ public final class ServiceLoaderSystemCatalogProvider
     return Optional.ofNullable(decorators.get(ctx.effectiveEngineKind()));
   }
 
+  /**
+   * Returns the install extension for the provided engine kind. Versions are handled by the
+   * extension itself through the provided {@link
+   * ai.floedb.floecat.systemcatalog.util.EngineContext}.
+   */
+  public Optional<EngineSystemCatalogExtension> extensionFor(String engineKind) {
+    if (engineKind == null || engineKind.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(plugins.get(engineKind));
+  }
+
   private static void logValidationIssues(
       EngineSystemCatalogExtension ext, List<ValidationIssue> issues) {
     LOG.warn(

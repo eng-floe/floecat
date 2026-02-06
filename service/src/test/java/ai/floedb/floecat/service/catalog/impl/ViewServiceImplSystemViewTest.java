@@ -122,6 +122,7 @@ class ViewServiceImplSystemViewTest {
             GraphNodeOrigin.SYSTEM,
             Map.of(),
             Optional.empty(),
+            Map.of(),
             Map.<EngineHintKey, EngineHint>of());
 
     overlay.addNode(node);
@@ -214,6 +215,7 @@ class ViewServiceImplSystemViewTest {
         GraphNodeOrigin.SYSTEM,
         Map.of(),
         Optional.empty(),
+        Map.of(),
         Map.<EngineHintKey, EngineHint>of());
   }
 }

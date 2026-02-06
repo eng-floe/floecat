@@ -14,7 +14,7 @@
 
 package ai.floedb.floecat.extensions.floedb.hints;
 
-import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.*;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -24,7 +24,7 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.PayloadDescriptor;
+import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -38,6 +38,7 @@ import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import com.google.protobuf.Message;
 import java.util.Arrays;
 import java.util.Optional;
 
@@ -49,7 +50,7 @@ public final class FloeHintResolver {
   public static FloeNamespaceSpecific namespaceSpecific(
       MetadataResolutionContext ctx, NamespaceNode namespace) {
     FloeNamespaceSpecific.Builder builder =
-        payload(ctx, namespace.id(), NAMESPACE)
+        payload(ctx, namespace.id(), NAMESPACE, FloeNamespaceSpecific.class)
             .map(FloeNamespaceSpecific::toBuilder)
             .orElse(FloeNamespaceSpecific.newBuilder());
     applyNamespaceDefaults(builder, namespace);
@@ -59,7 +60,7 @@ public final class FloeHintResolver {
   public static FloeRelationSpecific relationSpecific(
       MetadataResolutionContext ctx, GraphNode node) {
     FloeRelationSpecific.Builder builder =
-        payload(ctx, node.id(), RELATION)
+        payload(ctx, node.id(), RELATION, FloeRelationSpecific.class)
             .map(FloeRelationSpecific::toBuilder)
             .orElse(FloeRelationSpecific.newBuilder());
     applyRelationDefaults(builder, node);
@@ -69,7 +70,7 @@ public final class FloeHintResolver {
   public static FloeFunctionSpecific functionSpecific(
       MetadataResolutionContext ctx, ResourceId namespaceId, FunctionNode function) {
     FloeFunctionSpecific.Builder builder =
-        payload(ctx, function.id(), FUNCTION)
+        payload(ctx, function.id(), FUNCTION, FloeFunctionSpecific.class)
             .map(FloeFunctionSpecific::toBuilder)
             .orElse(FloeFunctionSpecific.newBuilder());
     applyFunctionDefaults(builder, ctx, namespaceId, function);
@@ -78,11 +79,11 @@ public final class FloeHintResolver {
 
   public static FloeTypeSpecific typeSpecific(MetadataResolutionContext ctx, TypeNode type) {
     FloeTypeSpecific.Builder builder =
-        payload(ctx, type.id(), TYPE)
+        payload(ctx, type.id(), TYPE, FloeTypeSpecific.class)
             .map(FloeTypeSpecific::toBuilder)
             .orElse(FloeTypeSpecific.newBuilder());
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(type.id()));
+      builder.setOid(ScannerUtils.fallbackOid(type.id(), TYPE.type()));
     }
     applyTypeDefaults(builder, type);
     return builder.build();
@@ -91,10 +92,24 @@ public final class FloeHintResolver {
   public static FloeColumnSpecific columnSpecific(
       MetadataResolutionContext ctx,
       TypeResolver resolver,
+      ResourceId tableId,
       int relationOid,
       int attnum,
       SchemaColumn column,
       LogicalType logicalType) {
+    if (ctx != null && tableId != null) {
+      Optional<FloeColumnSpecific> stored =
+          ScannerUtils.columnPayload(
+              ctx.overlay(),
+              tableId,
+              column.getId(),
+              COLUMN,
+              FloeColumnSpecific.class,
+              ctx.engineContext());
+      if (stored.isPresent()) {
+        return stored.get();
+      }
+    }
     ColumnMetadata metadata = columnMetadata(ctx, resolver, column, logicalType);
     return buildColumnSpecific(column, attnum, metadata);
   }
@@ -110,7 +125,7 @@ public final class FloeHintResolver {
     // This keeps pg_attribute rows well-formed even when upstream logical types are
     // missing/invalid.
     if (resolved == null) {
-      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column));
+      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
       return new ColumnMetadata(typeOid, -1, -1, "i", false, "p", 0, 0);
     }
 
@@ -142,7 +157,7 @@ public final class FloeHintResolver {
   private static void applyNamespaceDefaults(
       FloeNamespaceSpecific.Builder builder, NamespaceNode namespace) {
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(namespace.id()));
+      builder.setOid(ScannerUtils.fallbackOid(namespace.id(), NAMESPACE.type()));
     }
     if (!builder.hasNspname()) {
       builder.setNspname(namespace.displayName());
@@ -151,7 +166,7 @@ public final class FloeHintResolver {
 
   private static void applyRelationDefaults(FloeRelationSpecific.Builder builder, GraphNode node) {
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(node.id()));
+      builder.setOid(ScannerUtils.fallbackOid(node.id(), RELATION.type()));
     }
     if (!builder.hasRelname()) {
       builder.setRelname(node.displayName());
@@ -177,17 +192,28 @@ public final class FloeHintResolver {
     if (!builder.hasOid()) {
       builder.setOid(
           ScannerUtils.oid(
-              overlay, function.id(), FUNCTION, FloeFunctionSpecific::getOid, engineContext));
+              overlay,
+              function.id(),
+              FUNCTION,
+              FloeFunctionSpecific.class,
+              FloeFunctionSpecific::getOid,
+              engineContext));
     }
     builder.setPronamespace(
         ScannerUtils.oid(
-            overlay, namespaceId, NAMESPACE, FloeNamespaceSpecific::getOid, engineContext));
+            overlay,
+            namespaceId,
+            NAMESPACE,
+            FloeNamespaceSpecific.class,
+            FloeNamespaceSpecific::getOid,
+            engineContext));
     if (!builder.hasProrettype()) {
       builder.setProrettype(
           ScannerUtils.oid(
               overlay,
               function.id(),
               FUNCTION,
+              FloeFunctionSpecific.class,
               FloeFunctionSpecific::getProrettype,
               engineContext));
     }
@@ -197,6 +223,7 @@ public final class FloeHintResolver {
               overlay,
               function.id(),
               FUNCTION,
+              FloeFunctionSpecific.class,
               s -> s.getProargtypesList().stream().mapToInt(Integer::intValue).toArray(),
               engineContext);
       Arrays.stream(types).forEach(builder::addProargtypes);
@@ -239,9 +266,15 @@ public final class FloeHintResolver {
       int typmod = deriveTypmod(logicalType);
       TypeNode type = resolver.resolveOrThrow(logicalType);
       int typeOid =
-          ScannerUtils.oid(overlay, type.id(), TYPE, FloeTypeSpecific::getOid, engineContext);
+          ScannerUtils.oid(
+              overlay,
+              type.id(),
+              TYPE,
+              FloeTypeSpecific.class,
+              FloeTypeSpecific::getOid,
+              engineContext);
       Optional<FloeTypeSpecific> typeSpec =
-          ScannerUtils.payload(overlay, type.id(), TYPE, engineContext);
+          ScannerUtils.payload(overlay, type.id(), TYPE, FloeTypeSpecific.class, engineContext);
       FloeTypeSpecific specific =
           typeSpec.isPresent()
               ? typeSpec.get()
@@ -266,19 +299,24 @@ public final class FloeHintResolver {
       SchemaColumn column,
       LogicalType logical) {
     if (ctx == null || resolver == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column));
+      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
     }
     LogicalType logicalType = logical == null ? parseLogicalType(column) : logical;
     if (logicalType == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column));
+      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
     }
     Optional<TypeNode> resolved = resolver.resolve(logicalType);
     return resolved
         .map(
             type ->
                 ScannerUtils.oid(
-                    ctx.overlay(), type.id(), TYPE, FloeTypeSpecific::getOid, ctx.engineContext()))
-        .orElseGet(() -> ScannerUtils.fallbackOid(fallbackTypeId(column)));
+                    ctx.overlay(),
+                    type.id(),
+                    TYPE,
+                    FloeTypeSpecific.class,
+                    FloeTypeSpecific::getOid,
+                    ctx.engineContext()))
+        .orElseGet(() -> ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type()));
   }
 
   public static LogicalType parseLogicalType(SchemaColumn column) {
@@ -318,12 +356,15 @@ public final class FloeHintResolver {
         .build();
   }
 
-  private static <T> Optional<T> payload(
-      MetadataResolutionContext ctx, ResourceId id, PayloadDescriptor<T> descriptor) {
+  private static <T extends Message> Optional<T> payload(
+      MetadataResolutionContext ctx,
+      ResourceId id,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass) {
     if (ctx == null) {
       return Optional.empty();
     }
-    return ScannerUtils.payload(ctx.overlay(), id, descriptor, ctx.engineContext());
+    return ScannerUtils.payload(ctx.overlay(), id, descriptor, messageClass, ctx.engineContext());
   }
 
   private static boolean passByValue(LogicalType logical) {

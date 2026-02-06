@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods;
@@ -27,7 +29,6 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies;
 import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -65,7 +66,13 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = "namespace:" + ValidationSupport.canonicalOrBlank(ns.name());
       List<ValidationSupport.DecodedRule<FloeNamespaceSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, ns.engineSpecific(), FloePayloads.NAMESPACE, ctx, errors);
+              runContext,
+              scope,
+              ns.engineSpecific(),
+              NAMESPACE,
+              FloeNamespaceSpecific.class,
+              ctx,
+              errors);
       for (ValidationSupport.DecodedRule<FloeNamespaceSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -88,7 +95,13 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = domain + ":" + ValidationSupport.canonicalOrBlank(name);
       List<ValidationSupport.DecodedRule<FloeRelationSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, entry.engineSpecific(), FloePayloads.RELATION, ctx, errors);
+              runContext,
+              scope,
+              entry.engineSpecific(),
+              RELATION,
+              FloeRelationSpecific.class,
+              ctx,
+              errors);
       for (ValidationSupport.DecodedRule<FloeRelationSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -106,7 +119,7 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = "type:" + ValidationSupport.canonicalOrBlank(type.name());
       List<ValidationSupport.DecodedRule<FloeTypeSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, type.engineSpecific(), FloePayloads.TYPE, ctx, errors);
+              runContext, scope, type.engineSpecific(), TYPE, FloeTypeSpecific.class, ctx, errors);
       for (ValidationSupport.DecodedRule<FloeTypeSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -124,7 +137,13 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = buildFunctionIdentity(def.name());
       List<ValidationSupport.DecodedRule<FloeFunctionSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, def.engineSpecific(), FloePayloads.FUNCTION, ctx, errors);
+              runContext,
+              scope,
+              def.engineSpecific(),
+              FUNCTION,
+              FloeFunctionSpecific.class,
+              ctx,
+              errors);
       for (ValidationSupport.DecodedRule<FloeFunctionSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -142,7 +161,13 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = buildOperatorIdentity(def);
       List<ValidationSupport.DecodedRule<FloeOperatorSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, def.engineSpecific(), FloePayloads.OPERATOR, ctx, errors);
+              runContext,
+              scope,
+              def.engineSpecific(),
+              OPERATOR,
+              FloeOperatorSpecific.class,
+              ctx,
+              errors);
       for (ValidationSupport.DecodedRule<FloeOperatorSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -160,7 +185,13 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
       String identity = "collation:" + ValidationSupport.canonicalOrBlank(col.name());
       List<ValidationSupport.DecodedRule<FloeCollationSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, col.engineSpecific(), FloePayloads.COLLATION, ctx, errors);
+              runContext,
+              scope,
+              col.engineSpecific(),
+              COLLATION,
+              FloeCollationSpecific.class,
+              ctx,
+              errors);
       for (ValidationSupport.DecodedRule<FloeCollationSpecific> dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -178,7 +209,8 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
             runContext,
             scope,
             rules,
-            FloePayloads.ACCESS_METHODS,
+            ACCESS_METHODS,
+            FloeAccessMethods.class,
             "registry:access_methods",
             errors);
     for (ValidationSupport.DecodedRule<FloeAccessMethods> dr : accessRules) {
@@ -202,7 +234,8 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
             runContext,
             scope,
             rules,
-            FloePayloads.OPERATOR_FAMILIES,
+            OPERATOR_FAMILIES,
+            FloeOperatorFamilies.class,
             "registry:operator_families",
             errors);
     for (ValidationSupport.DecodedRule<FloeOperatorFamilies> dr : familyRules) {
@@ -226,7 +259,8 @@ final class GlobalOidValidator implements SectionValidator<SimpleValidationResul
             runContext,
             scope,
             rules,
-            FloePayloads.OPERATOR_CLASSES,
+            OPERATOR_CLASSES,
+            FloeOperatorClasses.class,
             "registry:operator_classes",
             errors);
     for (ValidationSupport.DecodedRule<FloeOperatorClasses> dr : classRules) {

@@ -42,6 +42,8 @@
     <test.jvm.args.extra></test.jvm.args.extra>
     <analyticsaccelerator.version>1.3.1</analyticsaccelerator.version>
     <argLine></argLine>
+    <junit.jupiter.version>5.13.4</junit.jupiter.version>
+    <assertj.version>3.26.3</assertj.version>
   </properties>
 
   <modules>
@@ -97,6 +99,21 @@
         <groupId>org.jboss.slf4j</groupId>
         <artifactId>slf4j-jboss-logmanager</artifactId>
         <version>2.0.2.Final</version>
+      </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
+        <version>${junit.jupiter.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-engine</artifactId>
+        <version>${junit.jupiter.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>${assertj.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

@@ -16,9 +16,10 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -74,11 +75,17 @@ final class FunctionValidator implements SectionValidator<FunctionValidationResu
       }
       List<ValidationSupport.DecodedRule<FloeFunctionSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, fn.engineSpecific(), FloePayloads.FUNCTION, ctx, errors);
+              runContext,
+              scope,
+              fn.engineSpecific(),
+              FUNCTION,
+              FloeFunctionSpecific.class,
+              ctx,
+              errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.FUNCTION.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, FUNCTION.type(), ctx, errors);
 
       for (ValidationSupport.DecodedRule<FloeFunctionSpecific> decodedRule : decoded) {
         String ruleCtx = ValidationSupport.contextWithInterval(ctx, decodedRule.interval());

@@ -38,6 +38,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -78,6 +79,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject CatalogOverlay overlay;
+  @Inject EngineHintSchemaCleaner hintCleaner;
 
   private static final Set<String> VIEW_MUTABLE_PATHS =
       Set.of("display_name", "description", "sql", "properties", "catalog_id", "namespace_id");
@@ -414,6 +416,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               () -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
+                  if (hintCleaner.shouldClearHints(mask)) {
+                    View.Builder builder = desired.toBuilder();
+                    hintCleaner.cleanViewHints(builder, mask, current, builder.build());
+                    desired = builder.build();
+                  }
 
                   if (desired.equals(current)) {
                     var metaNoop = viewRepo.metaFor(viewId);

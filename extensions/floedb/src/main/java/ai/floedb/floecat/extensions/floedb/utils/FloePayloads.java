@@ -13,103 +13,90 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package ai.floedb.floecat.extensions.floedb.utils;
 
-import ai.floedb.floecat.extensions.floedb.proto.FloeAccessMethods;
-import ai.floedb.floecat.extensions.floedb.proto.FloeAggregateSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeCastSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorAccessMethods;
-import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorClasses;
-import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorFamilies;
-import ai.floedb.floecat.extensions.floedb.proto.FloeOperatorSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeProcedureAccessMethods;
-import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.proto.FloeTypePlanningSemantics;
-import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.*;
+import com.google.protobuf.Message;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
-/**
- * Central registry of Floe engine-specific payload descriptors.
- *
- * <p>This is the single source of truth for:
- *
- * <ul>
- *   <li>payload type strings
- *   <li>binary decoding logic
- *   <li>linking encoders ↔ decoders
- * </ul>
- *
- * Scanners and catalog extensions must reference these descriptors instead of hardcoding
- * payloadType strings.
- */
 public final class FloePayloads {
-
   private FloePayloads() {}
 
-  /** pg_proc / functions */
-  public static final PayloadDescriptor<FloeFunctionSpecific> FUNCTION =
-      PayloadDescriptor.of("floe.function+proto", FloeFunctionSpecific::parseFrom);
+  public enum Descriptor {
+    FUNCTION("floe.function+proto", FloeFunctionSpecific.class, FloeFunctionSpecific::parseFrom),
+    NAMESPACE(
+        "floe.namespace+proto", FloeNamespaceSpecific.class, FloeNamespaceSpecific::parseFrom),
+    RELATION("floe.relation+proto", FloeRelationSpecific.class, FloeRelationSpecific::parseFrom),
+    TYPE("floe.type+proto", FloeTypeSpecific.class, FloeTypeSpecific::parseFrom),
+    COLLATION(
+        "floe.collation+proto", FloeCollationSpecific.class, FloeCollationSpecific::parseFrom),
+    OPERATOR("floe.operator+proto", FloeOperatorSpecific.class, FloeOperatorSpecific::parseFrom),
+    CAST("floe.cast+proto", FloeCastSpecific.class, FloeCastSpecific::parseFrom),
+    AGGREGATE(
+        "floe.aggregate+proto", FloeAggregateSpecific.class, FloeAggregateSpecific::parseFrom),
+    COLUMN("floe.column+proto", FloeColumnSpecific.class, FloeColumnSpecific::parseFrom),
+    TYPE_PLANNING(
+        "floe.type.planning_semantics+proto",
+        FloeTypePlanningSemantics.class,
+        FloeTypePlanningSemantics::parseFrom),
+    ACCESS_METHODS(
+        "floe.access_methods+proto", FloeAccessMethods.class, FloeAccessMethods::parseFrom),
+    OPERATOR_FAMILIES(
+        "floe.operator_families+proto",
+        FloeOperatorFamilies.class,
+        FloeOperatorFamilies::parseFrom),
+    OPERATOR_CLASSES(
+        "floe.operator_classes+proto", FloeOperatorClasses.class, FloeOperatorClasses::parseFrom),
+    OPERATOR_ACCESS_METHODS(
+        "floe.operator_access_methods+proto",
+        FloeOperatorAccessMethods.class,
+        FloeOperatorAccessMethods::parseFrom),
+    PROCEDURE_ACCESS_METHODS(
+        "floe.procedure_access_methods+proto",
+        FloeProcedureAccessMethods.class,
+        FloeProcedureAccessMethods::parseFrom);
 
-  /** pg_namespace */
-  public static final PayloadDescriptor<FloeNamespaceSpecific> NAMESPACE =
-      PayloadDescriptor.of("floe.namespace+proto", FloeNamespaceSpecific::parseFrom);
+    private final String type;
+    private final Class<? extends Message> messageClass;
+    private final ThrowingFunction<byte[], ? extends Message> decoder;
 
-  /** pg_type */
-  public static final PayloadDescriptor<FloeTypeSpecific> TYPE =
-      PayloadDescriptor.of("floe.type+proto", FloeTypeSpecific::parseFrom);
+    Descriptor(
+        String type,
+        Class<? extends Message> messageClass,
+        ThrowingFunction<byte[], ? extends Message> decoder) {
+      this.type = type;
+      this.messageClass = messageClass;
+      this.decoder = decoder;
+    }
 
-  /** Floe type planning semantics to seed typcache. */
-  public static final PayloadDescriptor<FloeTypePlanningSemantics> TYPE_PLANNING_SEMANTICS =
-      PayloadDescriptor.of(
-          "floe.type.planning_semantics+proto", FloeTypePlanningSemantics::parseFrom);
+    public String type() {
+      return type;
+    }
 
-  /** pg_operator */
-  public static final PayloadDescriptor<FloeOperatorSpecific> OPERATOR =
-      PayloadDescriptor.of("floe.operator+proto", FloeOperatorSpecific::parseFrom);
+    public Class<? extends Message> messageClass() {
+      return messageClass;
+    }
 
-  /** pg_cast */
-  public static final PayloadDescriptor<FloeCastSpecific> CAST =
-      PayloadDescriptor.of("floe.cast+proto", FloeCastSpecific::parseFrom);
+    public Message decode(byte[] payload) throws Exception {
+      return decoder.apply(payload);
+    }
+  }
 
-  /** pg_aggregate */
-  public static final PayloadDescriptor<FloeAggregateSpecific> AGGREGATE =
-      PayloadDescriptor.of("floe.aggregate+proto", FloeAggregateSpecific::parseFrom);
+  private static final Map<String, Descriptor> DESCRIPTORS =
+      Arrays.stream(Descriptor.values())
+          .collect(Collectors.toUnmodifiableMap(Descriptor::type, Function.identity()));
 
-  /** pg_collation */
-  public static final PayloadDescriptor<FloeCollationSpecific> COLLATION =
-      PayloadDescriptor.of("floe.collation+proto", FloeCollationSpecific::parseFrom);
+  public static Optional<Descriptor> descriptor(String type) {
+    return Optional.ofNullable(DESCRIPTORS.get(type));
+  }
 
-  /** pg_class / relations */
-  public static final PayloadDescriptor<FloeRelationSpecific> RELATION =
-      PayloadDescriptor.of("floe.relation+proto", FloeRelationSpecific::parseFrom);
-
-  /** pg_attribute / columns */
-  public static final PayloadDescriptor<FloeColumnSpecific> COLUMN =
-      PayloadDescriptor.of("floe.column+proto", FloeColumnSpecific::parseFrom);
-
-  /** pg_am / access method dictionary. */
-  public static final PayloadDescriptor<FloeAccessMethods> ACCESS_METHODS =
-      PayloadDescriptor.of("floe.access_methods+proto", FloeAccessMethods::parseFrom);
-
-  /** pg_opfamily / operator family dictionary. */
-  public static final PayloadDescriptor<FloeOperatorFamilies> OPERATOR_FAMILIES =
-      PayloadDescriptor.of("floe.operator_families+proto", FloeOperatorFamilies::parseFrom);
-
-  /** pg_opclass / operator class dictionary. */
-  public static final PayloadDescriptor<FloeOperatorClasses> OPERATOR_CLASSES =
-      PayloadDescriptor.of("floe.operator_classes+proto", FloeOperatorClasses::parseFrom);
-
-  /** pg_amop / operator strategy dictionary. */
-  public static final PayloadDescriptor<FloeOperatorAccessMethods> OPERATOR_ACCESS_METHODS =
-      PayloadDescriptor.of(
-          "floe.operator_access_methods+proto", FloeOperatorAccessMethods::parseFrom);
-
-  /** pg_amproc / support procedure dictionary. */
-  public static final PayloadDescriptor<FloeProcedureAccessMethods> PROCEDURE_ACCESS_METHODS =
-      PayloadDescriptor.of(
-          "floe.procedure_access_methods+proto", FloeProcedureAccessMethods::parseFrom);
+  public static Descriptor requireDescriptor(String type) {
+    return descriptor(type)
+        .orElseThrow(
+            () -> new IllegalArgumentException("Unknown Floe payload descriptor type: " + type));
+  }
 }
