@@ -39,9 +39,10 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade.ScanFileStreamResponse;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import io.delta.kernel.engine.Engine;
 import java.lang.reflect.Method;
@@ -98,11 +99,8 @@ class DeltaManifestMaterializerTest {
             .setFileSizeInBytes(256)
             .setRecordCount(42)
             .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(scanFile).build())
-                .build());
+    when(grpcClient.fetchScanFileStream(any()))
+        .thenReturn(scanResponse(ScanBundle.newBuilder().addDataFiles(scanFile).build()));
   }
 
   @Test
@@ -119,7 +117,7 @@ class DeltaManifestMaterializerTest {
     String secondManifestList = second.get(0).getManifestList();
     assertEquals(firstManifestList, secondManifestList);
 
-    verify(grpcClient, times(1)).fetchScanBundle(any());
+    verify(grpcClient, times(1)).fetchScanFileStream(any());
   }
 
   @Test
@@ -138,7 +136,7 @@ class DeltaManifestMaterializerTest {
     assertNotEquals(oldManifestList, newManifestList);
     assertTrue(materializer.fileIo().newInputFile(newManifestList).exists());
 
-    verify(grpcClient, times(2)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanFileStream(any());
   }
 
   @Test
@@ -159,7 +157,7 @@ class DeltaManifestMaterializerTest {
     assertEquals(firstManifestList, second.get(0).getManifestList());
     assertEquals(secondManifestList, second.get(1).getManifestList());
 
-    verify(grpcClient, times(2)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanFileStream(any());
   }
 
   @Test
@@ -266,11 +264,8 @@ class DeltaManifestMaterializerTest {
                             .build())
                     .build())
             .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(scanFileWithStats).build())
-                .build());
+    when(grpcClient.fetchScanFileStream(any()))
+        .thenReturn(scanResponse(ScanBundle.newBuilder().addDataFiles(scanFileWithStats).build()));
 
     Table table = deltaTable("column-metrics");
     Snapshot snapshot = snapshot(11L, 11L);
@@ -333,11 +328,8 @@ class DeltaManifestMaterializerTest {
             .setPartitionDataJson(
                 "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-east-1\"}]}")
             .build();
-    when(grpcClient.fetchScanBundle(any()))
-        .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(partitionedFile).build())
-                .build());
+    when(grpcClient.fetchScanFileStream(any()))
+        .thenReturn(scanResponse(ScanBundle.newBuilder().addDataFiles(partitionedFile).build()));
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
     String manifestListPath = out.get(0).getManifestList();
@@ -397,11 +389,9 @@ class DeltaManifestMaterializerTest {
             .setPartitionDataJson(
                 "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-west-2\"},{\"id\":\"2\",\"value\":5}]}")
             .build();
-    when(grpcClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanFileStream(any()))
         .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(ScanBundle.newBuilder().addDataFiles(dataFileWithMixedIds).build())
-                .build());
+            scanResponse(ScanBundle.newBuilder().addDataFiles(dataFileWithMixedIds).build()));
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
     String manifestListPath = out.get(0).getManifestList();
@@ -441,16 +431,14 @@ class DeltaManifestMaterializerTest {
             .setFileSizeInBytes(20)
             .setRecordCount(3)
             .build();
-    when(grpcClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanFileStream(any()))
         .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(positionDelete)
-                        .addDeleteFiles(equalityDelete)
-                        .build())
-                .build());
+            scanResponse(
+                ScanBundle.newBuilder()
+                    .addDataFiles(dataFile)
+                    .addDeleteFiles(positionDelete)
+                    .addDeleteFiles(equalityDelete)
+                    .build()));
 
     Table table = deltaTable("bundle-deletes");
     Snapshot snapshot = snapshot(13L, 13L);
@@ -506,15 +494,13 @@ class DeltaManifestMaterializerTest {
             .setRecordCount(2)
             .setSequenceNumber(202)
             .build();
-    when(grpcClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanFileStream(any()))
         .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(positionDelete)
-                        .build())
-                .build());
+            scanResponse(
+                ScanBundle.newBuilder()
+                    .addDataFiles(dataFile)
+                    .addDeleteFiles(positionDelete)
+                    .build()));
 
     Table table = deltaTable("manifest-sequences");
     Snapshot snapshot = snapshot(18L, 18L);
@@ -595,15 +581,10 @@ class DeltaManifestMaterializerTest {
             .setPartitionSpecId(9)
             .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id\",\"value\":3}]}")
             .build();
-    when(grpcClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanFileStream(any()))
         .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(deleteFile)
-                        .build())
-                .build());
+            scanResponse(
+                ScanBundle.newBuilder().addDataFiles(dataFile).addDeleteFiles(deleteFile).build()));
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
     String manifestListPath = out.get(0).getManifestList();
@@ -713,15 +694,10 @@ class DeltaManifestMaterializerTest {
             .setPartitionSpecId(99)
             .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id_bucket\",\"value\":3}]}")
             .build();
-    when(grpcClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanFileStream(any()))
         .thenReturn(
-            FetchScanBundleResponse.newBuilder()
-                .setBundle(
-                    ScanBundle.newBuilder()
-                        .addDataFiles(dataFile)
-                        .addDeleteFiles(deleteFile)
-                        .build())
-                .build());
+            scanResponse(
+                ScanBundle.newBuilder().addDataFiles(dataFile).addDeleteFiles(deleteFile).build()));
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
     String manifestListPath = out.get(0).getManifestList();
@@ -779,6 +755,24 @@ class DeltaManifestMaterializerTest {
         .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())
         .putProperties("storage_location", "s3://floecat-delta/call_center/" + testName)
         .build();
+  }
+
+  private static ScanFileStreamResponse scanResponse(ScanBundle bundle) {
+    List<ai.floedb.floecat.query.rpc.DataFile> dataFiles =
+        bundle.getDataFilesList().stream()
+            .map(file -> ai.floedb.floecat.query.rpc.DataFile.newBuilder().setFile(file).build())
+            .toList();
+    List<ai.floedb.floecat.query.rpc.DeleteFile> deleteFiles =
+        java.util.stream.IntStream.range(0, bundle.getDeleteFilesCount())
+            .mapToObj(
+                index ->
+                    ai.floedb.floecat.query.rpc.DeleteFile.newBuilder()
+                        .setDeleteId(index)
+                        .setFile(bundle.getDeleteFiles(index))
+                        .build())
+            .toList();
+    return new ScanFileStreamResponse(
+        InitScanResponse.getDefaultInstance(), dataFiles, deleteFiles);
   }
 
   private Snapshot snapshot(long snapshotId, long sequence) {
