@@ -22,6 +22,7 @@ option java_outer_classname = "QueryScanProto";
 
 import "floecat/common/common.proto";       // ResourceId
 import "floecat/common/predicate.proto";    // Predicate
+import "floecat/catalog/partition.proto";   // PartitionSpecInfo
 import "floecat/execution/scan.proto";      // ScanBundle
 
 /**
@@ -51,8 +52,17 @@ message FetchScanBundleRequest {
   repeated ai.floedb.floecat.common.Predicate predicates = 4;
 }
 
+message TableInfo {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  string schema_json = 2;
+  ai.floedb.floecat.catalog.PartitionSpecInfo partition_specs = 3;
+  map<string,string> properties = 4;
+  string metadata_location = 5;
+}
+
 message FetchScanBundleResponse {
   ai.floedb.floecat.execution.ScanBundle bundle = 1;
+  TableInfo table_info = 2;
 }
 
 service QueryScanService {
