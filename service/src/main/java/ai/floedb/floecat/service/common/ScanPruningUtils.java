@@ -173,6 +173,13 @@ public final class ScanPruningUtils {
     return true;
   }
 
+  public static boolean matchesPredicates(ScanFile file, List<Predicate> preds) {
+    if (preds == null || preds.isEmpty()) {
+      return true;
+    }
+    return matches(file, preds);
+  }
+
   /**
    * Determines whether a file may satisfy a predicate based on its column-level min/max statistics.
    * This is a conservative check: the method returns {@code true} unless the file is guaranteed to

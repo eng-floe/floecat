@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -92,6 +93,7 @@ public final class QueryContext {
   private final State state;
   private final long version;
   private final ResourceId queryDefaultCatalogId;
+  private final Set<String> scanHandles;
 
   private static final Clock clock = Clock.systemUTC();
 
@@ -126,6 +128,7 @@ public final class QueryContext {
     this.queryDefaultCatalogId =
         Objects.requireNonNull(b.queryDefaultCatalogId, "queryDefaultCatalogId");
     this.queryStatus = new AtomicReference<>(Objects.requireNonNull(b.queryStatus, "queryStatus"));
+    this.scanHandles = b.scanHandles == null ? Set.of() : Set.copyOf(b.scanHandles);
   }
 
   /**
@@ -183,7 +186,8 @@ public final class QueryContext {
         .state(state)
         .version(version)
         .queryDefaultCatalogId(queryDefaultCatalogId)
-        .queryStatus(queryStatus.get());
+        .queryStatus(queryStatus.get())
+        .scanHandles(scanHandles);
   }
 
   public static final class Builder {
@@ -199,6 +203,7 @@ public final class QueryContext {
     private long version;
     private ResourceId queryDefaultCatalogId;
     private QueryStatus queryStatus = QueryStatus.SUBMITTED;
+    private Set<String> scanHandles = Set.of();
 
     private Builder() {}
 
@@ -260,6 +265,11 @@ public final class QueryContext {
 
     public Builder queryDefaultCatalogId(ResourceId v) {
       this.queryDefaultCatalogId = v;
+      return this;
+    }
+
+    public Builder scanHandles(Set<String> scanHandles) {
+      this.scanHandles = scanHandles == null ? Set.of() : Set.copyOf(scanHandles);
       return this;
     }
 
@@ -446,6 +456,10 @@ public final class QueryContext {
 
   public ResourceId getQueryDefaultCatalogId() {
     return queryDefaultCatalogId;
+  }
+
+  public Set<String> scanHandles() {
+    return scanHandles;
   }
 
   // ----------------------------------------------------------------------

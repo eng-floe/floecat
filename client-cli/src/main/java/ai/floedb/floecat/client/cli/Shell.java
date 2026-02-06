@@ -114,23 +114,29 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.EndQueryResponse;
 import ai.floedb.floecat.query.rpc.ExpansionMap;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
+import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
@@ -2486,19 +2492,40 @@ public class Shell implements Runnable {
       return;
     }
 
-    var resp =
-        queryScan.fetchScanBundle(
-            FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build());
+    InitScanRequest initReq =
+        InitScanRequest.newBuilder().setQueryId(queryId).setTableId(tableId).build();
+    InitScanResponse initResp = queryScan.initScan(initReq);
+    TableInfo tableInfo = initResp.getTableInfo();
+    ScanHandle handle = initResp.getHandle();
 
-    if (!resp.hasBundle()) {
-      out.println("query fetch-scan: no bundle returned");
-      return;
+    List<ScanFile> deleteFiles = new ArrayList<>();
+    var deleteStream = queryScan.streamDeleteFiles(handle);
+    while (deleteStream.hasNext()) {
+      DeleteFileBatch batch = deleteStream.next();
+      batch.getItemsList().forEach(deleteFile -> deleteFiles.add(deleteFile.getFile()));
+    }
+
+    List<DataFile> dataFiles = new ArrayList<>();
+    var dataStream = queryScan.streamDataFiles(handle);
+    while (dataStream.hasNext()) {
+      DataFileBatch batch = dataStream.next();
+      dataFiles.addAll(batch.getItemsList());
+    }
+
+    try {
+      queryScan.closeScan(handle);
+    } catch (Exception ignored) {
+      // best effort cleanup
     }
 
     out.println("query id: " + queryId);
     out.println("table id: " + rid(tableId));
-    printQueryFiles("data_files", resp.getBundle().getDataFilesList());
-    printQueryFiles("delete_files", resp.getBundle().getDeleteFilesList());
+    if (initResp.hasTableInfo()) {
+      out.println("schema: " + tableInfo.getSchemaJson());
+      out.println("metadata-location: " + tableInfo.getMetadataLocation());
+    }
+    printQueryFiles("data_files", dataFiles.stream().map(DataFile::getFile).toList());
+    printQueryFiles("delete_files", deleteFiles);
   }
 
   private int parseQueryInputOptions(

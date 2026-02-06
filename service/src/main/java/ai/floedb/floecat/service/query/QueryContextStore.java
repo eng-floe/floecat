@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.service.query;
 
+import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.query.impl.ScanSession;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 
@@ -63,6 +65,16 @@ public interface QueryContextStore extends AutoCloseable {
    * resulting context version is bumped automatically.
    */
   Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn);
+
+  // ---------------------------------------------------------------------
+  //  Scan session helpers
+  // ---------------------------------------------------------------------
+
+  ScanHandle createScanSession(String correlationId, ScanSession session);
+
+  Optional<ScanSession> getScanSession(ScanHandle handle);
+
+  void removeScanSession(ScanHandle handle);
 
   @Override
   void close();

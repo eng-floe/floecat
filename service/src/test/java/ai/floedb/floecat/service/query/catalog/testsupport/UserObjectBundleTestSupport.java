@@ -28,11 +28,13 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
@@ -44,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
@@ -317,6 +320,7 @@ public final class UserObjectBundleTestSupport {
   public static final class TestQueryContextStore implements QueryContextStore {
     private final Map<String, QueryContext> contexts = new HashMap<>();
     private final List<QueryContext> updates = new ArrayList<>();
+    private final Map<String, ScanSession> scanSessions = new HashMap<>();
 
     public void seed(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
@@ -374,6 +378,28 @@ public final class UserObjectBundleTestSupport {
       contexts.put(queryId, updated);
       updates.add(updated);
       return Optional.of(updated);
+    }
+
+    @Override
+    public ScanHandle createScanSession(String correlationId, ScanSession session) {
+      String id = UUID.randomUUID().toString();
+      scanSessions.put(id, session);
+      return ScanHandle.newBuilder().setId(id).build();
+    }
+
+    @Override
+    public Optional<ScanSession> getScanSession(ScanHandle handle) {
+      if (handle == null) {
+        return Optional.empty();
+      }
+      return Optional.ofNullable(scanSessions.get(handle.getId()));
+    }
+
+    @Override
+    public void removeScanSession(ScanHandle handle) {
+      if (handle != null) {
+        scanSessions.remove(handle.getId());
+      }
     }
 
     @Override
