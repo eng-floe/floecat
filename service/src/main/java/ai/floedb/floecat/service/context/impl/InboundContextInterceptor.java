@@ -126,7 +126,10 @@ public class InboundContextInterceptor {
     String engineVersion = readHeader(headers, ENGINE_VERSION_HEADER);
     String engineKind = readHeader(headers, ENGINE_KIND_HEADER);
 
-    ResolvedContext resolvedContext = resolvePrincipalAndQuery(headers, queryIdHeader);
+    ResolvedContext resolvedContext =
+        isCallAllowed(call)
+            ? new ResolvedContext(PrincipalContext.getDefaultInstance(), "")
+            : resolvePrincipalAndQuery(headers, queryIdHeader);
 
     PrincipalContext principalContext = resolvedContext.pc();
     String queryId = resolvedContext.queryId();
@@ -334,6 +337,13 @@ public class InboundContextInterceptor {
   private static boolean hasHeader(Metadata headers, String headerName) {
     Metadata.Key<String> key = Metadata.Key.of(headerName, Metadata.ASCII_STRING_MARSHALLER);
     return headers.containsKey(key);
+  }
+
+  private static boolean isCallAllowed(ServerCall<?, ?> call) {
+    String method = call.getMethodDescriptor().getFullMethodName();
+    return method != null
+        && (method.startsWith("grpc.health.v1.Health/")
+            || method.startsWith("grpc.reflection.v1.ServerReflection/"));
   }
 
   private String requireAccountIdClaim(SecurityIdentity identity) {

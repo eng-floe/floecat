@@ -46,6 +46,12 @@
     </dependency>
 
     <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
       <version>${quarkus.platform.version}</version>
