@@ -20,7 +20,6 @@ import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -30,7 +29,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -141,11 +139,7 @@ final class PgClassScannerTest {
 
   private static NamespaceNode pgCatalogNamespace() {
     return new NamespaceNode(
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("pg_catalog")
-            .build(),
+        PgCatalogTestIds.namespace("pg_catalog"),
         1,
         Instant.EPOCH,
         catalogId(),
@@ -175,12 +169,7 @@ final class PgClassScannerTest {
       Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> hints) {
 
-    ResourceId id =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("pg:" + name)
-            .build();
+    ResourceId id = PgCatalogTestIds.table(name);
 
     return new SystemTableNode.FloeCatSystemTableNode(
         id,
@@ -197,12 +186,7 @@ final class PgClassScannerTest {
 
   private static ViewNode view(String name, Map<EngineHintKey, EngineHint> hints) {
 
-    ResourceId id =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_VIEW)
-            .setId("pg:" + name)
-            .build();
+    ResourceId id = PgCatalogTestIds.view(name);
 
     return new ViewNode(
         id,
@@ -224,10 +208,6 @@ final class PgClassScannerTest {
   }
 
   private static ResourceId catalogId() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("pg")
-        .build();
+    return PgCatalogTestIds.catalog();
   }
 }

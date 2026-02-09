@@ -30,6 +30,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.*;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
@@ -147,11 +148,8 @@ final class PgProcScannerTest {
 
   private static SystemObjectScanContext contextWithFunctions() {
     ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("floe-demo:pg_catalog")
-            .build();
+        SystemNodeRegistry.resourceId(
+            "floe-demo", ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
 
     NamespaceNode pgCatalog =
         new NamespaceNode(
@@ -229,11 +227,8 @@ final class PgProcScannerTest {
 
   private static SystemObjectScanContext contextWithWindowFunction() {
     ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("floe-demo:pg_catalog")
-            .build();
+        SystemNodeRegistry.resourceId(
+            "floe-demo", ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
 
     NamespaceNode pgCatalog =
         new NamespaceNode(
@@ -325,18 +320,11 @@ final class PgProcScannerTest {
   }
 
   private static ResourceId rid(String name) {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_FUNCTION)
-        .setId("postgres:" + name)
-        .build();
+    return SystemNodeRegistry.resourceId(
+        "postgres", ResourceKind.RK_FUNCTION, NameRefUtil.name("pg_catalog", name));
   }
 
   private static ResourceId ridCatalog() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("postgres:system")
-        .build();
+    return SystemNodeRegistry.systemCatalogContainerId("postgres");
   }
 }

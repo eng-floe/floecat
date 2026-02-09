@@ -322,7 +322,8 @@ ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDemo
 
 All caches are case-normalized and thread-safe:
 * `SystemDefinitionRegistry` keeps one `SystemEngineCatalog` per engine kind in a `ConcurrentHashMap`. Loading once per kind is enough because `SystemEngineCatalog` references a parsed `SystemCatalogData` snapshot that contains every supported version.
-* `SystemNodeRegistry` caches `BuiltinNodes` per `VersionKey(engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered `SystemCatalogData`.
+* `SystemNodeRegistry` caches `BuiltinNodes` per `VersionKey(engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered `SystemCatalogData`.  
+  `SystemNodeRegistry.resourceId` now derives a deterministic UUID (engine kind + resource kind + object signature) instead of concatenating readable `engine:suffix` strings, so every owner of a system node should call the helper rather than inventing their own IDs.
 * `SystemGraph` keeps a synchronized, access-ordered `LinkedHashMap` of `GraphSnapshot`s per version. Each snapshot already groups namespace relations and indexes every `GraphNode` so that `_system` list/lookups take constant time.
 
 ## Version Matching

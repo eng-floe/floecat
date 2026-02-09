@@ -96,12 +96,7 @@ class SystemGraphTest {
 
     systemGraph = new SystemGraph(registry, 16);
 
-    systemCatalogId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_CATALOG)
-            .setId(ENGINE)
-            .build();
+    systemCatalogId = SystemNodeRegistry.systemCatalogContainerId(ENGINE);
 
     wrongCatalogId =
         ResourceId.newBuilder()
@@ -111,24 +106,17 @@ class SystemGraphTest {
             .build();
 
     namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(ENGINE + ":pg_catalog")
-            .build();
+        SystemNodeRegistry.resourceId(
+            ENGINE, ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
 
     tableId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(ENGINE + ":pg_catalog.pg_class")
-            .build();
+        SystemNodeRegistry.resourceId(
+            ENGINE, ResourceKind.RK_TABLE, NameRefUtil.name("pg_catalog", "pg_class"));
     defaultTableId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":pg_catalog.pg_class")
-            .build();
+        SystemNodeRegistry.resourceId(
+            EngineCatalogNames.FLOECAT_DEFAULT_CATALOG,
+            ResourceKind.RK_TABLE,
+            NameRefUtil.name("pg_catalog", "pg_class"));
   }
 
   @Test
@@ -248,11 +236,7 @@ class SystemGraphTest {
   @Test
   void listCatalogs_returnsEngineCatalogs() {
     ResourceId defaultCatalogId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_CATALOG)
-            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG)
-            .build();
+        SystemNodeRegistry.systemCatalogContainerId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
 
     assertThat(systemGraph.listCatalogs())
         .containsExactlyInAnyOrder(defaultCatalogId, systemCatalogId);
@@ -269,18 +253,10 @@ class SystemGraphTest {
   void functionsWithUnqualifiedDisplayNameStillLandInNamespace() {
     String engineKind = "stub-engine";
     String engineVersion = "1.0";
-    ResourceId catalogId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_CATALOG)
-            .setId(engineKind)
-            .build();
+    ResourceId catalogId = SystemNodeRegistry.systemCatalogContainerId(engineKind);
     ResourceId namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(engineKind + ":pg_catalog")
-            .build();
+        SystemNodeRegistry.resourceId(
+            engineKind, ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
 
     NamespaceNode namespaceNode =
         new NamespaceNode(
@@ -296,22 +272,16 @@ class SystemGraphTest {
 
     FunctionNode functionNode =
         new FunctionNode(
-            ResourceId.newBuilder()
-                .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-                .setKind(ResourceKind.RK_FUNCTION)
-                .setId(engineKind + ":pg_catalog.short_name")
-                .build(),
+            SystemNodeRegistry.resourceId(
+                engineKind, ResourceKind.RK_FUNCTION, NameRefUtil.name("pg_catalog", "short_name")),
             1,
             Instant.EPOCH,
             engineVersion,
             namespaceId,
             "short_name",
             List.of(),
-            ResourceId.newBuilder()
-                .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-                .setKind(ResourceKind.RK_TYPE)
-                .setId(engineKind + ":pg_catalog.int4")
-                .build(),
+            SystemNodeRegistry.resourceId(
+                engineKind, ResourceKind.RK_TYPE, NameRefUtil.name("pg_catalog", "int4")),
             false,
             false,
             Map.of());

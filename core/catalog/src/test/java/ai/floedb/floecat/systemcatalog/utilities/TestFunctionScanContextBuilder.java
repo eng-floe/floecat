@@ -25,6 +25,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -32,26 +33,22 @@ import java.util.Map;
 /** Test builder for function-based scanners (pg_catalog.pg_proc, aggregates, operators). */
 public final class TestFunctionScanContextBuilder extends AbstractTestScanContextBuilder {
 
-  private TestFunctionScanContextBuilder(ResourceId catalogId) {
+  private final String engineKind;
+
+  private TestFunctionScanContextBuilder(String engineKind, ResourceId catalogId) {
     super(catalogId);
+    this.engineKind = engineKind;
   }
 
   public static TestFunctionScanContextBuilder builder(String catalogName) {
     return new TestFunctionScanContextBuilder(
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_CATALOG)
-            .setId(catalogName)
-            .build());
+        catalogName, SystemNodeRegistry.systemCatalogContainerId(catalogName));
   }
 
   public NamespaceNode addNamespace(String name) {
     ResourceId id =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(name)
-            .build();
+        SystemNodeRegistry.resourceId(
+            engineKind, ResourceKind.RK_NAMESPACE, NameRefUtil.name(name));
 
     NamespaceNode ns =
         new NamespaceNode(
@@ -79,11 +76,8 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
 
     FunctionNode fn =
         new FunctionNode(
-            ResourceId.newBuilder()
-                .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-                .setKind(ResourceKind.RK_FUNCTION)
-                .setId(name)
-                .build(),
+            SystemNodeRegistry.resourceId(
+                engineKind, ResourceKind.RK_FUNCTION, NameRefUtil.name(name)),
             1,
             Instant.EPOCH,
             "15",

@@ -21,6 +21,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
@@ -32,6 +34,7 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @ApplicationScoped
 public final class SystemScannerResolver {
@@ -41,9 +44,12 @@ public final class SystemScannerResolver {
   @Inject List<SystemObjectScannerProvider> providers;
 
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
+    EngineContext ctx = engine.engineContext();
+    String engineKind = ctx.effectiveEngineKind();
+    String engineVersion = ctx.normalizedVersion();
 
     Optional<SystemTableNode.FloeCatSystemTableNode> nodeOptional =
-        resolveSystemTable(graph, tableId);
+        resolveSystemTable(graph, tableId, engineKind);
     var node =
         nodeOptional.orElseThrow(
             () ->
@@ -57,10 +63,6 @@ public final class SystemScannerResolver {
       throw GrpcErrors.internal(
           correlationId, SYSTEM_SCAN_MISSING_SCANNER, Map.of("table_id", tableId.getId()));
     }
-
-    EngineContext ctx = engine.engineContext();
-    String engineKind = ctx.normalizedKind();
-    String engineVersion = ctx.normalizedVersion();
 
     for (var provider : providers) {
       if (!provider.supportsEngine(engineKind)) {
@@ -82,26 +84,51 @@ public final class SystemScannerResolver {
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
-      CatalogOverlay graph, ResourceId tableId) {
-    Optional<SystemTableNode.FloeCatSystemTableNode> node =
-        graph
-            .resolve(tableId)
-            .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
-            .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
-    if (node.isPresent() || tableId == null || tableId.getId() == null) {
-      return node;
+      CatalogOverlay graph, ResourceId tableId, String effectiveEngineKind) {
+    if (tableId == null || tableId.getId() == null) {
+      return Optional.empty();
     }
-    String idPart = tableId.getId();
-    int colon = idPart.indexOf(':');
-    String suffix = colon < 0 ? idPart : idPart.substring(colon + 1);
-    if (suffix.isBlank()) {
-      return node;
+    Optional<?> resolved = graph.resolve(tableId);
+    if (resolved.isPresent()) {
+      return resolved
+          .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
+          .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
     }
+
+    UUID incomingUuid;
+    try {
+      incomingUuid = UUID.fromString(tableId.getId());
+    } catch (IllegalArgumentException e) {
+      return Optional.empty();
+    }
+    if (!SystemResourceIdGenerator.isSystemId(incomingUuid)) {
+      return Optional.empty();
+    }
+    byte[] incoming = SystemResourceIdGenerator.bytesFromUuid(incomingUuid);
+    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(effectiveEngineKind)) {
+      return Optional.empty();
+    }
+
+    return translateToDefault(graph, tableId, incoming, effectiveEngineKind);
+  }
+
+  private Optional<SystemTableNode.FloeCatSystemTableNode> translateToDefault(
+      CatalogOverlay graph, ResourceId tableId, byte[] incoming, String sourceEngineKind) {
+    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(sourceEngineKind)) {
+      return Optional.empty();
+    }
+
+    byte[] base =
+        SystemResourceIdGenerator.xor(incoming, SystemResourceIdGenerator.mask(sourceEngineKind));
+    byte[] fallbackBytes =
+        SystemResourceIdGenerator.xor(
+            base, SystemResourceIdGenerator.mask(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG));
+    UUID defaultId = SystemResourceIdGenerator.uuidFromBytes(fallbackBytes);
     ResourceId fallback =
         ResourceId.newBuilder()
-            .setAccountId(tableId.getAccountId())
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
             .setKind(tableId.getKind())
-            .setId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":" + suffix)
+            .setId(defaultId.toString())
             .build();
     return graph
         .resolve(fallback)
