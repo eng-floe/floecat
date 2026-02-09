@@ -16,9 +16,6 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
-import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
-import ai.floedb.floecat.connector.rpc.AuthCredentials;
-import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -33,27 +30,14 @@ public final class IcebergConnectorProvider implements ConnectorProvider {
 
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
-    ConnectorConfig resolved = resolveCredentials(cfg);
-    Map<String, String> options = new HashMap<>(resolved.options());
-    var auth = resolved.auth();
+    Map<String, String> options = new HashMap<>(cfg.options());
+    var auth = cfg.auth();
 
     return IcebergConnectorFactory.create(
-        resolved.uri(),
+        cfg.uri(),
         options,
         auth.scheme(),
         new HashMap<>(auth.props()),
         new HashMap<>(auth.headerHints()));
-  }
-
-  static ConnectorConfig resolveCredentials(ConnectorConfig cfg) {
-    if (cfg == null) {
-      return cfg;
-    }
-    AuthCredentials credentials = cfg.auth() != null ? cfg.auth().credentials() : null;
-    if (credentials == null
-        || credentials.getCredentialCase() == AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
-      return cfg;
-    }
-    return CredentialResolverSupport.apply(cfg, credentials, AuthResolutionContext.empty());
   }
 }

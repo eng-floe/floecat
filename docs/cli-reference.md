@@ -58,22 +58,70 @@ connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <
     [--source-table <name>] [--source-cols c1,#id2,...]
     [--dest-ns <a.b[.c]>] [--dest-table <name>]
     [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
-    [--head k=v ...] [--secret <ref>]
+    [--head k=v ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
     [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
-    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+    [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
 connector delete <display_name|id>  [--etag <etag>]
 connector validate <kind> <uri>
     [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
-    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...] [--secret <ref>]
+    [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
+    [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...]
 connector trigger <display_name|id> [--full]
 connector job <jobId>
+
+Credential types (`--cred-type`):
+- `bearer` – required: `token`.
+- `client` – required: `endpoint`, `client_id`, `client_secret`.
+- `cli` – optional: `provider` (databricks, aws; default databricks). Provider-specific keys are
+  supplied via `--cred` and stored in `AuthCredentials.properties` (for example `cache_path`,
+  `profile_name`, `client_id`, `scope`).
+- `token-exchange` – `endpoint`, `subject_token_type`, `requested_token_type`, `audience`, `scope`,
+  `client_id`, `client_secret`.
+- `token-exchange-entra` – `endpoint`, `subject_token_type`, `requested_token_type`, `audience`,
+  `scope`, `client_id`, `client_secret`.
+- `token-exchange-gcp` – base fields `endpoint`, `subject_token_type`, `requested_token_type`,
+  `audience`, `scope`; plus optional `gcp.service_account_email`, `gcp.delegated_user`,
+  `gcp.service_account_private_key_pem`, `gcp.service_account_private_key_id`,
+  `jwt_lifetime_seconds`.
+- `aws` – required: `access_key_id`, `secret_access_key`; optional: `session_token`.
+- `aws-web-identity` – `role_arn`, `role_session_name`, `provider_id`, `duration_seconds`;
+  requires `aws.web_identity_token` via `--cred`.
+- `aws-assume-role` – `role_arn`, `role_session_name`, `external_id`, `duration_seconds`.
+
+Any type can include extra `--cred k=v` entries to populate `AuthCredentials.properties` and
+`--cred-head k=v` entries to populate `AuthCredentials.headers` (used by token exchange requests).
+
+Auth properties (generic options):
+- `--auth aws.profile=<name>` – use an AWS CLI/profile for SigV4 and S3 auth (for example `default`, `dev`).
+- `--auth aws.profile_path=<path>` – optional shared credentials/config file path.
+- `--auth oauth.mode=cli` – use the Databricks CLI cache for OAuth2 token auth.
+- `--auth cache_path=<path>` – optional Databricks CLI cache path (default `~/.databricks/token-cache.json`).
+
+CLI cache examples:
+- Databricks:
+  `--auth-scheme oauth2 --cred-type cli --cred provider=databricks --cred cache_path=~/.databricks/token-cache.json --cred client_id=databricks-cli`
+- AWS profile:
+  `--auth-scheme aws-sigv4 --cred-type cli --cred provider=aws --cred profile_name=dev --cred cache_path=~/.aws/config`
+
+Auth credential types explained (end-user view):
+- `bearer`: You already have an access token; Floecat uses it as-is.
+- `client`: Floecat exchanges a client ID/secret for an access token at the given endpoint.
+- `cli`: Floecat uses local CLI caches. For Databricks, it reads/refreshes the token cache; for AWS,
+  it selects a profile from shared config/credentials files.
+- `token-exchange`: Floecat exchanges a subject token for an access token using RFC 8693.
+- `token-exchange-entra`: Floecat performs an Azure Entra OBO exchange to get an access token.
+- `token-exchange-gcp`: Floecat performs GCP domain-wide delegation to get an access token.
+- `aws`: Floecat uses static AWS access keys (plus optional session token).
+- `aws-web-identity`: Floecat assumes an AWS role using a web identity token.
+- `aws-assume-role`: Floecat assumes an AWS role using existing AWS credentials.
 
 help
 quit

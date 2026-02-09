@@ -65,7 +65,7 @@ message Connector {
   ConnectorKind kind = 4;
   SourceSelector source = 10;
   DestinationTarget destination = 11;
-  string uri = 20; 
+  string uri = 20;
   AuthConfig auth = 22;
   ReconcilePolicy policy = 30;
   google.protobuf.Timestamp created_at = 40;
@@ -83,8 +83,8 @@ enum ConnectorState {
 
 message AuthConfig {
   string scheme = 1;                    // Auth scheme name (e.g., oauth2, aws-sigv4).
+  AuthCredentials credentials = 2;      // Credentials for this connector.
   map<string,string> header_hints = 3;  // Extra headers to send to upstream APIs.
-  AuthCredentials credentials = 11;     // Inline credentials for this connector.
   map<string,string> properties = 99;   // Additional auth properties.
 }
 
@@ -94,16 +94,23 @@ message AuthCredentials {
   }
 
   message ClientCredentials {
-    string client_id = 1;     // OAuth client ID.
-    string client_secret = 2; // OAuth client secret.
+    string endpoint = 1;      // OAuth client-credentials token endpoint URL.
+    string client_id = 2;     // OAuth client ID.
+    string client_secret = 3; // OAuth client secret.
+  }
+
+  message CliCredentials {
+    string provider = 1;     // Optional provider (databricks, aws).
   }
 
   message TokenExchange {
-    string endpoint = 1;                // Token exchange endpoint URL.
-    string subject_token_type = 2;      // Subject token type (RFC 8693).
-    string requested_token_type = 3;    // Requested token type (RFC 8693).
-    string audience = 4;                // Audience for the exchanged token.
-    string scope = 5;                   // Scope for the exchanged token.
+    string endpoint = 1;              // Token exchange endpoint URL.
+    string client_id = 2;             // Optional client id for token exchange.
+    string client_secret = 3;         // Optional client secret for token exchange.
+    string subject_token_type = 4;    // Subject token type (RFC 8693).
+    string requested_token_type = 5;  // Requested token type (RFC 8693).
+    string audience = 6;              // Audience for the exchanged token.
+    string scope = 7;                 // Scope for the exchanged token.
   }
 
   message Rfc8693TokenExchange {
@@ -120,8 +127,6 @@ message AuthCredentials {
     optional string delegated_user = 3;             // Workspace user email (sub) to impersonate.
     optional string service_account_private_key_pem = 4; // PKCS#8 private key PEM for signing the JWT.
     optional string service_account_private_key_id = 5;  // Optional key id (kid) for JWT header.
-    optional string token_endpoint = 6;             // Optional token endpoint (default https://oauth2.googleapis.com/token).
-    optional int32 jwt_lifetime_seconds = 7;        // Optional JWT lifetime in seconds (1..3600).
   }
 
   message AwsCredentials {
@@ -147,6 +152,7 @@ message AuthCredentials {
   oneof credential {
     BearerToken bearer = 1;               // Bearer access token.
     ClientCredentials client = 2;         // OAuth client credentials.
+    CliCredentials cli = 3;               // CLI cache credentials (Databricks/AWS).
     AwsCredentials aws = 4;               // Static AWS credentials.
     AwsWebIdentity aws_web_identity = 5;  // AWS web identity configuration.
     AwsAssumeRole aws_assume_role = 6;    // AWS assume role configuration.

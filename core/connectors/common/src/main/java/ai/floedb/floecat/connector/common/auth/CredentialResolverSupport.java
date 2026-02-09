@@ -35,6 +35,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -70,17 +71,12 @@ public final class CredentialResolverSupport {
           "requested_token_type",
           "audience",
           "scope",
-          "resource");
+          "resource",
+          "client_id",
+          "client_secret");
   private static final Set<String> AZURE_OBO_RESERVED =
       Set.of(
-          "grant_type",
-          "requested_token_use",
-          "assertion",
-          "scope",
-          "client_id",
-          "client_secret",
-          "oauth.client_id",
-          "oauth.client_secret");
+          "grant_type", "requested_token_use", "assertion", "scope", "client_id", "client_secret");
   private static final Set<String> GCP_DWD_RESERVED =
       Set.of(
           "grant_type",
@@ -90,8 +86,9 @@ public final class CredentialResolverSupport {
           "gcp.delegated_user",
           "gcp.service_account_private_key_pem",
           "gcp.service_account_private_key_id",
-          "gcp.token_endpoint",
-          "gcp.jwt_lifetime_seconds");
+          "jwt_lifetime_seconds");
+  private static final Set<String> CLIENT_CREDENTIALS_RESERVED =
+      Set.of("grant_type", "endpoint", "client_id", "client_secret", "scope", "token_endpoint");
 
   private CredentialResolverSupport() {}
 
@@ -113,8 +110,46 @@ public final class CredentialResolverSupport {
       case BEARER -> putIfNotBlank(authProps, "token", credential.getBearer().getToken());
       case CLIENT -> {
         var client = credential.getClient();
-        putIfNotBlank(authProps, "oauth.client_id", client.getClientId());
-        putIfNotBlank(authProps, "oauth.client_secret", client.getClientSecret());
+        String tokenEndpoint =
+            firstNonBlank(
+                client.getEndpoint(),
+                firstNonBlank(
+                    credential.getPropertiesMap().get("token_endpoint"),
+                    authProps.get("token_endpoint")));
+
+        if (!isBlank(tokenEndpoint)) {
+          String scope =
+              firstNonBlank(credential.getPropertiesMap().get("scope"), authProps.get("scope"));
+          String token =
+              exchangeClientCredentials(
+                  tokenEndpoint,
+                  client,
+                  scope,
+                  credential.getPropertiesMap(),
+                  credential.getHeadersMap());
+          putIfNotBlank(authProps, "token", token);
+        } else {
+          putIfNotBlank(authProps, "client_id", client.getClientId());
+          putIfNotBlank(authProps, "client_secret", client.getClientSecret());
+        }
+      }
+      case CLI -> {
+        var cli = credential.getCli();
+        String provider =
+            cli.getProvider() == null ? "" : cli.getProvider().trim().toLowerCase(Locale.ROOT);
+        if (!provider.isBlank()) {
+          authProps.put("cli.provider", provider);
+        }
+        if ("aws".equals(provider)) {
+          String profile = credential.getPropertiesMap().get("profile_name");
+          if (profile != null && !profile.isBlank()) {
+            putIfNotBlank(authProps, "aws.profile", profile);
+          }
+          String profilePath = credential.getPropertiesMap().get("cache_path");
+          if (profilePath != null && !profilePath.isBlank()) {
+            putIfNotBlank(authProps, "aws.profile_path", profilePath);
+          }
+        }
       }
       case AWS -> {
         var aws = credential.getAws();
@@ -170,9 +205,7 @@ public final class CredentialResolverSupport {
       headerHints.putAll(credential.getHeadersMap());
     }
 
-    var auth =
-        new ConnectorConfig.Auth(
-            base.auth().scheme(), authProps, headerHints, base.auth().credentials());
+    var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
 
     return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
   }
@@ -300,7 +333,8 @@ public final class CredentialResolverSupport {
     putIfNotBlank(params, "scope", exchange.getScope());
 
     Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
-    Map<String, String> headerValues = headers == null ? Map.of() : headers;
+    Map<String, String> headerValues = headers == null ? Map.of() : new LinkedHashMap<>(headers);
+    applyClientAuth(exchange, headerValues);
     return sendTokenExchangeRequest(endpoint, params, extra, headerValues, RFC8693_RESERVED);
   }
 
@@ -312,11 +346,6 @@ public final class CredentialResolverSupport {
     String endpoint = requireNonBlank(exchange.getEndpoint(), "token_exchange.endpoint");
     String scopeValue = requireNonBlank(exchange.getScope(), "token_exchange.scope");
 
-    String clientId =
-        firstNonBlank(extraParams.get("oauth.client_id"), extraParams.get("client_id"));
-    String clientSecret =
-        firstNonBlank(extraParams.get("oauth.client_secret"), extraParams.get("client_secret"));
-
     Map<String, String> params = new LinkedHashMap<>();
     params.put("grant_type", AZURE_OBO_GRANT_TYPE);
     params.put("requested_token_use", AZURE_REQUESTED_TOKEN_USE);
@@ -325,21 +354,7 @@ public final class CredentialResolverSupport {
 
     Map<String, String> headerValues =
         headers == null ? new LinkedHashMap<>() : new LinkedHashMap<>(headers);
-    boolean hasAuthHeader =
-        headerValues.keySet().stream().anyMatch(k -> "authorization".equalsIgnoreCase(k));
-    if (!hasAuthHeader && !isBlank(clientId) && !isBlank(clientSecret)) {
-      String basic =
-          Base64.getEncoder()
-              .encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
-      headerValues.put("Authorization", "Basic " + basic);
-    } else if (!hasAuthHeader) {
-      if (!isBlank(clientId)) {
-        params.put("client_id", clientId);
-      }
-      if (!isBlank(clientSecret)) {
-        params.put("client_secret", clientSecret);
-      }
-    }
+    applyClientAuth(exchange, headerValues);
 
     Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
     return sendTokenExchangeRequest(endpoint, params, extra, headerValues, AZURE_OBO_RESERVED);
@@ -347,6 +362,25 @@ public final class CredentialResolverSupport {
 
   private static boolean isBlank(String value) {
     return value == null || value.isBlank();
+  }
+
+  private static void applyClientAuth(
+      AuthCredentials.TokenExchange exchange, Map<String, String> headers) {
+    if (exchange == null) {
+      return;
+    }
+    if (headers != null && !headers.isEmpty()) {
+      headers.keySet().removeIf(k -> "authorization".equalsIgnoreCase(k));
+    }
+    String clientId = exchange.getClientId();
+    String clientSecret = exchange.getClientSecret();
+    if (isBlank(clientId) || isBlank(clientSecret)) {
+      return;
+    }
+    String basic =
+        Base64.getEncoder()
+            .encodeToString((clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
+    headers.put("Authorization", "Basic " + basic);
   }
 
   private static String firstNonBlank(String a, String b) {
@@ -435,6 +469,27 @@ public final class CredentialResolverSupport {
     return out.toString();
   }
 
+  private static String exchangeClientCredentials(
+      String endpoint,
+      AuthCredentials.ClientCredentials client,
+      String scope,
+      Map<String, String> extraParams,
+      Map<String, String> headers) {
+    String clientId = requireNonBlank(client.getClientId(), "client_id");
+    String clientSecret = requireNonBlank(client.getClientSecret(), "client_secret");
+
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("grant_type", "client_credentials");
+    params.put("client_id", clientId);
+    params.put("client_secret", clientSecret);
+    putIfNotBlank(params, "scope", scope);
+
+    Map<String, String> extra = extraParams == null ? Map.of() : extraParams;
+    Map<String, String> headerValues = headers == null ? Map.of() : headers;
+    return sendTokenExchangeRequest(
+        endpoint, params, extra, headerValues, CLIENT_CREDENTIALS_RESERVED);
+  }
+
   private static String exchangeGoogleDwd(
       AuthCredentials.GcpTokenExchange exchange,
       Map<String, String> extraParams,
@@ -446,10 +501,7 @@ public final class CredentialResolverSupport {
     var base = exchange.getBase();
     String scopeValue = requireNonBlank(base.getScope(), "gcp_token_exchange.base.scope");
 
-    String endpoint =
-        exchange.hasTokenEndpoint()
-            ? exchange.getTokenEndpoint()
-            : firstNonBlank(base.getEndpoint(), DEFAULT_GCP_TOKEN_ENDPOINT);
+    String endpoint = firstNonBlank(base.getEndpoint(), DEFAULT_GCP_TOKEN_ENDPOINT);
 
     String serviceAccountEmail =
         exchange.hasServiceAccountEmail()
@@ -472,10 +524,7 @@ public final class CredentialResolverSupport {
     String subject = requireNonBlank(delegatedUser, "gcp.delegated_user");
     String privateKeyValue = requireNonBlank(privateKeyPem, "gcp.service_account_private_key_pem");
 
-    int lifetimeSeconds =
-        exchange.hasJwtLifetimeSeconds() && exchange.getJwtLifetimeSeconds() > 0
-            ? exchange.getJwtLifetimeSeconds()
-            : parseLifetimeSeconds(extraParams.get("gcp.jwt_lifetime_seconds"));
+    int lifetimeSeconds = parseLifetimeSeconds(extraParams.get("jwt_lifetime_seconds"));
     if (lifetimeSeconds <= 0) {
       lifetimeSeconds = DEFAULT_GCP_JWT_LIFETIME_SECONDS;
     }

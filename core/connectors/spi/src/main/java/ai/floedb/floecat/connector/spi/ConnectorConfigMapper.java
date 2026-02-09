@@ -37,9 +37,6 @@ public final class ConnectorConfigMapper {
 
   private static ConnectorConfig.Auth toAuth(AuthConfig auth) {
     return new ConnectorConfig.Auth(
-        auth.getScheme(),
-        auth.getPropertiesMap(),
-        auth.getHeaderHintsMap(),
-        auth.hasCredentials() ? auth.getCredentials() : null);
+        auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
   }
 }

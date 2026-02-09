@@ -92,6 +92,8 @@ class CredentialResolverSupportTest {
             .setRequestedTokenType("urn:ietf:params:oauth:token-type:access_token")
             .setAudience("example-audience")
             .setScope("scope-a scope-b")
+            .setClientId("client-1")
+            .setClientSecret("secret-1")
             .build();
 
     var rfc = AuthCredentials.Rfc8693TokenExchange.newBuilder().setBase(exchange).build();
@@ -108,7 +110,7 @@ class CredentialResolverSupportTest {
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of(), null));
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -129,6 +131,11 @@ class CredentialResolverSupportTest {
     assertEquals("scope-a scope-b", form.get("scope"));
     assertEquals("value", form.get("custom"));
     assertEquals("yes", req.headers.getFirst("X-Test"));
+    String expectedBasic =
+        "Basic "
+            + Base64.getEncoder()
+                .encodeToString("client-1:secret-1".getBytes(StandardCharsets.UTF_8));
+    assertEquals(expectedBasic, req.headers.getFirst("Authorization"));
   }
 
   @Test
@@ -156,21 +163,18 @@ class CredentialResolverSupportTest {
         AuthCredentials.TokenExchange.newBuilder()
             .setEndpoint(endpoint)
             .setScope("https://graph.microsoft.com/.default")
+            .setClientId("client-1")
+            .setClientSecret("secret-1")
             .build();
     var azure = AuthCredentials.AzureTokenExchange.newBuilder().setBase(base).build();
-    var creds =
-        AuthCredentials.newBuilder()
-            .setAzureTokenExchange(azure)
-            .putProperties("oauth.client_id", "client-1")
-            .putProperties("oauth.client_secret", "secret-1")
-            .build();
+    var creds = AuthCredentials.newBuilder().setAzureTokenExchange(azure).build();
     var cfg =
         new ConnectorConfig(
             ConnectorConfig.Kind.DELTA,
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of(), null));
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -234,7 +238,7 @@ class CredentialResolverSupportTest {
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of(), null));
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -249,6 +253,129 @@ class CredentialResolverSupportTest {
     assertEquals("https://www.googleapis.com/auth/cloud-platform", form.get("scope"));
     String assertion = form.get("assertion");
     assertNotNull(assertion);
+  }
+
+  @Test
+  void clientCredentialsPopulateAuthProps() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setClient(
+                AuthCredentials.ClientCredentials.newBuilder()
+                    .setClientId("client-id")
+                    .setClientSecret("client-secret"))
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("client-id", applied.auth().props().get("client_id"));
+    assertEquals("client-secret", applied.auth().props().get("client_secret"));
+  }
+
+  @Test
+  void clientCredentialsExchangeToken() throws Exception {
+    AtomicReference<CapturedRequest> captured = new AtomicReference<>();
+    server = createServer();
+    server.createContext(
+        "/token",
+        exchange -> {
+          String body =
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+          captured.set(new CapturedRequest(body, exchange.getRequestHeaders()));
+          byte[] response =
+              "{\"access_token\":\"client-token\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+                  .getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+
+    String endpoint = "http://localhost:" + server.getAddress().getPort() + "/token";
+    var creds =
+        AuthCredentials.newBuilder()
+            .setClient(
+                AuthCredentials.ClientCredentials.newBuilder()
+                    .setEndpoint(endpoint)
+                    .setClientId("client-id")
+                    .setClientSecret("client-secret"))
+            .putProperties("extra", "value")
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of("scope", "scope-x"), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("client-token", applied.auth().props().get("token"));
+
+    CapturedRequest req = captured.get();
+    assertNotNull(req);
+    Map<String, String> form = parseForm(req.body);
+    assertEquals("client_credentials", form.get("grant_type"));
+    assertEquals("client-id", form.get("client_id"));
+    assertEquals("client-secret", form.get("client_secret"));
+    assertEquals("scope-x", form.get("scope"));
+    assertEquals("value", form.get("extra"));
+  }
+
+  @Test
+  void cliCredentialsReadTokenCache() throws Exception {
+    String host = "https://dbc.example.com";
+    var creds =
+        AuthCredentials.newBuilder()
+            .setCli(AuthCredentials.CliCredentials.newBuilder().setProvider("databricks"))
+            .putProperties("cache_path", "/tmp/cache.json")
+            .putProperties("client_id", "client")
+            .putProperties("scope", "scope-x")
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "name",
+            host,
+            Map.of(),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("databricks", applied.auth().props().get("cli.provider"));
+    assertEquals("/tmp/cache.json", applied.auth().props().get("cache_path"));
+    assertEquals("client", applied.auth().props().get("client_id"));
+    assertEquals("scope-x", applied.auth().props().get("scope"));
+  }
+
+  @Test
+  void cliCredentialsAwsProfileMapping() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setCli(AuthCredentials.CliCredentials.newBuilder().setProvider("aws"))
+            .putProperties("profile_name", "dev")
+            .putProperties("cache_path", "/tmp/aws-config")
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "s3://bucket",
+            Map.of(),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("dev", applied.auth().props().get("aws.profile"));
+    assertEquals("/tmp/aws-config", applied.auth().props().get("aws.profile_path"));
   }
 
   @Test

@@ -891,10 +891,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
   private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {
     return new ConnectorConfig.Auth(
-        auth.getScheme(),
-        auth.getPropertiesMap(),
-        auth.getHeaderHintsMap(),
-        auth.hasCredentials() ? auth.getCredentials() : null);
+        auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
   }
 
   private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {

@@ -8,7 +8,8 @@ warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL en
 
 The primary implementation is `DeltaConnector` (abstract) with source-specific subclasses for Unity
 Catalog and filesystem-backed tables, exposed via `DeltaConnectorProvider`. Supporting classes manage
-OAuth2/SP token acquisition, Databricks SQL execution, and custom file readers for S3.
+OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream),
+Databricks SQL execution, and custom file readers for S3.
 
 ## Architecture & Responsibilities
 
@@ -22,8 +23,6 @@ OAuth2/SP token acquisition, Databricks SQL execution, and custom file readers f
 - **`DeltaFilesystemConnector`** – Single-table connector for `delta.table-root` plus optional
   `external.namespace` / `external.table-name` overrides.
 - **`DeltaConnectorFactory`** – Selects Unity vs filesystem sources and wires engine/auth/IO.
-- **`DatabricksAuthFactory`** – Produces `AuthProvider`s (OAuth2 bearer tokens, service principal
-  tokens, CLI profiles) consumed by `UcHttp` and SQL client.
 - **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
   handling retries/timeouts.
 - **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Floecat logical types for stats.
@@ -44,9 +43,9 @@ OAuth2/SP token acquisition, Databricks SQL execution, and custom file readers f
 
 ## Important Internal Details
 
-- **Authentication** – Supports OAuth2 bearer tokens, Databricks CLI profiles, service principal
-  tokens, and workload identity federation (WIF) via token exchange. `DatabricksAuthFactory`
-  inspects connector properties such as `auth.scheme` and `auth.properties`.
+- **Authentication** – Uses an OAuth2 bearer token supplied in the resolved connector config or
+  the Databricks CLI cache. Token exchange and secret handling happen earlier in the service layer,
+  except for CLI cache refresh which is handled in the connector.
 - **HTTP & SQL clients** – `UcHttp` centralises base URI, connect/read timeouts, and error mapping.
   `SqlStmtClient` optionally executes SQL statements (for example to inspect statistics tables) via
   Databricks SQL warehouses.
@@ -86,14 +85,20 @@ Important connector properties:
 - `databricks.sql.warehouse_id` – Enables SQL statement execution when set.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
-- Authentication-specific options (`auth.scheme`, `auth.properties`) – See
-  `DatabricksAuthFactory` for supported schemes (OAuth2 static token, service principal, CLI
-  profile, WIF token exchange).
+- Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`
+  expects either `token=<access-token>` or `oauth.mode=cli` (to read the Databricks CLI cache).
+  Service principal and WIF are expressed as `AuthCredentials` and resolved upstream.
+
+Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+For Delta, the relevant types are `bearer`, `client` (SP), `cli`, `token-exchange` (WIF),
+`token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only work if the Databricks
+workspace is configured to trust those IdPs.
+Use the Databricks workspace host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`);
+token exchange endpoints use `https://<workspace-host>/oidc/v1/token`.
 
 Extensibility points:
 
-- Implement new auth schemes by extending `AuthProvider` and adding cases in
-  `DatabricksAuthFactory`.
+- Implement new auth schemes by extending `AuthProvider` and wiring them in the connector provider.
 - Plug in additional NDV providers if Delta tables store custom sketches.
 - Extend `DeltaPlanner` to emit additional metadata (for example z-order hints) when the upstream API
   exposes them.
@@ -112,19 +117,63 @@ Extensibility points:
       "s3.region":"us-west-2",
       "stats.ndv.enabled":"true"
     },
-    "auth":{"scheme":"oauth2","properties":{"token":"..."}}
+    "auth":{
+      "scheme":"oauth2",
+      "credentials":{"bearer":{"token":"<access-token>"}},
+      "properties":{}
+    }
   }
   ```
 
-- **CLI example (WIF token exchange)** – Using the `connector` CLI with a workload identity token:
+- **CLI examples**
+  - **Service principal (SP)** – Use `client` credentials. Resolve via client credentials exchange
+    (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+    `https://<workspace-host>/oidc/v1/token`.
+
+    ```bash
+    connector create "Unity Delta SP" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+      "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
+      --auth-scheme oauth2 \
+      --cred-type client \
+      --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
+      --cred client_id=3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234 \
+      --cred client_secret=ddbsp-9f1c2a3b4c5d6e7f8a9b \
+      --auth scope=all-apis
+    ```
+
+  - **WIF (token exchange)** – Use `token-exchange`. Resolve via RFC 8693 exchange (service layer),
+    connector sees a bearer token. Token endpoint is the workspace OIDC URL:
+    `https://<workspace-host>/oidc/v1/token`.
+
+    ```bash
+    connector create "Unity Delta WIF" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+      "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
+      --auth-scheme oauth2 \
+      --cred-type token-exchange \
+      --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
+      --cred client_id=3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234 \
+      --cred client_secret=ddbsp-9f1c2a3b4c5d6e7f8a9b \
+      --cred subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+      --cred requested_token_type=urn:ietf:params:oauth:token-type:access_token \
+      --cred scope="all-apis offline_access"
+    ```
+
+  - **CLI cache** – Connector reads the Databricks CLI cache directly:
+
+    ```bash
+    connector create "Unity Delta CLI" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+      "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
+      --auth-scheme oauth2 \
+      --cred-type cli \
+      --cred cache_path=~/.databricks/token-cache.json
+    ```
+
+  - **Bearer token** – Using the `connector` CLI with a resolved token:
 
   ```bash
-  connector create "Unity Delta TPC-DS (WIF)" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+  connector create "Unity Delta Token" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
     "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
-    --auth-scheme oauth2 --auth mode=wif \
-    --auth host=https://dbc-d382c535-b2a9.cloud.databricks.com \
-    --auth oauth.client_id=<client-id> \
-    --auth oauth.subject_token_file=/path/to/subject_token.jwt
+    --auth-scheme oauth2 --auth token=<access-token>
   ```
 
 - **Full reconciliation** – `ReconcilerService` enters full-rescan mode (`fullRescan=true`), so the

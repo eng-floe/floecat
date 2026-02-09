@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
+import ai.floedb.floecat.connector.common.auth.AwsProfileSupport;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.Collections;
 import java.util.HashMap;
@@ -99,10 +100,11 @@ final class IcebergConnectorFactory {
         RESTCatalog cat = new RESTCatalog();
         cat.initialize("floecat-iceberg", Collections.unmodifiableMap(props));
         if (source == IcebergSource.GLUE) {
-          var glue =
-              GlueClient.builder()
-                  .region(Region.of(props.getOrDefault("s3.region", "us-east-1")))
-                  .build();
+          var glueBuilder =
+              GlueClient.builder().region(Region.of(props.getOrDefault("s3.region", "us-east-1")));
+          AwsProfileSupport.resolveProfileProvider(authProps)
+              .ifPresent(glueBuilder::credentialsProvider);
+          var glue = glueBuilder.build();
           var glueFilter = new GlueIcebergFilter(glue);
           yield new IcebergGlueConnector(
               "iceberg-glue", cat, glueFilter, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
@@ -140,6 +142,8 @@ final class IcebergConnectorFactory {
 
         props.putIfAbsent("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
         props.putIfAbsent("s3.region", signingRegion);
+
+        AwsProfileSupport.applyProfileProperties(props, authProps);
       }
 
       case "oauth2" -> {

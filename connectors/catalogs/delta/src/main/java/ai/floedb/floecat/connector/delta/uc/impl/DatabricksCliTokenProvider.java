@@ -16,14 +16,10 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.auth.OAuthRefreshSupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -130,34 +126,13 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
   }
 
   private CacheTok refreshAccessToken(String refreshToken) throws Exception {
-    String body =
-        "grant_type=refresh_token"
-            + "&refresh_token="
-            + enc(refreshToken)
-            + "&client_id="
-            + enc(clientId)
-            + (scope.isBlank() ? "" : "&scope=" + enc(scope));
-
-    HttpRequest req =
-        HttpRequest.newBuilder(URI.create(host + "/oidc/v1/token"))
-            .timeout(Duration.ofMillis(timeoutMs))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("Accept", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(body))
-            .build();
-
-    HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-    if (resp.statusCode() / 100 != 2) {
-      throw new RuntimeException("Refresh failed: HTTP " + resp.statusCode() + " " + resp.body());
-    }
-
-    JsonNode j = M.readTree(resp.body());
-    String access = j.path("access_token").asText(null);
-    long expiresIn = j.path("expires_in").asLong(3600);
-    String newRefresh = j.path("refresh_token").asText(refreshToken);
-    if (access == null || access.isBlank())
-      throw new IllegalStateException("No access_token in refresh response");
-    return new CacheTok(access, newRefresh, Instant.now().plusSeconds(expiresIn));
+    var resp =
+        OAuthRefreshSupport.refreshAccessToken(
+            http, host + "/oidc/v1/token", clientId, scope, refreshToken, timeoutMs);
+    return new CacheTok(
+        resp.accessToken(),
+        resp.refreshToken(),
+        Instant.now().plusSeconds(Math.max(1, resp.expiresInSeconds())));
   }
 
   private void tryPersist(CacheTok t) {
@@ -199,9 +174,5 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
     }
     long sec = tokNode.path("expires_in").asLong(0);
     return sec > 0 ? Instant.now().plusSeconds(sec) : null;
-  }
-
-  private static String enc(String s) {
-    return URLEncoder.encode(s, StandardCharsets.UTF_8);
   }
 }

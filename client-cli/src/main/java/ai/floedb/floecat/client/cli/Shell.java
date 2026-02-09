@@ -94,6 +94,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
@@ -1587,7 +1588,8 @@ public class Shell implements Runnable {
                   + " <source_namespace (a[.b[.c]...])> <destination_catalog (name)>"
                   + " [--source-table <name>] [--source-cols c1,#id2,...] [--dest-ns <a.b[.c]>]"
                   + " [--dest-table <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v"
-                  + " ...] [--head k=v ...] [--policy-enabled] (if provided,"
+                  + " ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...]"
+                  + " [--cred-head k=v ...] [--policy-enabled] (if provided,"
                   + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-max-par <n>]"
                   + " [--policy-not-before-epoch <sec>] [--props k=v ...]  (e.g."
                   + " stats.ndv.enabled=false,stats.ndv.sample_fraction=0.1)");
@@ -1615,6 +1617,9 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        String credType = Quotes.unquote(parseStringFlag(args, "--cred-type", ""));
+        Map<String, String> credProps = parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
 
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
@@ -1622,7 +1627,8 @@ public class Shell implements Runnable {
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth = buildAuth(authScheme, authProps, headerHints);
+        var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
+        var auth = buildAuth(authScheme, authProps, headerHints, credentials);
         var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
 
         var spec =
@@ -1659,7 +1665,8 @@ public class Shell implements Runnable {
                   + " <uri>] [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols"
                   + " c1,#id2,...] [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table"
                   + " <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v"
-                  + " ...] [--policy-enabled true|false] [--policy-interval-sec"
+                  + " ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]"
+                  + " [--policy-enabled true|false] [--policy-interval-sec"
                   + " <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--props k=v"
                   + " ...] [--etag <etag>]");
           return;
@@ -1689,6 +1696,9 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        String credType = Quotes.unquote(parseStringFlag(args, "--cred-type", ""));
+        Map<String, String> credProps = parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
         String policyEnabledStr = parseStringFlag(args, "--policy-enabled", "");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
@@ -1719,13 +1729,19 @@ public class Shell implements Runnable {
           mask.add("properties");
         }
 
-        boolean authSet = !authScheme.isBlank() || !authProps.isEmpty() || !headerHints.isEmpty();
+        var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
+        boolean authSet =
+            !authScheme.isBlank()
+                || !authProps.isEmpty()
+                || !headerHints.isEmpty()
+                || credentials != null;
         if (authSet) {
-          var ab = buildAuth(authScheme, authProps, headerHints);
+          var ab = buildAuth(authScheme, authProps, headerHints, credentials);
           spec.setAuth(ab);
           if (!authScheme.isBlank()) mask.add("auth.scheme");
           if (!authProps.isEmpty()) mask.add("auth.properties");
           if (!headerHints.isEmpty()) mask.add("auth.header_hints");
+          if (credentials != null) mask.add("auth.credentials");
         }
 
         boolean policySet =
@@ -1801,6 +1817,7 @@ public class Shell implements Runnable {
           out.println(
               "usage: connector validate <kind> <uri>"
                   + " [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]"
+                  + " [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]"
                   + " [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]"
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
                   + " [--props k=v ...]");
@@ -1822,10 +1839,14 @@ public class Shell implements Runnable {
         String authScheme = Quotes.unquote(parseStringFlag(args, "--auth-scheme", ""));
         Map<String, String> authProps = parseKeyValueList(args, "--auth");
         Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        String credType = Quotes.unquote(parseStringFlag(args, "--cred-type", ""));
+        Map<String, String> credProps = parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
 
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
-        var auth = buildAuth(authScheme, authProps, headerHints);
+        var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
+        var auth = buildAuth(authScheme, authProps, headerHints, credentials);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1906,12 +1927,16 @@ public class Shell implements Runnable {
   }
 
   private AuthConfig buildAuth(
-      String scheme, Map<String, String> props, Map<String, String> heads) {
-    return AuthConfig.newBuilder()
-        .setScheme(nvl(scheme, ""))
-        .putAllProperties(props)
-        .putAllHeaderHints(heads)
-        .build();
+      String scheme, Map<String, String> props, Map<String, String> heads, AuthCredentials creds) {
+    var b =
+        AuthConfig.newBuilder()
+            .setScheme(nvl(scheme, ""))
+            .putAllProperties(props)
+            .putAllHeaderHints(heads);
+    if (creds != null) {
+      b.setCredentials(creds);
+    }
+    return b.build();
   }
 
   private ReconcilePolicy buildPolicy(

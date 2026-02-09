@@ -77,6 +77,10 @@ Connector options (part of `ConnectorSpec.properties`):
   Iceberg metadata JSON file. `external.namespace` and `external.table-name` override the logical
   name when needed.
 
+Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+For Iceberg, the relevant types are `bearer`, `client`, `cli` (provider=aws), `token-exchange`,
+`token-exchange-entra`, `token-exchange-gcp`, `aws`, `aws-web-identity`, and `aws-assume-role`.
+
 To extend behavior:
 - Provide a custom NDV provider by plugging into `GenericStatsEngine`.
 - Wrap alternative auth schemes by implementing `AuthProvider` and mapping new `auth.scheme` values.
