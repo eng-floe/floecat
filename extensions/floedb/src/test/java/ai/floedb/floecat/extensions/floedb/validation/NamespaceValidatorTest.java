@@ -16,11 +16,11 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -158,11 +158,6 @@ class NamespaceValidatorTest {
     }
     builder.setNspname(name);
     return new EngineSpecificRule(
-        "floedb",
-        "1.0",
-        "",
-        FloePayloads.NAMESPACE.type(),
-        builder.build().toByteArray(),
-        Map.of());
+        "floedb", "1.0", "", NAMESPACE.type(), builder.build().toByteArray(), Map.of());
   }
 }

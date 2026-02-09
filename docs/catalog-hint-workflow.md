@@ -38,7 +38,7 @@ The resolver:
 
 * looks for existing Floe payloads via `ScannerUtils`.
 * applies overlay values if present.
-* fills deterministic defaults for OIDs, typmods, lengths, collision, etc.
+* fills deterministic defaults for OIDs, typmods, lengths, collision, etc. When overlays are missing, ScannerUtils now defers to a pluggable `EngineOidGenerator` (currently configured through `floecat.extensions.floedb.engine.oid-generator=default`), and there is a payload-aware `fallbackOid(id, payloadType)` overload so different hint categories for the same resource hash to distinct values. The default generator compresses its UUID into ~31 bits, so collisions can still occur at scale; any persistence layer that stores generated OIDs may need to detect duplicates and retry with a new payload tag or salt. If you retry with a new salt (or payload tag), be sure to persist the resulting OID alongside the object before you rely on it again—otherwise you break the deterministic guarantee that future scans expect.
 * returns the canonical `Floe*Specific` proto (e.g., `FloeColumnSpecific`, `FloeRelationSpecific`).
 
 It never mutates scan builders or catalog responses, and all callers share the same defaults.
@@ -59,12 +59,61 @@ When `UserObjectBundleService` builds responses it:
 
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.
-* the decorator calls `FloeHintResolver`, wraps the resulting proto in `EngineSpecific` via `FloePayloads`, and attaches it to the bundle.
+* the decorator calls `FloeHintResolver`, asks the matching `FloePayloads.Descriptor` for the payloadType string (`Descriptor.type()`) and, when replaying overlays, optionally decodes persisted bytes via `Descriptor.decode()`, uses `toEngineSpecific` to build the wrapper, and attaches the `EngineSpecific` blob to the bundle.
 * if snapshot-aware stats exist for the relation, the bundle includes them in `RelationInfo.stats` (a new `RelationStats` proto carrying best-effort `row_count` and `total_size_bytes`). This field is optional: resolvers may see `RelationInfo.stats` unset for views, system tables, or any unpinned relation, and should treat missing stats as a best-effort decoration rather than required data.
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.
 
-## 5. Results for the planner
+## 5. Persisting engine hints
+
+Decorators persist every hint they emit so the metadata graph can replay it later. `FloeEngineSpecificDecorator`
+receives the configured `EngineHintPersistence` bean via CDI injection (the service layer wires
+`EngineHintPersistenceImpl` as the implementation) and writes each payload through
+`EngineHintPersistenceImpl`. The implementation consults `EngineHintMetadata` to build the canonical
+`engine.hint.<payloadType>` or `engine.hint.column.<payloadType>.<columnId>` key, encodes `(engineKind,
+engineVersion, payload)` as a semicolon-delimited string, and updates either the table or view repository only
+when the stored value actually changes. Because column hints now carry the stable `columnId`, the loader +
+scanner flows can distinguish columns that share payload types even when new columns shift the ordinals.
+Payload types are normalized (trimmed and lower-cased) and limited to `[a-z0-9._+-]` to keep the key format
+stable; semicolons are forbidden because they would break the encoded `(engineKind;engineVersion;payload)` value.
+
+Those properties are loaded back into the `MetaGraph` because `NodeLoader` eventually calls
+`EngineHintMetadata.hintsFromProperties(...)` and `EngineHintMetadata.columnHints(...)` for every catalog, namespace, table, and view, so both relation- and column-level hints reappear even when no decorator runs. Column payloads now key by the stable `columnId` from `SchemaColumn`/`ColumnIdAlgorithm` rather than the ordinal/attnum, so loaders and decorators agree on the identifier. The live request path still benefits from the `EngineHintManager` cache that sits atop the provider pipeline.
+
+Because persisted hints must stay in sync with the schema they describe, any update that touches the logical
+definition (currently `schema_json` and `upstream`/`upstream.*` fields) clears the `engine.hint.*` entries before the
+service writes the table/view metadata. That forces the next decorator run to treat the object as new, recomputing
+fresh OIDs and payloads rather than reusing stale values. These change paths cover the current schema API—the cleaner
+runs when one of those canonical fields is present in the request mask, so other schema-affecting updates (e.g., column
+lists, format changes, partitioning metadata) need to include `schema_json` or `upstream.*` in their mask (or call the
+cleaner directly) for hints to be cleared. Upstream may also carry metadata unrelated to column layout (credentials,
+location, notes), so the cleaner can regenerate hints even when only those fields change; refine the mask if you want
+to avoid that extra churn.
+
+### Compatibility & normalization guarantees
+
+`engine.hint.*` is persistent metadata, so its format is part of the public contract:
+
+* Relation keys use `engine.hint.<payloadType>` and column keys use `engine.hint.column.<payloadType>.<columnId>`.
+  Payload types are trimmed, lower-cased (Locale.ROOT), and restricted to the `[a-z0-9._+-]` character set, which makes
+  the stored keys effectively case-insensitive. Any deviation (e.g., a legacy builder that emits uppercase or extra
+  whitespace) is normalized when reading via `EngineHintMetadata`.
+* Column hints are scoped by the stable `columnId` instead of the ordinal (`attnum`), so adding/removing columns or
+  reordering them no longer shifts the stored key. The id comes from the catalog's `ColumnIdAlgorithm`, so it survives
+  common column mutations.
+* Changing a payload type (for example, introducing `floe.relation+proto.v2`) simply writes to a new key; the old
+  hint stays in metadata until the schema cleaner removes it, but the runtime flow couples new payloads to the new key,
+  so scanners/decorators never mix versions.
+* Schema updates that run through the cleaner (schema_json, upstream definitions) clear every `engine.hint.*` entry
+  before other metadata writes, ensuring stale hints don't survive even if the stored payloads drift away from the actual
+  schema.
+
+To keep hints alive even if someone else updates the catalog/column metadata concurrently, the persistence helpers
+now retry once with a fresh metadata snapshot when an optimistic update fails. That retry behaves exactly like a
+single re-read/Rebuild attempt—if the second update still loses the compare-and-set, the helper logs and moves on,
+so metadata writes stay best-effort while the decorators remain resilient to racing callers.
+
+## 6. Results for the planner
 
 The planner now receives two consistent views:
 
@@ -75,11 +124,11 @@ Both flows rely on:
 
 * Normalized `EngineContext` (kind+version),
 * `FloeHintResolver` for overlay/default fusion,
-* A shared `FloePayloads` registry that knows how to wrap protos into `EngineSpecific`.
+* A shared `FloePayloads.Descriptor` registry that exposes the payloadType string and decoder for every hint.
 
 Because the resolver caches parsed schema info and the decorator is lightweight, the entire workflow scales to large catalogs without redundant recomputation.
 
-## 6. Optional relation statistics
+## 7. Optional relation statistics
 
 Catalog bundles now attach optional relation statistics via `RelationInfo.stats`
 (`core/proto/src/main/proto/query/catalog_bundle.proto`). Each `RelationStats`

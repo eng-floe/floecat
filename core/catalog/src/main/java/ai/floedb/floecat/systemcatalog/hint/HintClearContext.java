@@ -14,27 +14,17 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.extensions.floedb.utils;
+package ai.floedb.floecat.systemcatalog.hint;
 
-public final class PayloadDescriptor<T> {
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import com.google.protobuf.FieldMask;
 
-  private final String type;
-  private final ThrowingFunction<byte[], T> decoder;
-
-  private PayloadDescriptor(String type, ThrowingFunction<byte[], T> decoder) {
-    this.type = type;
-    this.decoder = decoder;
-  }
-
-  public String type() {
-    return type;
-  }
-
-  public ThrowingFunction<byte[], T> decoder() {
-    return decoder;
-  }
-
-  public static <T> PayloadDescriptor<T> of(String type, ThrowingFunction<byte[], T> decoder) {
-    return new PayloadDescriptor<>(type, decoder);
-  }
-}
+public record HintClearContext(
+    ResourceId resourceId,
+    FieldMask mask,
+    Table beforeTable,
+    Table afterTable,
+    View beforeView,
+    View afterView) {}

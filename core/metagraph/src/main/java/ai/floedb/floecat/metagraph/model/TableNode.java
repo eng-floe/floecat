@@ -19,7 +19,7 @@ package ai.floedb.floecat.metagraph.model;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 
-public interface TableNode extends GraphNode {
+public interface TableNode extends RelationNode {
 
   ResourceId namespaceId();
 

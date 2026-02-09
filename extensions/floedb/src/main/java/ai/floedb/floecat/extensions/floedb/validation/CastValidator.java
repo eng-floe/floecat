@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.extensions.floedb.proto.FloeCastSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -70,11 +71,11 @@ final class CastValidator implements SectionValidator<SimpleValidationResult> {
       String ctx = ValidationSupport.context("cast", cast.name());
       List<ValidationSupport.DecodedRule<FloeCastSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, cast.engineSpecific(), FloePayloads.CAST, ctx, errors);
+              runContext, scope, cast.engineSpecific(), CAST, FloeCastSpecific.class, ctx, errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.CAST.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, CAST.type(), ctx, errors);
       for (ValidationSupport.DecodedRule<FloeCastSpecific> decodedRule : decoded) {
         rows.add(new CastRow(ctx, decodedRule));
       }

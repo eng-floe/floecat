@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.extensions.floedb.proto.FloeCollationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -65,11 +66,17 @@ final class CollationValidator implements SectionValidator<CollationValidationRe
       String ctx = ValidationSupport.context("collation", coll.name());
       List<ValidationSupport.DecodedRule<FloeCollationSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, coll.engineSpecific(), FloePayloads.COLLATION, ctx, errors);
+              runContext,
+              scope,
+              coll.engineSpecific(),
+              COLLATION,
+              FloeCollationSpecific.class,
+              ctx,
+              errors);
       if (decoded.isEmpty()) {
         continue;
       }
-      ValidationSupport.detectRuleOverlaps(decoded, FloePayloads.COLLATION.type(), ctx, errors);
+      ValidationSupport.detectRuleOverlaps(decoded, COLLATION.type(), ctx, errors);
 
       for (ValidationSupport.DecodedRule<FloeCollationSpecific> decodedRule : decoded) {
         String ruleCtx = ValidationSupport.contextWithInterval(ctx, decodedRule.interval());

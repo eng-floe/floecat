@@ -16,11 +16,12 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
@@ -72,7 +73,13 @@ final class RelationValidator implements SectionValidator<SimpleValidationResult
       String ctx = ValidationSupport.context(ResourceKind.RK_NAMESPACE.name(), ns.name());
       List<ValidationSupport.DecodedRule<FloeNamespaceSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, ns.engineSpecific(), FloePayloads.NAMESPACE, ctx, errors);
+              runContext,
+              scope,
+              ns.engineSpecific(),
+              NAMESPACE,
+              FloeNamespaceSpecific.class,
+              ctx,
+              errors);
       for (var dr : decoded) {
         int oid = dr.payload().getOid();
         if (oid <= 0) {
@@ -94,7 +101,13 @@ final class RelationValidator implements SectionValidator<SimpleValidationResult
       String ctx = ValidationSupport.context(domain, name);
       List<ValidationSupport.DecodedRule<FloeRelationSpecific>> decoded =
           ValidationSupport.decodeAllPayloads(
-              runContext, scope, entry.engineSpecific(), FloePayloads.RELATION, ctx, errors);
+              runContext,
+              scope,
+              entry.engineSpecific(),
+              RELATION,
+              FloeRelationSpecific.class,
+              ctx,
+              errors);
       for (var dr : decoded) {
         FloeRelationSpecific payload = dr.payload();
         if (!ValidationSupport.requirePositiveOid(

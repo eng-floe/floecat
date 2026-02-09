@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -23,7 +24,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -71,10 +71,9 @@ final class PgAttributeScannerTest {
         typeNode(
             NameRef.newBuilder().addPath("pg_catalog").setName("int4").build(),
             Map.of(
-                new EngineHintKey(
-                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.TYPE.type()),
+                new EngineHintKey(ENGINE.engineKind(), ENGINE.engineVersion(), TYPE.type()),
                 new EngineHint(
-                    FloePayloads.TYPE.type(),
+                    TYPE.type(),
                     FloeTypeSpecific.newBuilder()
                         .setOid(23)
                         .setTyplen(4)
@@ -86,10 +85,9 @@ final class PgAttributeScannerTest {
         typeNode(
             NameRef.newBuilder().addPath("pg_catalog").setName("numeric").build(),
             Map.of(
-                new EngineHintKey(
-                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.TYPE.type()),
+                new EngineHintKey(ENGINE.engineKind(), ENGINE.engineVersion(), TYPE.type()),
                 new EngineHint(
-                    FloePayloads.TYPE.type(),
+                    TYPE.type(),
                     FloeTypeSpecific.newBuilder()
                         .setOid(1700)
                         .setTyplen(-1)
@@ -105,10 +103,9 @@ final class PgAttributeScannerTest {
             List.of(),
             Map.of(),
             Map.of(
-                new EngineHintKey(
-                    ENGINE.engineKind(), ENGINE.engineVersion(), FloePayloads.RELATION.type()),
+                new EngineHintKey(ENGINE.engineKind(), ENGINE.engineVersion(), RELATION.type()),
                 new EngineHint(
-                    FloePayloads.RELATION.type(),
+                    RELATION.type(),
                     FloeRelationSpecific.newBuilder().setOid(100).build().toByteArray())));
 
     // --- schema
@@ -181,7 +178,8 @@ final class PgAttributeScannerTest {
 
     Object[] v = scanner.scan(ctx).findFirst().orElseThrow().values();
     int expectedRelOid =
-        ScannerUtils.oid(ctx, table.id(), FloePayloads.RELATION, FloeRelationSpecific::getOid);
+        ScannerUtils.oid(
+            ctx, table.id(), RELATION, FloeRelationSpecific.class, FloeRelationSpecific::getOid);
 
     assertThat(v[0]).isEqualTo(expectedRelOid); // attrelid falls back deterministically
     assertThat(v[1]).isEqualTo("x"); // attname
@@ -269,7 +267,7 @@ final class PgAttributeScannerTest {
   private static TableNode table(
       String name,
       List<SchemaColumn> columns,
-      Map<String, Map<EngineHintKey, EngineHint>> columnHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> hints) {
     ResourceId id =
         ResourceId.newBuilder()

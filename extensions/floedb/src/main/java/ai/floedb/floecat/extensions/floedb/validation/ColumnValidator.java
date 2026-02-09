@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
+
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
-import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -96,7 +97,8 @@ final class ColumnValidator implements SectionValidator<SimpleValidationResult> 
                   runContext,
                   scope,
                   column.engineSpecific(),
-                  FloePayloads.COLUMN,
+                  COLUMN,
+                  FloeColumnSpecific.class,
                   columnCtx,
                   errors));
         }
