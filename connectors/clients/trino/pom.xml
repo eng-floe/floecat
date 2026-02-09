@@ -35,7 +35,7 @@
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <trino.version>476</trino.version>
-    <trino.grpc.version>1.78.0</trino.grpc.version>
+    <trino.grpc.version>1.79.0</trino.grpc.version>
     <protobuf.version>4.32.1</protobuf.version>
     <proto.source.dir>${project.basedir}/../../../core/proto/src/main/proto</proto.source.dir>
     <test.jvm.args.extra>-Djdk.attach.allowAttachSelf=true</test.jvm.args.extra>
