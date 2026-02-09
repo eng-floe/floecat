@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -103,6 +104,7 @@ class CredentialResolverSupportTest {
             .setRfc8693TokenExchange(rfc)
             .putProperties("custom", "value")
             .putHeaders("X-Test", "yes")
+            .putHeaders("Authorization", "Bearer override")
             .build();
     var base =
         new ConnectorConfig(
@@ -276,6 +278,8 @@ class CredentialResolverSupportTest {
 
     assertEquals("client-id", applied.auth().props().get("client_id"));
     assertEquals("client-secret", applied.auth().props().get("client_secret"));
+    assertNull(applied.auth().props().get("oauth.client_id"));
+    assertNull(applied.auth().props().get("oauth.client_secret"));
   }
 
   @Test

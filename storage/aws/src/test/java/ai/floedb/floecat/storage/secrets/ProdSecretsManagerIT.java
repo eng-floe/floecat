@@ -30,7 +30,9 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.DescribeSecretRequest;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.Tag;
 import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerIT {
@@ -56,6 +58,7 @@ class ProdSecretsManagerIT {
               .secretBinary()
               .asByteArray();
       assertArrayEquals(payload, stored);
+      assertTrue(hasTag(client, secretName, "AccountId", accountId));
 
       byte[] updated = "beta".getBytes();
       manager.update(accountId, secretType, secretId, updated);
@@ -126,5 +129,18 @@ class ProdSecretsManagerIT {
       return second;
     }
     return null;
+  }
+
+  private static boolean hasTag(
+      SecretsManagerClient client, String secretName, String key, String value) {
+    for (Tag tag :
+        client
+            .describeSecret(DescribeSecretRequest.builder().secretId(secretName).build())
+            .tags()) {
+      if (key.equals(tag.key()) && value.equals(tag.value())) {
+        return true;
+      }
+    }
+    return false;
   }
 }
