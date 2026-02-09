@@ -77,4 +77,5 @@ CAS blob GC → blobStore.list + blobStore.deletePrefix
 ## Cross-References
 - In-memory implementation: [`docs/storage-memory.md`](storage-memory.md)
 - AWS implementation: [`docs/storage-aws.md`](storage-aws.md)
+- Secrets Manager integration: [`docs/secrets-manager.md`](secrets-manager.md)
 - Repository usage: [`docs/service.md`](service.md)

@@ -3,7 +3,7 @@
 ## Overview
 `storage/aws/` contains production-grade implementations of the storage SPI backed by Amazon
 DynamoDB (pointer store) and Amazon S3 (blob store). It also includes bootstrapping helpers to ensure
-DynamoDB tables exist before the service starts.
+DynamoDB tables exist before the service starts, plus a Secrets Manager-backed secrets store.
 
 ## Architecture & Responsibilities
 - **`AwsClients`** – Centralises AWS SDK v2 clients (DynamoDB, S3) configured via Quarkus properties
@@ -16,6 +16,7 @@ DynamoDB tables exist before the service starts.
 - **`S3BlobStore`** – Stores protobuf blobs inside an S3 bucket. `put` writes objects with
   server-side encryption (if configured) and stores metadata (ETag, content-type). `head` uses
   `HeadObject` to fetch metadata and returns `BlobHeader`.
+- **`ProdSecretsManager`** – Stores secret payloads in AWS Secrets Manager with ABAC-friendly tags.
 
 ## Public API / Surface Area
 Implements `PointerStore` and `BlobStore` exactly as defined in the SPI. Additional behaviours:
@@ -82,3 +83,4 @@ DynamoDB table, and TTL attribute using the bundled `awslocal` CLI.
 ## Cross-References
 - SPI contract: [`docs/storage-spi.md`](storage-spi.md)
 - Repository usage: [`docs/service.md`](service.md)
+- Secrets Manager integration: [`docs/secrets-manager.md`](secrets-manager.md)

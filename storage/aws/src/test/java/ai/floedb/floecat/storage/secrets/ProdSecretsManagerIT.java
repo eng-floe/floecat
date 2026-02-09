@@ -31,13 +31,15 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerIT {
 
   @Test
   void put_get_update_delete_round_trip() {
     SecretsManagerClient client = buildClient();
-    ProdSecretsManager manager = new ProdSecretsManager(client);
+    StsClient stsClient = buildStsClient();
+    ProdSecretsManager manager = new ProdSecretsManager(client, stsClient);
 
     String accountId = "acct-it";
     String secretType = "connectors";
@@ -63,6 +65,7 @@ class ProdSecretsManagerIT {
     } finally {
       manager.delete(accountId, secretType, secretId);
       client.close();
+      stsClient.close();
     }
   }
 
@@ -77,6 +80,23 @@ class ProdSecretsManagerIT {
     }
     AwsCredentialsProvider provider = StaticCredentialsProvider.create(resolveCredentials());
     return SecretsManagerClient.builder()
+        .endpointOverride(URI.create(endpoint))
+        .region(Region.of(region))
+        .credentialsProvider(provider)
+        .build();
+  }
+
+  private static StsClient buildStsClient() {
+    String endpoint = firstNonBlank(env("LOCALSTACK_ENDPOINT"), env("AWS_ENDPOINT_URL"));
+    if (endpoint == null) {
+      endpoint = "http://localhost:4566";
+    }
+    String region = firstNonBlank(env("AWS_REGION"), env("AWS_DEFAULT_REGION"));
+    if (region == null) {
+      region = "us-east-1";
+    }
+    AwsCredentialsProvider provider = StaticCredentialsProvider.create(resolveCredentials());
+    return StsClient.builder()
         .endpointOverride(URI.create(endpoint))
         .region(Region.of(region))
         .credentialsProvider(provider)
