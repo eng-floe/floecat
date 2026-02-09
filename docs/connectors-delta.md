@@ -168,7 +168,7 @@ Extensibility points:
       --cred cache_path=~/.databricks/token-cache.json
     ```
 
-  - **Bearer token** – Using the `connector` CLI with a resolved token:
+  - **Bearer token (PAT)** – Using the `connector` CLI with a resolved token or Databricks personal access token:
 
   ```bash
   connector create "Unity Delta Token" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \

@@ -51,7 +51,8 @@ Flags:
   overriding `quarkus.otel.traces.exporter`.
 
 Configuration flags are documented per module (for example storage backend selection in
-[`docs/storage-spi.md`](storage-spi.md), GC cadence in [`docs/service.md`](service.md)).
+[`docs/storage-spi.md`](storage-spi.md), GC cadence in [`docs/service.md`](service.md),
+Secrets Manager in [`docs/secrets-manager.md`](secrets-manager.md)).
 
 ### Metrics
 Micrometer + Prometheus export is enabled by default. The scrape endpoint is:

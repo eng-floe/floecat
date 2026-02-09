@@ -163,6 +163,7 @@ Notable `application.properties` keys:
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
 | `floecat.auth.mode` | Auth enforcement mode (`oidc`, `dev`). |
 | `floecat.auth.platform-admin.role` | IdP role name granted permission to manage accounts (default `platform-admin`). |
+| `floecat.secrets.aws.role-arn` | Optional role to assume per account when using AWS Secrets Manager. |
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
@@ -170,6 +171,9 @@ Extension points:
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
   additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`.
+
+Secrets Manager integration (tags + optional per-account assume-role) is documented in
+[`docs/secrets-manager.md`](secrets-manager.md).
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, allocates a

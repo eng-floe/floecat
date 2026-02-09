@@ -86,6 +86,9 @@ engine release.
   when retrying.
 - **Query Lifecycle** – `QueryDescriptor.query_status` moves through `SUBMITTED → COMPLETED/FAILED`
   depending on connector planning success. Lease expirations are surfaced via `expires_at`.
+- **AuthConfig** – Connector auth now carries structured `credentials` (for example `bearer`, `cli`,
+  `client`, `token-exchange-*`) plus free-form properties; the service resolves secrets and exchanges
+  before connectors consume them.
 
 ## Data Flow & Lifecycle
 1. Clients authenticate using the configured OIDC session/authorization headers (see

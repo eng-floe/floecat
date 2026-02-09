@@ -142,7 +142,9 @@ Limits/Follow-ups:
 
 ## Operational Notes & Current Limitations
 
-- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access delegation; per-request signing is not yet implemented.
+- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
+  delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
+  and `aws.profile_path` when clients expect AWS SDK profile-based access.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
 - **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.

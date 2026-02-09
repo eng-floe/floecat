@@ -78,7 +78,7 @@ connector trigger <display_name|id> [--full]
 connector job <jobId>
 
 Credential types (`--cred-type`):
-- `bearer` – required: `token`.
+- `bearer` – required: `token` (use this for personal access tokens).
 - `client` – required: `endpoint`, `client_id`, `client_secret`.
 - `cli` – optional: `provider` (databricks, aws; default databricks). Provider-specific keys are
   supplied via `--cred` and stored in `AuthCredentials.properties` (for example `cache_path`,
@@ -102,8 +102,8 @@ Any type can include extra `--cred k=v` entries to populate `AuthCredentials.pro
 Auth properties (generic options):
 - `--auth aws.profile=<name>` – use an AWS CLI/profile for SigV4 and S3 auth (for example `default`, `dev`).
 - `--auth aws.profile_path=<path>` – optional shared credentials/config file path.
-- `--auth oauth.mode=cli` – use the Databricks CLI cache for OAuth2 token auth.
-- `--auth cache_path=<path>` – optional Databricks CLI cache path (default `~/.databricks/token-cache.json`).
+- `--auth oauth.mode=cli` – use the CLI cache for OAuth2 token auth.
+- `--auth cache_path=<path>` – optional CLI cache path.
 
 CLI cache examples:
 - Databricks:
@@ -112,10 +112,10 @@ CLI cache examples:
   `--auth-scheme aws-sigv4 --cred-type cli --cred provider=aws --cred profile_name=dev --cred cache_path=~/.aws/config`
 
 Auth credential types explained (end-user view):
-- `bearer`: You already have an access token; Floecat uses it as-is.
+- `bearer`: You already have an access token (including personal access tokens); Floecat uses it as-is.
 - `client`: Floecat exchanges a client ID/secret for an access token at the given endpoint.
 - `cli`: Floecat uses local CLI caches. For Databricks, it reads/refreshes the token cache; for AWS,
-  it selects a profile from shared config/credentials files.
+  it selects a profile from shared config files.
 - `token-exchange`: Floecat exchanges a subject token for an access token using RFC 8693.
 - `token-exchange-entra`: Floecat performs an Azure Entra OBO exchange to get an access token.
 - `token-exchange-gcp`: Floecat performs GCP domain-wide delegation to get an access token.
