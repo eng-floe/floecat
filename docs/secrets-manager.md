@@ -62,7 +62,55 @@ The IAM identity Floecat runs under must be allowed to call Secrets Manager APIs
 }
 ```
 
-If you can scope the `Resource` to your Secrets Manager ARNs, do so.
+## Quick start (AWS CLI validation)
+
+Primary setup is granting the Floecat workload permissions to call Secrets Manager (see the IAM
+policy above). The commands here are a quick validation of access and the expected key format.
+
+Set the identifiers and create a sample payload:
+
+```bash
+export ACCOUNT_ID=acct-123
+export SECRET_TYPE=connectors
+export SECRET_ID=conn-001
+export SECRET_NAME="accounts/${ACCOUNT_ID}/${SECRET_TYPE}/${SECRET_ID}"
+
+printf 'example-secret-payload' > payload.bin
+```
+
+Create a secret (binary payload):
+
+```bash
+aws secretsmanager create-secret \
+  --name "$SECRET_NAME" \
+  --secret-binary fileb://payload.bin \
+  --tags Key=AccountId,Value="$ACCOUNT_ID"
+```
+
+Update the secret:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id "$SECRET_NAME" \
+  --secret-binary fileb://payload.bin
+```
+
+Read the secret:
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id "$SECRET_NAME" \
+  --query 'SecretBinary' \
+  --output text | base64 --decode
+```
+
+Delete the secret:
+
+```bash
+aws secretsmanager delete-secret \
+  --secret-id "$SECRET_NAME" \
+  --recovery-window-in-days 7
+```
 
 ## Optional hardening: per-account ABAC with role assumption
 
