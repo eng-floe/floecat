@@ -29,7 +29,7 @@
   <properties>
     <delta.kernel.api.version>4.0.0</delta.kernel.api.version>
     <hadoop.version>3.4.2</hadoop.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
+    <aws.sdk.version>2.41.24</aws.sdk.version>
     <parquet.version>1.16.0</parquet.version>
   </properties>
 

@@ -29,7 +29,7 @@
   <properties>
     <iceberg.version>1.10.0</iceberg.version>
     <hadoop.version>3.4.2</hadoop.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
+    <aws.sdk.version>2.41.24</aws.sdk.version>
   </properties>
 
   <dependencyManagement>
