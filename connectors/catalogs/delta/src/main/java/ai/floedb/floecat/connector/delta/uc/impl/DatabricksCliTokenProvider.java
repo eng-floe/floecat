@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 final class DatabricksCliTokenProvider implements AccessTokenProvider {
   private static final ObjectMapper M = new ObjectMapper();
@@ -132,7 +133,7 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
     return new CacheTok(
         resp.accessToken(),
         resp.refreshToken(),
-        Instant.now().plusSeconds(Math.max(1, resp.expiresInSeconds())));
+        Instant.now().plusSeconds(minExpirySeconds(resp.expiresInSeconds())));
   }
 
   private void tryPersist(CacheTok t) {
@@ -174,5 +175,9 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
     }
     long sec = tokNode.path("expires_in").asLong(0);
     return sec > 0 ? Instant.now().plusSeconds(sec) : null;
+  }
+
+  static long minExpirySeconds(long expiresInSeconds) {
+    return Math.max(TimeUnit.MINUTES.toSeconds(5), expiresInSeconds);
   }
 }
