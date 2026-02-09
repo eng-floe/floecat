@@ -14,6 +14,10 @@ Each secret is tagged with:
 
 These tags support ABAC-style policies.
 
+Connector AuthCredentials are written to Secrets Manager and removed from connector records before
+they are persisted to the pointer store. Responses from the Connectors service mask any sensitive
+auth fields so callers never see raw tokens, keys, or client secrets.
+
 ## Configuration
 
 Optional role assumption:

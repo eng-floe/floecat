@@ -92,6 +92,8 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
 - **AuthCredentials resolution** – Connectors consume already-resolved auth props (for example a
   bearer token). The service handles secrets manager lookups and token exchange flows, so connector
   implementations should not perform credential exchanges themselves.
+- **Auth redaction** – The service never stores `AuthCredentials` in connector records and masks
+  sensitive auth fields in responses so callers cannot retrieve raw secrets.
 - **NDV estimation** – `NdvProvider` implementations chain together (sampling → filtering → backing
   store) so connectors can merge Parquet-level NDV sketches with streaming approximations. The SPI
   exposes `NdvApprox` structures mirroring `catalog/stats.proto` for compatibility.
