@@ -251,7 +251,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                   if (txn.getState() == TransactionState.TS_ABORTED) {
                     return AbortTransactionResponse.newBuilder().setTransaction(txn).build();
                   }
-                  if (txn.getState() == TransactionState.TS_COMMITTED) {
+                  if (txn.getState() == TransactionState.TS_COMMITTED
+                      || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
                     throw new IllegalArgumentException("transaction already committed");
                   }
                   Transaction aborted =
@@ -479,6 +480,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (txn.getState() == TransactionState.TS_COMMITTED) {
       return txn;
     }
+    if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+      return txn;
+    }
     if (txn.getState() != TransactionState.TS_PREPARED) {
       throw new IllegalArgumentException("transaction not prepared: " + txn.getState().name());
     }
@@ -503,10 +507,25 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         txn.toBuilder().setState(TransactionState.TS_COMMITTED).setUpdatedAt(now).build();
     updateTransaction(committed);
 
+    boolean conflict = false;
     for (var intent : intents) {
-      applierSupport.applyIntentBestEffort(intent, intentRepo);
+      var outcome = applierSupport.applyIntentBestEffort(intent, intentRepo);
+      if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
+        recordIntentConflict(intent, outcome, now);
+        conflict = true;
+        break;
+      }
     }
 
+    if (conflict) {
+      Transaction failed =
+          committed.toBuilder()
+              .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
+              .setUpdatedAt(now)
+              .build();
+      updateTransaction(failed);
+      return failed;
+    }
     return committed;
   }
 
@@ -529,7 +548,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       return txn;
     }
     if (txn.getState() == TransactionState.TS_ABORTED
-        || txn.getState() == TransactionState.TS_COMMITTED) {
+        || txn.getState() == TransactionState.TS_COMMITTED
+        || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return txn;
     }
     Transaction aborted =
@@ -603,5 +623,29 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private com.google.protobuf.Duration defaultTtl() {
     return com.google.protobuf.Duration.newBuilder().setSeconds(600).build();
+  }
+
+  private void recordIntentConflict(
+      TransactionIntent intent,
+      TransactionIntentApplierSupport.ApplyOutcome outcome,
+      Timestamp now) {
+    TransactionIntent updated =
+        intent.toBuilder()
+            .setApplyErrorCode(outcome.errorCode())
+            .setApplyErrorMessage(outcome.errorMessage())
+            .setApplyErrorAt(now)
+            .build();
+    if (outcome.expectedVersion() != null) {
+      updated = updated.toBuilder().setApplyErrorExpectedVersion(outcome.expectedVersion()).build();
+    }
+    if (outcome.actualVersion() != null) {
+      updated = updated.toBuilder().setApplyErrorActualVersion(outcome.actualVersion()).build();
+    }
+    if (outcome.conflictOwner() != null) {
+      updated = updated.toBuilder().setApplyErrorConflictOwner(outcome.conflictOwner()).build();
+    }
+    if (!intentRepo.update(updated)) {
+      LOG.warnf("failed to persist intent conflict for %s", intent.getTargetPointerKey());
+    }
   }
 }

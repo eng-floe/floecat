@@ -54,6 +54,16 @@ public class TransactionIntentRepository {
     repo.create(intent);
   }
 
+  public boolean update(TransactionIntent intent) {
+    String key =
+        Keys.transactionIntentPointerByTarget(intent.getAccountId(), intent.getTargetPointerKey());
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      return false;
+    }
+    return repo.update(intent, ptr.getVersion());
+  }
+
   public Optional<TransactionIntent> getByTarget(String accountId, String targetPointerKey) {
     return repo.get(Keys.transactionIntentPointerByTarget(accountId, targetPointerKey));
   }

@@ -28,6 +28,7 @@ enum TransactionState {
   TS_PREPARED = 2;
   TS_COMMITTED = 3;
   TS_ABORTED = 4;
+  TS_APPLY_FAILED_CONFLICT = 5;
 }
 
 message Transaction {
@@ -108,6 +109,12 @@ message TransactionIntent {
   string blob_uri = 4;
   optional int64 expected_version = 5;
   google.protobuf.Timestamp created_at = 6;
+  optional string apply_error_code = 20;
+  optional string apply_error_message = 21;
+  optional int64 apply_error_expected_version = 22;
+  optional int64 apply_error_actual_version = 23;
+  optional string apply_error_conflict_owner = 24;
+  optional google.protobuf.Timestamp apply_error_at = 25;
 }
 
 service Transactions {

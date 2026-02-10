@@ -9,7 +9,7 @@ Transactions provide an optimistic, lock-free, multi-table commit mechanism:
 
 - **Begin** creates a transaction in `TS_OPEN`.
 - **Prepare** validates preconditions, persists intent payloads, and moves to `TS_PREPARED`.
-- **Commit** validates intent versions, marks `TS_COMMITTED`, and applies intents best-effort.
+- **Commit** validates intent versions, marks `TS_COMMITTED`, and applies intents asynchronously.
 - **Abort** marks `TS_ABORTED` and cleans up intents.
 
 All operations are **idempotent** when an idempotency key is provided.
@@ -18,8 +18,10 @@ All operations are **idempotent** when an idempotency key is provided.
 
 - `TS_OPEN`: new transaction, no intents persisted yet.
 - `TS_PREPARED`: intents persisted and validated.
-- `TS_COMMITTED`: transaction committed; intents are applied to pointers.
+- `TS_COMMITTED`: transaction commit decision is durable; intents may still be pending apply.
 - `TS_ABORTED`: transaction was aborted (explicitly or due to conflicts).
+- `TS_APPLY_FAILED_CONFLICT`: commit decision is durable, but apply failed due to irreconcilable
+  conflicts (intents retain diagnostics).
 
 ## Data Model
 
@@ -57,7 +59,7 @@ All operations are **idempotent** when an idempotency key is provided.
 1. Load the transaction (must be `TS_PREPARED`).
 2. Re-check intent expected versions against current pointer versions.
 3. Transition the transaction to `TS_COMMITTED`.
-4. Apply intents best-effort:
+4. Apply intents best-effort (may be incomplete):
    - CAS the target pointer to the intent blob URI.
    - If table-by-id pointer changed, update table-by-name pointer.
 5. Return the committed transaction (idempotent by key).
@@ -81,7 +83,10 @@ Begin, prepare, and commit accept idempotency keys. If a request is retried:
   are persisted only if all changes validate; payload blobs may already be written and are not
   referenced by any intent.
 - **Version conflict** during commit aborts the transaction and returns a conflict error.
+- **Apply state** is derived from intents: a transaction is fully applied once it has no intents.
 - **Best-effort apply** means post-commit pointer updates are retried by background workers if needed.
+- **Irreconcilable apply conflicts** transition the transaction to `TS_APPLY_FAILED_CONFLICT` and
+  persist per-intent diagnostics for inspection.
 
 ## Relevant Code
 

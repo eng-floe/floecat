@@ -24,6 +24,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -73,10 +74,15 @@ public class TransactionIntentApplier {
           skipped++;
           continue;
         }
-        if (applierSupport.applyIntentBestEffort(intent, intentRepo)) {
-          applied++;
-        } else {
-          skipped++;
+        var outcome = applierSupport.applyIntentBestEffort(intent, intentRepo);
+        switch (outcome.status()) {
+          case APPLIED -> applied++;
+          case RETRYABLE -> skipped++;
+          case CONFLICT -> {
+            markTransactionFailed(txn, outcome);
+            persistIntentConflict(intent, outcome);
+            skipped++;
+          }
         }
       }
       token = next.toString();
@@ -97,6 +103,46 @@ public class TransactionIntentApplier {
     } catch (Exception e) {
       LOG.debugf("intent blob parse failed: %s", blobUri, e);
       return null;
+    }
+  }
+
+  private void markTransactionFailed(
+      Transaction txn, TransactionIntentApplierSupport.ApplyOutcome outcome) {
+    if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+      return;
+    }
+    var now = Timestamps.fromMillis(System.currentTimeMillis());
+    Transaction failed =
+        txn.toBuilder()
+            .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
+            .setUpdatedAt(now)
+            .build();
+    long version = txRepo.metaFor(txn.getAccountId(), txn.getTxId(), now).getPointerVersion();
+    if (!txRepo.update(failed, version)) {
+      LOG.warnf("failed to update transaction state for %s", txn.getTxId());
+    }
+  }
+
+  private void persistIntentConflict(
+      TransactionIntent intent, TransactionIntentApplierSupport.ApplyOutcome outcome) {
+    var now = Timestamps.fromMillis(System.currentTimeMillis());
+    TransactionIntent updated =
+        intent.toBuilder()
+            .setApplyErrorCode(outcome.errorCode())
+            .setApplyErrorMessage(outcome.errorMessage())
+            .setApplyErrorAt(now)
+            .build();
+    if (outcome.expectedVersion() != null) {
+      updated = updated.toBuilder().setApplyErrorExpectedVersion(outcome.expectedVersion()).build();
+    }
+    if (outcome.actualVersion() != null) {
+      updated = updated.toBuilder().setApplyErrorActualVersion(outcome.actualVersion()).build();
+    }
+    if (outcome.conflictOwner() != null) {
+      updated = updated.toBuilder().setApplyErrorConflictOwner(outcome.conflictOwner()).build();
+    }
+    if (!intentRepo.update(updated)) {
+      LOG.warnf("failed to persist intent conflict for %s", intent.getTargetPointerKey());
     }
   }
 }
