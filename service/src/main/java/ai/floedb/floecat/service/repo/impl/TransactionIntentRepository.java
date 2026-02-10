@@ -21,6 +21,7 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.PointerOverlay;
+import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -57,18 +58,47 @@ public class TransactionIntentRepository {
     return repo.get(Keys.transactionIntentPointerByTarget(accountId, targetPointerKey));
   }
 
+  public Optional<ai.floedb.floecat.common.rpc.Pointer> getTargetPointer(
+      String accountId, String targetPointerKey) {
+    String key = Keys.transactionIntentPointerByTarget(accountId, targetPointerKey);
+    return pointerStore.get(key);
+  }
+
   public List<TransactionIntent> listByTx(String accountId, String txId) {
     String prefix = Keys.transactionIntentPointerByTxPrefix(accountId, txId);
     return repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
   }
 
-  public void deleteByTarget(String accountId, String targetPointerKey) {
+  public boolean deleteByTargetIfBlobUriMatches(
+      String accountId, String targetPointerKey, String expectedBlobUri) {
     String key = Keys.transactionIntentPointerByTarget(accountId, targetPointerKey);
-    pointerStore.delete(key);
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null || !expectedBlobUri.equals(ptr.getBlobUri())) {
+      return false;
+    }
+    return pointerStore.compareAndDelete(key, ptr.getVersion());
   }
 
-  public void deleteByTx(String accountId, String txId, String targetPointerKey) {
+  public boolean deleteByTxIfBlobUriMatches(
+      String accountId, String txId, String targetPointerKey, String expectedBlobUri) {
     String key = Keys.transactionIntentPointerByTx(accountId, txId, targetPointerKey);
-    pointerStore.delete(key);
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null || !expectedBlobUri.equals(ptr.getBlobUri())) {
+      return false;
+    }
+    return pointerStore.compareAndDelete(key, ptr.getVersion());
+  }
+
+  public void deleteBothIndices(TransactionIntent intent) {
+    String expectedBlobUri = blobUriForIntent(intent);
+    deleteByTxIfBlobUriMatches(
+        intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey(), expectedBlobUri);
+    deleteByTargetIfBlobUriMatches(
+        intent.getAccountId(), intent.getTargetPointerKey(), expectedBlobUri);
+  }
+
+  public String blobUriForIntent(TransactionIntent intent) {
+    var sha = ResourceHash.sha256Hex(intent.toByteArray());
+    return Keys.transactionIntentBlobUri(intent.getAccountId(), intent.getTxId(), sha);
   }
 }

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.transaction.impl;
 
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -71,6 +70,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject PrincipalProvider principalProvider;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject TransactionIntentApplierSupport applierSupport;
 
   @Override
   public Uni<BeginTransactionResponse> beginTransaction(BeginTransactionRequest request) {
@@ -248,6 +248,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                   authz.require(principalContext, "table.write");
                   String accountId = principalContext.getAccountId();
                   Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
+                  if (txn.getState() == TransactionState.TS_ABORTED) {
+                    return AbortTransactionResponse.newBuilder().setTransaction(txn).build();
+                  }
+                  if (txn.getState() == TransactionState.TS_COMMITTED) {
+                    throw new IllegalArgumentException("transaction already committed");
+                  }
                   Transaction aborted =
                       txn.toBuilder()
                           .setState(TransactionState.TS_ABORTED)
@@ -303,7 +309,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return ResourceId.newBuilder()
         .setAccountId(accountId)
         .setId(txId)
-        .setKind(ResourceKind.RK_UNSPECIFIED)
+        .setKind(ResourceKind.RK_TRANSACTION)
         .build();
   }
 
@@ -332,6 +338,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private Transaction prepareTransaction(
       String accountId, PrepareTransactionRequest request, Timestamp now) {
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
+    if (isExpired(txn, now)) {
+      abortExpired(txn, now);
+      throw new IllegalArgumentException("transaction expired");
+    }
     if (txn.getState() == TransactionState.TS_PREPARED) {
       return txn;
     }
@@ -340,21 +350,41 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
 
     List<TransactionIntent> intents = new ArrayList<>();
+    java.util.Set<String> seenTargets = new java.util.HashSet<>();
+    List<String> createdBlobs = new ArrayList<>();
 
-    for (var change : request.getChangesList()) {
-      ResourceId tableId = resolveTableId(accountId, change);
-      String pointerKey = Keys.tablePointerById(accountId, tableId.getId());
-      long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
-      Precondition pre = change.getPrecondition();
-      if (pre != null && pre.getExpectedVersion() != 0L) {
-        if (currentVersion != pre.getExpectedVersion()) {
-          throw new IllegalArgumentException("precondition failed for " + pointerKey);
+    try {
+      for (var change : request.getChangesList()) {
+        ResourceId tableId = resolveTableId(accountId, change);
+        String pointerKey = Keys.tablePointerById(accountId, tableId.getId());
+        if (!seenTargets.add(pointerKey)) {
+          throw new IllegalArgumentException("duplicate change for " + pointerKey);
         }
-      }
+        var existing = intentRepo.getByTarget(accountId, pointerKey).orElse(null);
+        if (existing != null && !txn.getTxId().equals(existing.getTxId())) {
+          throw new IllegalArgumentException("intent already exists for " + pointerKey);
+        }
+        long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+        Precondition pre = change.getPrecondition();
+        Long expectedVersion = currentVersion;
+        if (pre != null && pre.hasExpectedVersion()) {
+          if (currentVersion != pre.getExpectedVersion()) {
+            throw new IllegalArgumentException("precondition failed for " + pointerKey);
+          }
+        }
 
-      String blobUri = change.getIntendedBlobUri();
-      if (blobUri == null || blobUri.isBlank()) {
+        String blobUri;
         switch (change.getChangePayloadCase()) {
+          case INTENDED_BLOB_URI -> {
+            blobUri = change.getIntendedBlobUri().trim();
+            if (blobUri.isEmpty()) {
+              throw new IllegalArgumentException("intended_blob_uri is empty for " + pointerKey);
+            }
+            if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
+              throw new IllegalArgumentException(
+                  "intended_blob_uri outside account scope for " + pointerKey);
+            }
+          }
           case TABLE -> {
             var tablePayload = change.getTable();
             if (!tablePayload.hasResourceId()) {
@@ -368,45 +398,84 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             }
             String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
             blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
+            boolean existed = blobStore.head(blobUri).isPresent();
             blobStore.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
+            if (!existed) {
+              createdBlobs.add(blobUri);
+            }
           }
           case PAYLOAD -> {
             String sha = ResourceHash.sha256Hex(change.getPayload().toByteArray());
             blobUri = Keys.transactionObjectBlobUri(accountId, txn.getTxId(), sha);
+            boolean existed = blobStore.head(blobUri).isPresent();
             blobStore.put(blobUri, change.getPayload().toByteArray(), "application/octet-stream");
+            if (!existed) {
+              createdBlobs.add(blobUri);
+            }
           }
           case CHANGEPAYLOAD_NOT_SET -> {
             throw new IllegalArgumentException(
                 "missing payload or intended_blob_uri for " + pointerKey);
           }
+          default ->
+              throw new IllegalArgumentException(
+                  "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
         }
-      }
 
-      TransactionIntent intent =
-          TransactionIntent.newBuilder()
-              .setTxId(txn.getTxId())
-              .setAccountId(accountId)
-              .setTargetPointerKey(pointerKey)
-              .setBlobUri(blobUri)
-              .setExpectedVersion(currentVersion)
-              .setCreatedAt(now)
-              .build();
-      intents.add(intent);
+        var intentBuilder =
+            TransactionIntent.newBuilder()
+                .setTxId(txn.getTxId())
+                .setAccountId(accountId)
+                .setTargetPointerKey(pointerKey)
+                .setBlobUri(blobUri)
+                .setCreatedAt(now);
+        if (expectedVersion != null) {
+          intentBuilder.setExpectedVersion(expectedVersion);
+        }
+        TransactionIntent intent = intentBuilder.build();
+        intents.add(intent);
+      }
+    } catch (RuntimeException e) {
+      deletePreparedBlobs(createdBlobs);
+      throw e;
     }
 
-    for (var intent : intents) {
-      intentRepo.create(intent);
+    List<TransactionIntent> created = new ArrayList<>();
+    try {
+      for (var intent : intents) {
+        intentRepo.create(intent);
+        created.add(intent);
+      }
+    } catch (RuntimeException e) {
+      for (var intent : created) {
+        intentRepo.deleteBothIndices(intent);
+      }
+      deletePreparedBlobs(createdBlobs);
+      throw e;
     }
 
     Transaction updated =
         txn.toBuilder().setState(TransactionState.TS_PREPARED).setUpdatedAt(now).build();
-    updateTransaction(updated);
+    try {
+      updateTransaction(updated);
+    } catch (RuntimeException e) {
+      for (var intent : created) {
+        intentRepo.deleteBothIndices(intent);
+      }
+      deletePreparedBlobs(createdBlobs);
+      throw e;
+    }
     return updated;
   }
 
   private Transaction commitTransaction(
       String accountId, CommitTransactionRequest request, Timestamp now) {
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
+    if (isExpired(txn, now)) {
+      abortExpired(txn, now);
+      cleanupIntents(accountId, txn.getTxId());
+      throw new IllegalArgumentException("transaction expired");
+    }
     if (txn.getState() == TransactionState.TS_COMMITTED) {
       return txn;
     }
@@ -421,10 +490,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     for (var intent : intents) {
       String pointerKey = intent.getTargetPointerKey();
       long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
-      if (intent.getExpectedVersion() != 0L && currentVersion != intent.getExpectedVersion()) {
+      if (intent.hasExpectedVersion() && currentVersion != intent.getExpectedVersion()) {
         Transaction aborted =
             txn.toBuilder().setState(TransactionState.TS_ABORTED).setUpdatedAt(now).build();
         updateTransaction(aborted);
+        cleanupIntents(accountId, txn.getTxId());
         throw new IllegalArgumentException("transaction conflict for " + pointerKey);
       }
     }
@@ -434,116 +504,53 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     updateTransaction(committed);
 
     for (var intent : intents) {
-      applyIntentBestEffort(intent);
+      applierSupport.applyIntentBestEffort(intent, intentRepo);
     }
 
     return committed;
   }
 
-  private void applyIntentBestEffort(TransactionIntent intent) {
-    String pointerKey = intent.getTargetPointerKey();
-    var current = pointerStore.get(pointerKey).orElse(null);
-    long expected = current == null ? 0L : current.getVersion();
-    if (intent.getExpectedVersion() != 0L && expected != intent.getExpectedVersion()) {
-      LOG.warnf(
-          "transaction intent apply skipped (version mismatch) key=%s expected=%d actual=%d",
-          pointerKey, intent.getExpectedVersion(), expected);
-      return;
-    }
-    long nextVersion = expected + 1;
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(pointerKey)
-            .setBlobUri(intent.getBlobUri())
-            .setVersion(nextVersion)
-            .build();
-    if (!pointerStore.compareAndSet(pointerKey, expected, next)) {
-      LOG.warnf("transaction intent apply CAS failed key=%s", pointerKey);
-      return;
-    }
-
-    if (isTableByIdPointer(pointerKey)) {
-      Table nextTable = readTable(intent.getBlobUri());
-      if (nextTable != null) {
-        updateTableNamePointers(current, nextTable, intent.getBlobUri());
-      }
-    }
-    intentRepo.deleteByTarget(intent.getAccountId(), pointerKey);
-  }
-
   private void cleanupIntents(String accountId, String txId) {
     List<TransactionIntent> intents = intentRepo.listByTx(accountId, txId);
     for (var intent : intents) {
-      intentRepo.deleteByTarget(accountId, intent.getTargetPointerKey());
+      intentRepo.deleteBothIndices(intent);
     }
   }
 
-  private boolean isTableByIdPointer(String pointerKey) {
-    return pointerKey != null && pointerKey.contains("/tables/by-id/");
-  }
-
-  private Table readTable(String blobUri) {
-    try {
-      byte[] bytes = blobStore.get(blobUri);
-      if (bytes == null) {
-        return null;
-      }
-      return Table.parseFrom(bytes);
-    } catch (Exception e) {
-      return null;
+  private boolean isExpired(Transaction txn, Timestamp now) {
+    if (txn == null || !txn.hasExpiresAt()) {
+      return false;
     }
+    return Timestamps.compare(now, txn.getExpiresAt()) > 0;
   }
 
-  private void updateTableNamePointers(Pointer currentPtr, Table nextTable, String nextBlobUri) {
-    String accountId = nextTable.getResourceId().getAccountId();
-    String newKey =
-        Keys.tablePointerByName(
-            accountId,
-            nextTable.getCatalogId().getId(),
-            nextTable.getNamespaceId().getId(),
-            nextTable.getDisplayName());
-    upsertPointer(newKey, nextBlobUri);
+  private Transaction abortExpired(Transaction txn, Timestamp now) {
+    if (txn == null) {
+      return txn;
+    }
+    if (txn.getState() == TransactionState.TS_ABORTED
+        || txn.getState() == TransactionState.TS_COMMITTED) {
+      return txn;
+    }
+    Transaction aborted =
+        txn.toBuilder().setState(TransactionState.TS_ABORTED).setUpdatedAt(now).build();
+    updateTransaction(aborted);
+    return aborted;
+  }
 
-    if (currentPtr == null) {
+  private void deletePreparedBlobs(List<String> uris) {
+    if (uris == null || uris.isEmpty()) {
       return;
     }
-    Table oldTable = readTable(currentPtr.getBlobUri());
-    if (oldTable == null) {
-      return;
-    }
-    String oldKey =
-        Keys.tablePointerByName(
-            oldTable.getResourceId().getAccountId(),
-            oldTable.getCatalogId().getId(),
-            oldTable.getNamespaceId().getId(),
-            oldTable.getDisplayName());
-    if (!oldKey.equals(newKey)) {
-      pointerStore
-          .get(oldKey)
-          .ifPresent(ptr -> pointerStore.compareAndDelete(oldKey, ptr.getVersion()));
-    }
-  }
-
-  private void upsertPointer(String key, String blobUri) {
-    var ptr = pointerStore.get(key).orElse(null);
-    if (ptr == null) {
-      Pointer created = Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-      if (pointerStore.compareAndSet(key, 0L, created)) {
-        return;
+    for (String uri : uris) {
+      if (uri == null || uri.isBlank()) {
+        continue;
       }
-      ptr = pointerStore.get(key).orElse(null);
-      if (ptr == null) {
-        throw new IllegalArgumentException("pointer missing for " + key);
+      try {
+        blobStore.delete(uri);
+      } catch (RuntimeException e) {
+        LOG.debugf(e, "Failed to cleanup prepared blob %s", uri);
       }
-    }
-    Pointer next =
-        Pointer.newBuilder()
-            .setKey(key)
-            .setBlobUri(blobUri)
-            .setVersion(ptr.getVersion() + 1)
-            .build();
-    if (!pointerStore.compareAndSet(key, ptr.getVersion(), next)) {
-      throw new IllegalArgumentException("pointer update conflict for " + key);
     }
   }
 

@@ -25,7 +25,8 @@ All operations are **idempotent** when an idempotency key is provided.
 
 **TxChange**
 - Targets a table by ID or fully qualified name.
-- Includes a payload (full Table proto or opaque bytes) or an `intended_blob_uri`.
+- `table_fq` format is `catalog.namespace1.namespace2.table` (dot-separated, no escaping).
+- Includes exactly one payload source: full Table proto, opaque bytes, or an `intended_blob_uri`.
 - Optional precondition on the target pointer version.
 
 **TransactionIntent**
@@ -76,7 +77,9 @@ Begin, prepare, and commit accept idempotency keys. If a request is retried:
 
 ## Failure and Concurrency Behavior
 
-- **Precondition failure** during prepare aborts the operation and the transaction remains open.
+- **Precondition failure** during prepare aborts the operation and the transaction remains open. Intents
+  are persisted only if all changes validate; payload blobs may already be written and are not
+  referenced by any intent.
 - **Version conflict** during commit aborts the transaction and returns a conflict error.
 - **Best-effort apply** means post-commit pointer updates are retried by background workers if needed.
 
@@ -85,4 +88,3 @@ Begin, prepare, and commit accept idempotency keys. If a request is retried:
 - gRPC service: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionsServiceImpl.java`
 - Intent applier: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionIntentApplier.java`
 - Storage keys: `service/src/main/java/ai/floedb/floecat/service/repo/model/Keys.java`
-

@@ -157,6 +157,12 @@ public final class Keys {
         "/accounts/%s/transactions/%s/transaction/%s.pb", encode(tid), encode(tx), encode(sha));
   }
 
+  public static String transactionBlobPrefix(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return String.format("/accounts/%s/transactions/%s/transaction/", encode(tid), encode(tx));
+  }
+
   public static String transactionIntentPointerByTarget(String accountId, String targetPointerKey) {
     String tid = req("account_id", accountId);
     String key = req("target_pointer_key", targetPointerKey);

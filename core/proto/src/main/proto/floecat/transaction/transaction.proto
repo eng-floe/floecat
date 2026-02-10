@@ -52,16 +52,18 @@ message BeginTransactionResponse {
 message TxChange {
   oneof resource_ref {
     ai.floedb.floecat.common.ResourceId table_id = 1;
+    // Fully qualified table name: catalog.namespace1.namespace2.table
+    // Segments are dot-separated with no escaping; dots are not allowed in identifiers.
     string table_fq = 2;
   }
 
   oneof change_payload {
     // Opaque payload (format-specific).
     bytes payload = 10;
+    // Optional: use a previously staged blob URI for the target pointer.
+    string intended_blob_uri = 11;
     ai.floedb.floecat.catalog.Table table = 12;
   }
-  // Optional: if set, use as the intended blob URI for the target pointer.
-  string intended_blob_uri = 11;
 
   // Optimistic checks for the target resource.
   ai.floedb.floecat.common.Precondition precondition = 20;
@@ -104,7 +106,7 @@ message TransactionIntent {
   string account_id = 2;
   string target_pointer_key = 3;
   string blob_uri = 4;
-  int64 expected_version = 5;
+  optional int64 expected_version = 5;
   google.protobuf.Timestamp created_at = 6;
 }
 
