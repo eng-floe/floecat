@@ -30,7 +30,7 @@ Non-goals for the current release:
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
 | `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
 | `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
-| `/tables/rename`, `/transactions/commit` | Table services + staging store | Replays staged payloads per Iceberg semantics; no cross-table ACID. |
+| `/tables/rename`, `/transactions/commit` | Table services + staging store | Multi-table commit with atomic snapshot add/ref/remove + rollback; post-commit side effects are best-effort. |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
 | `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
 | `/register-view` | `ViewService` + `ViewMetadataService` | Registers an Iceberg view from a metadata location. |
@@ -106,7 +106,15 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ### `/transactions/commit`
 
-Receives Iceberg’s transaction payload (list of table changes referencing stage-ids). The gateway replays each staged change sequentially using the same path as per-table commits. Requirements (assert stage, schema, snapshot refs, etc.) are enforced per change. The endpoint is idempotent but **does not** offer multi-table ACID guarantees beyond staged payload replay.
+Receives Iceberg’s transaction payload (list of table changes). The gateway:
+
+1. Plans and validates all table changes (requirements + updates) before starting the transaction.
+2. Begins a gRPC transaction (idempotent) and prepares intent payloads for all tables.
+3. Applies pre-commit snapshot changes (add/ref/remove). Failures abort and roll back.
+4. Commits the transaction (idempotent). Commit failures return `CommitStateUnknownException`.
+5. Applies post-commit snapshot updates, then synchronizes connectors.
+
+This provides cross-table atomicity for snapshot adds/refs/removes with rollback and safe retries. Post-commit side effects (connector sync and non-snapshot metadata updates) are best-effort.
 
 ---
 
@@ -145,7 +153,7 @@ Limits/Follow-ups:
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access delegation; per-request signing is not yet implemented.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
-- **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.
+- **Multi-table ACID:** `/transactions/commit` is atomic for snapshot adds/refs/removes with rollback. Post-commit side effects remain best-effort.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---
