@@ -84,11 +84,16 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
 `ConnectorConfig` encodes:
 - Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).
 - URI and arbitrary `properties` map.
-- Authentication configuration (scheme, headers, secrets, properties).
+- Authentication configuration (scheme, credentials, headers, properties).
 
 `ConnectorProvider` is a lightweight registry allowing CDI discovery of connector factories.
 
 ## Important Internal Details
+- **AuthCredentials resolution** – Connectors consume already-resolved auth props (for example a
+  bearer token). The service handles secrets manager lookups and token exchange flows, so connector
+  implementations should not perform credential exchanges themselves.
+- **Auth redaction** – The service never stores `AuthCredentials` in connector records and masks
+  sensitive auth fields in responses so callers cannot retrieve raw secrets.
 - **NDV estimation** – `NdvProvider` implementations chain together (sampling → filtering → backing
   store) so connectors can merge Parquet-level NDV sketches with streaming approximations. The SPI
   exposes `NdvApprox` structures mirroring `catalog/stats.proto` for compatibility.

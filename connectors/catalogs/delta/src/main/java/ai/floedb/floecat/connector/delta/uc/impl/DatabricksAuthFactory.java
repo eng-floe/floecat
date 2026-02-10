@@ -23,41 +23,33 @@ import java.util.Map;
 
 public final class DatabricksAuthFactory {
 
-  public static AuthProvider from(ConnectorConfig.Auth auth) {
+  public static AuthProvider from(ConnectorConfig cfg) {
+    if (cfg == null || cfg.auth() == null) {
+      return new NoAuthProvider();
+    }
+    return from(cfg.auth(), cfg.uri());
+  }
+
+  public static AuthProvider from(ConnectorConfig.Auth auth, String uri) {
     String scheme = auth.scheme() == null ? "none" : auth.scheme().toLowerCase();
     switch (scheme) {
       case "oauth2" -> {
         var props = auth.props();
-        String mode = props.getOrDefault("mode", "static").toLowerCase();
+        String mode = props.getOrDefault("oauth.mode", "").trim().toLowerCase();
+        if (mode.isBlank() && "databricks".equals(props.getOrDefault("cli.provider", ""))) {
+          mode = "cli";
+        }
+        if (mode.isBlank()) {
+          mode = "static";
+        }
         return switch (mode) {
           case "cli" ->
               new OAuth2BearerAuthProvider(
                   new DatabricksCliTokenProvider(
-                      require(props, "host"),
-                      props.getOrDefault(
-                          "oauth.cache",
-                          System.getProperty("user.home") + "/.databricks/token-cache.json"),
-                      props.getOrDefault("oauth.client_id", ""),
-                      props.getOrDefault("oauth.scope", "all-apis offline_access")));
-          case "sp" ->
-              new OAuth2BearerAuthProvider(
-                  new DatabricksSpTokenProvider(
-                      require(props, "host"),
-                      require(props, "oauth.client_id"),
-                      require(props, "oauth.client_secret"),
-                      props.getOrDefault("oauth.scope", "all-apis")));
-          case "wif" ->
-              new OAuth2BearerAuthProvider(
-                  new DatabricksWifTokenProvider(
-                      require(props, "host"),
-                      require(props, "oauth.client_id"),
-                      props.getOrDefault("oauth.scope", "all-apis"),
-                      props.get("oauth.subject_token"),
-                      props.get("oauth.subject_token_file"),
-                      props.getOrDefault(
-                          "oauth.subject_token_type", "urn:ietf:params:oauth:token-type:jwt"),
-                      props.get("oauth.requested_token_type"),
-                      props.get("oauth.audience")));
+                      requireHost(uri),
+                      props.get("cache_path"),
+                      props.get("client_id"),
+                      props.get("scope")));
           default -> new OAuth2BearerAuthProvider(() -> require(props, "token"));
         };
       }
@@ -74,5 +66,12 @@ public final class DatabricksAuthFactory {
       throw new IllegalArgumentException("Missing auth property: " + k);
     }
     return v;
+  }
+
+  private static String requireHost(String uri) {
+    if (uri == null || uri.isBlank()) {
+      throw new IllegalArgumentException("Missing Databricks host");
+    }
+    return uri;
   }
 }

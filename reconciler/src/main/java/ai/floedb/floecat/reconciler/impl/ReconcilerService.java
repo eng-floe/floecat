@@ -43,6 +43,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -52,12 +53,16 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
@@ -71,10 +76,13 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcilerService {
+  private static final Logger LOG = Logger.getLogger(ReconcilerService.class);
 
   public enum CaptureMode {
     METADATA_ONLY,
@@ -83,6 +91,7 @@ public class ReconcilerService {
 
   @Inject GrpcClients clients;
   @Inject LogicalSchemaMapper schemaMapper;
+  @Inject CredentialResolver credentialResolver;
 
   public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
     return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
@@ -130,9 +139,10 @@ public class ReconcilerService {
     final DestinationTarget dest =
         stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
 
-    var cfg = ConnectorConfigMapper.fromProto(stored);
+    var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
+    var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
-    try (FloecatConnector connector = ConnectorFactory.create(cfg)) {
+    try (FloecatConnector connector = ConnectorFactory.create(resolved)) {
       final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
@@ -865,6 +875,40 @@ public class ReconcilerService {
       out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
     }
     return out;
+  }
+
+  private ConnectorConfig resolveCredentials(
+      ConnectorConfig base,
+      ai.floedb.floecat.connector.rpc.AuthConfig auth,
+      ResourceId connectorId) {
+    if (auth.hasCredentials()
+        && auth.getCredentials().getCredentialCase()
+            != ai.floedb.floecat.connector.rpc.AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return CredentialResolverSupport.apply(base, auth.getCredentials());
+    }
+    if (auth == null || auth.getScheme().isBlank() || "none".equalsIgnoreCase(auth.getScheme())) {
+      return base;
+    }
+    var credential = credentialResolver.resolve(connectorId.getAccountId(), connectorId.getId());
+    return credential
+        .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
+        .orElse(base);
+  }
+
+  private static ConnectorConfig applyIcebergOverrides(ConnectorConfig base) {
+    if (base.kind() != ConnectorConfig.Kind.ICEBERG) {
+      return base;
+    }
+    Map<String, String> options = new LinkedHashMap<>(base.options());
+    String external = options.get("external.metadata-location");
+    if (external == null || external.isBlank()) {
+      return base;
+    }
+    options.putIfAbsent("iceberg.source", "filesystem");
+    RuntimeFileIoOverrides.mergeInto(options);
+    return options.equals(base.options())
+        ? base
+        : new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, base.auth());
   }
 
   public static final class Result {

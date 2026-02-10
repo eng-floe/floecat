@@ -623,7 +623,6 @@ public class TableGatewaySupport {
                     : template.scheme())
             .putAllProperties(template.properties())
             .putAllHeaderHints(template.headerHints());
-    template.secretRef().ifPresent(builder::setSecretRef);
     return builder.build();
   }
 

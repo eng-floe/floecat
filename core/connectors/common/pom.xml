@@ -34,6 +34,8 @@
     <iceberg.version>1.10.0</iceberg.version>
     <parquet.version>1.16.0</parquet.version>
     <hadoop.version>3.4.2</hadoop.version>
+    <aws.sdk.version>2.39.5</aws.sdk.version>
+    <jackson.version>2.18.2</jackson.version>
   </properties>
   
   <dependencies>
@@ -83,6 +85,30 @@
       <groupId>org.apache.datasketches</groupId>
       <artifactId>datasketches-java</artifactId>
       <version>6.0.0</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
+      <version>${aws.sdk.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>auth</artifactId>
+      <version>${aws.sdk.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>profiles</artifactId>
+      <version>${aws.sdk.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
     </dependency>
 
     <!-- Needed for reading parquet via Iceberg IO wrappers -->
@@ -150,6 +176,14 @@
       <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
+
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.20.0</version>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
 
 </project>

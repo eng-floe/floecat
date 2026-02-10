@@ -757,6 +757,57 @@ public class ConnectorIT {
   }
 
   @Test
+  void connectorAuthIsMaskedOnResponses() {
+    TestSupport.createCatalog(catalogService, "cat-auth", "");
+    var auth =
+        AuthConfig.newBuilder()
+            .setScheme("oauth2")
+            .setCredentials(
+                AuthCredentials.newBuilder()
+                    .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("secret-token")))
+            .putProperties("client_secret", "super-secret")
+            .putProperties("scope", "all-apis")
+            .putProperties("token", "also-secret")
+            .putHeaderHints("Authorization", "Bearer secret-token")
+            .putHeaderHints("X-Test", "keep")
+            .build();
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("auth-mask")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://x")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-auth"))
+            .setAuth(auth)
+            .build();
+
+    var created =
+        connectors.createConnector(CreateConnectorRequest.newBuilder().setSpec(spec).build());
+    var returnedAuth = created.getConnector().getAuth();
+
+    assertFalse(returnedAuth.hasCredentials());
+    assertEquals("****", returnedAuth.getPropertiesMap().get("client_secret"));
+    assertEquals("****", returnedAuth.getPropertiesMap().get("token"));
+    assertEquals("all-apis", returnedAuth.getPropertiesMap().get("scope"));
+    assertEquals("****", returnedAuth.getHeaderHintsMap().get("Authorization"));
+    assertEquals("keep", returnedAuth.getHeaderHintsMap().get("X-Test"));
+
+    var fetched =
+        connectors.getConnector(
+            GetConnectorRequest.newBuilder()
+                .setConnectorId(created.getConnector().getResourceId())
+                .build());
+    var fetchedAuth = fetched.getConnector().getAuth();
+
+    assertFalse(fetchedAuth.hasCredentials());
+    assertEquals("****", fetchedAuth.getPropertiesMap().get("client_secret"));
+    assertEquals("****", fetchedAuth.getPropertiesMap().get("token"));
+    assertEquals("all-apis", fetchedAuth.getPropertiesMap().get("scope"));
+    assertEquals("****", fetchedAuth.getHeaderHintsMap().get("Authorization"));
+    assertEquals("keep", fetchedAuth.getHeaderHintsMap().get("X-Test"));
+  }
+
+  @Test
   void createConnectorIdempotencyMismatchOnUri() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-idem-2", "");
     var specA =
