@@ -39,18 +39,27 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFile;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.Empty;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -164,8 +173,7 @@ class TablePlanServiceTest {
             .build();
     ScanBundle bundle =
         ScanBundle.newBuilder().addDataFiles(data).addDeleteFiles(deleteFile).build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    ScanHandle handle = mockScanForBundle(tableId, bundle);
 
     List<StorageCredentialDto> credentials =
         List.of(new StorageCredentialDto("s3", Map.of("role", "arn:aws:iam::123:role/Test")));
@@ -176,20 +184,21 @@ class TablePlanServiceTest {
     assertIterableEquals(List.of("plan-2"), response.planTasks());
     assertEquals(credentials, response.storageCredentials());
     assertEquals(1, response.fileScanTasks().size());
-    assertEquals(List.of(1, "A"), response.fileScanTasks().get(0).dataFile().partition());
-    assertEquals(List.of(0), response.fileScanTasks().get(0).deleteFileReferences());
+    assertEquals("s3://bucket/data.parquet", response.fileScanTasks().get(0).dataFile().filePath());
     assertEquals("s3://bucket/delete.parquet", response.deleteFiles().get(0).filePath());
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(scanStub).fetchScanBundle(fetch.capture());
-    FetchScanBundleRequest sent = fetch.getValue();
+    ArgumentCaptor<InitScanRequest> fetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(scanStub).initScan(fetch.capture());
+    InitScanRequest sent = fetch.getValue();
     assertEquals(tableId, sent.getTableId());
     assertEquals(1, sent.getRequiredColumnsCount());
     assertEquals("id", sent.getRequiredColumns(0));
     assertEquals(2, sent.getPredicatesCount());
     assertEquals("customerid", sent.getPredicates(0).getColumn());
     assertEquals("DeletedFlag".toLowerCase(), sent.getPredicates(1).getColumn());
+    verify(scanStub).streamDeleteFiles(handle);
+    verify(scanStub).streamDataFiles(handle);
+    verify(scanStub).closeScan(handle);
   }
 
   @Test
@@ -223,15 +232,13 @@ class TablePlanServiceTest {
         null);
 
     ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    ScanHandle handle = mockScanForBundle(tableId, bundle);
 
     service.fetchPlan("plan-4", List.of());
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(scanStub).fetchScanBundle(fetch.capture());
-    assertEquals(0, fetch.getValue().getPredicatesCount());
+    ArgumentCaptor<InitScanRequest> initFetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(scanStub).initScan(initFetch.capture());
+    assertEquals(0, initFetch.getValue().getPredicatesCount());
   }
 
   @Test
@@ -265,16 +272,14 @@ class TablePlanServiceTest {
         null);
 
     ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    ScanHandle handle = mockScanForBundle(tableId, bundle);
 
     service.fetchPlan("plan-5", List.of());
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(scanStub).fetchScanBundle(fetch.capture());
-    assertEquals(1, fetch.getValue().getPredicatesCount());
-    assertEquals("OrderId", fetch.getValue().getPredicates(0).getColumn());
+    ArgumentCaptor<InitScanRequest> initFetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(scanStub).initScan(initFetch.capture());
+    assertEquals(1, initFetch.getValue().getPredicatesCount());
+    assertEquals("OrderId", initFetch.getValue().getPredicates(0).getColumn());
   }
 
   @Test
@@ -297,8 +302,7 @@ class TablePlanServiceTest {
         null);
 
     ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    mockScanForBundle(tableId, bundle);
 
     TablePlanTasksResponseDto tasks = service.fetchTasks("plan-3");
     assertTrue(tasks.fileScanTasks().isEmpty());
@@ -358,5 +362,41 @@ class TablePlanServiceTest {
         false,
         null);
     verify(queryStub, times(1)).beginQuery(any());
+  }
+
+  private ScanHandle mockScanForBundle(ResourceId tableId, ScanBundle bundle) {
+    ScanHandle handle = ScanHandle.newBuilder().setId("handle").build();
+    InitScanResponse initResp =
+        InitScanResponse.newBuilder()
+            .setHandle(handle)
+            .setTableInfo(TableInfo.newBuilder().setTableId(tableId).build())
+            .build();
+    when(scanStub.initScan(any())).thenReturn(initResp);
+    AtomicInteger deleteId = new AtomicInteger(0);
+    List<DeleteFile> deleteFiles =
+        bundle.getDeleteFilesList().stream()
+            .map(
+                file ->
+                    DeleteFile.newBuilder()
+                        .setDeleteId(deleteId.getAndIncrement())
+                        .setFile(file)
+                        .build())
+            .toList();
+    when(scanStub.streamDeleteFiles(handle))
+        .thenReturn(
+            List.of(DeleteFileBatch.newBuilder().addAllItems(deleteFiles).build()).iterator());
+    List<DataFile> dataFiles =
+        bundle.getDataFilesList().stream()
+            .map(
+                file ->
+                    DataFile.newBuilder()
+                        .setFile(file)
+                        .setDeletes(DeleteRef.newBuilder().setAllDeletes(true))
+                        .build())
+            .toList();
+    when(scanStub.streamDataFiles(handle))
+        .thenReturn(List.of(DataFileBatch.newBuilder().addAllItems(dataFiles).build()).iterator());
+    when(scanStub.closeScan(handle)).thenReturn(Empty.newBuilder().build());
+    return handle;
   }
 }

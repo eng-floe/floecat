@@ -71,8 +71,8 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
-  `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
-  demand.
+  `GetQuery`) and exposes the scan streaming helpers (`InitScan`, `StreamDeleteFiles`,
+  `StreamDataFiles`, `CloseScan`) so planners can request connector metadata safely.
 - **SystemObjectsServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
   per engine version, and serves them via `GetSystemObjects`.
 
@@ -112,9 +112,15 @@ External session header authentication is documented in
 `QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,
 expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
 `QueryServiceImpl.beginQuery` resolves name or ID references via Directory/Snapshot/Table services,
-pins snapshots, and stores the lease. Planners request connector `ScanBundle`s later via
-`FetchScanBundle`, which streams data/delete files for a specific table. The lease data (snapshots,
-expansion map, obligations) is returned to the caller inside the `QueryDescriptor`.
+pins snapshots, and stores the lease. Planners request connector file lists with `InitScan` (which
+returns table metadata and a scan handle), then consume `StreamDeleteFiles` followed by
+`StreamDataFiles`, and finally call `CloseScan` when done. Ordering is strict: `StreamDeleteFiles`
+must be fully consumed before `StreamDataFiles` begins, otherwise the server rejects the data stream
+with `FAILED_PRECONDITION`. The server auto-releases the scan session as soon as both streams finish,
+so `CloseScan` is best-effort but still recommended to tidy server resources sooner. Each `DataFile`
+currently reports `DeleteRef.all_deletes=true`; finer-grain delete references will come later once the
+applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
+the caller inside the `QueryDescriptor`.
 
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the

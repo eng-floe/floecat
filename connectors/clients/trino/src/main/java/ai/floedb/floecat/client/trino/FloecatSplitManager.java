@@ -19,18 +19,24 @@ package ai.floedb.floecat.client.trino;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.Operator;
+import ai.floedb.floecat.common.rpc.Predicate;
+import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.common.rpc.Operator;
-import ai.floedb.floecat.common.rpc.Predicate;
-import ai.floedb.floecat.common.rpc.QueryInput;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ScanHandle;
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.airlift.slice.Slice;
@@ -46,13 +52,13 @@ import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
-import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -93,10 +99,11 @@ public class FloecatSplitManager implements ConnectorSplitManager {
     if (catalogResourceId == null) {
       synchronized (this) {
         if (catalogResourceId == null) {
-          var response = directory.resolveCatalog(
-              ResolveCatalogRequest.newBuilder()
-                  .setRef(NameRef.newBuilder().setCatalog(catalogName.toString()).build())
-                  .build());
+          var response =
+              directory.resolveCatalog(
+                  ResolveCatalogRequest.newBuilder()
+                      .setRef(NameRef.newBuilder().setCatalog(catalogName.toString()).build())
+                      .build());
           catalogResourceId = response.getResourceId();
         }
       }
@@ -139,9 +146,8 @@ public class FloecatSplitManager implements ConnectorSplitManager {
             });
     requiredColumns.addAll(floecatHandle.getProjectedColumns());
 
-    BeginQueryRequest beginReq = BeginQueryRequest.newBuilder()
-        .setDefaultCatalogId(getCatalogResourceId())
-        .build();
+    BeginQueryRequest beginReq =
+        BeginQueryRequest.newBuilder().setDefaultCatalogId(getCatalogResourceId()).build();
 
     var beginResp = planning.beginQuery(beginReq);
     String queryId = beginResp.getQuery().getQueryId();
@@ -154,19 +160,41 @@ public class FloecatSplitManager implements ConnectorSplitManager {
 
     schema.describeInputs(describeReq);
 
-    FetchScanBundleRequest fetchReq =
-        FetchScanBundleRequest.newBuilder()
+    InitScanRequest initReq =
+        InitScanRequest.newBuilder()
             .setQueryId(queryId)
             .setTableId(floecatHandle.getTableResourceId())
             .addAllRequiredColumns(requiredColumns)
             .addAllPredicates(predicates)
             .build();
+    InitScanResponse initResp = scan.initScan(initReq);
+    ScanHandle scanHandle = initResp.getHandle();
 
-    var fetchResp = scan.fetchScanBundle(fetchReq);
+    List<DeleteFile> deleteFiles = new ArrayList<>();
+    var deleteIter = scan.streamDeleteFiles(scanHandle);
+    Map<Integer, DeleteFile> icebergDeleteById = new LinkedHashMap<>();
+    while (deleteIter.hasNext()) {
+      DeleteFileBatch batch = deleteIter.next();
+      for (var delete : batch.getItemsList()) {
+        DeleteFile converted = toDeleteFile(delete.getFile());
+        if (converted != null) {
+          icebergDeleteById.put(delete.getDeleteId(), converted);
+          deleteFiles.add(converted);
+        }
+      }
+    }
+    List<DataFile> dataFiles = new ArrayList<>();
+    var dataIter = scan.streamDataFiles(scanHandle);
+    while (dataIter.hasNext()) {
+      DataFileBatch batch = dataIter.next();
+      dataFiles.addAll(batch.getItemsList());
+    }
 
-    List<ScanFile> dataFiles = fetchResp.getBundle().getDataFilesList();
-    List<ScanFile> deleteScanFiles = fetchResp.getBundle().getDeleteFilesList();
-    List<DeleteFile> deleteFiles = toDeleteFiles(deleteScanFiles);
+    try {
+      scan.closeScan(scanHandle);
+    } catch (Exception ignored) {
+      // best-effort cleanup
+    }
 
     String partitionSpecJson =
         Optional.ofNullable(floecatHandle.getPartitionSpecJson())
@@ -175,8 +203,9 @@ public class FloecatSplitManager implements ConnectorSplitManager {
     Map<String, String> storageProps = buildStorageProperties();
 
     List<IcebergSplit> splits = new ArrayList<>();
-    for (var file : dataFiles) {
-      List<DeleteFile> fileDeletes = selectDeleteFiles(deleteFiles, file.getDeleteFileIndicesList());
+    for (var dataFile : dataFiles) {
+      ScanFile file = dataFile.getFile();
+      List<DeleteFile> fileDeletes = resolveDeleteFiles(dataFile.getDeletes(), icebergDeleteById);
       IcebergFileFormat fileFormat = toIcebergFormat(file.getFileFormat());
       String dataJson = file.getPartitionDataJson();
       if (dataJson == null || dataJson.isBlank()) {
@@ -339,53 +368,71 @@ public class FloecatSplitManager implements ConnectorSplitManager {
     }
     List<DeleteFile> out = new ArrayList<>(files.size());
     for (ScanFile file : files) {
-      FileContent content =
-          switch (file.getFileContent()) {
-            case SCAN_FILE_CONTENT_EQUALITY_DELETES -> FileContent.EQUALITY_DELETES;
-            case SCAN_FILE_CONTENT_POSITION_DELETES -> FileContent.POSITION_DELETES;
-            default -> null;
-          };
-      if (content == null) {
-        continue;
+      DeleteFile df = toDeleteFile(file);
+      if (df != null) {
+        out.add(df);
       }
-      FileFormat format;
-      try {
-        format = FileFormat.valueOf(file.getFileFormat().toUpperCase());
-      } catch (Exception e) {
-        format = FileFormat.PARQUET;
-      }
-      out.add(
-          new DeleteFile(
-              content,
-              file.getFilePath(),
-              format,
-              file.getRecordCount(),
-              file.getFileSizeInBytes(),
-              file.getEqualityFieldIdsList(),
-              Optional.empty(),
-              Optional.empty(),
-              0));
     }
     return out;
   }
 
-  private static List<DeleteFile> selectDeleteFiles(
-      List<DeleteFile> deleteFiles, List<Integer> deleteIndices) {
-    if (deleteFiles == null || deleteFiles.isEmpty() || deleteIndices == null || deleteIndices.isEmpty()) {
+  private static DeleteFile toDeleteFile(ScanFile file) {
+    FileContent content =
+        switch (file.getFileContent()) {
+          case SCAN_FILE_CONTENT_EQUALITY_DELETES -> FileContent.EQUALITY_DELETES;
+          case SCAN_FILE_CONTENT_POSITION_DELETES -> FileContent.POSITION_DELETES;
+          default -> null;
+        };
+    if (content == null) {
+      return null;
+    }
+    FileFormat format;
+    try {
+      format = FileFormat.valueOf(file.getFileFormat().toUpperCase());
+    } catch (Exception e) {
+      format = FileFormat.PARQUET;
+    }
+    return
+        new DeleteFile(
+            content,
+            file.getFilePath(),
+            format,
+            file.getRecordCount(),
+            file.getFileSizeInBytes(),
+            file.getEqualityFieldIdsList(),
+            Optional.empty(),
+            Optional.empty(),
+            0);
+  }
+
+  private static List<io.trino.plugin.iceberg.delete.DeleteFile> resolveDeleteFiles(
+      DeleteRef deletes,
+      Map<Integer, io.trino.plugin.iceberg.delete.DeleteFile> deleteById) {
+    if (deletes == null || deleteById.isEmpty()) {
       return List.of();
     }
-    List<DeleteFile> out = new ArrayList<>(deleteIndices.size());
-    for (Integer idx : deleteIndices) {
-      if (idx == null) {
-        continue;
-      }
-      int i = idx;
-      if (i < 0 || i >= deleteFiles.size()) {
-        continue;
-      }
-      out.add(deleteFiles.get(i));
+    if (deletes.hasAllDeletes() && deletes.getAllDeletes()) {
+      return List.copyOf(deleteById.values());
     }
-    return out;
+    if (deletes.hasDeleteIds()) {
+      List<Integer> ids = deletes.getDeleteIds().getIdsList();
+      List<io.trino.plugin.iceberg.delete.DeleteFile> out = new ArrayList<>(ids.size());
+      for (Integer id : ids) {
+        if (id == null) {
+          continue;
+        }
+        io.trino.plugin.iceberg.delete.DeleteFile file = deleteById.get(id);
+        if (file == null) {
+          throw new IllegalStateException(
+              String.format(
+                  "delete id %d referenced by DataFile was not emitted (unsupported content or missing stream)",
+                  id));
+        }
+        out.add(file);
+      }
+      return out;
+    }
+    return List.of();
   }
 
   private Map<String, String> buildStorageProperties() {

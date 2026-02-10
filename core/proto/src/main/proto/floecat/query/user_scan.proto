@@ -20,10 +20,11 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QueryScanProto";
 
-import "floecat/common/common.proto";       // ResourceId
-import "floecat/common/predicate.proto";    // Predicate
-import "floecat/catalog/partition.proto";   // PartitionSpecInfo
-import "floecat/execution/scan.proto";      // ScanBundle
+import "floecat/common/common.proto";
+import "floecat/common/predicate.proto";
+import "floecat/catalog/partition.proto";
+import "floecat/execution/scan.proto";
+import "google/protobuf/empty.proto";
 
 /**
  * QUERY FILE SCAN SERVICE
@@ -39,33 +40,115 @@ import "floecat/execution/scan.proto";      // ScanBundle
  *   - Predicate evaluation is conservative (may over-select files)
  *   - Never filters rows
  */
-message FetchScanBundleRequest {
-  string query_id = 1;
+service QueryScanService {
+  // Open a scan handle for the query/table pair, supplying required metadata before streams.
+  rpc InitScan(InitScanRequest) returns (InitScanResponse);
 
-  // The table whose bundle is being fetched.
-  ai.floedb.floecat.common.ResourceId table_id = 2;
+  // Stream delete files for the pinned snapshot. Delete batches must be fully consumed before
+  // invoking StreamDataFiles; the server rejects StreamDataFiles with FAILED_PRECONDITION otherwise.
+  rpc StreamDeleteFiles(ScanHandle) returns (stream DeleteFileBatch);
 
-  // Needed columns; all other column stats are dropped.
-  repeated string required_columns = 3;
+  // Stream data files and their delete references (all delete files if all_deletes=true).
+  rpc StreamDataFiles(ScanHandle) returns (stream DataFileBatch);
 
-  // Logical predicates used for file-level pruning.
-  repeated ai.floedb.floecat.common.Predicate predicates = 4;
+  // Close the scan handle and release server-side resources.
+  rpc CloseScan(ScanHandle) returns (google.protobuf.Empty);
 }
 
 message TableInfo {
+  // Table identity and metadata for the scan. Clients should use this schema/partition info
+  // when planning downstream execution.
   ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  // Full schema JSON
   string schema_json = 2;
+
+  // Partition spec that matches the pinned snapshot.
   ai.floedb.floecat.catalog.PartitionSpecInfo partition_specs = 3;
+
+  // Table properties
   map<string,string> properties = 4;
+
+  // Optional Iceberg table metadata location for clients that pass FileIO directly.
   string metadata_location = 5;
 }
 
-message FetchScanBundleResponse {
-  ai.floedb.floecat.execution.ScanBundle bundle = 1;
+message ScanHandle {
+  // Opaque scan identifier returned by InitScan and consumed by stream/close RPCs.
+  string id = 1;
+}
+
+message InitScanRequest {
+  // Query identifier. The query must exist and have pinned snapshots.
+  string query_id = 1;
+
+  // Table resource to scan.
+  ai.floedb.floecat.common.ResourceId table_id = 2;
+
+  // Optional list of columns clients need for pruning / column stats.
+  repeated string required_columns = 3;
+
+  // Optional predicates that should be applied during ScanPruningUtils pruning.
+  repeated ai.floedb.floecat.common.Predicate predicates = 4;
+
+  // Requested upper bound on batch item count (default 1k).
+  uint32 target_batch_items = 10;
+
+  // Requested rough batch size in bytes (approximate).
+  // This uses the file size on disk, not the serialized gRPC payload.
+  uint32 target_batch_bytes = 11;
+
+  // Whether to include column stats in emitted ScanFile metadata (default false).
+  bool include_column_stats = 20;
+
+  // Whether the client wants partition_data_json stripped from ScanFiles (default false → keep it).
+  bool exclude_partition_data_json = 21;
+}
+
+message InitScanResponse {
+  // Handle used for the subsequent delete/data streams.
+  ScanHandle handle = 1;
+
+  // Metadata for the Table (schema/partition info) that clients will read before streaming.
   TableInfo table_info = 2;
 }
 
-service QueryScanService {
-  rpc FetchScanBundle(FetchScanBundleRequest)
-      returns (FetchScanBundleResponse);
+message DeleteFile {
+  // Streaming sequence number per delete file so DataFile.delete_ids can reference it.
+  uint32 delete_id = 1;
+
+  // Catalog ScanFile metadata for the delete.
+  ai.floedb.floecat.execution.ScanFile file = 2;
+}
+
+message DeleteFileBatch {
+  // Delete files emitted in this batch.
+  repeated DeleteFile items = 1;
+}
+
+message DeleteRef {
+  oneof mode {
+    // Indicates all delete files provided by StreamDeleteFiles should be applied to this data file.
+    // When no delete files exist, all_deletes behaves like an empty set (no-op).
+    bool all_deletes = 1;
+
+    // Specific subset of indexed delete IDs that apply to this data file.
+    DeleteIdList delete_ids = 2;
+  }
+}
+
+message DeleteIdList {
+  repeated uint32 ids = 1;
+}
+
+message DataFile {
+  // Data file metadata.
+  ai.floedb.floecat.execution.ScanFile file = 1;
+
+  // Optional delete reference describing which deletes should be applied to this file.
+  DeleteRef deletes = 2;
+}
+
+message DataFileBatch {
+  repeated DataFile items = 1;
 }

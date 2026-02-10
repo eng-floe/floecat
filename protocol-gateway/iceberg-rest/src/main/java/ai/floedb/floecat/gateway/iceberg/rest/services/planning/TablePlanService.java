@@ -33,12 +33,16 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient.ScanFileStreamResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DeleteFile;
+import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.GetQueryRequest;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -51,6 +55,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 @ApplicationScoped
 public class TablePlanService {
@@ -104,8 +111,10 @@ public class TablePlanService {
     var resp = queryClient.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
     QueryDescriptor query = resp.getQuery();
 
-    ScanBundle bundle = fetchScanBundle(ctx, query.getQueryId());
-    TablePlanTasksResponseDto scanTasks = toScanTasksDto(bundle);
+    ScanBundleWithDataFiles bundleWithData = fetchScanBundle(ctx, query.getQueryId());
+    TablePlanTasksResponseDto scanTasks =
+        toScanTasksDto(
+            bundleWithData.bundle(), bundleWithData.dataFiles(), bundleWithData.deleteFiles());
     String resolvedPlanId =
         (query.getQueryId() == null || query.getQueryId().isBlank()) ? planId : query.getQueryId();
     List<String> planTasks =
@@ -131,37 +140,79 @@ public class TablePlanService {
     if (ctx == null) {
       throw new IllegalArgumentException("unknown plan id " + planId);
     }
-    ScanBundle bundle = fetchScanBundle(ctx, planId);
+    ScanBundleWithDataFiles bundleWithData = fetchScanBundle(ctx, planId);
     planContexts.remove(planId);
-    return toScanTasksDto(bundle);
+    return toScanTasksDto(
+        bundleWithData.bundle(), bundleWithData.dataFiles(), bundleWithData.deleteFiles());
   }
 
-  private ScanBundle fetchScanBundle(PlanContext ctx, String queryId) {
-    FetchScanBundleRequest.Builder builder =
-        FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(ctx.tableId());
+  private ScanBundleWithDataFiles fetchScanBundle(PlanContext ctx, String queryId) {
+    InitScanRequest.Builder builder =
+        InitScanRequest.newBuilder().setQueryId(queryId).setTableId(ctx.tableId());
     if (ctx.requiredColumns() != null && !ctx.requiredColumns().isEmpty()) {
       builder.addAllRequiredColumns(ctx.requiredColumns());
     }
     if (ctx.predicates() != null && !ctx.predicates().isEmpty()) {
       builder.addAllPredicates(ctx.predicates());
     }
-    return queryClient.fetchScanBundle(builder.build()).getBundle();
+    ScanFileStreamResponse response = queryClient.fetchScanFileStream(builder.build());
+    ScanBundle bundle =
+        ScanBundle.newBuilder()
+            .addAllDataFiles(response.dataFiles().stream().map(DataFile::getFile).toList())
+            .addAllDeleteFiles(response.deleteFiles().stream().map(DeleteFile::getFile).toList())
+            .build();
+    return new ScanBundleWithDataFiles(bundle, response.dataFiles(), response.deleteFiles());
   }
 
-  private TablePlanTasksResponseDto toScanTasksDto(ScanBundle bundle) {
-    List<ContentFileDto> deleteFiles = new ArrayList<>();
+  private TablePlanTasksResponseDto toScanTasksDto(
+      ScanBundle bundle, List<DataFile> dataFiles, List<DeleteFile> deleteFiles) {
+    List<ContentFileDto> deleteFileDtos = new ArrayList<>();
     List<FileScanTaskDto> tasks = new ArrayList<>();
     if (bundle != null) {
       for (ScanFile delete : bundle.getDeleteFilesList()) {
-        deleteFiles.add(toContentFile(delete));
+        deleteFileDtos.add(toContentFile(delete));
       }
-      for (ScanFile file : bundle.getDataFilesList()) {
-        List<Integer> deleteRefs =
-            file.getDeleteFileIndicesCount() > 0 ? file.getDeleteFileIndicesList() : List.of();
-        tasks.add(new FileScanTaskDto(toContentFile(file), deleteRefs, null));
+      List<Integer> allDeleteIndices = IntStream.range(0, deleteFiles.size()).boxed().toList();
+      Map<Integer, Integer> deleteIdToIndex =
+          IntStream.range(0, deleteFiles.size())
+              .boxed()
+              .collect(
+                  Collectors.toMap(idx -> deleteFiles.get(idx).getDeleteId(), Function.identity()));
+      for (var file : dataFiles) {
+        List<Integer> deleteRefs = dataFileDeleteRefs(file, allDeleteIndices, deleteIdToIndex);
+        tasks.add(new FileScanTaskDto(toContentFile(file.getFile()), deleteRefs, null));
       }
     }
-    return new TablePlanTasksResponseDto(List.of(), tasks, deleteFiles);
+    return new TablePlanTasksResponseDto(List.of(), tasks, deleteFileDtos);
+  }
+
+  private record ScanBundleWithDataFiles(
+      ScanBundle bundle, List<DataFile> dataFiles, List<DeleteFile> deleteFiles) {}
+
+  private List<Integer> dataFileDeleteRefs(
+      DataFile file, List<Integer> allDeleteIndices, Map<Integer, Integer> deleteIdToIndex) {
+    DeleteRef ref = file.getDeletes();
+    if (ref == null || ref.getModeCase() == DeleteRef.ModeCase.MODE_NOT_SET) {
+      return List.of();
+    }
+    if (ref.getModeCase() == DeleteRef.ModeCase.ALL_DELETES) {
+      return allDeleteIndices;
+    }
+    if (ref.getModeCase() == DeleteRef.ModeCase.DELETE_IDS) {
+      List<Integer> ids = new ArrayList<>();
+      for (int deleteId : ref.getDeleteIds().getIdsList()) {
+        Integer idx = deleteIdToIndex.get(deleteId);
+        if (idx == null) {
+          throw new IllegalStateException(
+              "DataFile referenced delete ID "
+                  + deleteId
+                  + " that was not emitted by StreamDeleteFiles");
+        }
+        ids.add(idx);
+      }
+      return ids;
+    }
+    return List.of();
   }
 
   private ContentFileDto toContentFile(ScanFile file) {

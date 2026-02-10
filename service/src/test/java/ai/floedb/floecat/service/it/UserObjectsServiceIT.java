@@ -24,16 +24,21 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.*;
+import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
@@ -158,16 +163,10 @@ class UserObjectsServiceIT {
     assertEquals(1, end.getEnd().getFoundCount());
     assertEquals(0, end.getEnd().getNotFoundCount());
 
-    var response =
-        fetchScanBundle(
-                FetchScanBundleRequest.newBuilder()
-                    .setQueryId(queryId)
-                    .setTableId(tbl.getResourceId())
-                    .build())
-            .toCompletableFuture()
-            .join();
-    assertTrue(response.hasBundle());
-    assertEquals(0, response.getBundle().getDataFilesCount());
+    InitScanRequest initReq =
+        InitScanRequest.newBuilder().setQueryId(queryId).setTableId(tbl.getResourceId()).build();
+    var response = fetchScanFileStream(initReq).toCompletableFuture().join();
+    assertEquals(0, response.dataFiles().size());
   }
 
   @Test
@@ -362,33 +361,39 @@ class UserObjectsServiceIT {
     return future.orTimeout(5, TimeUnit.SECONDS);
   }
 
-  private CompletionStage<FetchScanBundleResponse> fetchScanBundle(FetchScanBundleRequest request) {
-    CompletableFuture<FetchScanBundleResponse> future = new CompletableFuture<>();
-    QueryScanServiceGrpc.QueryScanServiceStub async =
-        QueryScanServiceGrpc.newStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-    async.fetchScanBundle(
-        request,
-        new StreamObserver<>() {
-          @Override
-          public void onNext(FetchScanBundleResponse response) {
-            future.complete(response);
-          }
-
-          @Override
-          public void onError(Throwable t) {
-            future.completeExceptionally(t);
-          }
-
-          @Override
-          public void onCompleted() {
-            if (!future.isDone()) {
-              future.completeExceptionally(
-                  new IllegalStateException("fetchScanBundle completed without response"));
-            }
-          }
-        });
+  private CompletionStage<ScanFileStreamResponse> fetchScanFileStream(InitScanRequest request) {
+    CompletableFuture<ScanFileStreamResponse> future = new CompletableFuture<>();
+    QueryScanServiceGrpc.QueryScanServiceBlockingStub blocking =
+        QueryScanServiceGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
+    try {
+      InitScanResponse initResp = blocking.initScan(request);
+      ScanHandle handle = initResp.getHandle();
+      List<ScanFile> dataFiles = new ArrayList<>();
+      List<ScanFile> deleteFiles = new ArrayList<>();
+      var deleteIter = blocking.streamDeleteFiles(handle);
+      while (deleteIter.hasNext()) {
+        DeleteFileBatch batch = deleteIter.next();
+        for (var delete : batch.getItemsList()) {
+          deleteFiles.add(delete.getFile());
+        }
+      }
+      var dataIter = blocking.streamDataFiles(handle);
+      while (dataIter.hasNext()) {
+        DataFileBatch batch = dataIter.next();
+        for (var data : batch.getItemsList()) {
+          dataFiles.add(data.getFile());
+        }
+      }
+      blocking.closeScan(handle);
+      future.complete(new ScanFileStreamResponse(initResp.getTableInfo(), dataFiles, deleteFiles));
+    } catch (Throwable t) {
+      future.completeExceptionally(t);
+    }
     return future.orTimeout(5, TimeUnit.SECONDS);
   }
+
+  private record ScanFileStreamResponse(
+      TableInfo tableInfo, List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
 
   private Connector createDummyConnector(
       ResourceId catalogId, ResourceId namespaceId, String suffix) {
