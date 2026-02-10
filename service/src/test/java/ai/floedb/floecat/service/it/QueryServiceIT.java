@@ -27,10 +27,13 @@ import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -154,5 +157,73 @@ class QueryServiceIT {
             EndQueryRequest.newBuilder().setQueryId(query.getQueryId()).setCommit(true).build());
 
     assertEquals(query.getQueryId(), end.getQueryId());
+  }
+
+  @Test
+  void beginQueryWithInputsPinsSnapshots() {
+    var catName = catalogPrefix + "cat-with-inputs";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "");
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "input_orders",
+            "s3://bucket/input_orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+
+    var snap =
+        TestSupport.createSnapshot(
+            snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
+
+    String queryId = "it-inputs-" + UUID.randomUUID();
+
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(2)
+                .setQueryId(queryId)
+                .addInputs(
+                    QueryInput.newBuilder()
+                        .setTableId(tbl.getResourceId())
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap.getSnapshotId()))
+                        .build())
+                .build());
+
+    assertTrue(begin.hasQuery());
+    var descriptor = begin.getQuery();
+    assertEquals(queryId, descriptor.getQueryId());
+    assertEquals(1, descriptor.getSnapshots().getPinsCount());
+    var pin = descriptor.getSnapshots().getPins(0);
+    assertEquals(tbl.getResourceId(), pin.getTableId());
+    assertEquals(snap.getSnapshotId(), pin.getSnapshotId());
+  }
+
+  @Test
+  void beginQueryWithDuplicateQueryIdFails() {
+    var catName = catalogPrefix + "cat-dup-query";
+    var cat = TestSupport.createCatalog(catalog, catName, "");
+
+    String queryId = "it-dup-" + UUID.randomUUID();
+
+    var request =
+        BeginQueryRequest.newBuilder()
+            .setDefaultCatalogId(cat.getResourceId())
+            .setTtlSeconds(2)
+            .setQueryId(queryId)
+            .build();
+
+    queries.beginQuery(request);
+
+    StatusRuntimeException thrown =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> queries.beginQuery(request),
+            "Duplicate query IDs should be rejected with conflict");
+    assertEquals(Status.ALREADY_EXISTS.getCode(), thrown.getStatus().getCode());
   }
 }

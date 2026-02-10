@@ -50,6 +50,7 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -67,8 +68,8 @@ import org.jboss.logging.Logger;
  *
  * <p>Scan bundle retrieval is implemented separately in {@code QueryScanServiceImpl}.
  *
- * <p><b>Important:</b> BeginQuery DOES NOT accept inputs. All input resolution happens in
- * DescribeInputs() and GetUserObjects().
+ * <p><b>Important:</b> BeginQuery may optionally accept inputs for deterministic replay; schema
+ * resolution still happens in DescribeInputs() and GetUserObjects().
  */
 @Singleton
 @GrpcService
@@ -91,6 +92,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
   @Inject QueryContextStore queryStore;
 
+  @Inject QueryInputMetadataAssembler metadataAssembler;
+
   @Inject
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;
@@ -100,12 +103,12 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
   /**
    * BeginQuery
    *
-   * <p>Creates a new empty query context with a TTL.
+   * <p>Creates a new query context with a TTL. Clients may optionally supply a `query_id` to pin
+   * the identifier and/or a set of {@link ai.floedb.floecat.common.rpc.QueryInput} records to
+   * resolve the inputs immediately.
    *
-   * <p>NO INPUTS ARE ACCEPTED HERE.
-   *
-   * <p>All resolution (tables, views, snapshot pins, schemas, obligations, expansions) happens
-   * later in DescribeInputs(), GetUserObjects(), and FetchScanBundle().
+   * <p>Resolution results (pins, expansions, obligations) are stored for downstream services but
+   * schema resolution and planning remain downstream responsibilities.
    */
   @Override
   public Uni<BeginQueryResponse> beginQuery(BeginQueryRequest request) {
@@ -134,29 +137,57 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   ResourceId catalogId = request.getDefaultCatalogId();
 
-                  // Empty metadata blobs
-                  byte[] emptyExpansion = ExpansionMap.getDefaultInstance().toByteArray();
-                  byte[] emptySnapshots = SnapshotSet.getDefaultInstance().toByteArray();
-                  byte[] emptyObligations = new byte[0];
-                  byte[] asOfDefaultBytes =
-                      request.hasAsOfDefault() ? request.getAsOfDefault().toByteArray() : null;
+                  String queryId;
+                  if (request.hasQueryId()) {
+                    queryId = mustNonEmpty(request.getQueryId().trim(), "query_id", correlationId);
+                  } else {
+                    queryId = UUID.randomUUID().toString();
+                  }
 
-                  // Build new query context
-                  String queryId = UUID.randomUUID().toString();
+                  Optional<Timestamp> asOfDefault =
+                      request.hasAsOfDefault()
+                          ? Optional.of(request.getAsOfDefault())
+                          : Optional.empty();
+                  byte[] asOfDefaultBytes =
+                      request.hasAsOfDefault()
+                          ? request.getAsOfDefault().toByteArray()
+                          : new byte[0];
+
+                  var metadata =
+                      metadataAssembler.assemble(
+                          correlationId, request.getInputsList(), asOfDefault);
+
+                  byte[] expansionBytes = metadata.expansionMap().toByteArray();
+                  byte[] snapshotBytes = metadata.snapshotSet().toByteArray();
+                  byte[] obligationsBytes = metadata.obligationsBytes();
 
                   var ctx =
                       QueryContext.newActive(
                           queryId,
                           pc,
-                          emptyExpansion,
-                          emptySnapshots,
-                          emptyObligations,
+                          expansionBytes,
+                          snapshotBytes,
+                          obligationsBytes,
                           asOfDefaultBytes,
                           ttlMs,
                           1L,
                           catalogId);
 
-                  queryStore.put(ctx);
+                  boolean clientProvidedId = request.hasQueryId();
+                  boolean inserted;
+                  if (clientProvidedId) {
+                    inserted = queryStore.putIfAbsent(ctx);
+                  } else {
+                    queryStore.put(ctx);
+                    inserted = true;
+                  }
+                  if (clientProvidedId && !inserted) {
+                    throw GrpcErrors.alreadyExists(
+                        correlationId,
+                        ALREADY_EXISTS,
+                        Map.of("resource", "query", "name", queryId),
+                        new IllegalStateException("query_id already exists: " + queryId));
+                  }
 
                   // Build descriptor
                   QueryDescriptor descriptor =
@@ -166,8 +197,9 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setQueryStatus(ctx.getQueryStatus())
                           .setCreatedAt(ts(ctx.getCreatedAtMs()))
                           .setExpiresAt(ts(ctx.getExpiresAtMs()))
-                          .setSnapshots(SnapshotSet.getDefaultInstance())
-                          .setExpansion(ExpansionMap.getDefaultInstance())
+                          .setSnapshots(metadata.snapshotSet())
+                          .setExpansion(metadata.expansionMap())
+                          .addAllObligations(metadata.obligations())
                           .build();
 
                   return BeginQueryResponse.newBuilder().setQuery(descriptor).build();

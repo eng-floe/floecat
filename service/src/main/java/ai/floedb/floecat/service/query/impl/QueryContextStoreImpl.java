@@ -85,8 +85,15 @@ public class QueryContextStoreImpl implements QueryContextStore {
 
   @Override
   public void put(QueryContext ctx) {
-    // Insert only if absent
-    cache.asMap().compute(ctx.getQueryId(), (k, existing) -> existing != null ? existing : ctx);
+    putIfAbsent(ctx);
+  }
+
+  @Override
+  public boolean putIfAbsent(QueryContext ctx) {
+    return cache
+            .asMap()
+            .compute(ctx.getQueryId(), (k, existing) -> existing != null ? existing : ctx)
+        == ctx;
   }
 
   @Override

@@ -34,6 +34,13 @@ public interface QueryContextStore extends AutoCloseable {
   /** Insert a new context only if one does not already exist. */
   void put(QueryContext ctx);
 
+  /**
+   * Insert a new context only if one does not already exist.
+   *
+   * @return true if the context was inserted, false if the id already exists
+   */
+  boolean putIfAbsent(QueryContext ctx);
+
   /** Extend TTL of an existing active context. */
   Optional<QueryContext> extendLease(String queryId, long requestedExpiresAtMs);
 
