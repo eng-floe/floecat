@@ -178,6 +178,9 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
   }
 
   static long minExpirySeconds(long expiresInSeconds) {
-    return Math.max(TimeUnit.MINUTES.toSeconds(5), expiresInSeconds);
+    if (expiresInSeconds <= 0) {
+      return TimeUnit.MINUTES.toSeconds(5);
+    }
+    return expiresInSeconds;
   }
 }
