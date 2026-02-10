@@ -19,13 +19,11 @@ package ai.floedb.floecat.extensions.floedb.pgcatalog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
@@ -109,16 +107,8 @@ final class PgNamespaceScannerTest {
   }
 
   private static NamespaceNode namespace(String name, Map<EngineHintKey, EngineHint> engineHints) {
-
-    ResourceId nsId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("pg:" + name)
-            .build();
-
     return new NamespaceNode(
-        nsId,
+        PgCatalogTestIds.namespace(name),
         1,
         Instant.EPOCH,
         catalogId(),
@@ -130,10 +120,6 @@ final class PgNamespaceScannerTest {
   }
 
   private static ResourceId catalogId() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("pg")
-        .build();
+    return PgCatalogTestIds.catalog();
   }
 }

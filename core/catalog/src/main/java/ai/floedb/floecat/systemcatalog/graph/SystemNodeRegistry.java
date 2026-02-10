@@ -64,6 +64,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
@@ -152,7 +153,7 @@ public class SystemNodeRegistry {
     long version = versionFromFingerprint(catalog.fingerprint());
     String normalizedKind = canonical.normalizedKind();
     String normalizedVersion = canonical.normalizedVersion();
-    ResourceId catalogId = systemCatalogId(normalizedKind);
+    ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
     List<SystemNamespaceDef> namespaceDefs =
@@ -745,16 +746,17 @@ public class SystemNodeRegistry {
    * the identity string strategy (canonical name vs overload-safe signature).
    */
   public static ResourceId resourceId(String engineKind, SystemObjectDef def) {
-    String suffix = SignatureUtil.identityString(def);
     if (def == null) {
       return resourceId(engineKind, ResourceKind.RK_UNSPECIFIED, "");
     }
-    return resourceId(engineKind, def.kind(), suffix);
+    String signature = SignatureUtil.identityString(def);
+    return resourceId(engineKind, def.kind(), signature);
   }
 
   /** ResourceId builder for objects identified by NameRef only (no overloads). */
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
-    return resourceId(engineKind, kind, NameRefUtil.canonical(name));
+    String canonical = NameRefUtil.canonical(name);
+    return resourceId(engineKind, kind, canonical);
   }
 
   /**
@@ -764,15 +766,21 @@ public class SystemNodeRegistry {
    * or other identifiers.
    */
   public static ResourceId resourceId(String engineKind, ResourceKind kind, String idSuffix) {
-    String engine =
-        (engineKind == null || engineKind.isBlank())
-            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
-            : engineKind;
+    String normalizedEngine = SystemResourceIdGenerator.normalizeEngine(engineKind);
+    String canonicalSignature = idSuffix == null ? "" : idSuffix;
+    byte[] base = SystemResourceIdGenerator.base(kind, canonicalSignature);
+    byte[] masked =
+        SystemResourceIdGenerator.xor(base, SystemResourceIdGenerator.mask(normalizedEngine));
+    UUID uuid = SystemResourceIdGenerator.uuidFromBytes(masked);
     return ResourceId.newBuilder()
         .setAccountId(SYSTEM_ACCOUNT)
         .setKind(kind)
-        .setId(engine + ":" + (idSuffix == null ? "" : idSuffix))
+        .setId(uuid.toString())
         .build();
+  }
+
+  public static ResourceId systemCatalogContainerId(String engineKind) {
+    return resourceId(engineKind, ResourceKind.RK_CATALOG, "");
   }
 
   /**
@@ -950,18 +958,6 @@ public class SystemNodeRegistry {
     LOG.warnf(
         "Skipping system %s %s because namespace %s is missing",
         objectType, canonical, namespaceKey);
-  }
-
-  private static ResourceId systemCatalogId(String engineKind) {
-    String id =
-        (engineKind == null || engineKind.isBlank())
-            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
-            : engineKind;
-    return ResourceId.newBuilder()
-        .setAccountId(SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId(id)
-        .build();
   }
 
   private static <T extends GraphNode> Map<ResourceId, List<T>> freezeNamespaceMap(

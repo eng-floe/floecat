@@ -19,16 +19,16 @@ package ai.floedb.floecat.extensions.floedb.pgcatalog;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.TypeNode;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.Map;
@@ -148,12 +148,7 @@ final class PgTypeScannerTest {
 
   private static TypeNode type(String name, Map<EngineHintKey, EngineHint> engineHints) {
 
-    ResourceId typeId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_TYPE)
-            .setId("pg:" + name)
-            .build();
+    ResourceId typeId = PgCatalogTestIds.type(asNameRef(name));
 
     return new TypeNode(
         typeId,
@@ -168,10 +163,14 @@ final class PgTypeScannerTest {
   }
 
   private static ResourceId catalogId() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("pg")
-        .build();
+    return PgCatalogTestIds.catalog();
+  }
+
+  private static NameRef asNameRef(String qualified) {
+    if (qualified == null || qualified.isBlank()) {
+      return NameRef.getDefaultInstance();
+    }
+    String[] parts = qualified.split("\\.");
+    return NameRefUtil.name(parts);
   }
 }

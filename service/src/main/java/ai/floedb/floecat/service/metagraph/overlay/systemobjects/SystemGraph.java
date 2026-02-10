@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -493,15 +492,7 @@ public final class SystemGraph {
   }
 
   private static ResourceId systemCatalogId(String engineKind) {
-    String id =
-        (engineKind == null || engineKind.isBlank())
-            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
-            : engineKind;
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId(id)
-        .build();
+    return SystemNodeRegistry.systemCatalogContainerId(engineKind);
   }
 
   private static long versionFromFingerprint(String fingerprint) {

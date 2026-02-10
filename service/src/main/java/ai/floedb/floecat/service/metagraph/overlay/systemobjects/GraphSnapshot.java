@@ -128,7 +128,13 @@ public final class GraphSnapshot {
    * @param id ResourceId of the node
    */
   public Optional<GraphNode> resolve(ResourceId id) {
-    return Optional.ofNullable(nodesById.get(id));
+    GraphNode node = nodesById.get(id);
+    if (node != null) {
+      return Optional.of(node);
+    }
+    return Optional.ofNullable(SystemCatalogTranslator.normalizeSystemId(id))
+        .map(nodesById::get)
+        .flatMap(Optional::ofNullable);
   }
 
   /** Resolves a catalog node by its ResourceId. */

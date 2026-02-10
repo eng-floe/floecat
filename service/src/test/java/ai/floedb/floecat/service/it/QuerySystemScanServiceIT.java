@@ -40,6 +40,7 @@ import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -98,11 +99,8 @@ public class QuerySystemScanServiceIT {
         (engineKind == null || engineKind.isBlank())
             ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
             : engineKind;
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_TABLE)
-        .setId(kind + ":" + schema + "." + table)
-        .build();
+    return SystemNodeRegistry.resourceId(
+        kind, ResourceKind.RK_TABLE, NameRefUtil.name(schema, table));
   }
 
   private String beginQuery(ResourceId catalogId) {
