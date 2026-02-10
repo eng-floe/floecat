@@ -40,6 +40,7 @@ import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -545,6 +546,7 @@ class PlannerStatsBundleServiceTest {
       super(
           pointerStore,
           blobStore,
+          PointerOverlay.NOOP,
           /* smartThreshold= */ 2,
           /* scanColumnsPerPage= */ 5,
           /* maxScanPages= */ 5);
@@ -564,6 +566,7 @@ class PlannerStatsBundleServiceTest {
       super(
           pointerStore,
           blobStore,
+          PointerOverlay.NOOP,
           /* smartThreshold= */ 2,
           /* scanColumnsPerPage= */ 1,
           /* maxScanPages= */ 1);

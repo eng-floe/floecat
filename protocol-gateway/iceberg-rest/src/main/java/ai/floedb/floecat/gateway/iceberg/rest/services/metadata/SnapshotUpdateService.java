@@ -318,6 +318,54 @@ public class SnapshotUpdateService {
     return null;
   }
 
+  public Response validateSnapshotUpdates(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return null;
+    }
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if ("add-snapshot".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> snapshot =
+            update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (snapshot == null || snapshot.isEmpty()) {
+          return validationError("add-snapshot requires snapshot");
+        }
+        Long snapshotId = asLong(snapshot.get("snapshot-id"));
+        if (snapshotId == null) {
+          return validationError("add-snapshot requires snapshot-id");
+        }
+      } else if ("remove-snapshots".equals(action)) {
+        List<Long> ids = asLongList(update.get("snapshot-ids"));
+        if (ids.isEmpty()) {
+          return validationError("remove-snapshots requires snapshot-ids");
+        }
+      } else if ("set-snapshot-ref".equals(action)) {
+        String refName = asString(update.get("ref-name"));
+        if (refName == null || refName.isBlank()) {
+          return validationError("set-snapshot-ref requires ref-name");
+        }
+        String type = asString(update.get("type"));
+        if (type == null || type.isBlank()) {
+          return validationError("set-snapshot-ref requires type");
+        }
+        Long pointedSnapshot = asLong(update.get("snapshot-id"));
+        if (pointedSnapshot == null) {
+          return validationError("set-snapshot-ref requires snapshot-id");
+        }
+      } else if ("remove-snapshot-ref".equals(action)) {
+        String ref = asString(update.get("ref-name"));
+        if (ref == null || ref.isBlank()) {
+          return validationError("remove-snapshot-ref requires ref-name");
+        }
+      }
+    }
+    return null;
+  }
+
   Response ensureSnapshotExists(
       TableGatewaySupport tableSupport,
       ResourceId tableId,

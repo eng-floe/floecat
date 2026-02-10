@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -38,15 +39,21 @@ public class SnapshotRepository {
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
 
   @Inject
-  public SnapshotRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public SnapshotRepository(
+      PointerStore pointerStore, BlobStore blobStore, PointerOverlay overlay) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            overlay,
             Schemas.SNAPSHOT,
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf");
+  }
+
+  public SnapshotRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, PointerOverlay.NOOP);
   }
 
   public void create(Snapshot snapshot) {

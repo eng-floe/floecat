@@ -43,6 +43,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
+  protected PointerOverlay overlay;
 
   public static final int CAS_MAX = 10;
 
@@ -95,11 +96,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected BaseResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
+      PointerOverlay overlay,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
     this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
     this.blobStore = Objects.requireNonNull(blobStore, "blobs");
+    this.overlay = overlay == null ? PointerOverlay.NOOP : overlay;
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
@@ -113,29 +116,32 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
 
     var pointer = pointerStoreOpt.get();
+    var effectivePtr =
+        overlay == null ? pointer : overlay.resolveEffectivePointer(key, pointer).orElse(pointer);
     byte[] bytes;
 
     try {
-      bytes = blobStore.get(pointer.getBlobUri());
+      bytes = blobStore.get(effectivePtr.getBlobUri());
       if (bytes == null) {
         if (pointerChangedOrDeleted(key, pointer)) {
           return Optional.empty();
         }
         throw new CorruptionException(
-            "dangling pointer, missing blob: " + pointer.getBlobUri(), null);
+            "dangling pointer, missing blob: " + effectivePtr.getBlobUri(), null);
       }
       return Optional.of(parser.parse(bytes));
     } catch (StorageNotFoundException snf) {
       if (pointerChangedOrDeleted(key, pointer)) {
         return Optional.empty();
       }
-      throw new CorruptionException("dangling pointer, missing blob: " + pointer.getBlobUri(), snf);
+      throw new CorruptionException(
+          "dangling pointer, missing blob: " + effectivePtr.getBlobUri(), snf);
     } catch (InvalidProtocolBufferException ipbe) {
-      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), ipbe);
+      throw new CorruptionException("parse failed: " + effectivePtr.getBlobUri(), ipbe);
     } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + pointer.getBlobUri());
+      throw new AbortRetryableException("blob read retryable: " + effectivePtr.getBlobUri());
     } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + effectivePtr.getBlobUri(), e);
     }
   }
 
@@ -274,13 +280,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
+    var effective = new ArrayList<Pointer>(rows.size());
     for (var row : rows) {
-      uris.add(row.getBlobUri());
+      Pointer eff =
+          overlay == null ? row : overlay.resolveEffectivePointer(row.getKey(), row).orElse(row);
+      effective.add(eff);
+      uris.add(eff.getBlobUri());
     }
 
     var blobsMap = blobStore.getBatch(uris);
-    var blobs = new ArrayList<T>(rows.size());
-    for (var row : rows) {
+    var blobs = new ArrayList<T>(effective.size());
+    for (var row : effective) {
       byte[] bytes = blobsMap.get(row.getBlobUri());
       if (bytes == null) {
         continue;
