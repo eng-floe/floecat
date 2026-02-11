@@ -44,7 +44,7 @@
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-connectors-common</artifactId>
@@ -59,7 +59,6 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
-      <version>${version.iceberg}</version>
       <exclusions>
         <exclusion>
           <groupId>io.airlift</groupId>
@@ -71,13 +70,11 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-aws</artifactId>
-      <version>${version.iceberg}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
-      <version>${version.hadoop}</version>
       <exclusions>
         <exclusion>
           <groupId>org.apache.httpcomponents</groupId>
@@ -193,7 +190,6 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>${version.junit.jupiter}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

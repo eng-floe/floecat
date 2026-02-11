@@ -69,7 +69,6 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
-
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
@@ -94,12 +93,10 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
-      <version>${version.iceberg}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-aws</artifactId>
-      <version>${version.iceberg}</version>
     </dependency>
 
     <dependency>
@@ -179,7 +176,6 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${version.quarkus}</version>
         <executions>
           <execution>
             <goals>
@@ -191,7 +187,6 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>${version.plugin.build.helper}</version>
         <executions>
           <execution>
             <id>add-integration-test-sources</id>
@@ -224,7 +219,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>${version.plugin.surefire}</version>
         <configuration>
           <includes>
             <include>**/*Test.java</include>
@@ -236,7 +230,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>${version.plugin.failsafe}</version>
         <executions>
           <execution>
             <goals>
