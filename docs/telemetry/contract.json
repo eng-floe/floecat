@@ -1,0 +1,128 @@
+[
+  {
+    "name": "cache.hits",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
+    "name": "cache.misses",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
+    "name": "cache.size",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
+    "name": "gc.collections",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "gc.pause",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "observability.dropped.tags.total",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "rpc.active",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "rpc.errors",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "rpc.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "rpc.requests",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["account", "component", "operation", "status"],
+    "allowedTags": ["account", "component", "operation", "status"]
+  },
+  {
+    "name": "rpc.retries",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "store.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "store.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "store.requests",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  }
+]
