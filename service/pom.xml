@@ -27,7 +27,6 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <iceberg.version>1.9.2</iceberg.version>
     <test.jvm.args.extra>--add-opens java.base/sun.nio.ch=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
   </properties>
 
@@ -36,7 +35,7 @@
       <dependency>
         <groupId>io.quarkus.platform</groupId>
         <artifactId>quarkus-bom</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -81,7 +80,7 @@
     <dependency>
       <groupId>com.github.ben-manes.caffeine</groupId>
       <artifactId>caffeine</artifactId>
-      <version>3.2.3</version>
+      <version>${version.caffeine}</version>
     </dependency>
 
     <dependency>
@@ -97,7 +96,7 @@
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
-      <version>3.27.7</version>
+      <version>${version.assertj}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -129,7 +128,7 @@
       <artifactId>floecat-connectors-common</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-extension-floedb</artifactId>
@@ -176,7 +175,7 @@
       <artifactId>floecat-storage-aws</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-metagraph</artifactId>
@@ -218,29 +217,29 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>${mockito.version}</version>
+      <version>${version.mockito}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-junit-jupiter</artifactId>
-      <version>${mockito.version}</version>
+      <version>${version.mockito}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.tngtech.archunit</groupId>
       <artifactId>archunit-junit5-engine</artifactId>
-      <version>1.1.0</version>
+      <version>${version.archunit}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
 
   <build>
     <plugins>
-    <plugin>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-maven-plugin</artifactId>
-      <version>${quarkus.platform.version}</version>
+      <plugin>
+        <groupId>io.quarkus</groupId>
+        <artifactId>quarkus-maven-plugin</artifactId>
+        <version>${version.quarkus}</version>
         <executions>
           <execution>
             <goals>
@@ -280,7 +279,7 @@
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>3.5.2</version>
+        <version>${version.plugin.jandex}</version>
         <executions>
           <execution>
             <id>make-index</id>
@@ -312,7 +311,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.4</version>
+        <version>${version.plugin.surefire}</version>
         <configuration>
           <includes>
             <include>**/*Test.java</include>
@@ -326,7 +325,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>3.5.4</version>
+        <version>${version.plugin.failsafe}</version>
         <executions>
           <execution>
             <goals>

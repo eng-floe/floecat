@@ -26,18 +26,12 @@
 
   <artifactId>floecat-connectors-iceberg</artifactId>
 
-  <properties>
-    <iceberg.version>1.10.0</iceberg.version>
-    <hadoop.version>3.4.2</hadoop.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
-  </properties>
-
   <dependencyManagement>
     <dependencies>
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>bom</artifactId>
-        <version>${aws.sdk.version}</version>
+        <version>${version.aws.sdk}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -65,7 +59,7 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
-      <version>${iceberg.version}</version>
+      <version>${version.iceberg}</version>
       <exclusions>
         <exclusion>
           <groupId>io.airlift</groupId>
@@ -77,13 +71,13 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-aws</artifactId>
-      <version>${iceberg.version}</version>
+      <version>${version.iceberg}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
-      <version>${hadoop.version}</version>
+      <version>${version.hadoop}</version>
       <exclusions>
         <exclusion>
           <groupId>org.apache.httpcomponents</groupId>
@@ -119,7 +113,7 @@
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-aws</artifactId>
-      <version>${hadoop.version}</version>
+      <version>${version.hadoop}</version>
       <exclusions>
         <exclusion>
           <groupId>software.amazon.awssdk</groupId>
@@ -151,7 +145,7 @@
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client-api</artifactId>
-      <version>${hadoop.version}</version>
+      <version>${version.hadoop}</version>
       <exclusions>
         <exclusion>
           <groupId>org.slf4j</groupId>
@@ -199,7 +193,7 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.12.2</version>
+      <version>${version.junit.jupiter}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
