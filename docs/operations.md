@@ -46,9 +46,30 @@ Flags:
 - **Logging** – JSON console logs plus rotating files under `log/`. Audit logs route gRPC request
   summaries to `log/audit.json`; see [`docs/log.md`](log.md).
 - **Metrics** – Micrometer/Prometheus exporters expose gRPC, storage, and GC metrics at the
-  `/q/metrics` endpoint.
+  `/q/metrics` endpoint (see the telemetry hub contract in `docs/telemetry/contract.md`).
 - **Tracing** – OpenTelemetry (TraceContext propagator) is enabled; export pipelines can be wired by
   overriding `quarkus.otel.traces.exporter`.
+
+### Telemetry hub configuration
+The service now uses the telemetry hub core + Micrometer backend. The following flags are available in
+`service/src/main/resources/application.properties`:
+
+```
+telemetry.strict=false
+telemetry.exporters=prometheus,otlp
+telemetry.contract.version=v1
+%dev.telemetry.strict=true
+%test.telemetry.strict=true
+```
+
+These settings keep production lenient (dropped-tag counters are exposed) while blowing up early in dev/test
+when metrics violate their contract. Run the docgen tool if you change any metrics to regenerate the catalog:
+
+```
+mvn -pl telemetry-hub/tool-docgen -am process-classes
+```
+
+Documented metrics are listed in `docs/telemetry/contract.md` and generated JSON `docs/telemetry/contract.json`.
 
 Configuration flags are documented per module (for example storage backend selection in
 [`docs/storage-spi.md`](storage-spi.md), GC cadence in [`docs/service.md`](service.md),

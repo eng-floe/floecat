@@ -66,9 +66,9 @@ public final class RpcMetrics extends BaseMetrics {
   }
 
   public ObservationScopeHolder observe(Tag... tags) {
-    Tag[] scopeTags = scopeTags(tags);
     return new ObservationScopeHolder(
-        observability.observe(Observability.Category.RPC, component(), operation(), scopeTags));
+        observability.observe(
+            Observability.Category.RPC, component(), operation(), scopeTags(tags)));
   }
 
   /** Wrapper around {@link Observability} scope that decrements the active gauge when closed. */

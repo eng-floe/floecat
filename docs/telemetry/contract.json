@@ -27,6 +27,204 @@
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
   {
+    "name": "floecat.service.cache.accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.cache.enabled",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.cache.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.cache.load.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": ["result"]
+  },
+  {
+    "name": "floecat.service.cache.max.size",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.cas.enabled",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.cas.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.cas.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.cas.running",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.idempotency.enabled",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.idempotency.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.idempotency.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.idempotency.running",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.pointer.enabled",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.pointer.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.pointer.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.gc.pointer.running",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.hint.cache.hits",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.hint.cache.misses",
+    "type": "COUNTER",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.hint.cache.weight",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.storage.account.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
+    "name": "floecat.service.storage.account.pointers",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
     "name": "gc.collections",
     "type": "COUNTER",
     "unit": "count",

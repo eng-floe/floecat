@@ -22,11 +22,14 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Weigher;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -45,35 +48,41 @@ public class EngineHintManager {
 
   private final List<EngineHintProvider> providers;
   private final Cache<HintCacheKey, EngineHint> cache;
-  private final Counter hitCounter;
-  private final Counter missCounter;
+  private final Observability observability;
+  private final MetricId hitMetric;
+  private final MetricId missMetric;
+  private final MetricId weightMetric;
 
   @Inject
   public EngineHintManager(
       Instance<EngineHintProvider> providers,
-      MeterRegistry meterRegistry,
+      Observability observability,
       @ConfigProperty(name = "floecat.metadata.hint.cache-max-weight", defaultValue = "67108864")
           long maxWeightBytes) {
     this(
         providers == null ? List.of() : providers.stream().toList(),
-        meterRegistry,
+        observability,
         maxWeightBytes,
         false); // always async in prod
   }
 
   /** Production constructor */
   EngineHintManager(
-      List<EngineHintProvider> providers, MeterRegistry meterRegistry, long maxWeightBytes) {
-    this(providers, meterRegistry, maxWeightBytes, false);
+      List<EngineHintProvider> providers, Observability observability, long maxWeightBytes) {
+    this(providers, observability, maxWeightBytes, false);
   }
 
   /** Test-only constructor enabling synchronous eviction */
   EngineHintManager(
       List<EngineHintProvider> providers,
-      MeterRegistry meterRegistry,
+      Observability observability,
       long maxWeightBytes,
       boolean forceSynchronous) {
     this.providers = List.copyOf(providers == null ? List.of() : providers);
+    this.observability = Objects.requireNonNull(observability, "observability");
+    this.hitMetric = ServiceMetrics.Hint.CACHE_HITS;
+    this.missMetric = ServiceMetrics.Hint.CACHE_MISSES;
+    this.weightMetric = ServiceMetrics.Hint.CACHE_WEIGHT;
 
     long bounded = Math.max(1, Math.min(Integer.MAX_VALUE, maxWeightBytes));
 
@@ -91,16 +100,7 @@ public class EngineHintManager {
     }
 
     this.cache = builder.build();
-
-    if (meterRegistry != null) {
-      this.hitCounter = meterRegistry.counter("floecat.metadata.hint.cache", "result", "hit");
-      this.missCounter = meterRegistry.counter("floecat.metadata.hint.cache", "result", "miss");
-      meterRegistry.gauge(
-          "floecat.metadata.hint.cache.weight_bytes", cache, EngineHintManager::weightedSize);
-    } else {
-      this.hitCounter = null;
-      this.missCounter = null;
-    }
+    observability.gauge(weightMetric, () -> weightedSize(cache), "Engine hint cache weight bytes");
   }
 
   private static double weightedSize(Cache<HintCacheKey, EngineHint> cache) {
@@ -151,14 +151,10 @@ public class EngineHintManager {
     HintCacheKey key = new HintCacheKey(node.id(), node.version(), engineHintKey, fingerprint);
     EngineHint cached = cache.getIfPresent(key);
     if (cached != null) {
-      if (hitCounter != null) {
-        hitCounter.increment();
-      }
+      recordHit();
       return Optional.of(cached);
     }
-    if (missCounter != null) {
-      missCounter.increment();
-    }
+    recordMiss();
     Optional<EngineHint> computed;
     try {
       computed = provider.get().compute(node, engineKey, payloadType, correlationId);
@@ -191,6 +187,14 @@ public class EngineHintManager {
   /** Test-only: exposes the Caffeine cache for inspection in unit tests. */
   Cache<HintCacheKey, EngineHint> cache() {
     return cache;
+  }
+
+  private void recordHit() {
+    observability.counter(hitMetric, 1, Tag.of(TagKey.RESULT, "hit"));
+  }
+
+  private void recordMiss() {
+    observability.counter(missMetric, 1, Tag.of(TagKey.RESULT, "miss"));
   }
 
   static final record HintCacheKey(

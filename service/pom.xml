@@ -70,16 +70,6 @@
 
     <dependency>
       <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-micrometer</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>io.quarkus</groupId>
       <artifactId>quarkus-logging-json</artifactId>
     </dependency>
 
@@ -195,6 +185,22 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-quarkus</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-backend-micrometer</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-protocol-gateway-common-test</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -226,16 +232,43 @@
 
   <build>
     <plugins>
-      <plugin>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${quarkus.platform.version}</version>
+    <plugin>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-maven-plugin</artifactId>
+      <version>${quarkus.platform.version}</version>
         <executions>
           <execution>
             <goals>
               <goal>build</goal>
             </goals>
           </execution>
+        </executions>
+    </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <executions>
+      <execution>
+        <id>telemetry-jar</id>
+        <phase>process-classes</phase>
+        <goals>
+          <goal>jar</goal>
+        </goals>
+        <configuration>
+          <classifier>telemetry</classifier>
+          <includes>
+            <include>ai/floedb/floecat/service/telemetry/**</include>
+            <include>META-INF/services/ai.floedb.floecat.telemetry.TelemetryContributor</include>
+          </includes>
+          <archive>
+            <manifest>
+              <addClasspath>false</addClasspath>
+            </manifest>
+          </archive>
+        </configuration>
+      </execution>
         </executions>
       </plugin>
 

@@ -18,9 +18,11 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import ai.floedb.floecat.telemetry.helpers.GcMetrics;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -29,6 +31,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -41,17 +44,9 @@ public class CasBlobGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
-  @Inject MeterRegistry registry;
+  @Inject Observability observability;
 
-  private Counter tickCounter;
-  private Counter accountCounter;
-  private Counter pointersScannedCounter;
-  private Counter blobsScannedCounter;
-  private Counter blobsDeletedCounter;
-  private Counter referencedCounter;
-  private Counter tablesScannedCounter;
-  private Timer tickTimer;
-  private Timer accountTimer;
+  private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
@@ -61,44 +56,23 @@ public class CasBlobGcScheduler {
 
   @PostConstruct
   void initMeters() {
-    tickCounter =
-        Counter.builder("floecat_gc_cas_ticks").description("Scheduler ticks").register(registry);
-    accountCounter =
-        Counter.builder("floecat_gc_cas_accounts")
-            .description("Accounts processed per tick")
-            .register(registry);
-    pointersScannedCounter =
-        Counter.builder("floecat_gc_cas_pointers_scanned")
-            .description("Pointers scanned by CAS GC")
-            .register(registry);
-    blobsScannedCounter =
-        Counter.builder("floecat_gc_cas_blobs_scanned")
-            .description("Blobs scanned by CAS GC")
-            .register(registry);
-    blobsDeletedCounter =
-        Counter.builder("floecat_gc_cas_blobs_deleted")
-            .description("Blobs deleted by CAS GC")
-            .register(registry);
-    referencedCounter =
-        Counter.builder("floecat_gc_cas_referenced")
-            .description("Referenced blobs discovered by CAS GC")
-            .register(registry);
-    tablesScannedCounter =
-        Counter.builder("floecat_gc_cas_tables_scanned")
-            .description("Tables scanned by CAS GC")
-            .register(registry);
-    tickTimer =
-        Timer.builder("floecat_gc_cas_tick_duration")
-            .description("Duration of CAS GC ticks")
-            .register(registry);
-    accountTimer =
-        Timer.builder("floecat_gc_cas_account_duration")
-            .description("Duration of CAS GC per account")
-            .register(registry);
-    registry.gauge("floecat_gc_cas_running", running);
-    registry.gauge("floecat_gc_cas_enabled", enabledGauge);
-    registry.gauge("floecat_gc_cas_last_tick_start_ms", lastTickStartMs);
-    registry.gauge("floecat_gc_cas_last_tick_end_ms", lastTickEndMs);
+    this.gcMetrics = new GcMetrics(observability, "service", "gc.cas", "cas");
+    registerGauges();
+  }
+
+  private void registerGauges() {
+    observability.gauge(
+        ServiceMetrics.GC.CAS_RUNNING, () -> (double) running.get(), "CAS GC running flag");
+    observability.gauge(
+        ServiceMetrics.GC.CAS_ENABLED, () -> (double) enabledGauge.get(), "CAS GC enabled");
+    observability.gauge(
+        ServiceMetrics.GC.CAS_LAST_TICK_START,
+        () -> (double) lastTickStartMs.get(),
+        "CAS GC last tick start millis");
+    observability.gauge(
+        ServiceMetrics.GC.CAS_LAST_TICK_END,
+        () -> (double) lastTickEndMs.get(),
+        "CAS GC last tick end millis");
   }
 
   void onStop(@Observes ShutdownEvent ev) {
@@ -134,7 +108,7 @@ public class CasBlobGcScheduler {
     final long now = System.currentTimeMillis();
     lastTickStartMs.set(now);
     running.set(1);
-    tickCounter.increment();
+    gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "tick"));
 
     final long maxTickMillis =
         cfg.getOptionalValue("floecat.gc.cas.max-tick-millis", Long.class).orElse(4000L);
@@ -142,7 +116,7 @@ public class CasBlobGcScheduler {
         cfg.getOptionalValue("floecat.gc.cas.accounts-page-size", Integer.class).orElse(200);
     final long deadline = now + maxTickMillis;
 
-    Timer.Sample tickSample = Timer.start(registry);
+    long tickStart = System.nanoTime();
     try {
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
@@ -151,18 +125,21 @@ public class CasBlobGcScheduler {
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
-        Timer.Sample accountSample = Timer.start(registry);
+        long accountStart = System.nanoTime();
         var result = gc.runForAccount(account.getResourceId().getId());
-        accountSample.stop(accountTimer);
-        accountCounter.increment();
-        pointersScannedCounter.increment(result.pointersScanned());
-        blobsScannedCounter.increment(result.blobsScanned());
-        blobsDeletedCounter.increment(result.blobsDeleted());
-        referencedCounter.increment(result.referenced());
-        tablesScannedCounter.increment(result.tablesScanned());
+        gcMetrics.recordCollection(
+            result.pointersScanned(), Tag.of(TagKey.RESULT, "pointers-scanned"));
+        gcMetrics.recordCollection(result.blobsScanned(), Tag.of(TagKey.RESULT, "blobs-scanned"));
+        gcMetrics.recordCollection(result.blobsDeleted(), Tag.of(TagKey.RESULT, "blobs-deleted"));
+        gcMetrics.recordCollection(result.referenced(), Tag.of(TagKey.RESULT, "referenced"));
+        gcMetrics.recordCollection(result.tablesScanned(), Tag.of(TagKey.RESULT, "tables-scanned"));
+        gcMetrics.recordPause(
+            Duration.ofNanos(System.nanoTime() - accountStart),
+            Tag.of(TagKey.RESULT, "account-run"));
       }
     } finally {
-      tickSample.stop(tickTimer);
+      gcMetrics.recordPause(
+          Duration.ofNanos(System.nanoTime() - tickStart), Tag.of(TagKey.RESULT, "tick"));
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
     }

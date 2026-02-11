@@ -48,6 +48,45 @@ class MicrometerObservabilityTest {
   }
 
   @Test
+  void strictAllowsDuplicateCanonicalTag() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.STRICT);
+    ObservationScope scope =
+        observability.observe(
+            Category.RPC,
+            "svc",
+            "op",
+            Tag.of(TagKey.COMPONENT, "svc"),
+            Tag.of(TagKey.OPERATION, "op"),
+            Tag.of(TagKey.COMPONENT, "svc-dup"),
+            Tag.of(TagKey.ACCOUNT, "acct"));
+    scope.success();
+    scope.close();
+
+    assertThat(
+            meters
+                .find("rpc.latency")
+                .tags("component", "svc", "operation", "op", "account", "acct")
+                .timer())
+        .isNotNull();
+  }
+
+  @Test
+  void strictRejectsDuplicateNonCanonicalTag() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.STRICT);
+    assertThatThrownBy(
+            () ->
+                observability.observe(
+                    Category.RPC,
+                    "svc",
+                    "op",
+                    Tag.of(TagKey.ACCOUNT, "acct"),
+                    Tag.of(TagKey.ACCOUNT, "acct-dup")))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void lenientDropsDisallowedTagAndIncrementsDroppedTagsCounter() {
     MicrometerObservability observability =
         new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);

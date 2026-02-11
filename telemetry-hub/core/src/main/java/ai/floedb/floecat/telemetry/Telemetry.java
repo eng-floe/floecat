@@ -1,11 +1,13 @@
 package ai.floedb.floecat.telemetry;
 
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.Set;
 
 /** Static facade for the shared telemetry catalog. */
@@ -15,11 +17,13 @@ public final class Telemetry {
   public static TelemetryRegistry newRegistryWithCore() {
     TelemetryRegistry registry = new TelemetryRegistry();
     registry.register(new CoreTelemetryContributor());
+    registerServiceContributors(registry);
     return registry;
   }
 
   public static void applyCore(TelemetryRegistry registry) {
     registry.register(new CoreTelemetryContributor());
+    registerServiceContributors(registry);
   }
 
   public static Optional<MetricDef> metricDef(TelemetryRegistry registry, MetricId metric) {
@@ -41,6 +45,14 @@ public final class Telemetry {
   public static Map<String, MetricDef> metricCatalog(TelemetryRegistry registry) {
     Objects.requireNonNull(registry, "registry");
     return registry.metrics();
+  }
+
+  private static void registerServiceContributors(TelemetryRegistry registry) {
+    ServiceLoader<TelemetryContributor> loader = ServiceLoader.load(TelemetryContributor.class);
+    loader.stream()
+        .map(ServiceLoader.Provider::get)
+        .sorted(Comparator.comparing(c -> c.getClass().getName()))
+        .forEach(contributor -> contributor.contribute(registry));
   }
 
   /** Tag keys shared across multiple metrics. */

@@ -14,21 +14,23 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.metrics;
+package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,7 +43,10 @@ public class StorageUsageMetrics {
   @Inject AccountRepository accounts;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject MeterRegistry registry;
+  @Inject Observability observability;
+  private final Map<String, AtomicLong> accountBytes = new ConcurrentHashMap<>();
+  private final Map<String, AtomicLong> accountPointers = new ConcurrentHashMap<>();
+  private StoreMetrics storeMetrics;
 
   @ConfigProperty(name = "floecat.metrics.storage.refresh", defaultValue = "30s")
   String refreshEvery;
@@ -55,29 +60,15 @@ public class StorageUsageMetrics {
   @ConfigProperty(name = "floecat.metrics.storage.default-avg-bytes", defaultValue = "0")
   long defaultAvgBytes;
 
-  private final Map<String, AtomicLong> accountBytes = new ConcurrentHashMap<>();
-  private final Map<String, AtomicLong> accountPointers = new ConcurrentHashMap<>();
-
-  private Counter refreshErrors;
-  private Timer refreshTimer;
-
   @PostConstruct
   void init() {
-    refreshErrors =
-        Counter.builder("account.storage.refresh.errors")
-            .description("Errors during storage metrics refresh")
-            .register(registry);
-
-    refreshTimer =
-        Timer.builder("account.storage.refresh.ms")
-            .description("Refresh duration (ms)")
-            .publishPercentiles(0.5, 0.95, 0.99)
-            .register(registry);
+    storeMetrics = new StoreMetrics(observability, "service", "storage.refresh");
   }
 
   @Scheduled(every = "${floecat.metrics.storage.refresh:30s}")
   void refresh() {
-    var sample = Timer.start(registry);
+    long refreshStart = System.nanoTime();
+    boolean error = false;
 
     try {
       String token = "";
@@ -89,46 +80,56 @@ public class StorageUsageMetrics {
 
         for (var t : page) {
           final String accountId = t.getResourceId().getId();
+          long accountStart = System.nanoTime();
           try {
             int ptrCount = pointerStore.countByPrefix(Keys.accountRootPointer(accountId));
-            setGauge(
-                accountPointers,
-                "account.pointers.count",
-                "Pointer count per account",
-                accountId,
-                ptrCount);
+            updateGauge(
+                accountPointers, ServiceMetrics.Storage.ACCOUNT_POINTERS, accountId, ptrCount);
 
             long bytes = estimateBytesForAccount(accountId, ptrCount);
-            setGauge(
-                accountBytes,
-                "account.storage.bytes",
-                "Approximate blob bytes per account",
-                accountId,
-                bytes);
+            updateGauge(accountBytes, ServiceMetrics.Storage.ACCOUNT_BYTES, accountId, bytes);
+
+            storeMetrics.recordRequest("success", Tag.of(TagKey.ACCOUNT, accountId));
+            storeMetrics.recordBytes(bytes, "success", Tag.of(TagKey.ACCOUNT, accountId));
+            storeMetrics.recordLatency(
+                Duration.ofNanos(System.nanoTime() - accountStart),
+                "success",
+                Tag.of(TagKey.ACCOUNT, accountId));
 
           } catch (Throwable e) {
-            refreshErrors.increment();
+            error = true;
+            storeMetrics.recordRequest("error", Tag.of(TagKey.ACCOUNT, accountId));
+            storeMetrics.recordLatency(
+                Duration.ofNanos(System.nanoTime() - accountStart),
+                "error",
+                Tag.of(TagKey.ACCOUNT, accountId));
           }
         }
       } while (!token.isBlank());
     } finally {
-      sample.stop(refreshTimer);
+      Duration refreshDuration = Duration.ofNanos(System.nanoTime() - refreshStart);
+      storeMetrics.recordLatency(
+          refreshDuration,
+          error ? "error" : "success",
+          Tag.of(TagKey.RESULT, error ? "error" : "success"));
     }
   }
 
-  private void setGauge(
-      Map<String, AtomicLong> map, String meterName, String desc, String accountId, long value) {
-    map.computeIfAbsent(
-            accountId,
-            tid -> {
-              var holder = new AtomicLong(0L);
-              Gauge.builder(meterName, holder, AtomicLong::get)
-                  .description(desc)
-                  .tag("account", tid)
-                  .register(registry);
-              return holder;
-            })
-        .set(value);
+  private void updateGauge(
+      Map<String, AtomicLong> map, MetricId metric, String accountId, long value) {
+    accountObservers(map, metric, accountId).set(value);
+  }
+
+  private AtomicLong accountObservers(
+      Map<String, AtomicLong> map, MetricId metric, String accountId) {
+    return map.computeIfAbsent(
+        accountId,
+        tid -> {
+          AtomicLong holder = new AtomicLong(0L);
+          observability.gauge(
+              metric, holder::get, "Storage account metric", Tag.of(TagKey.ACCOUNT, tid));
+          return holder;
+        });
   }
 
   public long estimateBytesForAccount(String accountId, int knownTotalObjects) {

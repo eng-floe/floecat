@@ -13,15 +13,21 @@
   <packaging>jar</packaging>
   <name>Telemetry Hub Docgen Tool</name>
 
-  <dependencies>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>telemetry-hub-core</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter-api</artifactId>
+    <dependencies>
+      <dependency>
+        <groupId>ai.floedb.floecat</groupId>
+        <artifactId>telemetry-hub-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ai.floedb.floecat</groupId>
+        <artifactId>floecat-service</artifactId>
+        <version>${project.version}</version>
+        <classifier>telemetry</classifier>
+      </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-api</artifactId>
       <version>5.13.4</version>
       <scope>test</scope>
     </dependency>

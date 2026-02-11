@@ -30,7 +30,7 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +44,7 @@ class EngineHintManagerTest {
   void cachesAndInvalidatesHints() {
     TestProvider provider = new TestProvider();
     EngineHintManager manager =
-        new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
+        new EngineHintManager(List.of(provider), new TestObservability(), 1024);
 
     UserTableNode node = tableNode(1L);
     var engineKey = new EngineKey("floedb", "1.0.0");
@@ -62,7 +62,7 @@ class EngineHintManagerTest {
 
   @Test
   void returnsEmptyWhenNoProvider() {
-    EngineHintManager manager = new EngineHintManager(List.of(), new SimpleMeterRegistry(), 1024);
+    EngineHintManager manager = new EngineHintManager(List.of(), new TestObservability(), 1024);
     assertThat(manager.get(tableNode(1L), new EngineKey("floedb", "1"), "missing", "cid"))
         .isEmpty();
   }
@@ -117,7 +117,7 @@ class EngineHintManagerTest {
           }
         };
 
-    var manager = new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
+    var manager = new EngineHintManager(List.of(provider), new TestObservability(), 1024);
     var key = new EngineKey("floedb", "1");
     // same node id and version
     var n = tableNode(1);
@@ -137,7 +137,7 @@ class EngineHintManagerTest {
     var p2 = new TestProvider();
 
     EngineHintManager manager =
-        new EngineHintManager(List.of(p1, p2), new SimpleMeterRegistry(), 1024);
+        new EngineHintManager(List.of(p1, p2), new TestObservability(), 1024);
 
     var node = tableNode(1);
     var key = new EngineHintKey("floedb", "1", "test");
@@ -161,7 +161,7 @@ class EngineHintManagerTest {
         };
 
     // max 600 bytes -> only one entry can fit
-    var manager = new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 600, true);
+    var manager = new EngineHintManager(List.of(provider), new TestObservability(), 600, true);
     var key = new EngineKey("f", "1");
 
     var n1 = tableNode(1);
@@ -218,8 +218,7 @@ class EngineHintManagerTest {
           }
         };
 
-    EngineHintManager manager =
-        new EngineHintManager(List.of(bad), new SimpleMeterRegistry(), 1024);
+    EngineHintManager manager = new EngineHintManager(List.of(bad), new TestObservability(), 1024);
 
     assertThatThrownBy(() -> manager.get(tableNode(1), new EngineKey("floedb", "1"), "test", "cid"))
         .isInstanceOf(RuntimeException.class)
@@ -229,8 +228,7 @@ class EngineHintManagerTest {
   @Test
   void cacheIsolatedByPayloadType() {
     TestProvider.GLOBAL_CALLS.set(0);
-    var manager =
-        new EngineHintManager(List.of(new TestProvider()), new SimpleMeterRegistry(), 1024);
+    var manager = new EngineHintManager(List.of(new TestProvider()), new TestObservability(), 1024);
     var node = tableNode(1);
     var key = new EngineKey("floedb", "1");
     manager.get(node, key, "test", "cid").orElseThrow();
@@ -245,7 +243,7 @@ class EngineHintManagerTest {
   @Test
   void unsupportedPayloadTypeNeverComputes() {
     var provider = new TestProvider();
-    var manager = new EngineHintManager(List.of(provider), new SimpleMeterRegistry(), 1024);
+    var manager = new EngineHintManager(List.of(provider), new TestObservability(), 1024);
     var node = tableNode(1);
 
     assertThat(manager.get(node, new EngineKey("floedb", "1"), "missing", "cid")).isEmpty();

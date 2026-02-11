@@ -25,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Micrometer-based {@link Observability} implementation. */
 public final class MicrometerObservability implements Observability {
@@ -37,6 +39,8 @@ public final class MicrometerObservability implements Observability {
   private final ConcurrentMap<MeterKey, Gauge> gauges = new ConcurrentHashMap<>();
 
   private final TelemetryPolicy policy;
+
+  private static final Logger LOG = LoggerFactory.getLogger(MicrometerObservability.class);
 
   public MicrometerObservability(
       MeterRegistry registry, TelemetryRegistry telemetryRegistry, TelemetryPolicy policy) {
@@ -147,15 +151,17 @@ public final class MicrometerObservability implements Observability {
 
   private List<Tag> buildScopeTags(String component, String operation, Tag... tags) {
     LinkedHashMap<String, Tag> canon = new LinkedHashMap<>();
-    canon.put(Telemetry.TagKey.COMPONENT, Tag.of(Telemetry.TagKey.COMPONENT, component));
-    canon.put(Telemetry.TagKey.OPERATION, Tag.of(Telemetry.TagKey.OPERATION, operation));
+    Tag componentTag = Tag.of(Telemetry.TagKey.COMPONENT, component);
+    Tag operationTag = Tag.of(Telemetry.TagKey.OPERATION, operation);
+    canon.put(Telemetry.TagKey.COMPONENT, componentTag);
+    canon.put(Telemetry.TagKey.OPERATION, operationTag);
     if (tags != null) {
       for (Tag tag : tags) {
         if (tag == null) {
           continue;
         }
         if (canon.containsKey(tag.key())) {
-          if (policy.isStrict()) {
+          if (policy.isStrict() && !isCanonicalTag(tag.key())) {
             throw new IllegalArgumentException("Duplicate tag key: " + tag.key());
           }
           continue;
@@ -164,6 +170,10 @@ public final class MicrometerObservability implements Observability {
       }
     }
     return List.copyOf(canon.values());
+  }
+
+  private static boolean isCanonicalTag(String key) {
+    return Telemetry.TagKey.COMPONENT.equals(key) || Telemetry.TagKey.OPERATION.equals(key);
   }
 
   private static Iterable<io.micrometer.core.instrument.Tag> micrometerTags(List<Tag> tags) {
@@ -239,18 +249,26 @@ public final class MicrometerObservability implements Observability {
         return;
       }
       closed = true;
-      if (!successCalled && error == null) {
-        if (MicrometerObservability.this.policy.isStrict()) {
-          throw new IllegalStateException(
-              "Observation scope closed without calling success() or error()");
-        }
-        return;
-      }
       Duration elapsed = Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos));
       List<Tag> latencyTags = new ArrayList<>(baseTags.size() + 3);
       latencyTags.addAll(baseTags);
       latencyTags.add(Tag.of(Telemetry.TagKey.STATUS, grpcStatus == null ? "UNKNOWN" : grpcStatus));
-      latencyTags.add(Tag.of(Telemetry.TagKey.RESULT, error != null ? "error" : "success"));
+      String resultTag;
+      boolean outcomeMissing = !successCalled && error == null;
+      if (outcomeMissing && MicrometerObservability.this.policy.isStrict()) {
+        throw new IllegalStateException(
+            "Observation closed without success() or error() in strict mode");
+      }
+      if (outcomeMissing) {
+        LOG.warn(
+            "Observation closed without explicit outcome for {}.{}; emitting result=unknown",
+            component,
+            operation);
+        resultTag = "unknown";
+      } else {
+        resultTag = (error != null) ? "error" : "success";
+      }
+      latencyTags.add(Tag.of(Telemetry.TagKey.RESULT, resultTag));
       if (error != null) {
         latencyTags.add(Tag.of(Telemetry.TagKey.EXCEPTION, error.getClass().getSimpleName()));
       }

@@ -11,12 +11,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 class MetricCatalogDocgenTest {
-  private static final Path DOC_DIR = MetricCatalogDocgen.docDir();
-
   @Test
   void generatedDocsMatchOnDisk() throws IOException {
-    Path markdown = DOC_DIR.resolve("contract.md");
-    Path json = DOC_DIR.resolve("contract.json");
+    Path markdown = MetricCatalogDocgen.docDir().resolve("contract.md");
+    Path json = MetricCatalogDocgen.docDir().resolve("contract.json");
 
     TelemetryRegistry registry = Telemetry.newRegistryWithCore();
     Map<String, MetricDef> catalog = Telemetry.metricCatalog(registry);
@@ -29,7 +27,7 @@ class MetricCatalogDocgenTest {
     Assertions.assertEquals(
         expectedMd,
         actualMd,
-        "Markdown contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes`");
+        "Markdown contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes` to refresh it.");
 
     String expectedJson = MetricCatalogDocgen.buildJson(catalog);
     String actualJson = Files.readString(json);
@@ -37,6 +35,6 @@ class MetricCatalogDocgenTest {
     Assertions.assertEquals(
         expectedJson,
         actualJson,
-        "JSON contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes`");
+        "JSON contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes` to refresh it.");
   }
 }
