@@ -170,7 +170,9 @@ Extension points:
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
-  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`.
+  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`. `BeginQuery`
+  optionally accepts a client-specified `query_id` plus `common.QueryInput` records so lifecycle can
+  pre-pin snapshots/expansions for deterministic replay.
 
 Secrets Manager integration (tags + optional per-account assume-role) is documented in
 [`docs/secrets-manager.md`](secrets-manager.md).

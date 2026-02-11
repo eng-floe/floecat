@@ -98,8 +98,13 @@ engine release.
 3. Connectors written against the SPI return `ScanFile` and stats payloads that exactly match the
   protos defined here; the reconciler pipes them back via the catalog/statistics services.
 4. Planners call `QueryService.BeginQuery` to create query leases, optionally extend them via
-  `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
-  `EndQuery` once execution is complete.
+   `RenewQuery`, call `FetchScanBundle` per table when they need manifests, and close leases out via
+   `EndQuery` once execution is complete.
+
+   * BeginQuery now allows clients to provide an optional `query_id` (duplicates are rejected) and
+     a list of `common.QueryInput` records so the lifecycle service can pin snapshots and expansions
+     at creation time for deterministic replay. Schema resolution and planning still occur in the
+     downstream services.
 
 _State diagram for the query lease protocol:_
 

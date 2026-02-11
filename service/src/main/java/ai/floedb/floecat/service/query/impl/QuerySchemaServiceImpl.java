@@ -24,6 +24,7 @@ import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
+import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.QuerySchemaService;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -104,10 +105,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                   }
 
                   // Compute expansions + obligations and store updated context
-                  byte[] expansionBytes =
-                      expansions.computeExpansion(correlationId(), request.getInputsList());
+                  ExpansionMap expansionMap =
+                      expansions.computeExpansion(correlationId(), List.copyOf(rr.resolved()));
+                  byte[] expansionBytes = expansionMap.toByteArray();
 
-                  byte[] obligationsBytes = obligations.resolveObligations(correlationId(), pins);
+                  var obligationsResult = obligations.resolveObligations(correlationId(), pins);
+                  byte[] obligationsBytes = obligationsResult.bytes();
 
                   var updated =
                       ctx.toBuilder()

@@ -337,6 +337,15 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
+    public boolean putIfAbsent(QueryContext ctx) {
+      if (contexts.containsKey(ctx.getQueryId())) {
+        return false;
+      }
+      contexts.put(ctx.getQueryId(), ctx);
+      return true;
+    }
+
+    @Override
     public Optional<QueryContext> extendLease(String queryId, long requestedExpiresAtMs) {
       return Optional.empty();
     }
