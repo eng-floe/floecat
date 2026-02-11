@@ -50,6 +50,26 @@ public final class MetricId {
   }
 
   @Override
+  public boolean equals(Object obj) {
+    if (this == obj) {
+      return true;
+    }
+    if (!(obj instanceof MetricId other)) {
+      return false;
+    }
+    return name.equals(other.name)
+        && type == other.type
+        && unit.equals(other.unit)
+        && since.equals(other.since)
+        && origin.equals(other.origin);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(name, type, unit, since, origin);
+  }
+
+  @Override
   public String toString() {
     return name + "(" + type + ")";
   }

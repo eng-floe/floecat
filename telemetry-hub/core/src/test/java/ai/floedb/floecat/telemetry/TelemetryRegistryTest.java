@@ -41,6 +41,24 @@ class TelemetryRegistryTest {
     assertThat(snapshot).doesNotContainKey("metric.four");
   }
 
+  @Test
+  void contributorRegistrationIsAtomic() {
+    registry.register(new CoreTelemetryContributor());
+    TelemetryContributor badContributor =
+        target -> target.register(new MetricDef(sampleId("rpc.errors"), Set.of(), Set.of()));
+
+    assertThatThrownBy(() -> registry.register(badContributor))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    assertThat(registry.metrics()).containsKey("rpc.errors");
+  }
+
+  @Test
+  void nullContributorThrows() {
+    assertThatThrownBy(() -> registry.register((TelemetryContributor) null))
+        .isInstanceOf(NullPointerException.class);
+  }
+
   private MetricDef sampleDef(String name) {
     return new MetricDef(sampleId(name), Set.of(), Set.of());
   }

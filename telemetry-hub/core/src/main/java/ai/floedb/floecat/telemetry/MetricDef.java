@@ -24,7 +24,18 @@ public final class MetricDef {
     if (tags == null || tags.isEmpty()) {
       return Collections.emptySet();
     }
-    return Collections.unmodifiableSet(new HashSet<>(tags));
+    Set<String> normalized = new HashSet<>();
+    for (String tag : tags) {
+      normalized.add(requireNonBlank(tag, "tag"));
+    }
+    return Collections.unmodifiableSet(normalized);
+  }
+
+  private static String requireNonBlank(String value, String label) {
+    if (value == null || value.isBlank()) {
+      throw new IllegalArgumentException(label + " entries must not be blank");
+    }
+    return value;
   }
 
   public MetricId id() {
