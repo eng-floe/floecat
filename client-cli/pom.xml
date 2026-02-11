@@ -32,7 +32,7 @@
       <dependency>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-bom</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -57,13 +57,13 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
-      <version>5.13.4</version>
+      <version>${version.junit.jupiter}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
-      <version>5.13.4</version>
+      <version>${version.junit.jupiter}</version>
       <scope>test</scope>
     </dependency>
 
@@ -76,19 +76,19 @@
     <dependency>
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
-      <version>4.7.7</version>
+      <version>${version.picocli}</version>
     </dependency>
 
     <dependency>
       <groupId>org.jline</groupId>
       <artifactId>jline</artifactId>
-      <version>3.30.6</version>
+      <version>${version.jline}</version>
     </dependency>
 
     <dependency>
       <groupId>org.antlr</groupId>
       <artifactId>antlr4-runtime</artifactId>
-      <version>4.13.2</version>
+      <version>${version.antlr4}</version>
     </dependency>
   </dependencies>
 
@@ -97,7 +97,7 @@
       <plugin>
         <groupId>org.antlr</groupId>
         <artifactId>antlr4-maven-plugin</artifactId>
-        <version>4.13.2</version>
+        <version>${version.plugin.antlr4}</version>
         <executions>
           <execution>
             <id>generate-antlr-sources</id>
@@ -116,7 +116,7 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <executions>
           <execution>
             <goals>
@@ -131,7 +131,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.4</version>
+        <version>${version.plugin.surefire}</version>
         <configuration>
           <reuseForks>true</reuseForks>
           <forkCount>1</forkCount>

@@ -54,13 +54,13 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
-      <version>${quarkus.platform.version}</version>
+      <version>${version.quarkus}</version>
     </dependency>
 
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-scheduler</artifactId>
-      <version>${quarkus.platform.version}</version>
+      <version>${version.quarkus}</version>
     </dependency>
   </dependencies>
 
@@ -69,7 +69,7 @@
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>3.5.2</version>
+        <version>${version.plugin.jandex}</version>
         <executions>
           <execution>
             <id>make-index</id>

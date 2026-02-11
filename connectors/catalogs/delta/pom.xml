@@ -26,19 +26,12 @@
 
   <artifactId>floecat-connectors-delta</artifactId>
 
-  <properties>
-    <delta.kernel.api.version>4.0.0</delta.kernel.api.version>
-    <hadoop.version>3.4.2</hadoop.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
-    <parquet.version>1.16.0</parquet.version>
-  </properties>
-
   <dependencyManagement>
     <dependencies>
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>bom</artifactId>
-        <version>${aws.sdk.version}</version>
+        <version>${version.aws.sdk}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -66,18 +59,18 @@
     <dependency>
       <groupId>io.delta</groupId>
       <artifactId>delta-kernel-api</artifactId>
-      <version>${delta.kernel.api.version}</version>
+      <version>${version.delta.kernel.api}</version>
     </dependency>
     <dependency>
       <groupId>io.delta</groupId>
       <artifactId>delta-kernel-defaults</artifactId>
-      <version>${delta.kernel.api.version}</version>
+      <version>${version.delta.kernel.api}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-hadoop</artifactId>
-      <version>${parquet.version}</version>
+      <version>${version.parquet}</version>
     </dependency>
 
     <dependency>

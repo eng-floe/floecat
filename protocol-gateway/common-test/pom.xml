@@ -33,12 +33,12 @@
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
-      <version>${iceberg.version}</version>
+      <version>${version.iceberg}</version>
     </dependency>
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
-      <version>${aws.sdk.version}</version>
+      <version>${version.aws.sdk}</version>
     </dependency>
   </dependencies>
 </project>
