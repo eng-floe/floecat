@@ -30,11 +30,6 @@
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
-  <properties>
-    <iceberg.version>1.10.0</iceberg.version>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
-  </properties>
-
   <modules>
     <module>common-test</module>
     <module>iceberg-rest</module>

@@ -35,9 +35,6 @@
     <!-- Properties                                                       -->
     <!-- ================================================================ -->
     <properties>
-        <!-- Canonical protobuf version used for both protoc + runtime -->
-        <protobuf.version>4.32.1</protobuf.version>
-
         <!-- Java version inherited from parent -->
         <maven.compiler.source>${proto.compiler.release}</maven.compiler.source>
         <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
@@ -69,34 +66,30 @@
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>${protobuf.version}</version>
         </dependency>
 
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java-util</artifactId>
-            <version>${protobuf.version}</version>
+            <version>${version.protobuf}</version>
         </dependency>
 
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>5.13.4</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>5.13.4</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>3.27.7</version>
             <scope>test</scope>
         </dependency>
 
@@ -112,7 +105,7 @@
             <extension>
                 <groupId>kr.motd.maven</groupId>
                 <artifactId>os-maven-plugin</artifactId>
-                <version>1.7.1</version>
+                <version>${version.plugin.os}</version>
             </extension>
         </extensions>
 
@@ -122,12 +115,10 @@
             <plugin>
                 <groupId>org.xolstice.maven.plugins</groupId>
                 <artifactId>protobuf-maven-plugin</artifactId>
-                <version>0.6.1</version>
-
                 <configuration>
                     <!-- Use protobuf 4.x (proto2 for extensions) -->
                     <protocArtifact>
-                        com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}
+                        com.google.protobuf:protoc:${version.protobuf}:exe:${os.detected.classifier}
                     </protocArtifact>
 
                     <!-- Include shared proto directory from core proto module -->
@@ -155,7 +146,6 @@
             <!-- Package plugin with META-INF/services -->
             <plugin>
                 <artifactId>maven-jar-plugin</artifactId>
-                <version>3.3.0</version>
                 <configuration>
                     <archive>
                         <manifestEntries>
@@ -169,14 +159,13 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.0.0</version>
             </plugin>
 
             <!-- Execute built-in tools -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
+                <version>${version.plugin.exec}</version>
 
                 <executions>
                     <!-- Format fragments in-place -->

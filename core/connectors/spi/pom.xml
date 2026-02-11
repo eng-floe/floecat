@@ -26,12 +26,6 @@
 
   <artifactId>floecat-connectors-spi</artifactId>
 
-  <properties>
-    <iceberg.version>1.10.0</iceberg.version>
-    <parquet.version>1.16.0</parquet.version>
-    <hadoop.version>3.4.2</hadoop.version>
-  </properties>
-
   <dependencies>
     <!-- Proto DTOs (ResourceId, schema, scan specs, etc.) -->
     <dependency>
