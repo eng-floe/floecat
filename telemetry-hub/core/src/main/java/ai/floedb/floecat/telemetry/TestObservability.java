@@ -13,30 +13,38 @@ import java.util.function.Supplier;
 /** Lightweight observability implementation for tests. */
 public final class TestObservability implements Observability {
   private final Map<MetricId, Double> counters = new LinkedHashMap<>();
+  private final Map<MetricId, List<List<Tag>>> counterTags = new LinkedHashMap<>();
   private final Map<MetricId, List<Double>> summaries = new LinkedHashMap<>();
+  private final Map<MetricId, List<List<Tag>>> summaryTags = new LinkedHashMap<>();
   private final Map<MetricId, List<Duration>> timers = new LinkedHashMap<>();
+  private final Map<MetricId, List<List<Tag>>> timerTags = new LinkedHashMap<>();
   private final Map<MetricId, Supplier<? extends Number>> gauges = new LinkedHashMap<>();
+  private final Map<MetricId, List<Tag>> gaugeTags = new LinkedHashMap<>();
   private final Map<String, List<TestObservationScope>> scopes = new LinkedHashMap<>();
 
   @Override
   public void counter(MetricId metric, double amount, Tag... tags) {
     counters.merge(metric, amount, Double::sum);
+    counterTags.computeIfAbsent(metric, key -> new ArrayList<>()).add(copyTags(tags));
   }
 
   @Override
   public void summary(MetricId metric, double value, Tag... tags) {
     summaries.computeIfAbsent(metric, key -> new ArrayList<>()).add(value);
+    summaryTags.computeIfAbsent(metric, key -> new ArrayList<>()).add(copyTags(tags));
   }
 
   @Override
   public void timer(MetricId metric, Duration duration, Tag... tags) {
     timers.computeIfAbsent(metric, key -> new ArrayList<>()).add(duration);
+    timerTags.computeIfAbsent(metric, key -> new ArrayList<>()).add(copyTags(tags));
   }
 
   @Override
   public <T extends Number> void gauge(
       MetricId metric, Supplier<T> supplier, String description, Tag... tags) {
     gauges.put(metric, Objects.requireNonNull(supplier, "supplier"));
+    gaugeTags.put(metric, copyTags(tags));
   }
 
   @Override
@@ -52,7 +60,7 @@ public final class TestObservability implements Observability {
     if (tags == null || tags.length == 0) {
       return List.of();
     }
-    return new ArrayList<>(Arrays.asList(tags));
+    return List.copyOf(Arrays.asList(tags));
   }
 
   public double counterValue(MetricId metric) {
@@ -69,6 +77,28 @@ public final class TestObservability implements Observability {
 
   public Supplier<? extends Number> gauge(MetricId metric) {
     return gauges.get(metric);
+  }
+
+  public List<Tag> gaugeTags(MetricId metric) {
+    return gaugeTags.getOrDefault(metric, List.of());
+  }
+
+  public List<List<Tag>> counterTagHistory(MetricId metric) {
+    return counterTags.containsKey(metric)
+        ? Collections.unmodifiableList(counterTags.get(metric))
+        : Collections.emptyList();
+  }
+
+  public List<List<Tag>> timerTagHistory(MetricId metric) {
+    return timerTags.containsKey(metric)
+        ? Collections.unmodifiableList(timerTags.get(metric))
+        : Collections.emptyList();
+  }
+
+  public List<List<Tag>> summaryTagHistory(MetricId metric) {
+    return summaryTags.containsKey(metric)
+        ? Collections.unmodifiableList(summaryTags.get(metric))
+        : Collections.emptyList();
   }
 
   public Map<String, List<TestObservationScope>> scopes() {

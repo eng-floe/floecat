@@ -51,6 +51,8 @@ public final class Telemetry {
     public static final String STATUS = "status";
     public static final String RESULT = "result";
     public static final String EXCEPTION = "exception";
+    public static final String CACHE_NAME = "cache";
+    public static final String GC_NAME = "gc";
 
     private TagKey() {}
   }
@@ -69,6 +71,22 @@ public final class Telemetry {
         new MetricId("rpc.errors", MetricType.COUNTER, "count", "v1", "core");
     public static final MetricId RPC_RETRIES =
         new MetricId("rpc.retries", MetricType.COUNTER, "count", "v1", "core");
+    public static final MetricId STORE_REQUESTS =
+        new MetricId("store.requests", MetricType.COUNTER, "count", "v1", "core");
+    public static final MetricId STORE_LATENCY =
+        new MetricId("store.latency", MetricType.TIMER, "seconds", "v1", "core");
+    public static final MetricId STORE_BYTES =
+        new MetricId("store.bytes", MetricType.COUNTER, "bytes", "v1", "core");
+    public static final MetricId CACHE_HITS =
+        new MetricId("cache.hits", MetricType.COUNTER, "count", "v1", "core");
+    public static final MetricId CACHE_MISSES =
+        new MetricId("cache.misses", MetricType.COUNTER, "count", "v1", "core");
+    public static final MetricId CACHE_SIZE =
+        new MetricId("cache.size", MetricType.GAUGE, "count", "v1", "core");
+    public static final MetricId GC_COLLECTIONS =
+        new MetricId("gc.collections", MetricType.COUNTER, "count", "v1", "core");
+    public static final MetricId GC_PAUSE =
+        new MetricId("gc.pause", MetricType.TIMER, "seconds", "v1", "core");
 
     private static final Map<MetricId, MetricDef> DEFINITIONS = buildDefinitions();
 
@@ -100,6 +118,24 @@ public final class Telemetry {
           RPC_RETRIES,
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
           Set.of(TagKey.COMPONENT, TagKey.OPERATION));
+
+      Set<String> storeRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+      Set<String> storeAllowed =
+          addTags(storeRequired, TagKey.ACCOUNT, TagKey.STATUS, TagKey.EXCEPTION);
+      add(definitions, STORE_REQUESTS, storeRequired, storeAllowed);
+      add(definitions, STORE_LATENCY, storeRequired, storeAllowed);
+      add(definitions, STORE_BYTES, storeRequired, storeAllowed);
+
+      Set<String> cacheRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.CACHE_NAME);
+      Set<String> cacheAllowed = addTags(cacheRequired, TagKey.RESULT, TagKey.ACCOUNT);
+      add(definitions, CACHE_HITS, cacheRequired, cacheAllowed);
+      add(definitions, CACHE_MISSES, cacheRequired, cacheAllowed);
+      add(definitions, CACHE_SIZE, cacheRequired, cacheAllowed);
+
+      Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.GC_NAME);
+      Set<String> gcAllowed = addTags(gcRequired, TagKey.RESULT, TagKey.EXCEPTION);
+      add(definitions, GC_COLLECTIONS, gcRequired, gcAllowed);
+      add(definitions, GC_PAUSE, gcRequired, gcAllowed);
 
       return Collections.unmodifiableMap(definitions);
     }

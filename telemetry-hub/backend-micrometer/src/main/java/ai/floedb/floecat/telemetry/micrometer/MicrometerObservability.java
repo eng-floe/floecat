@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -106,7 +107,7 @@ public final class MicrometerObservability implements Observability {
     if (category != Category.RPC) {
       return NOOP_SCOPE;
     }
-    List<Tag> baseTags = buildScopeTags(component, operation, tags);
+    List<Tag> baseTags = buildScopeTags(policy, component, operation, tags);
     return new MicrometerObservationScope(component, operation, baseTags);
   }
 
@@ -144,18 +145,24 @@ public final class MicrometerObservability implements Observability {
     return Collections.unmodifiableList(sorted);
   }
 
-  private static List<Tag> buildScopeTags(String component, String operation, Tag... tags) {
-    List<Tag> base = new ArrayList<>();
-    base.add(Tag.of(Telemetry.TagKey.COMPONENT, component));
-    base.add(Tag.of(Telemetry.TagKey.OPERATION, operation));
+  private static List<Tag> buildScopeTags(
+      TelemetryPolicy policy, String component, String operation, Tag... tags) {
+    Objects.requireNonNull(policy, "policy");
+    LinkedHashMap<String, Tag> canon = new LinkedHashMap<>();
+    canon.put(Telemetry.TagKey.COMPONENT, Tag.of(Telemetry.TagKey.COMPONENT, component));
+    canon.put(Telemetry.TagKey.OPERATION, Tag.of(Telemetry.TagKey.OPERATION, operation));
     if (tags != null) {
       for (Tag tag : tags) {
-        if (tag != null) {
-          base.add(tag);
+        if (tag == null || canon.containsKey(tag.key())) {
+          if (policy.isStrict() && tag != null) {
+            throw new IllegalArgumentException("Duplicate tag key: " + tag.key());
+          }
+          continue;
         }
+        canon.put(tag.key(), tag);
       }
     }
-    return Collections.unmodifiableList(base);
+    return List.copyOf(canon.values());
   }
 
   private static Iterable<io.micrometer.core.instrument.Tag> micrometerTags(List<Tag> tags) {
