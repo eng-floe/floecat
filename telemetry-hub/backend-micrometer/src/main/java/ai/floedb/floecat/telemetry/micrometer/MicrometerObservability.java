@@ -35,6 +35,8 @@ public final class MicrometerObservability implements Observability {
   private final ConcurrentMap<MeterKey, DistributionSummary> summaries = new ConcurrentHashMap<>();
   private final ConcurrentMap<MeterKey, Gauge> gauges = new ConcurrentHashMap<>();
 
+  private final TelemetryPolicy policy;
+
   public MicrometerObservability(
       MeterRegistry registry, TelemetryRegistry telemetryRegistry, TelemetryPolicy policy) {
     this.registry = Objects.requireNonNull(registry, "registry");
@@ -42,6 +44,7 @@ public final class MicrometerObservability implements Observability {
     this.validator =
         new MetricValidator(telemetryRegistry, Objects.requireNonNull(policy, "policy"));
     this.droppedTagsCounter = registry.counter(Telemetry.Metrics.DROPPED_TAGS.name());
+    this.policy = policy;
   }
 
   @Override
@@ -100,7 +103,11 @@ public final class MicrometerObservability implements Observability {
   @Override
   public ObservationScope observe(
       Category category, String component, String operation, Tag... tags) {
-    return NOOP_SCOPE;
+    if (category != Category.RPC) {
+      return NOOP_SCOPE;
+    }
+    List<Tag> baseTags = buildScopeTags(component, operation, tags);
+    return new MicrometerObservationScope(component, operation, baseTags);
   }
 
   private MeterKey validate(MetricType expected, MetricId id, Tag... tags) {
@@ -137,6 +144,20 @@ public final class MicrometerObservability implements Observability {
     return Collections.unmodifiableList(sorted);
   }
 
+  private static List<Tag> buildScopeTags(String component, String operation, Tag... tags) {
+    List<Tag> base = new ArrayList<>();
+    base.add(Tag.of(Telemetry.TagKey.COMPONENT, component));
+    base.add(Tag.of(Telemetry.TagKey.OPERATION, operation));
+    if (tags != null) {
+      for (Tag tag : tags) {
+        if (tag != null) {
+          base.add(tag);
+        }
+      }
+    }
+    return Collections.unmodifiableList(base);
+  }
+
   private static Iterable<io.micrometer.core.instrument.Tag> micrometerTags(List<Tag> tags) {
     if (tags.isEmpty()) {
       return Collections.emptyList();
@@ -150,6 +171,83 @@ public final class MicrometerObservability implements Observability {
     MeterKey {
       Objects.requireNonNull(metric, "metric");
       Objects.requireNonNull(tags, "tags");
+    }
+  }
+
+  private final class MicrometerObservationScope implements ObservationScope {
+    private final String component;
+    private final String operation;
+    private final List<Tag> baseTags;
+    private final long startNanos = System.nanoTime();
+    private boolean closed;
+    private Throwable error;
+    private int retries;
+    private boolean successCalled;
+
+    private MicrometerObservationScope(String component, String operation, List<Tag> baseTags) {
+      this.component = component;
+      this.operation = operation;
+      this.baseTags = baseTags;
+    }
+
+    @Override
+    public void success() {
+      if (closed) {
+        return;
+      }
+      successCalled = true;
+      error = null;
+    }
+
+    @Override
+    public void error(Throwable throwable) {
+      if (closed) {
+        return;
+      }
+      this.error = throwable;
+      this.successCalled = false;
+    }
+
+    @Override
+    public void retry() {
+      if (closed) {
+        return;
+      }
+      retries++;
+    }
+
+    @Override
+    public void close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      if (!successCalled && error == null) {
+        if (MicrometerObservability.this.policy.isStrict()) {
+          throw new IllegalStateException(
+              "Observation scope closed without calling success() or error()");
+        }
+        return;
+      }
+      Duration elapsed = Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos));
+      List<Tag> latencyTags = new ArrayList<>(baseTags.size() + 2);
+      latencyTags.addAll(baseTags);
+      latencyTags.add(Tag.of(Telemetry.TagKey.RESULT, error != null ? "error" : "success"));
+      if (error != null) {
+        latencyTags.add(Tag.of(Telemetry.TagKey.EXCEPTION, error.getClass().getSimpleName()));
+      }
+      Tag[] latencyArray = latencyTags.toArray(Tag[]::new);
+      timer(Telemetry.Metrics.RPC_LATENCY, elapsed, latencyArray);
+      if (error != null) {
+        counter(Telemetry.Metrics.RPC_ERRORS, 1, latencyArray);
+      }
+      if (retries > 0) {
+        counter(
+            Telemetry.Metrics.RPC_RETRIES,
+            retries,
+            Tag.of(Telemetry.TagKey.COMPONENT, component),
+            Tag.of(Telemetry.TagKey.OPERATION, operation));
+      }
     }
   }
 
