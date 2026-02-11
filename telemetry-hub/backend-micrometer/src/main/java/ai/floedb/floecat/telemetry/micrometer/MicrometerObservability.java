@@ -107,7 +107,7 @@ public final class MicrometerObservability implements Observability {
     if (category != Category.RPC) {
       return NOOP_SCOPE;
     }
-    List<Tag> baseTags = buildScopeTags(policy, component, operation, tags);
+    List<Tag> baseTags = buildScopeTags(component, operation, tags);
     return new MicrometerObservationScope(component, operation, baseTags);
   }
 
@@ -145,16 +145,17 @@ public final class MicrometerObservability implements Observability {
     return Collections.unmodifiableList(sorted);
   }
 
-  private static List<Tag> buildScopeTags(
-      TelemetryPolicy policy, String component, String operation, Tag... tags) {
-    Objects.requireNonNull(policy, "policy");
+  private List<Tag> buildScopeTags(String component, String operation, Tag... tags) {
     LinkedHashMap<String, Tag> canon = new LinkedHashMap<>();
     canon.put(Telemetry.TagKey.COMPONENT, Tag.of(Telemetry.TagKey.COMPONENT, component));
     canon.put(Telemetry.TagKey.OPERATION, Tag.of(Telemetry.TagKey.OPERATION, operation));
     if (tags != null) {
       for (Tag tag : tags) {
-        if (tag == null || canon.containsKey(tag.key())) {
-          if (policy.isStrict() && tag != null) {
+        if (tag == null) {
+          continue;
+        }
+        if (canon.containsKey(tag.key())) {
+          if (policy.isStrict()) {
             throw new IllegalArgumentException("Duplicate tag key: " + tag.key());
           }
           continue;
@@ -190,6 +191,7 @@ public final class MicrometerObservability implements Observability {
     private Throwable error;
     private int retries;
     private boolean successCalled;
+    private String grpcStatus;
 
     private MicrometerObservationScope(String component, String operation, List<Tag> baseTags) {
       this.component = component;
@@ -204,6 +206,7 @@ public final class MicrometerObservability implements Observability {
       }
       successCalled = true;
       error = null;
+      grpcStatus = "OK";
     }
 
     @Override
@@ -213,6 +216,13 @@ public final class MicrometerObservability implements Observability {
       }
       this.error = throwable;
       this.successCalled = false;
+    }
+
+    @Override
+    public void status(String status) {
+      if (status != null && !status.isBlank()) {
+        grpcStatus = status;
+      }
     }
 
     @Override
@@ -237,8 +247,9 @@ public final class MicrometerObservability implements Observability {
         return;
       }
       Duration elapsed = Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos));
-      List<Tag> latencyTags = new ArrayList<>(baseTags.size() + 2);
+      List<Tag> latencyTags = new ArrayList<>(baseTags.size() + 3);
       latencyTags.addAll(baseTags);
+      latencyTags.add(Tag.of(Telemetry.TagKey.STATUS, grpcStatus == null ? "UNKNOWN" : grpcStatus));
       latencyTags.add(Tag.of(Telemetry.TagKey.RESULT, error != null ? "error" : "success"));
       if (error != null) {
         latencyTags.add(Tag.of(Telemetry.TagKey.EXCEPTION, error.getClass().getSimpleName()));

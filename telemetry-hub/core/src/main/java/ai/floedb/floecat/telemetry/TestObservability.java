@@ -107,7 +107,7 @@ public final class TestObservability implements Observability {
     return Collections.unmodifiableMap(copy);
   }
 
-  static final class TestObservationScope implements ObservationScope {
+  public static final class TestObservationScope implements ObservationScope {
     private final Observability.Category category;
     private final String component;
     private final String operation;

@@ -103,7 +103,8 @@ public final class Telemetry {
       Set<String> rpcReqTags =
           Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.ACCOUNT, TagKey.STATUS);
       Set<String> rpcScopeRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
-      Set<String> rpcScopeAllowed = addTags(rpcScopeRequired, TagKey.EXCEPTION, TagKey.ACCOUNT);
+      Set<String> rpcScopeAllowed =
+          addTags(rpcScopeRequired, TagKey.EXCEPTION, TagKey.ACCOUNT, TagKey.STATUS);
 
       add(definitions, RPC_REQUESTS, rpcReqTags, rpcReqTags);
       add(

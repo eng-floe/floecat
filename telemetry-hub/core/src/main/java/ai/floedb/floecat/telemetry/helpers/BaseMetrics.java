@@ -65,6 +65,30 @@ abstract class BaseMetrics {
     return metricTags(extra);
   }
 
+  protected Tag[] scopeTags(List<Tag> extra) {
+    return metricTags(extra);
+  }
+
+  protected Tag[] scopeExtraTags(Tag... extra) {
+    return scopeExtraTagList(extra).toArray(Tag[]::new);
+  }
+
+  protected Tag[] scopeExtraTags(List<Tag> extra) {
+    return scopeExtraTagList(extra).toArray(Tag[]::new);
+  }
+
+  protected List<Tag> scopeExtraTagList(Tag... extra) {
+    List<Tag> tags = new ArrayList<>(extraTags);
+    addExtra(tags, extra);
+    return List.copyOf(tags);
+  }
+
+  protected List<Tag> scopeExtraTagList(List<Tag> extra) {
+    List<Tag> tags = new ArrayList<>(extraTags);
+    addExtra(tags, extra);
+    return List.copyOf(tags);
+  }
+
   protected static void addExtra(List<Tag> target, Tag... extra) {
     if (extra == null) {
       return;

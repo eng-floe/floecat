@@ -110,7 +110,6 @@ class MicrometerObservabilityTest {
         observability.observe(Category.RPC, "svc", "op", Tag.of(TagKey.ACCOUNT, "acct"));
     scope.error(new IllegalStateException("boom"));
     scope.close();
-
     Timer timer =
         meters
             .find("rpc.latency")
@@ -121,6 +120,8 @@ class MicrometerObservabilityTest {
                 "op",
                 "account",
                 "acct",
+                TagKey.STATUS,
+                "UNKNOWN",
                 TagKey.RESULT,
                 "error",
                 TagKey.EXCEPTION,
@@ -139,6 +140,8 @@ class MicrometerObservabilityTest {
                 "op",
                 "account",
                 "acct",
+                TagKey.STATUS,
+                "UNKNOWN",
                 TagKey.RESULT,
                 "error",
                 TagKey.EXCEPTION,
@@ -147,6 +150,37 @@ class MicrometerObservabilityTest {
     assertThat(errorsCounter).isNotNull();
     assertThat(errorsCounter.count()).isEqualTo(1d);
     assertThat(meters.find("observability.dropped.tags.total").counter().count()).isEqualTo(0d);
+  }
+
+  @Test
+  void scopeRespectsStatusOverride() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    ObservationScope scope =
+        observability.observe(Category.RPC, "svc", "op", Tag.of(TagKey.ACCOUNT, "acct"));
+    scope.status("INTERNAL");
+    scope.error(new IllegalStateException("boom"));
+    scope.close();
+
+    Timer timer =
+        meters
+            .find("rpc.latency")
+            .tags(
+                "component",
+                "svc",
+                "operation",
+                "op",
+                "account",
+                "acct",
+                TagKey.STATUS,
+                "INTERNAL",
+                TagKey.RESULT,
+                "error",
+                TagKey.EXCEPTION,
+                "IllegalStateException")
+            .timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1);
   }
 
   @Test

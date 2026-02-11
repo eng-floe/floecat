@@ -12,6 +12,9 @@ public interface ObservationScope extends AutoCloseable {
   /** Signals a retry event inside the scope. */
   void retry();
 
+  /** Adds a runtime status tag (e.g., RPC status) before closing the scope. */
+  default void status(String status) {}
+
   @Override
   default void close() {
     // Closing does not mutate the outcome; callers must call success()/error() explicitly.

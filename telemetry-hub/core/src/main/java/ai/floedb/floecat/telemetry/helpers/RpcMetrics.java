@@ -105,5 +105,10 @@ public final class RpcMetrics extends BaseMetrics {
       delegate.close();
       decrementActiveRequests();
     }
+
+    @Override
+    public void status(String status) {
+      delegate.status(status);
+    }
   }
 }
