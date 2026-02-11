@@ -11,5 +11,33 @@
   </parent>
   <artifactId>telemetry-hub-backend-micrometer</artifactId>
   <packaging>jar</packaging>
-  <name>Telemetry Hub Micrometer Backend (placeholder)</name>
+  <name>Telemetry Hub Micrometer Backend</name>
+
+  <dependencies>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+      <version>${micrometer.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
 </project>
