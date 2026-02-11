@@ -13,5 +13,7 @@ public interface ObservationScope extends AutoCloseable {
   void retry();
 
   @Override
-  default void close() {}
+  default void close() {
+    // Closing does not mutate the outcome; callers must call success()/error() explicitly.
+  }
 }

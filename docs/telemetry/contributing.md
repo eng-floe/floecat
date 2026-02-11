@@ -3,7 +3,7 @@
 Each module that wants to add metrics to the shared registry implements `TelemetryContributor`.
 The easiest path is:
 
-1. Add a new metric to your module’s telemetry holder (e.g., `MyModuleTelemetry`) with `MetricId` and `MetricDef`; core metrics live in `Telemetry.Metrics`.
+- Define the contract explicitly: add a new `MetricId`/`MetricDef` entry in your module’s telemetry holder (`MyModuleTelemetry`); core metrics live in `Telemetry.Metrics`. An empty `allowedTags` set means “allow any tag” (the contract only enforces required tags unless you enumerate the allowlist). Prefer enumerating `allowedTags` to avoid accidental high-cardinality tags in production.
 2. Implement `TelemetryContributor` (for example, `MyModuleTelemetryContributor`) and register it via `Telemetry.register(...)` or a framework integration.
 3. Provide tests that assert the metric exists in the registry (via `Telemetry.metricCatalog(registry)` or `Telemetry.requireMetricDef(registry, metric)`) and that its `requiredTags` are a subset of `allowedTags`.
 
