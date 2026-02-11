@@ -66,7 +66,6 @@
         <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
-            <version>${version.protobuf}</version>
         </dependency>
 
         <dependency>
@@ -79,21 +78,18 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>${version.junit.jupiter}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>${version.junit.jupiter}</version>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>${version.assertj}</version>
             <scope>test</scope>
         </dependency>
 
@@ -119,8 +115,6 @@
             <plugin>
                 <groupId>org.xolstice.maven.plugins</groupId>
                 <artifactId>protobuf-maven-plugin</artifactId>
-                <version>${version.plugin.protobuf}</version>
-
                 <configuration>
                     <!-- Use protobuf 4.x (proto2 for extensions) -->
                     <protocArtifact>
@@ -152,7 +146,6 @@
             <!-- Package plugin with META-INF/services -->
             <plugin>
                 <artifactId>maven-jar-plugin</artifactId>
-                <version>${version.plugin.jar}</version>
                 <configuration>
                     <archive>
                         <manifestEntries>
@@ -166,7 +159,6 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>${version.plugin.surefire}</version>
             </plugin>
 
             <!-- Execute built-in tools -->

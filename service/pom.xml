@@ -96,7 +96,6 @@
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
-      <version>${version.assertj}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -217,7 +216,6 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>${version.mockito}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -239,7 +237,6 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${version.quarkus}</version>
         <executions>
           <execution>
             <goals>
@@ -279,7 +276,6 @@
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>${version.plugin.jandex}</version>
         <executions>
           <execution>
             <id>make-index</id>
@@ -311,7 +307,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>${version.plugin.surefire}</version>
         <configuration>
           <includes>
             <include>**/*Test.java</include>
@@ -325,7 +320,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>${version.plugin.failsafe}</version>
         <executions>
           <execution>
             <goals>
