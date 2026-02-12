@@ -39,14 +39,24 @@ public class TableCommitPlanner {
   }
 
   public PlanResult plan(
-      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
-    var updatePlan = tableUpdatePlanner.planTransactionUpdates(command, tableSupplier, tableId);
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
+    var updatePlan =
+        tableUpdatePlanner.planTransactionUpdates(
+            command, tableSupplier, requirementTableSupplier, tableId);
     if (updatePlan.hasError()) {
       return new PlanResult(null, updatePlan.error());
     }
     Table current = tableSupplier.get();
     Table next = applySpec(current, updatePlan.spec(), updatePlan.mask());
     return new PlanResult(next, null);
+  }
+
+  public PlanResult plan(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return plan(command, tableSupplier, tableSupplier, tableId);
   }
 
   private Table applySpec(Table current, TableSpec.Builder spec, FieldMask.Builder mask) {

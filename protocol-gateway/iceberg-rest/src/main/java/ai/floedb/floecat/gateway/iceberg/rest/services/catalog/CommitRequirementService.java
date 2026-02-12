@@ -29,12 +29,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CommitRequirementService {
-  private static final Logger LOG = Logger.getLogger(CommitRequirementService.class);
-
   public Response validateRequirements(
       TableGatewaySupport tableSupport,
       List<Map<String, Object>> requirements,
@@ -64,7 +61,9 @@ public class CommitRequirementService {
       }
       switch (type) {
         case "assert-create" -> {
-          // no-op
+          if (table != null && table.hasResourceId() && !table.getResourceId().getId().isBlank()) {
+            return conflictErrorFactory.apply("assert-create failed");
+          }
         }
         case "assert-table-uuid" -> {
           String expected = asString(requirement.get("uuid"));
@@ -151,25 +150,30 @@ public class CommitRequirementService {
         }
         case "assert-ref-snapshot-id" -> {
           String refName = asString(requirement.get("ref"));
+          if (!requirement.containsKey("snapshot-id")) {
+            return validationErrorFactory.apply("assert-ref-snapshot-id requires snapshot-id");
+          }
           Long expected = asLong(requirement.get("snapshot-id"));
           if (refName == null || refName.isBlank()) {
             return validationErrorFactory.apply("assert-ref-snapshot-id requires ref");
           }
-          if (expected == null) {
-            LOG.debugf(
-                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because"
-                    + " snapshot-id was not provided",
-                table.hasResourceId() ? table.getResourceId().getId() : "<unknown>", refName);
-            continue;
-          }
           Long actual = null;
           IcebergMetadata metadata = metadataSupplier.get();
+          boolean refExists = false;
           if (metadata != null && metadata.getRefsMap().containsKey(refName)) {
+            refExists = true;
             actual = metadata.getRefsMap().get(refName).getSnapshotId();
           } else if ("main".equals(refName)) {
             if (metadata != null && metadata.getCurrentSnapshotId() > 0) {
+              refExists = true;
               actual = metadata.getCurrentSnapshotId();
             }
+          }
+          if (expected == null) {
+            if (refExists) {
+              return conflictErrorFactory.apply("assert-ref-snapshot-id failed for ref " + refName);
+            }
+            continue;
           }
           if (!Objects.equals(actual, expected)) {
             return conflictErrorFactory.apply("assert-ref-snapshot-id failed for ref " + refName);

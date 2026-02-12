@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
@@ -33,24 +36,70 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitService {
+  private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
+  private static final Set<String> SUPPORTED_REQUIREMENT_TYPES =
+      Set.of(
+          "assert-create",
+          "assert-table-uuid",
+          "assert-current-schema-id",
+          "assert-last-assigned-field-id",
+          "assert-last-assigned-partition-id",
+          "assert-default-spec-id",
+          "assert-default-sort-order-id",
+          "assert-ref-snapshot-id");
+  private static final Set<String> SUPPORTED_UPDATE_ACTIONS =
+      Set.of(
+          "set-properties",
+          "remove-properties",
+          "set-location",
+          "add-snapshot",
+          "remove-snapshots",
+          "set-snapshot-ref",
+          "remove-snapshot-ref",
+          "assign-uuid",
+          "upgrade-format-version",
+          "add-schema",
+          "set-current-schema",
+          "add-spec",
+          "set-default-spec",
+          "add-sort-order",
+          "set-default-sort-order",
+          "remove-partition-specs",
+          "remove-schemas",
+          "set-statistics",
+          "remove-statistics",
+          "set-partition-statistics",
+          "remove-partition-statistics",
+          "add-encryption-key",
+          "remove-encryption-key");
+  private static final Logger LOG = Logger.getLogger(TransactionCommitService.class);
   @Inject AccountContext accountContext;
   @Inject RequestContextFactory requestContextFactory;
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject CommitStageResolver stageResolver;
   @Inject TableCommitPlanner tableCommitPlanner;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject SnapshotMetadataService snapshotMetadataService;
-  @Inject CommitStageResolver stageResolver;
   @Inject TransactionClient transactionClient;
 
   public Response commit(
@@ -72,59 +121,214 @@ public class TransactionCommitService {
     String catalogName = catalogContext.catalogName();
     ResourceId catalogId = catalogContext.catalogId();
 
-    List<PlannedChange> planned = new ArrayList<>();
-
-    for (TransactionCommitRequest.TableChange change : changes) {
-      var identifier = change.identifier();
-      List<String> namespacePath =
-          identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace());
-      String namespace = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
-      ResourceId namespaceId = tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
-      TableRequests.Commit commitReq =
-          new TableRequests.Commit(change.requirements(), change.updates());
-      var command =
-          new TableCommitService.CommitCommand(
-              prefix,
-              namespace,
-              namespacePath,
-              identifier.name(),
-              catalogName,
-              catalogId,
-              namespaceId,
-              idempotencyKey,
-              change.stageId(),
-              transactionId,
-              commitReq,
-              tableSupport);
-      var stageResolution = stageResolver.resolve(command);
-      if (stageResolution.hasError()) {
-        return stageResolution.error();
-      }
-      ResourceId tableId = stageResolution.tableId();
-      Supplier<ai.floedb.floecat.catalog.rpc.Table> tableSupplier =
-          () -> {
-            var staged = stageResolution.stagedTable();
-            return staged != null ? staged : tableLifecycleService.getTable(tableId);
-          };
-      var plan = tableCommitPlanner.plan(command, tableSupplier, tableId);
-      if (plan.hasError()) {
-        return plan.error();
-      }
-      var updated = plan.table();
-      List<Map<String, Object>> updates = change.updates() == null ? List.of() : change.updates();
-      SnapshotPlan snapshotPlan = buildSnapshotPlan(tableSupport, updated, updates);
-      planned.add(
-          new PlannedChange(
-              namespacePath, namespaceId, identifier.name(), tableId, updated, snapshotPlan));
+    String requestHash = requestHash(changes);
+    String beginIdempotency =
+        firstNonBlank(idempotencyKey, transactionId, "req:" + catalogName + ":" + requestHash);
+    ai.floedb.floecat.transaction.rpc.BeginTransactionResponse begin;
+    try {
+      begin =
+          transactionClient.beginTransaction(
+              ai.floedb.floecat.transaction.rpc.BeginTransactionRequest.newBuilder()
+                  .setIdempotency(
+                      ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
+                          .setKey(beginIdempotency == null ? "" : beginIdempotency))
+                  .putProperties(TX_REQUEST_HASH_PROPERTY, requestHash)
+                  .build());
+    } catch (StatusRuntimeException beginFailure) {
+      return mapPreCommitFailure(beginFailure);
+    } catch (RuntimeException beginFailure) {
+      return preCommitStateUnknown();
+    }
+    String txId = begin.getTransaction().getTxId();
+    if (txId == null || txId.isBlank()) {
+      return IcebergErrorResponses.failure(
+          "Failed to begin transaction",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
     }
 
+    ai.floedb.floecat.transaction.rpc.GetTransactionResponse currentTxn;
+    TransactionState currentState;
+    try {
+      currentTxn =
+          transactionClient.getTransaction(
+              GetTransactionRequest.newBuilder().setTxId(txId).build());
+      currentState =
+          currentTxn != null && currentTxn.hasTransaction()
+              ? currentTxn.getTransaction().getState()
+              : TransactionState.TS_UNSPECIFIED;
+    } catch (StatusRuntimeException e) {
+      abortTransactionQuietly(txId, "failed to load transaction");
+      return mapPreCommitFailure(e);
+    } catch (RuntimeException e) {
+      abortTransactionQuietly(txId, "failed to load transaction");
+      return preCommitStateUnknown();
+    }
+    if (currentTxn != null && currentTxn.hasTransaction()) {
+      String existingRequestHash =
+          currentTxn.getTransaction().getPropertiesMap().get(TX_REQUEST_HASH_PROPERTY);
+      if (existingRequestHash != null
+          && !existingRequestHash.isBlank()
+          && !existingRequestHash.equals(requestHash)) {
+        maybeAbortOpenTransaction(currentState, txId, "transaction request-hash mismatch");
+        return IcebergErrorResponses.failure(
+            "transaction request does not match existing transaction payload",
+            "CommitFailedException",
+            Response.Status.CONFLICT);
+      }
+    }
+
+    String idempotencyBase = firstNonBlank(idempotencyKey, transactionId, txId);
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
     List<SyncTarget> syncTargets = new ArrayList<>();
+
+    if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+    }
+    boolean alreadyApplied = currentState == TransactionState.TS_APPLIED;
+    List<PlannedChange> planned = new ArrayList<>();
+    for (TransactionCommitRequest.TableChange change : changes) {
+      try {
+        if (change.stageId() != null && !change.stageId().isBlank()) {
+          maybeAbortOpenTransaction(
+              currentState, txId, "stage-id not supported in /transactions/commit");
+          return IcebergErrorResponses.validation(
+              "stage-id is not supported in /transactions/commit");
+        }
+        var identifier = change.identifier();
+        if (identifier == null || identifier.name() == null || identifier.name().isBlank()) {
+          maybeAbortOpenTransaction(currentState, txId, "table identifier is missing");
+          return IcebergErrorResponses.validation("table identifier is required");
+        }
+        if (change.requirements() == null) {
+          maybeAbortOpenTransaction(currentState, txId, "requirements are missing");
+          return IcebergErrorResponses.validation("requirements are required");
+        }
+        if (change.updates() == null) {
+          maybeAbortOpenTransaction(currentState, txId, "updates are missing");
+          return IcebergErrorResponses.validation("updates are required");
+        }
+        Response requirementTypeError = validateKnownRequirementTypes(change.requirements());
+        if (requirementTypeError != null) {
+          maybeAbortOpenTransaction(currentState, txId, "requirements include unknown type");
+          return requirementTypeError;
+        }
+        Response updateTypeError = validateKnownUpdateActions(change.updates());
+        if (updateTypeError != null) {
+          maybeAbortOpenTransaction(currentState, txId, "updates include unknown action");
+          return updateTypeError;
+        }
+        List<String> namespacePath =
+            identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace());
+        String namespace = namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
+        ResourceId namespaceId =
+            tableLifecycleService.resolveNamespaceId(catalogName, namespacePath);
+        TableRequests.Commit commitReq =
+            new TableRequests.Commit(change.requirements(), change.updates());
+        var command =
+            new TableCommitService.CommitCommand(
+                prefix,
+                namespace,
+                namespacePath,
+                identifier.name(),
+                catalogName,
+                catalogId,
+                namespaceId,
+                idempotencyBase,
+                change.stageId(),
+                transactionId,
+                commitReq,
+                tableSupport);
+        ResourceId tableId;
+        ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse;
+        var stageResolution = stageResolver.resolve(command);
+        if (stageResolution.hasError()) {
+          maybeAbortOpenTransaction(currentState, txId, "stage resolution failed");
+          return stageResolution.error();
+        }
+        tableId = stageResolution.tableId();
+        tableResponse = tableLifecycleService.getTableResponse(tableId);
+        ai.floedb.floecat.catalog.rpc.Table persistedTable =
+            tableResponse == null
+                ? (stageResolution.stagedTable() == null
+                    ? ai.floedb.floecat.catalog.rpc.Table.getDefaultInstance()
+                    : stageResolution.stagedTable())
+                : tableResponse.getTable();
+        long pointerVersion =
+            tableResponse != null && tableResponse.hasMeta()
+                ? tableResponse.getMeta().getPointerVersion()
+                : 0L;
+        ai.floedb.floecat.catalog.rpc.Table updated;
+        if (alreadyApplied) {
+          // Replay path: skip requirement re-evaluation and rebuild side effects from current table
+          // state.
+          updated = persistedTable;
+        } else {
+          boolean stageCreatedTable =
+              stageResolution.stageCommitResult() != null
+                  && stageResolution.stageCommitResult().tableCreated();
+          TableRequests.Commit planningReq =
+              normalizeCommitRequestForStage(commitReq, stageCreatedTable);
+          TableCommitService.CommitCommand planningCommand =
+              planningReq == commitReq
+                  ? command
+                  : new TableCommitService.CommitCommand(
+                      command.prefix(),
+                      command.namespace(),
+                      command.namespacePath(),
+                      command.table(),
+                      command.catalogName(),
+                      command.catalogId(),
+                      command.namespaceId(),
+                      command.idempotencyKey(),
+                      command.stageId(),
+                      command.transactionId(),
+                      planningReq,
+                      command.tableSupport());
+          Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = () -> persistedTable;
+          Supplier<ai.floedb.floecat.catalog.rpc.Table> requirementTableSupplier =
+              () -> persistedTable;
+          var plan =
+              tableCommitPlanner.plan(
+                  planningCommand, workingTableSupplier, requirementTableSupplier, tableId);
+          if (plan.hasError()) {
+            maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+            return plan.error();
+          }
+          updated = plan.table();
+        }
+        List<Map<String, Object>> updates = change.updates() == null ? List.of() : change.updates();
+        SnapshotPlan snapshotPlan = buildSnapshotPlan(tableSupport, persistedTable, updates);
+        planned.add(
+            new PlannedChange(
+                namespacePath,
+                namespaceId,
+                identifier.name(),
+                tableId,
+                updated,
+                snapshotPlan,
+                pointerVersion));
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+          maybeAbortOpenTransaction(currentState, txId, "table not found during planning");
+          return IcebergErrorResponses.noSuchTable(
+              "Table not found while planning transaction change");
+        }
+        maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+        throw e;
+      } catch (RuntimeException e) {
+        maybeAbortOpenTransaction(currentState, txId, "transaction planning failed");
+        throw e;
+      }
+    }
+
     for (var plan : planned) {
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
               .setTableId(plan.tableId())
               .setTable(plan.table())
+              .setPrecondition(Precondition.newBuilder().setExpectedVersion(plan.expectedVersion()))
               .build());
       syncTargets.add(
           new SyncTarget(
@@ -136,94 +340,168 @@ public class TransactionCommitService {
               plan.snapshotPlan()));
     }
 
-    String beginIdempotency = firstNonBlank(idempotencyKey, transactionId);
-    var begin =
-        transactionClient.beginTransaction(
-            ai.floedb.floecat.transaction.rpc.BeginTransactionRequest.newBuilder()
-                .setIdempotency(
-                    ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
-                        .setKey(beginIdempotency == null ? "" : beginIdempotency))
-                .build());
-    String txId = begin.getTransaction().getTxId();
-    if (txId == null || txId.isBlank()) {
-      return IcebergErrorResponses.failure(
-          "Failed to begin transaction",
-          "InternalServerError",
-          Response.Status.INTERNAL_SERVER_ERROR);
-    }
+    if (!isCommitAccepted(currentState)) {
+      if (currentState == TransactionState.TS_OPEN) {
+        try {
+          transactionClient.prepareTransaction(
+              ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.newBuilder()
+                  .setTxId(txId)
+                  .addAllChanges(txChanges)
+                  .setIdempotency(
+                      ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
+                          .setKey(idempotencyBase == null ? "" : idempotencyBase + ":prepare"))
+                  .build());
+        } catch (RuntimeException e) {
+          abortTransactionQuietly(txId, "transaction prepare failed");
+          if (e instanceof StatusRuntimeException prepareFailure) {
+            return mapPreCommitFailure(prepareFailure);
+          }
+          return preCommitStateUnknown();
+        }
+      }
+      if (currentState == TransactionState.TS_OPEN
+          || currentState == TransactionState.TS_PREPARED
+          || currentState == TransactionState.TS_APPLY_FAILED_RETRYABLE) {
+        Response preCommitError =
+            applyPreCommitSnapshots(tableSupport, syncTargets, idempotencyBase, txId, true);
+        if (preCommitError != null) {
+          return preCommitError;
+        }
+      }
 
-    var currentTxn =
-        transactionClient.getTransaction(GetTransactionRequest.newBuilder().setTxId(txId).build());
-    TransactionState currentState =
-        currentTxn != null && currentTxn.hasTransaction()
-            ? currentTxn.getTransaction().getState()
-            : TransactionState.TS_UNSPECIFIED;
-    if (currentState == TransactionState.TS_COMMITTED) {
-      return Response.noContent().build();
-    }
-
-    String idempotencyBase = firstNonBlank(idempotencyKey, transactionId, txId);
-    if (currentState != TransactionState.TS_PREPARED) {
-      transactionClient.prepareTransaction(
-          ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.newBuilder()
-              .setTxId(txId)
-              .addAllChanges(txChanges)
-              .setIdempotency(
-                  ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
-                      .setKey(idempotencyBase == null ? "" : idempotencyBase + ":prepare"))
-              .build());
-    }
-    Response preCommitError =
-        applyPreCommitSnapshots(tableSupport, syncTargets, idempotencyKey, txId);
-    if (preCommitError != null) {
-      return preCommitError;
-    }
-
-    try {
-      transactionClient.commitTransaction(
-          ai.floedb.floecat.transaction.rpc.CommitTransactionRequest.newBuilder()
-              .setTxId(txId)
-              .setIdempotency(
-                  ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
-                      .setKey(idempotencyBase == null ? "" : idempotencyBase + ":commit"))
-              .build());
-    } catch (RuntimeException commitFailure) {
-      rollbackSnapshotChanges(tableSupport, syncTargets);
-      return IcebergErrorResponses.failure(
-          "transaction commit failed",
-          "CommitStateUnknownException",
-          Response.Status.INTERNAL_SERVER_ERROR);
+      try {
+        ai.floedb.floecat.transaction.rpc.CommitTransactionRequest.Builder commitRequest =
+            ai.floedb.floecat.transaction.rpc.CommitTransactionRequest.newBuilder().setTxId(txId);
+        if (currentState != TransactionState.TS_APPLY_FAILED_RETRYABLE) {
+          commitRequest.setIdempotency(
+              ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
+                  .setKey(idempotencyBase == null ? "" : idempotencyBase + ":commit"));
+        }
+        var commitResponse = transactionClient.commitTransaction(commitRequest.build());
+        TransactionState commitState =
+            commitResponse != null && commitResponse.hasTransaction()
+                ? commitResponse.getTransaction().getState()
+                : TransactionState.TS_UNSPECIFIED;
+        if (!isCommitAccepted(commitState)) {
+          if (isDeterministicFailedState(commitState)) {
+            rollbackSnapshotChanges(tableSupport, syncTargets);
+            return IcebergErrorResponses.failure(
+                "transaction commit did not reach applied state",
+                "CommitFailedException",
+                Response.Status.CONFLICT);
+          }
+          if (waitForAppliedState(txId)) {
+            return Response.noContent().build();
+          }
+          return IcebergErrorResponses.failure(
+              "transaction commit did not reach applied state",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE);
+        }
+      } catch (StatusRuntimeException commitFailure) {
+        if (commitFailure.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed", "ValidationException", Response.Status.BAD_REQUEST);
+        }
+        if (isDeterministicCommitFailure(commitFailure)) {
+          rollbackSnapshotChanges(tableSupport, syncTargets);
+          return IcebergErrorResponses.failure(
+              "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+        }
+        if (isRetryableCommitAbort(commitFailure)) {
+          if (waitForAppliedState(txId)) {
+            return Response.noContent().build();
+          }
+          return IcebergErrorResponses.failure(
+              "transaction commit failed",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE);
+        }
+        if (commitFailure.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE);
+        }
+        if (commitFailure.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed", "UnauthorizedException", Response.Status.UNAUTHORIZED);
+        }
+        if (commitFailure.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed", "ForbiddenException", Response.Status.FORBIDDEN);
+        }
+        if (commitFailure.getStatus().getCode() == Status.Code.UNKNOWN) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed",
+              "CommitStateUnknownException",
+              Response.Status.BAD_GATEWAY);
+        }
+        if (commitFailure.getStatus().getCode() == Status.Code.DEADLINE_EXCEEDED) {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed",
+              "CommitStateUnknownException",
+              Response.Status.GATEWAY_TIMEOUT);
+        }
+        return IcebergErrorResponses.failure(
+            "transaction commit failed",
+            "CommitStateUnknownException",
+            Response.Status.INTERNAL_SERVER_ERROR);
+      } catch (RuntimeException commitFailure) {
+        return IcebergErrorResponses.failure(
+            "transaction commit failed",
+            "CommitStateUnknownException",
+            Response.Status.INTERNAL_SERVER_ERROR);
+      }
     }
 
     for (var target : syncTargets) {
-      Response snapshotError =
-          snapshotMetadataService.applySnapshotUpdates(
-              tableSupport,
-              target.tableId(),
-              target.namespacePath(),
-              target.tableName(),
-              () -> target.table(),
-              target.snapshotPlan().postCommitUpdates(),
-              idempotencyKey);
-      if (snapshotError != null) {
-        return snapshotError;
+      try {
+        Response snapshotError =
+            snapshotMetadataService.applySnapshotUpdates(
+                tableSupport,
+                target.tableId(),
+                target.namespacePath(),
+                target.tableName(),
+                () -> target.table(),
+                target.snapshotPlan().postCommitUpdates(),
+                idempotencyBase);
+        if (snapshotError != null) {
+          LOG.warnf(
+              "Post-commit snapshot update failed for %s.%s in tx; backend apply already committed",
+              String.join(".", target.namespacePath()), target.tableName());
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Post-commit snapshot update threw for %s.%s in tx; backend apply already committed",
+            String.join(".", target.namespacePath()),
+            target.tableName());
       }
-      String metadataLocation =
-          MetadataLocationUtil.metadataLocation(target.table().getPropertiesMap());
-      ResourceId connectorId =
-          sideEffectService.synchronizeConnector(
-              tableSupport,
-              prefix,
-              target.namespacePath(),
-              target.namespaceId(),
-              catalogId,
-              target.tableName(),
-              target.table(),
-              null,
-              metadataLocation,
-              idempotencyKey);
-      sideEffectService.runConnectorSync(
-          tableSupport, connectorId, target.namespacePath(), target.tableName());
+      try {
+        String metadataLocation =
+            MetadataLocationUtil.metadataLocation(target.table().getPropertiesMap());
+        ResourceId connectorId =
+            sideEffectService.synchronizeConnector(
+                tableSupport,
+                prefix,
+                target.namespacePath(),
+                target.namespaceId(),
+                catalogId,
+                target.tableName(),
+                target.table(),
+                null,
+                metadataLocation,
+                idempotencyBase);
+        sideEffectService.runConnectorSync(
+            tableSupport, connectorId, target.namespacePath(), target.tableName());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Post-commit connector sync failed for %s.%s in tx; backend apply already committed",
+            String.join(".", target.namespacePath()),
+            target.tableName());
+      }
     }
 
     return Response.noContent().build();
@@ -243,7 +521,8 @@ public class TransactionCommitService {
       String tableName,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table,
-      SnapshotPlan snapshotPlan) {}
+      SnapshotPlan snapshotPlan,
+      long expectedVersion) {}
 
   private record SnapshotPlan(
       List<Map<String, Object>> additions,
@@ -311,9 +590,8 @@ public class TransactionCommitService {
     out.put("action", "set-snapshot-ref");
     out.put("ref-name", refName);
     out.put("snapshot-id", ref.getSnapshotId());
-    if (ref.getType() != null && !ref.getType().isBlank()) {
-      out.put("type", ref.getType());
-    }
+    String refType = ref.getType() == null || ref.getType().isBlank() ? "branch" : ref.getType();
+    out.put("type", refType);
     if (ref.getMaxReferenceAgeMs() > 0) {
       out.put("max-ref-age-ms", ref.getMaxReferenceAgeMs());
     }
@@ -330,7 +608,8 @@ public class TransactionCommitService {
       TableGatewaySupport tableSupport,
       List<SyncTarget> targets,
       String idempotencyKey,
-      String txId) {
+      String txId,
+      boolean abortOnFailure) {
     for (var target : targets) {
       SnapshotPlan plan = target.snapshotPlan();
       Response addError =
@@ -344,11 +623,9 @@ public class TransactionCommitService {
               idempotencyKey);
       if (addError != null) {
         rollbackSnapshotChanges(tableSupport, targets);
-        transactionClient.abortTransaction(
-            ai.floedb.floecat.transaction.rpc.AbortTransactionRequest.newBuilder()
-                .setTxId(txId)
-                .setReason("snapshot additions failed")
-                .build());
+        if (abortOnFailure) {
+          abortTransactionQuietly(txId, "snapshot additions failed");
+        }
         return addError;
       }
       Response refError =
@@ -362,11 +639,9 @@ public class TransactionCommitService {
               idempotencyKey);
       if (refError != null) {
         rollbackSnapshotChanges(tableSupport, targets);
-        transactionClient.abortTransaction(
-            ai.floedb.floecat.transaction.rpc.AbortTransactionRequest.newBuilder()
-                .setTxId(txId)
-                .setReason("snapshot ref updates failed")
-                .build());
+        if (abortOnFailure) {
+          abortTransactionQuietly(txId, "snapshot ref updates failed");
+        }
         return refError;
       }
       Response removeError =
@@ -380,11 +655,9 @@ public class TransactionCommitService {
               idempotencyKey);
       if (removeError != null) {
         rollbackSnapshotChanges(tableSupport, targets);
-        transactionClient.abortTransaction(
-            ai.floedb.floecat.transaction.rpc.AbortTransactionRequest.newBuilder()
-                .setTxId(txId)
-                .setReason("snapshot removals failed")
-                .build());
+        if (abortOnFailure) {
+          abortTransactionQuietly(txId, "snapshot removals failed");
+        }
         return removeError;
       }
     }
@@ -396,20 +669,50 @@ public class TransactionCommitService {
       SnapshotPlan plan = target.snapshotPlan();
       List<Long> snapshotIds = snapshotIdsFrom(plan.additions());
       if (!snapshotIds.isEmpty()) {
-        snapshotMetadataService.deleteSnapshots(target.tableId(), snapshotIds);
+        try {
+          snapshotMetadataService.deleteSnapshots(target.tableId(), snapshotIds);
+        } catch (RuntimeException e) {
+          LOG.warnf(
+              e,
+              "Snapshot delete rollback failed for %s.%s in tx rollback",
+              String.join(".", target.namespacePath()),
+              target.tableName());
+        }
       }
       if (!plan.removedSnapshots().isEmpty()) {
-        snapshotMetadataService.restoreSnapshots(target.tableId(), plan.removedSnapshots());
+        try {
+          snapshotMetadataService.restoreSnapshots(target.tableId(), plan.removedSnapshots());
+        } catch (RuntimeException e) {
+          LOG.warnf(
+              e,
+              "Snapshot restore rollback failed for %s.%s in tx rollback",
+              String.join(".", target.namespacePath()),
+              target.tableName());
+        }
       }
       if (!plan.rollbackRefUpdates().isEmpty()) {
-        snapshotMetadataService.applySnapshotUpdates(
-            tableSupport,
-            target.tableId(),
-            target.namespacePath(),
-            target.tableName(),
-            () -> target.table(),
-            plan.rollbackRefUpdates(),
-            null);
+        try {
+          Response rollbackRefError =
+              snapshotMetadataService.applySnapshotUpdates(
+                  tableSupport,
+                  target.tableId(),
+                  target.namespacePath(),
+                  target.tableName(),
+                  () -> target.table(),
+                  plan.rollbackRefUpdates(),
+                  null);
+          if (rollbackRefError != null) {
+            LOG.warnf(
+                "Snapshot ref rollback failed for %s.%s in tx rollback",
+                String.join(".", target.namespacePath()), target.tableName());
+          }
+        } catch (RuntimeException e) {
+          LOG.warnf(
+              e,
+              "Snapshot ref rollback threw for %s.%s in tx rollback",
+              String.join(".", target.namespacePath()),
+              target.tableName());
+        }
       }
     }
   }
@@ -471,5 +774,345 @@ public class TransactionCommitService {
       }
     }
     return null;
+  }
+
+  private String requestHash(List<TransactionCommitRequest.TableChange> changes) {
+    List<Map<String, Object>> normalized = new ArrayList<>();
+    if (changes != null) {
+      for (TransactionCommitRequest.TableChange change : changes) {
+        if (change == null) {
+          normalized.add(Map.of());
+          continue;
+        }
+        Map<String, Object> entry = new LinkedHashMap<>();
+        var identifier = change.identifier();
+        if (identifier != null) {
+          Map<String, Object> idMap = new LinkedHashMap<>();
+          idMap.put(
+              "namespace", identifier.namespace() == null ? List.of() : identifier.namespace());
+          idMap.put("name", identifier.name());
+          entry.put("identifier", idMap);
+        } else {
+          entry.put("identifier", null);
+        }
+        entry.put("stage-id", change.stageId());
+        entry.put(
+            "requirements", change.requirements() == null ? List.of() : change.requirements());
+        entry.put("updates", change.updates() == null ? List.of() : change.updates());
+        normalized.add(entry);
+      }
+    }
+    String canonical = canonicalize(normalized);
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hash = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
+      return Base64.getEncoder().encodeToString(hash);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 not available", e);
+    }
+  }
+
+  private String canonicalize(Object value) {
+    if (value == null) {
+      return "null";
+    }
+    if (value instanceof Map<?, ?> map) {
+      List<String> keys = new ArrayList<>();
+      for (Object key : map.keySet()) {
+        keys.add(String.valueOf(key));
+      }
+      keys.sort(String::compareTo);
+      StringBuilder out = new StringBuilder("{");
+      boolean first = true;
+      for (String key : keys) {
+        if (!first) {
+          out.append(',');
+        }
+        first = false;
+        out.append(escapeJsonString(key)).append(':').append(canonicalize(map.get(key)));
+      }
+      return out.append('}').toString();
+    }
+    if (value instanceof List<?> list) {
+      StringBuilder out = new StringBuilder("[");
+      boolean first = true;
+      for (Object entry : list) {
+        if (!first) {
+          out.append(',');
+        }
+        first = false;
+        out.append(canonicalize(entry));
+      }
+      return out.append(']').toString();
+    }
+    if (value instanceof String str) {
+      return escapeJsonString(str);
+    }
+    if (value instanceof Number || value instanceof Boolean) {
+      return String.valueOf(value);
+    }
+    return escapeJsonString(String.valueOf(value));
+  }
+
+  private String escapeJsonString(String input) {
+    String value = input == null ? "" : input;
+    StringBuilder out = new StringBuilder("\"");
+    for (int i = 0; i < value.length(); i++) {
+      char ch = value.charAt(i);
+      switch (ch) {
+        case '\\' -> out.append("\\\\");
+        case '"' -> out.append("\\\"");
+        case '\b' -> out.append("\\b");
+        case '\f' -> out.append("\\f");
+        case '\n' -> out.append("\\n");
+        case '\r' -> out.append("\\r");
+        case '\t' -> out.append("\\t");
+        default -> {
+          if (ch < 0x20) {
+            out.append(String.format("\\u%04x", (int) ch));
+          } else {
+            out.append(ch);
+          }
+        }
+      }
+    }
+    return out.append('"').toString();
+  }
+
+  private boolean isCommitAccepted(TransactionState state) {
+    return state == TransactionState.TS_APPLIED;
+  }
+
+  private boolean isDeterministicFailedState(TransactionState state) {
+    return state == TransactionState.TS_APPLY_FAILED_CONFLICT
+        || state == TransactionState.TS_ABORTED;
+  }
+
+  private boolean isDeterministicCommitFailure(StatusRuntimeException failure) {
+    Status.Code code = failure.getStatus().getCode();
+    if (code == Status.Code.ABORTED) {
+      ErrorCode detailCode = extractFloecatErrorCode(failure);
+      if (detailCode == ErrorCode.MC_ABORT_RETRYABLE) {
+        return false;
+      }
+      if (detailCode == ErrorCode.MC_CONFLICT || detailCode == ErrorCode.MC_PRECONDITION_FAILED) {
+        return true;
+      }
+      return true;
+    }
+    return code == Status.Code.FAILED_PRECONDITION || code == Status.Code.ALREADY_EXISTS;
+  }
+
+  private boolean isRetryableCommitAbort(StatusRuntimeException failure) {
+    if (failure.getStatus().getCode() != Status.Code.ABORTED) {
+      return false;
+    }
+    return extractFloecatErrorCode(failure) == ErrorCode.MC_ABORT_RETRYABLE;
+  }
+
+  private ErrorCode extractFloecatErrorCode(StatusRuntimeException exception) {
+    var statusProto = StatusProto.fromThrowable(exception);
+    if (statusProto == null) {
+      return null;
+    }
+    for (com.google.protobuf.Any detail : statusProto.getDetailsList()) {
+      if (!detail.is(Error.class)) {
+        continue;
+      }
+      try {
+        return detail.unpack(Error.class).getCode();
+      } catch (Exception ignored) {
+        // Continue scanning details.
+      }
+    }
+    return null;
+  }
+
+  private boolean waitForAppliedState(String txId) {
+    if (txId == null || txId.isBlank()) {
+      return false;
+    }
+    final int maxAttempts = 3;
+    final long sleepMillis = 25L;
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        var current =
+            transactionClient.getTransaction(
+                GetTransactionRequest.newBuilder().setTxId(txId).build());
+        if (current != null && current.hasTransaction()) {
+          TransactionState state = current.getTransaction().getState();
+          if (state == TransactionState.TS_APPLIED) {
+            return true;
+          }
+          if (state == TransactionState.TS_APPLY_FAILED_CONFLICT
+              || state == TransactionState.TS_ABORTED) {
+            return false;
+          }
+        }
+      } catch (RuntimeException ignored) {
+        return false;
+      }
+      if (attempt + 1 < maxAttempts) {
+        try {
+          Thread.sleep(sleepMillis);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+
+  private Response mapPreCommitFailure(StatusRuntimeException failure) {
+    Status.Code code = failure.getStatus().getCode();
+    if (code == Status.Code.INVALID_ARGUMENT) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "ValidationException", Response.Status.BAD_REQUEST);
+    }
+    if (code == Status.Code.NOT_FOUND) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "NoSuchTableException", Response.Status.NOT_FOUND);
+    }
+    if (code == Status.Code.FAILED_PRECONDITION || code == Status.Code.ALREADY_EXISTS) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+    }
+    if (code == Status.Code.ABORTED) {
+      ErrorCode detailCode = extractFloecatErrorCode(failure);
+      if (detailCode == ErrorCode.MC_ABORT_RETRYABLE) {
+        return IcebergErrorResponses.failure(
+            "transaction commit failed",
+            "CommitStateUnknownException",
+            Response.Status.SERVICE_UNAVAILABLE);
+      }
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+    }
+    if (code == Status.Code.UNAVAILABLE) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed",
+          "CommitStateUnknownException",
+          Response.Status.SERVICE_UNAVAILABLE);
+    }
+    if (code == Status.Code.UNAUTHENTICATED) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "UnauthorizedException", Response.Status.UNAUTHORIZED);
+    }
+    if (code == Status.Code.PERMISSION_DENIED) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "ForbiddenException", Response.Status.FORBIDDEN);
+    }
+    if (code == Status.Code.UNKNOWN) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "CommitStateUnknownException", Response.Status.BAD_GATEWAY);
+    }
+    if (code == Status.Code.DEADLINE_EXCEEDED) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed",
+          "CommitStateUnknownException",
+          Response.Status.GATEWAY_TIMEOUT);
+    }
+    return preCommitStateUnknown();
+  }
+
+  private Response preCommitStateUnknown() {
+    return IcebergErrorResponses.failure(
+        "transaction commit failed",
+        "CommitStateUnknownException",
+        Response.Status.INTERNAL_SERVER_ERROR);
+  }
+
+  private void abortTransactionQuietly(String txId, String reason) {
+    if (txId == null || txId.isBlank()) {
+      return;
+    }
+    try {
+      transactionClient.abortTransaction(
+          ai.floedb.floecat.transaction.rpc.AbortTransactionRequest.newBuilder()
+              .setTxId(txId)
+              .setReason(reason == null ? "" : reason)
+              .build());
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Best-effort abort failed for tx=%s", txId);
+    }
+  }
+
+  private void maybeAbortOpenTransaction(
+      TransactionState currentState, String txId, String reason) {
+    if (currentState == TransactionState.TS_OPEN) {
+      abortTransactionQuietly(txId, reason);
+    }
+  }
+
+  private Response validateKnownRequirementTypes(List<Map<String, Object>> requirements) {
+    for (Map<String, Object> requirement : requirements) {
+      if (requirement == null) {
+        return IcebergErrorResponses.validation("commit requirement entry cannot be null");
+      }
+      Object typeObj = requirement.get("type");
+      String type = typeObj instanceof String value ? value : null;
+      if (type == null || type.isBlank()) {
+        return IcebergErrorResponses.validation("commit requirement missing type");
+      }
+      if (!SUPPORTED_REQUIREMENT_TYPES.contains(type)) {
+        return IcebergErrorResponses.validation("unsupported commit requirement: " + type);
+      }
+    }
+    return null;
+  }
+
+  private Response validateKnownUpdateActions(List<Map<String, Object>> updates) {
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        return IcebergErrorResponses.validation("unsupported commit update action: <missing>");
+      }
+      Object actionObj = update.get("action");
+      String action = actionObj instanceof String value ? value : null;
+      if (action == null || action.isBlank()) {
+        return IcebergErrorResponses.validation("unsupported commit update action: <missing>");
+      }
+      if (!SUPPORTED_UPDATE_ACTIONS.contains(action)) {
+        return IcebergErrorResponses.validation("unsupported commit update action: " + action);
+      }
+    }
+    return null;
+  }
+
+  private ai.floedb.floecat.catalog.rpc.Table loadPersistedTableOrDefault(ResourceId tableId) {
+    try {
+      return tableLifecycleService.getTable(tableId);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return ai.floedb.floecat.catalog.rpc.Table.getDefaultInstance();
+      }
+      throw e;
+    }
+  }
+
+  private TableRequests.Commit normalizeCommitRequestForStage(
+      TableRequests.Commit request, boolean stageCreatedTable) {
+    if (!stageCreatedTable || request == null || request.requirements() == null) {
+      return request;
+    }
+    List<Map<String, Object>> requirements = request.requirements();
+    if (requirements.isEmpty()) {
+      return request;
+    }
+    List<Map<String, Object>> filtered = new ArrayList<>(requirements.size());
+    boolean removed = false;
+    for (Map<String, Object> requirement : requirements) {
+      String type =
+          requirement == null ? null : requirement.get("type") instanceof String s ? s : null;
+      if ("assert-create".equals(type)) {
+        removed = true;
+        continue;
+      }
+      filtered.add(requirement);
+    }
+    if (!removed) {
+      return request;
+    }
+    return new TableRequests.Commit(filtered, request.updates());
   }
 }

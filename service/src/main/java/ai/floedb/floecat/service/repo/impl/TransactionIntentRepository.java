@@ -21,7 +21,6 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.PointerOverlay;
-import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -79,36 +78,67 @@ public class TransactionIntentRepository {
     return repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
   }
 
-  public boolean deleteByTargetIfBlobUriMatches(
-      String accountId, String targetPointerKey, String expectedBlobUri) {
+  public boolean deleteByTargetIfOwned(
+      String accountId, String targetPointerKey, String expectedOwnerTxId) {
     String key = Keys.transactionIntentPointerByTarget(accountId, targetPointerKey);
     var ptr = pointerStore.get(key).orElse(null);
-    if (ptr == null || !expectedBlobUri.equals(ptr.getBlobUri())) {
+    if (ptr == null || !pointerOwnedByTransaction(key, expectedOwnerTxId, targetPointerKey)) {
       return false;
     }
     return pointerStore.compareAndDelete(key, ptr.getVersion());
   }
 
-  public boolean deleteByTxIfBlobUriMatches(
-      String accountId, String txId, String targetPointerKey, String expectedBlobUri) {
+  public boolean deleteByTxIfOwned(String accountId, String txId, String targetPointerKey) {
     String key = Keys.transactionIntentPointerByTx(accountId, txId, targetPointerKey);
     var ptr = pointerStore.get(key).orElse(null);
-    if (ptr == null || !expectedBlobUri.equals(ptr.getBlobUri())) {
+    if (ptr == null || !pointerOwnedByTransaction(key, txId, targetPointerKey)) {
       return false;
     }
     return pointerStore.compareAndDelete(key, ptr.getVersion());
   }
 
   public void deleteBothIndices(TransactionIntent intent) {
-    String expectedBlobUri = blobUriForIntent(intent);
-    deleteByTxIfBlobUriMatches(
-        intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey(), expectedBlobUri);
-    deleteByTargetIfBlobUriMatches(
-        intent.getAccountId(), intent.getTargetPointerKey(), expectedBlobUri);
+    deleteBothIndicesBestEffort(intent);
   }
 
-  public String blobUriForIntent(TransactionIntent intent) {
-    var sha = ResourceHash.sha256Hex(intent.toByteArray());
-    return Keys.transactionIntentBlobUri(intent.getAccountId(), intent.getTxId(), sha);
+  public boolean deleteBothIndicesBestEffort(TransactionIntent intent) {
+    if (intent == null) {
+      return true;
+    }
+    for (int attempt = 0; attempt < 3; attempt++) {
+      deleteByTxIfOwned(intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey());
+      deleteByTargetIfOwned(intent.getAccountId(), intent.getTargetPointerKey(), intent.getTxId());
+      var current = getByTarget(intent.getAccountId(), intent.getTargetPointerKey()).orElse(null);
+      boolean canonicalGoneOrNotMine =
+          current == null || !intent.getTxId().equals(current.getTxId());
+      if (canonicalGoneOrNotMine
+          && listByTx(intent.getAccountId(), intent.getTxId()).stream()
+              .noneMatch(existing -> matchesIntent(existing, intent))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean pointerOwnedByTransaction(
+      String pointerKey, String txId, String targetPointerKey) {
+    if (txId == null || txId.isBlank() || targetPointerKey == null || targetPointerKey.isBlank()) {
+      return false;
+    }
+    return repo.get(pointerKey)
+        .map(
+            existing ->
+                txId.equals(existing.getTxId())
+                    && targetPointerKey.equals(existing.getTargetPointerKey()))
+        .orElse(false);
+  }
+
+  private boolean matchesIntent(TransactionIntent left, TransactionIntent right) {
+    if (left == null || right == null) {
+      return false;
+    }
+    return left.getTxId().equals(right.getTxId())
+        && left.getAccountId().equals(right.getAccountId())
+        && left.getTargetPointerKey().equals(right.getTargetPointerKey());
   }
 }

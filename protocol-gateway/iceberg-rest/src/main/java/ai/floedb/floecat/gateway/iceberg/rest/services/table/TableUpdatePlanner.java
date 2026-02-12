@@ -49,7 +49,10 @@ public class TableUpdatePlanner {
   @Inject SnapshotMetadataService snapshotMetadataService;
 
   public UpdatePlan planUpdates(
-      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -66,7 +69,7 @@ public class TableUpdatePlanner {
         commitRequirementService.validateRequirements(
             command.tableSupport(),
             req.requirements(),
-            tableSupplier,
+            requirementTableSupplier,
             this::validationError,
             this::conflictError);
     if (requirementError != null) {
@@ -114,8 +117,16 @@ public class TableUpdatePlanner {
     return UpdatePlan.success(spec, mask);
   }
 
-  public UpdatePlan planTransactionUpdates(
+  public UpdatePlan planUpdates(
       TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planUpdates(command, tableSupplier, tableSupplier, tableId);
+  }
+
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -132,7 +143,7 @@ public class TableUpdatePlanner {
         commitRequirementService.validateRequirements(
             command.tableSupport(),
             req.requirements(),
-            tableSupplier,
+            requirementTableSupplier,
             this::validationError,
             this::conflictError);
     if (requirementError != null) {
@@ -172,6 +183,11 @@ public class TableUpdatePlanner {
     return UpdatePlan.success(spec, mask);
   }
 
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planTransactionUpdates(command, tableSupplier, tableSupplier, tableId);
+  }
+
   public record UpdatePlan(TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
     static UpdatePlan success(TableSpec.Builder spec, FieldMask.Builder mask) {
       return new UpdatePlan(spec, mask, null);
@@ -203,9 +219,12 @@ public class TableUpdatePlanner {
       return null;
     }
     for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        return "<missing>";
+      }
       String action = asString(update == null ? null : update.get("action"));
-      if (action == null) {
-        continue;
+      if (action == null || action.isBlank()) {
+        return "<missing>";
       }
       if (!"set-properties".equals(action)
           && !"remove-properties".equals(action)

@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.model;
+package ai.floedb.floecat.service.repo.util;
 
-public record TransactionKey(String accountId, String txId, String sha256) implements ResourceKey {
-  public static TransactionKey byId(String accountId, String txId) {
-    return new TransactionKey(accountId, txId, "");
-  }
+import ai.floedb.floecat.common.rpc.Pointer;
+import jakarta.enterprise.context.ApplicationScoped;
+import java.util.Optional;
 
-  public TransactionKey(String accountId, String txId, String sha256) {
-    this.accountId = accountId;
-    this.txId = txId;
-    this.sha256 = sha256;
+@ApplicationScoped
+public class NoopPointerOverlay implements PointerOverlay {
+  @Override
+  public Optional<Pointer> resolveEffectivePointer(String key, Pointer current) {
+    return Optional.ofNullable(current);
   }
 }

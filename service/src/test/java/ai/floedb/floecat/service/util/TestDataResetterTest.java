@@ -158,6 +158,38 @@ public class TestDataResetterTest {
     }
 
     @Override
+    public boolean compareAndSetBatch(List<CasOp> ops) {
+      if (ops == null || ops.isEmpty()) {
+        return true;
+      }
+      for (CasOp op : ops) {
+        if (op instanceof CasUpsert upsert) {
+          Pointer cur = map.get(upsert.key());
+          if (cur == null) {
+            if (upsert.expectedVersion() != 0L) {
+              return false;
+            }
+          } else if (cur.getVersion() != upsert.expectedVersion()) {
+            return false;
+          }
+        } else if (op instanceof CasDelete delete) {
+          Pointer cur = map.get(delete.key());
+          if (cur == null || cur.getVersion() != delete.expectedVersion()) {
+            return false;
+          }
+        }
+      }
+      for (CasOp op : ops) {
+        if (op instanceof CasUpsert upsert) {
+          map.put(upsert.key(), upsert.next());
+        } else if (op instanceof CasDelete delete) {
+          map.remove(delete.key());
+        }
+      }
+      return true;
+    }
+
+    @Override
     public List<Pointer> listPointersByPrefix(
         String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
       final String pfx = prefix == null ? "" : prefix;

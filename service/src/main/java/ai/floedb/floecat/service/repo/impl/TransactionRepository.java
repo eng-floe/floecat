@@ -56,14 +56,14 @@ public class TransactionRepository {
   }
 
   public Optional<Transaction> getById(String accountId, String txId) {
-    return repo.getByKey(new TransactionKey(accountId, txId, ""));
+    return repo.getByKey(TransactionKey.byId(accountId, txId));
   }
 
   public MutationMeta metaFor(String accountId, String txId) {
-    return repo.metaFor(new TransactionKey(accountId, txId, ""));
+    return repo.metaFor(TransactionKey.byId(accountId, txId));
   }
 
   public MutationMeta metaFor(String accountId, String txId, Timestamp nowTs) {
-    return repo.metaFor(new TransactionKey(accountId, txId, ""), nowTs);
+    return repo.metaFor(TransactionKey.byId(accountId, txId), nowTs);
   }
 }

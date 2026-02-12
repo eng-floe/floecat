@@ -29,6 +29,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository.PreconditionFailedException;
 import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -60,7 +61,8 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class TransactionsServiceImpl extends BaseServiceImpl implements Transactions {
 
-  private static final Logger LOG = Logger.getLogger(Transactions.class);
+  private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
+  private static final int MAX_POINTER_TXN_OPS = 100;
 
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
@@ -70,7 +72,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject PrincipalProvider principalProvider;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject TransactionIntentApplierSupport applierSupport;
+  @Inject TransactionIntentApplierSupport intentApplierSupport;
 
   @Override
   public Uni<BeginTransactionResponse> beginTransaction(BeginTransactionRequest request) {
@@ -80,10 +82,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.write");
-                  String accountId = principalContext.getAccountId();
-                  if (accountId == null || accountId.isBlank()) {
-                    throw new IllegalArgumentException("missing account_id");
-                  }
+                  String accountId = requireAccountId(principalContext.getAccountId());
 
                   String idempotencyKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -138,7 +137,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.write");
-                  String accountId = principalContext.getAccountId();
+                  String accountId = requireAccountId(principalContext.getAccountId());
                   String idempotencyKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   idempotencyKey = idempotencyKey.isBlank() ? null : idempotencyKey;
@@ -192,7 +191,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.write");
-                  String accountId = principalContext.getAccountId();
+                  String accountId = requireAccountId(principalContext.getAccountId());
                   String idempotencyKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
                   idempotencyKey = idempotencyKey.isBlank() ? null : idempotencyKey;
@@ -246,13 +245,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.write");
-                  String accountId = principalContext.getAccountId();
+                  String accountId = requireAccountId(principalContext.getAccountId());
                   Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
                   if (txn.getState() == TransactionState.TS_ABORTED) {
                     return AbortTransactionResponse.newBuilder().setTransaction(txn).build();
                   }
-                  if (txn.getState() == TransactionState.TS_COMMITTED
-                      || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+                  if (isCommittedFamily(txn.getState())) {
                     throw new IllegalArgumentException("transaction already committed");
                   }
                   Transaction aborted =
@@ -279,7 +277,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 () -> {
                   var principalContext = principalProvider.get();
                   authz.require(principalContext, "table.read");
-                  String accountId = principalContext.getAccountId();
+                  String accountId = requireAccountId(principalContext.getAccountId());
                   Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
                   return GetTransactionResponse.newBuilder().setTransaction(txn).build();
                 }),
@@ -302,8 +300,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private void updateTransaction(Transaction txn) {
     long version = txRepo.metaFor(txn.getAccountId(), txn.getTxId()).getPointerVersion();
     if (!txRepo.update(txn, version)) {
-      throw new IllegalArgumentException("transaction update conflict: " + txn.getTxId());
+      throw new PreconditionFailedException("transaction update conflict: " + txn.getTxId());
     }
+  }
+
+  private String requireAccountId(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
+      throw new IllegalArgumentException("missing account_id");
+    }
+    return accountId;
   }
 
   private ResourceId transactionResourceId(String accountId, String txId) {
@@ -352,7 +357,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
     List<TransactionIntent> intents = new ArrayList<>();
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
-    List<String> createdBlobs = new ArrayList<>();
+    List<PendingBlob> pendingBlobs = new ArrayList<>();
+    int estimatedOps = 0;
 
     try {
       for (var change : request.getChangesList()) {
@@ -361,17 +367,19 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (!seenTargets.add(pointerKey)) {
           throw new IllegalArgumentException("duplicate change for " + pointerKey);
         }
-        var existing = intentRepo.getByTarget(accountId, pointerKey).orElse(null);
-        if (existing != null && !txn.getTxId().equals(existing.getTxId())) {
-          throw new IllegalArgumentException("intent already exists for " + pointerKey);
+        estimatedOps += isTableByIdPointer(pointerKey) ? 3 : 1;
+        if (estimatedOps > MAX_POINTER_TXN_OPS) {
+          throw new IllegalArgumentException(
+              "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
         }
         long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
         Precondition pre = change.getPrecondition();
-        Long expectedVersion = currentVersion;
+        long expectedVersion = currentVersion;
         if (pre != null && pre.hasExpectedVersion()) {
           if (currentVersion != pre.getExpectedVersion()) {
-            throw new IllegalArgumentException("precondition failed for " + pointerKey);
+            throw new PreconditionFailedException("precondition failed for " + pointerKey);
           }
+          expectedVersion = pre.getExpectedVersion();
         }
 
         String blobUri;
@@ -399,20 +407,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             }
             String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
             blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
-            boolean existed = blobStore.head(blobUri).isPresent();
-            blobStore.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
-            if (!existed) {
-              createdBlobs.add(blobUri);
-            }
+            pendingBlobs.add(
+                new PendingBlob(blobUri, tablePayload.toByteArray(), "application/x-protobuf"));
           }
           case PAYLOAD -> {
             String sha = ResourceHash.sha256Hex(change.getPayload().toByteArray());
             blobUri = Keys.transactionObjectBlobUri(accountId, txn.getTxId(), sha);
-            boolean existed = blobStore.head(blobUri).isPresent();
-            blobStore.put(blobUri, change.getPayload().toByteArray(), "application/octet-stream");
-            if (!existed) {
-              createdBlobs.add(blobUri);
-            }
+            pendingBlobs.add(
+                new PendingBlob(
+                    blobUri, change.getPayload().toByteArray(), "application/octet-stream"));
           }
           case CHANGEPAYLOAD_NOT_SET -> {
             throw new IllegalArgumentException(
@@ -429,21 +432,19 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 .setAccountId(accountId)
                 .setTargetPointerKey(pointerKey)
                 .setBlobUri(blobUri)
-                .setCreatedAt(now);
-        if (expectedVersion != null) {
-          intentBuilder.setExpectedVersion(expectedVersion);
-        }
+                .setCreatedAt(now)
+                .setExpectedVersion(expectedVersion);
         TransactionIntent intent = intentBuilder.build();
         intents.add(intent);
       }
     } catch (RuntimeException e) {
-      deletePreparedBlobs(createdBlobs);
       throw e;
     }
 
     List<TransactionIntent> created = new ArrayList<>();
     try {
       for (var intent : intents) {
+        ensureIntentTargetAvailable(accountId, txn.getTxId(), intent.getTargetPointerKey(), now);
         intentRepo.create(intent);
         created.add(intent);
       }
@@ -451,7 +452,17 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       for (var intent : created) {
         intentRepo.deleteBothIndices(intent);
       }
-      deletePreparedBlobs(createdBlobs);
+      throw e;
+    }
+
+    try {
+      for (var blob : pendingBlobs) {
+        blobStore.put(blob.uri(), blob.bytes(), blob.contentType());
+      }
+    } catch (RuntimeException e) {
+      for (var intent : created) {
+        intentRepo.deleteBothIndices(intent);
+      }
       throw e;
     }
 
@@ -463,7 +474,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       for (var intent : created) {
         intentRepo.deleteBothIndices(intent);
       }
-      deletePreparedBlobs(createdBlobs);
       throw e;
     }
     return updated;
@@ -477,13 +487,14 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       cleanupIntents(accountId, txn.getTxId());
       throw new IllegalArgumentException("transaction expired");
     }
-    if (txn.getState() == TransactionState.TS_COMMITTED) {
+    if (txn.getState() == TransactionState.TS_APPLIED) {
       return txn;
     }
     if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return txn;
     }
-    if (txn.getState() != TransactionState.TS_PREPARED) {
+    if (txn.getState() != TransactionState.TS_PREPARED
+        && txn.getState() != TransactionState.TS_APPLY_FAILED_RETRYABLE) {
       throw new IllegalArgumentException("transaction not prepared: " + txn.getState().name());
     }
 
@@ -492,47 +503,90 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       throw new IllegalArgumentException("transaction has no intents");
     }
     for (var intent : intents) {
-      String pointerKey = intent.getTargetPointerKey();
-      long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
-      if (intent.hasExpectedVersion() && currentVersion != intent.getExpectedVersion()) {
-        Transaction aborted =
-            txn.toBuilder().setState(TransactionState.TS_ABORTED).setUpdatedAt(now).build();
-        updateTransaction(aborted);
-        cleanupIntents(accountId, txn.getTxId());
-        throw new IllegalArgumentException("transaction conflict for " + pointerKey);
+      var lockOwner = intentRepo.getByTarget(accountId, intent.getTargetPointerKey()).orElse(null);
+      if (lockOwner == null || !txn.getTxId().equals(lockOwner.getTxId())) {
+        Transaction failed =
+            txn.toBuilder()
+                .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE)
+                .setUpdatedAt(now)
+                .build();
+        updateTransaction(failed);
+        return failed;
       }
     }
 
-    Transaction committed =
-        txn.toBuilder().setState(TransactionState.TS_COMMITTED).setUpdatedAt(now).build();
-    updateTransaction(committed);
-
-    boolean conflict = false;
-    for (var intent : intents) {
-      var outcome = applierSupport.applyIntentBestEffort(intent, intentRepo);
-      if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
-        recordIntentConflict(intent, outcome, now);
-        conflict = true;
-        break;
-      }
+    var outcome = intentApplierSupport.applyTransactionBestEffort(intents, intentRepo);
+    if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
+      Transaction applied =
+          txn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
+      updateTransaction(applied);
+      cleanupIntentsBestEffort(intents);
+      return applied;
     }
 
-    if (conflict) {
+    if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
+      annotateIntentApplyFailure(intents, outcome, now);
       Transaction failed =
-          committed.toBuilder()
+          txn.toBuilder()
               .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
               .setUpdatedAt(now)
               .build();
       updateTransaction(failed);
       return failed;
     }
-    return committed;
+
+    annotateIntentApplyFailure(intents, outcome, now);
+    Transaction failed =
+        txn.toBuilder()
+            .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE)
+            .setUpdatedAt(now)
+            .build();
+    updateTransaction(failed);
+    return failed;
+  }
+
+  private void annotateIntentApplyFailure(
+      List<TransactionIntent> intents,
+      TransactionIntentApplierSupport.ApplyOutcome outcome,
+      Timestamp now) {
+    for (var intent : intents) {
+      var updated =
+          intent.toBuilder()
+              .setApplyErrorCode(outcome.errorCode() == null ? "" : outcome.errorCode())
+              .setApplyErrorMessage(outcome.errorMessage() == null ? "" : outcome.errorMessage())
+              .setApplyErrorAt(now);
+      if (outcome.expectedVersion() != null) {
+        updated.setApplyErrorExpectedVersion(outcome.expectedVersion());
+      }
+      if (outcome.actualVersion() != null) {
+        updated.setApplyErrorActualVersion(outcome.actualVersion());
+      }
+      if (outcome.conflictOwner() != null && !outcome.conflictOwner().isBlank()) {
+        updated.setApplyErrorConflictOwner(outcome.conflictOwner());
+      }
+      if (!intentRepo.update(updated.build())) {
+        LOG.debugf(
+            "Failed to persist apply failure details for tx=%s target=%s",
+            intent.getTxId(), intent.getTargetPointerKey());
+      }
+    }
   }
 
   private void cleanupIntents(String accountId, String txId) {
     List<TransactionIntent> intents = intentRepo.listByTx(accountId, txId);
+    cleanupIntentsBestEffort(intents);
+  }
+
+  private void cleanupIntentsBestEffort(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return;
+    }
     for (var intent : intents) {
-      intentRepo.deleteBothIndices(intent);
+      if (!intentRepo.deleteBothIndicesBestEffort(intent)) {
+        LOG.warnf(
+            "Failed to fully remove transaction intent indices tx=%s target=%s",
+            intent.getTxId(), intent.getTargetPointerKey());
+      }
     }
   }
 
@@ -547,31 +601,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (txn == null) {
       return txn;
     }
-    if (txn.getState() == TransactionState.TS_ABORTED
-        || txn.getState() == TransactionState.TS_COMMITTED
-        || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+    if (txn.getState() == TransactionState.TS_ABORTED || isCommittedFamily(txn.getState())) {
       return txn;
     }
     Transaction aborted =
         txn.toBuilder().setState(TransactionState.TS_ABORTED).setUpdatedAt(now).build();
     updateTransaction(aborted);
     return aborted;
-  }
-
-  private void deletePreparedBlobs(List<String> uris) {
-    if (uris == null || uris.isEmpty()) {
-      return;
-    }
-    for (String uri : uris) {
-      if (uri == null || uri.isBlank()) {
-        continue;
-      }
-      try {
-        blobStore.delete(uri);
-      } catch (RuntimeException e) {
-        LOG.debugf(e, "Failed to cleanup prepared blob %s", uri);
-      }
-    }
   }
 
   private ResourceId resolveTableId(String accountId, ResourceId tableId, String tableFq) {
@@ -625,27 +661,61 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return com.google.protobuf.Duration.newBuilder().setSeconds(600).build();
   }
 
-  private void recordIntentConflict(
-      TransactionIntent intent,
-      TransactionIntentApplierSupport.ApplyOutcome outcome,
-      Timestamp now) {
-    TransactionIntent updated =
-        intent.toBuilder()
-            .setApplyErrorCode(outcome.errorCode())
-            .setApplyErrorMessage(outcome.errorMessage())
-            .setApplyErrorAt(now)
-            .build();
-    if (outcome.expectedVersion() != null) {
-      updated = updated.toBuilder().setApplyErrorExpectedVersion(outcome.expectedVersion()).build();
+  private boolean isCommittedFamily(TransactionState state) {
+    return state == TransactionState.TS_APPLIED
+        || state == TransactionState.TS_APPLY_FAILED_CONFLICT;
+  }
+
+  private void ensureIntentTargetAvailable(
+      String accountId, String txId, String targetPointerKey, Timestamp now) {
+    if (targetPointerKey == null || targetPointerKey.isBlank()) {
+      throw new IllegalArgumentException("missing target pointer key");
     }
-    if (outcome.actualVersion() != null) {
-      updated = updated.toBuilder().setApplyErrorActualVersion(outcome.actualVersion()).build();
+    for (int attempt = 0; attempt < 3; attempt++) {
+      var existingOpt = intentRepo.getByTarget(accountId, targetPointerKey);
+      if (existingOpt.isEmpty()) {
+        return;
+      }
+      TransactionIntent existing = existingOpt.get();
+      if (txId.equals(existing.getTxId())) {
+        return;
+      }
+      if (!isIntentOwnerStale(accountId, existing.getTxId(), now)) {
+        throw new PreconditionFailedException(
+            "target already locked by transaction: " + existing.getTxId());
+      }
+      throw new PreconditionFailedException(
+          "target locked by stale transaction: " + existing.getTxId());
     }
-    if (outcome.conflictOwner() != null) {
-      updated = updated.toBuilder().setApplyErrorConflictOwner(outcome.conflictOwner()).build();
-    }
-    if (!intentRepo.update(updated)) {
-      LOG.warnf("failed to persist intent conflict for %s", intent.getTargetPointerKey());
+    var remaining = intentRepo.getByTarget(accountId, targetPointerKey);
+    if (remaining.isPresent() && !txId.equals(remaining.get().getTxId())) {
+      throw new PreconditionFailedException(
+          "target already locked by transaction: " + remaining.get().getTxId());
     }
   }
+
+  private boolean isIntentOwnerStale(String accountId, String ownerTxId, Timestamp now) {
+    if (ownerTxId == null || ownerTxId.isBlank()) {
+      return true;
+    }
+    Transaction owner = txRepo.getById(accountId, ownerTxId).orElse(null);
+    if (owner == null) {
+      return true;
+    }
+    if (owner.getState() == TransactionState.TS_ABORTED
+        || owner.getState() == TransactionState.TS_APPLIED
+        || owner.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+      return true;
+    }
+    if (owner.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE) {
+      return isExpired(owner, now);
+    }
+    return isExpired(owner, now);
+  }
+
+  private boolean isTableByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/tables/by-id/");
+  }
+
+  private record PendingBlob(String uri, byte[] bytes, String contentType) {}
 }

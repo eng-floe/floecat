@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.util;
 
+import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,27 +33,29 @@ public class TestDataResetter {
   private static final String GLOBAL_ACCOUNTS_BY_NAME_PREFIX = "/accounts/by-name/";
 
   public void wipeAll() {
-    if (false) ptr.dump("BEFORE WIPE");
-    var accountIds = listAccountIds();
-    var accountNames = listAccountNames();
+    synchronized (SeedRunner.class) {
+      if (false) ptr.dump("BEFORE WIPE");
+      var accountIds = listAccountIds();
+      var accountNames = listAccountNames();
 
-    for (var tid : accountIds) {
-      ptr.deleteByPrefix("/accounts/" + tid + "/");
-      ptr.deleteByPrefix(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
-      ptr.delete(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
-    }
-    for (var nm : accountNames) {
-      ptr.delete(GLOBAL_ACCOUNTS_BY_NAME_PREFIX + nm);
-    }
-    ptr.deleteByPrefix("/accounts/");
+      for (var tid : accountIds) {
+        ptr.deleteByPrefix("/accounts/" + tid + "/");
+        ptr.deleteByPrefix(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
+        ptr.delete(GLOBAL_ACCOUNTS_BY_ID_PREFIX + tid);
+      }
+      for (var nm : accountNames) {
+        ptr.delete(GLOBAL_ACCOUNTS_BY_NAME_PREFIX + nm);
+      }
+      ptr.deleteByPrefix("/accounts/");
 
-    for (var tid : accountIds) {
-      blobs.deletePrefix("/accounts/" + tid + "/");
-    }
-    blobs.deletePrefix("/accounts/");
+      for (var tid : accountIds) {
+        blobs.deletePrefix("/accounts/" + tid + "/");
+      }
+      blobs.deletePrefix("/accounts/");
 
-    if (!ptr.isEmpty()) {
-      ptr.dump("AFTER WIPE, NON-EMPTY");
+      if (!ptr.isEmpty()) {
+        ptr.dump("AFTER WIPE, NON-EMPTY");
+      }
     }
   }
 

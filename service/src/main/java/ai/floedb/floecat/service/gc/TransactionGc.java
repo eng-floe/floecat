@@ -73,10 +73,13 @@ public class TransactionGc {
         if (!shouldCollect(accountId, txn, nowMs, minAgeMs)) {
           continue;
         }
+        intentsDeleted += cleanupIntentsForTx(accountId, txn.getTxId(), pageSize);
+        if (hasIntentsForTx(accountId, txn.getTxId())) {
+          continue;
+        }
         if (!pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
           continue;
         }
-        intentsDeleted += cleanupIntentsForTx(accountId, txn.getTxId(), pageSize);
         blobStore.deletePrefix(Keys.transactionBlobPrefix(accountId, txn.getTxId()));
         blobStore.deletePrefix(Keys.transactionIntentBlobPrefix(accountId, txn.getTxId()));
         blobStore.deletePrefix(Keys.transactionObjectBlobPrefix(accountId, txn.getTxId()));
@@ -94,7 +97,9 @@ public class TransactionGc {
     if (txn.getState() == TransactionState.TS_ABORTED) {
       return true;
     }
-    if (txn.getState() == TransactionState.TS_COMMITTED) {
+    if (txn.getState() == TransactionState.TS_APPLIED
+        || txn.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE
+        || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       if (!txn.hasExpiresAt()) {
         return false;
       }
@@ -182,7 +187,7 @@ public class TransactionGc {
         }
         Transaction txn = readTransactionById(accountId, intent.getTxId());
         if (txn == null || txn.getState() == TransactionState.TS_ABORTED) {
-          deleteByTxIfBlobMatches(accountId, intent, p.getBlobUri());
+          deleteByTxIfOwned(accountId, intent);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -194,8 +199,7 @@ public class TransactionGc {
     return deleted;
   }
 
-  private void deleteByTxIfBlobMatches(
-      String accountId, TransactionIntent intent, String expectedBlobUri) {
+  private void deleteByTxIfOwned(String accountId, TransactionIntent intent) {
     String targetPointerKey = intent.getTargetPointerKey();
     if (targetPointerKey == null || targetPointerKey.isBlank()) {
       return;
@@ -204,12 +208,7 @@ public class TransactionGc {
         Keys.transactionIntentPointerByTx(accountId, intent.getTxId(), targetPointerKey);
     pointerStore
         .get(byTxKey)
-        .ifPresent(
-            ptr -> {
-              if (expectedBlobUri.equals(ptr.getBlobUri())) {
-                pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion());
-              }
-            });
+        .ifPresent(ptr -> pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion()));
   }
 
   private TransactionIntent readIntent(String blobUri) {

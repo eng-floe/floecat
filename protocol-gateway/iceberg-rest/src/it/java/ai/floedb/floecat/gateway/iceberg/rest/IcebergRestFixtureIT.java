@@ -507,6 +507,113 @@ class IcebergRestFixtureIT {
   }
 
   @Test
+  void transactionCommitAssertCreateFailsWhenTableAlreadyExists() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, table);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, table, METADATA_V3, false);
+
+    given()
+        .spec(spec)
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", table),
+                        "requirements",
+                        List.of(Map.of("type", "assert-create")),
+                        "updates",
+                        List.of()))))
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(409)
+        .body("error.type", equalTo("CommitFailedException"));
+  }
+
+  @Test
+  void transactionCommitAssertRefSnapshotIdNullFailsWhenRefExists() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, table);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, table, METADATA_V3, false);
+
+    given()
+        .spec(spec)
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", table),
+                        "requirements",
+                        List.of(assertRefSnapshotIdRequirement("main", null)),
+                        "updates",
+                        List.of()))))
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(409)
+        .body("error.type", equalTo("CommitFailedException"));
+  }
+
+  @Test
+  void transactionCommitAssertRefSnapshotIdNullPassesWhenRefMissing() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, table);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, table, METADATA_V3, false);
+
+    given()
+        .spec(spec)
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", table),
+                        "requirements",
+                        List.of(assertRefSnapshotIdRequirement("dev", null)),
+                        "updates",
+                        List.of()))))
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(204);
+  }
+
+  @Test
   void transactionCommitRollsBackSnapshotChangesOnFailure() {
     String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
@@ -965,6 +1072,197 @@ class IcebergRestFixtureIT {
   }
 
   @Test
+  void transactionCommitAppliesAllTableChangesAtomically() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableA = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableB = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, tableA);
+    TestS3Fixtures.seedStageTable(namespace, tableB);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, tableA, METADATA_V3, false);
+    registerTable(namespace, tableB, METADATA_V3, false);
+
+    String ownerA = "txn-owner-a-" + UUID.randomUUID();
+    String ownerB = "txn-owner-b-" + UUID.randomUUID();
+    Map<String, Object> setOwnerA =
+        Map.of("action", "set-properties", "updates", Map.of("owner", ownerA));
+    Map<String, Object> setOwnerB =
+        Map.of("action", "set-properties", "updates", Map.of("owner", ownerB));
+
+    given()
+        .spec(spec)
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", tableA),
+                        "requirements",
+                        List.of(),
+                        "updates",
+                        List.of(setOwnerA)),
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", tableB),
+                        "requirements",
+                        List.of(),
+                        "updates",
+                        List.of(setOwnerB)))))
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(204);
+
+    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
+    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+  }
+
+  @Test
+  void transactionCommitIsIdempotentForMultipleTables() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableA = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableB = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, tableA);
+    TestS3Fixtures.seedStageTable(namespace, tableB);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, tableA, METADATA_V3, false);
+    registerTable(namespace, tableB, METADATA_V3, false);
+
+    String ownerA = "txn-idem-owner-a-" + UUID.randomUUID();
+    String ownerB = "txn-idem-owner-b-" + UUID.randomUUID();
+    Map<String, Object> setOwnerA =
+        Map.of("action", "set-properties", "updates", Map.of("owner", ownerA));
+    Map<String, Object> setOwnerB =
+        Map.of("action", "set-properties", "updates", Map.of("owner", ownerB));
+    Map<String, Object> commitBody =
+        Map.of(
+            "table-changes",
+            List.of(
+                Map.of(
+                    "identifier",
+                    Map.of("namespace", List.of(namespace), "name", tableA),
+                    "requirements",
+                    List.of(),
+                    "updates",
+                    List.of(setOwnerA)),
+                Map.of(
+                    "identifier",
+                    Map.of("namespace", List.of(namespace), "name", tableB),
+                    "requirements",
+                    List.of(),
+                    "updates",
+                    List.of(setOwnerB))));
+
+    String idemKey = "idem-" + UUID.randomUUID();
+    given()
+        .spec(spec)
+        .header("Idempotency-Key", idemKey)
+        .body(commitBody)
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(204);
+
+    String tableAMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableA);
+    String tableBMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableB);
+
+    given()
+        .spec(spec)
+        .header("Idempotency-Key", idemKey)
+        .body(commitBody)
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(204);
+
+    String tableAMetadataAfterSecond = fetchTablePropertyMetadataLocation(namespace, tableA);
+    String tableBMetadataAfterSecond = fetchTablePropertyMetadataLocation(namespace, tableB);
+    Assertions.assertEquals(tableAMetadataAfterFirst, tableAMetadataAfterSecond);
+    Assertions.assertEquals(tableBMetadataAfterFirst, tableBMetadataAfterSecond);
+    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
+    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+  }
+
+  @Test
+  void transactionCommitFailureDoesNotPartiallyApplyOtherTableChanges() {
+    String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableA = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    String tableB = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+    TestS3Fixtures.seedStageTable(namespace, tableA);
+    TestS3Fixtures.seedStageTable(namespace, tableB);
+
+    given()
+        .spec(spec)
+        .body(Map.of("namespace", namespace))
+        .when()
+        .post("/v1/" + CATALOG + "/namespaces")
+        .then()
+        .statusCode(200);
+
+    registerTable(namespace, tableA, METADATA_V3, false);
+    registerTable(namespace, tableB, METADATA_V3, false);
+
+    String initialOwnerA = fetchTableMetadataProperty(namespace, tableA, "owner");
+    String initialOwnerB = fetchTableMetadataProperty(namespace, tableB, "owner");
+    String metadataBeforeA = fetchTablePropertyMetadataLocation(namespace, tableA);
+
+    Map<String, Object> setOwnerA =
+        Map.of(
+            "action",
+            "set-properties",
+            "updates",
+            Map.of("owner", "should-not-apply-" + UUID.randomUUID()));
+    Map<String, Object> badRemoval =
+        Map.of("action", "remove-snapshots", "snapshot-ids", List.of());
+
+    given()
+        .spec(spec)
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", tableA),
+                        "requirements",
+                        List.of(),
+                        "updates",
+                        List.of(setOwnerA)),
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of(namespace), "name", tableB),
+                        "requirements",
+                        List.of(),
+                        "updates",
+                        List.of(badRemoval)))))
+        .when()
+        .post("/v1/" + CATALOG + "/transactions/commit")
+        .then()
+        .statusCode(400);
+
+    Assertions.assertEquals(initialOwnerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
+    Assertions.assertEquals(initialOwnerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+    Assertions.assertEquals(metadataBeforeA, fetchTablePropertyMetadataLocation(namespace, tableA));
+  }
+
+  @Test
   void deleteTablePurgesMetadataWhenRequested() {
     try {
       String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
@@ -1113,6 +1411,14 @@ class IcebergRestFixtureIT {
       return location.substring(idx + 1);
     }
     return location;
+  }
+
+  private static Map<String, Object> assertRefSnapshotIdRequirement(String ref, Long snapshotId) {
+    Map<String, Object> requirement = new LinkedHashMap<>();
+    requirement.put("type", "assert-ref-snapshot-id");
+    requirement.put("ref", ref);
+    requirement.put("snapshot-id", snapshotId);
+    return requirement;
   }
 
   private static void parseUpstreamTarget() {
@@ -1872,6 +2178,17 @@ class IcebergRestFixtureIT {
         .extract()
         .jsonPath()
         .getList("metadata.snapshots.'snapshot-id'", Long.class);
+  }
+
+  private String fetchTableMetadataProperty(String namespace, String table, String key) {
+    return given()
+        .spec(spec)
+        .when()
+        .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+        .then()
+        .statusCode(200)
+        .extract()
+        .path("metadata.properties.'" + key + "'");
   }
 
   private JsonNode fetchPersistedMetadata(String namespace, String table) throws IOException {

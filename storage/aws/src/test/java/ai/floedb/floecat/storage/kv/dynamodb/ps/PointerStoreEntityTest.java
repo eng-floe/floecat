@@ -40,7 +40,7 @@ public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
   @Test
   void create_get_list_and_delete() {
     var p =
-        Pointer.newBuilder().setKey("accounts/by-id/1/catalog/abc").setBlobUri("s3://b/1").build();
+        Pointer.newBuilder().setKey("/accounts/by-id/1/catalog/abc").setBlobUri("s3://b/1").build();
 
     assertTrue(pointers.compareAndSet(p.getKey(), 0L, p).await().indefinitely());
 
@@ -61,7 +61,7 @@ public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
 
   @Test
   void cas_updates_increment_version_and_wrong_expected_fails() {
-    String key = "accounts/by-id/2/ns/x";
+    String key = "/accounts/by-id/2/ns/x";
     var p1 = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/v1").build();
     assertTrue(pointers.compareAndSet(key, 0L, p1).await().indefinitely());
     assertEquals(1L, pointers.get(key).await().indefinitely().orElseThrow().getVersion());
@@ -88,7 +88,7 @@ public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
 
   @Test
   void multiple_updates_then_delete_removes_record_with_version_gt_1() {
-    String key = "accounts/by-id/3/catalog/c1";
+    String key = "/accounts/by-id/3/catalog/c1";
 
     assertTrue(
         pointers
@@ -143,7 +143,7 @@ public class PointerStoreEntityTest extends AbstractEntityTest<Pointer> {
   @Test
   void list_by_prefix_paginates() {
     for (int i = 0; i < 7; i++) {
-      String key = "accounts/by-id/9/p/" + i;
+      String key = "/accounts/by-id/9/p/" + i;
       assertTrue(
           pointers
               .compareAndSet(

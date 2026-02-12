@@ -1,95 +1,148 @@
 # Transactions (gRPC Core)
 
 This document describes Floecat's core gRPC transaction mechanism used for multi-table commits.
-It is the backend for the Iceberg REST `/transactions/commit` flow.
+It is the backend used by Iceberg REST `POST /v1/{prefix}/transactions/commit`.
 
 ## Overview
 
-Transactions provide an optimistic, lock-free, multi-table commit mechanism:
+Transactions provide optimistic, pointer-CAS-based multi-table commit:
 
-- **Begin** creates a transaction in `TS_OPEN`.
-- **Prepare** validates preconditions, persists intent payloads, and moves to `TS_PREPARED`.
-- **Commit** validates intent versions, marks `TS_COMMITTED`, and applies intents asynchronously.
-- **Abort** marks `TS_ABORTED` and cleans up intents.
-
-All operations are **idempotent** when an idempotency key is provided.
+- `BeginTransaction` creates a transaction in `TS_OPEN`.
+- `PrepareTransaction` validates changes, writes intent records, then moves to `TS_PREPARED`.
+- `CommitTransaction` applies intents synchronously and returns a terminal apply state.
+- `AbortTransaction` marks `TS_ABORTED` and cleans up intents.
 
 ## State Model
 
-- `TS_OPEN`: new transaction, no intents persisted yet.
-- `TS_PREPARED`: intents persisted and validated.
-- `TS_COMMITTED`: transaction commit decision is durable; intents may still be pending apply.
-- `TS_ABORTED`: transaction was aborted (explicitly or due to conflicts).
-- `TS_APPLY_FAILED_CONFLICT`: commit decision is durable, but apply failed due to irreconcilable
-  conflicts (intents retain diagnostics).
+- `TS_OPEN`: new transaction, no committed prepare yet.
+- `TS_PREPARED`: intents are persisted and ready to apply.
+- `TS_ABORTED`: transaction aborted explicitly or due to expiration handling.
+- `TS_APPLIED`: all intent pointer updates applied.
+- `TS_APPLY_FAILED_RETRYABLE`: apply failed with a retryable/storage conflict.
+- `TS_APPLY_FAILED_CONFLICT`: apply failed with deterministic conflict semantics.
 
-## Data Model
+## Request/Data Model
 
-**TxChange**
-- Targets a table by ID or fully qualified name.
+`TxChange`:
+- Targets a table by `table_id` or `table_fq`.
 - `table_fq` format is `catalog.namespace1.namespace2.table` (dot-separated, no escaping).
-- Includes exactly one payload source: full Table proto, opaque bytes, or an `intended_blob_uri`.
-- Optional precondition on the target pointer version.
+- Payload is one of: `table`, opaque `payload`, or `intended_blob_uri`.
+- Optional pointer `precondition.expected_version`.
 
-**TransactionIntent**
-- One intent per target pointer.
-- Stores the blob URI to apply and the expected pointer version.
+`TransactionIntent`:
+- One intent per target pointer key.
+- Stores target pointer key, blob URI, and optional expected version.
+- On failed apply, stores diagnostic fields (`apply_error_*`).
 
 ## Flow Details
 
 ### BeginTransaction
-1. Validate caller permissions and account.
-2. Create a `Transaction` with state `TS_OPEN`.
-3. Persist the transaction record.
-4. Return the transaction (idempotent by key).
+1. Authorize `table.write`; require account ID.
+2. Create transaction (`TS_OPEN`) with TTL:
+   - request TTL if provided
+   - otherwise default 600s
+3. Persist transaction and return it.
+4. If idempotency key is supplied, wrapped by `IdempotencyGuard.runOnce`.
 
 ### PrepareTransaction
-1. Load the transaction (must be `TS_OPEN`).
-2. For each `TxChange`:
-   - Resolve table ID.
-   - Read current pointer version.
-   - Validate precondition (if provided).
-   - Persist payload to blob store (table proto or raw payload).
-   - Create a `TransactionIntent` with target pointer + expected version.
-3. Persist intents.
-4. Transition the transaction to `TS_PREPARED`.
-5. Return the updated transaction (idempotent by key).
+1. Load transaction by `tx_id`.
+2. Expired transaction:
+   - transition to `TS_ABORTED`
+   - return error (`transaction expired`)
+3. State handling:
+   - `TS_PREPARED` => return existing transaction
+   - non-`TS_OPEN` => error
+4. Build intents from all changes:
+   - resolve table ID
+   - reject duplicate target pointer keys in one request
+   - read current pointer version
+   - validate `precondition.expected_version` (if set)
+   - materialize payload blob URI:
+     - `table`: validate resource ID/account match, write content-addressed table blob
+     - `payload`: write tx-scoped content-addressed blob
+     - `intended_blob_uri`: must be non-empty and within account prefix
+5. Before creating each intent, enforce target lock availability:
+   - if existing lock belongs to another tx and owner tx is stale/terminal/missing/expired, clean it up and continue
+   - if owner tx is still active (including `TS_APPLY_FAILED_RETRYABLE`), fail with lock error
+6. Create intents and transition transaction to `TS_PREPARED`.
+7. On failures after partial creation, delete created intent indices best-effort.
+
+Note: prepared blob URIs are content-addressed; cleanup intentionally does not delete blobs on failure.
 
 ### CommitTransaction
-1. Load the transaction (must be `TS_PREPARED`).
-2. Re-check intent expected versions against current pointer versions.
-3. Transition the transaction to `TS_COMMITTED`.
-4. Apply intents best-effort (may be incomplete):
-   - CAS the target pointer to the intent blob URI.
-   - If table-by-id pointer changed, update table-by-name pointer.
-5. Return the committed transaction (idempotent by key).
+1. Load transaction by `tx_id`.
+2. Expired transaction:
+   - transition to `TS_ABORTED`
+   - clean up intents
+   - return error (`transaction expired`)
+3. State handling:
+   - `TS_APPLIED` => return as-is
+   - `TS_APPLY_FAILED_CONFLICT` => return as-is
+   - allowed apply states: `TS_PREPARED`, `TS_APPLY_FAILED_RETRYABLE`
+   - other states => error
+4. Load intents by tx; empty intent set is an error.
+5. Apply intents via pointer batch CAS:
+   - table intents include by-id pointer plus table name-pointer ownership updates
+   - max pointer CAS ops per apply is 100
+6. Commit result mapping:
+   - apply success => `TS_APPLIED`
+   - deterministic conflict => annotate intents, `TS_APPLY_FAILED_CONFLICT`
+   - retryable apply failure => annotate intents, `TS_APPLY_FAILED_RETRYABLE`
+7. On successful apply, intent index cleanup is best-effort; warnings are logged if not fully removed.
 
 ### AbortTransaction
-1. Load the transaction.
-2. Transition to `TS_ABORTED`.
-3. Delete intents for the transaction.
-4. Return the aborted transaction.
+1. Load transaction by `tx_id`.
+2. State handling:
+   - already `TS_ABORTED` => return as-is
+   - committed family (`TS_APPLIED`, `TS_APPLY_FAILED_CONFLICT`) => error
+   - `TS_APPLY_FAILED_RETRYABLE` => abort is allowed to release intent locks
+3. Transition to `TS_ABORTED`.
+4. Delete intents for that tx (best-effort via index deletes).
 
 ## Idempotency
 
-Begin, prepare, and commit accept idempotency keys. If a request is retried:
+Idempotency keys are supported on:
+- `BeginTransaction`
+- `PrepareTransaction`
+- `CommitTransaction`
 
-- The same transaction record is returned.
-- The operation will not be re-applied.
+`AbortTransaction` has no idempotency key in the proto API.
 
-## Failure and Concurrency Behavior
+## REST `/transactions/commit` Bridge (Current Behavior)
 
-- **Precondition failure** during prepare aborts the operation and the transaction remains open. Intents
-  are persisted only if all changes validate; payload blobs may already be written and are not
-  referenced by any intent.
-- **Version conflict** during commit aborts the transaction and returns a conflict error.
-- **Apply state** is derived from intents: a transaction is fully applied once it has no intents.
-- **Best-effort apply** means post-commit pointer updates are retried by background workers if needed.
-- **Irreconcilable apply conflicts** transition the transaction to `TS_APPLY_FAILED_CONFLICT` and
-  persist per-intent diagnostics for inspection.
+The Iceberg REST gateway uses this gRPC flow as follows:
+
+1. Begins a transaction and stores `iceberg.commit.request-hash` in transaction properties.
+   - If `Idempotency-Key` / `Iceberg-Transaction-Id` is absent, begin idempotency falls back to `req:<catalog>:<request-hash>` so retries can resume the same backend transaction without cross-catalog key collisions.
+2. Reads current transaction state:
+   - `TS_APPLIED` => returns HTTP 204 immediately.
+   - `TS_APPLY_FAILED_CONFLICT` => returns HTTP 409 immediately.
+3. For open/retryable paths, plans table changes, prepares intents, applies pre-commit snapshot ops, then calls commit.
+4. During prepare, each table change now includes `precondition.expected_version` sourced from table `MutationMeta.pointer_version` fetched at planning time.
+5. REST returns 204 only when backend is `TS_APPLIED`; deterministic failures map to 409.
+   Unknown commit state maps are:
+   - 503 for unavailable/retryable unknown state
+   - 502 for upstream unknown response
+   - 504 for deadline exceeded
+   - 500 fallback for other unknowns
+   Auth failures map to:
+   - 401 for unauthenticated
+   - 403 for permission denied
+6. Post-commit snapshot metadata updates + connector sync are outside backend atomic CAS boundary and are best-effort after apply (they no longer downgrade a committed apply to non-204).
+7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
+8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
+
+## Failure and Concurrency Notes
+
+- Prepare may write blobs before intent creation; blob cleanup is intentionally skipped because blobs are content-addressed and may be shared.
+- Intent target locks are reclaimed from stale owners during prepare.
+- `TS_APPLY_FAILED_RETRYABLE` owners are reclaimable once expired; before expiry they are treated as active.
+- Commit conflict/retryable diagnostics are persisted onto each intent (`apply_error_*`) when possible.
+- Intent index cleanup is retried and verified but remains best-effort.
 
 ## Relevant Code
 
 - gRPC service: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionsServiceImpl.java`
-- Intent applier: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionIntentApplier.java`
-- Storage keys: `service/src/main/java/ai/floedb/floecat/service/repo/model/Keys.java`
+- Intent applier: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionIntentApplierSupport.java`
+- Intent repo: `service/src/main/java/ai/floedb/floecat/service/repo/impl/TransactionIntentRepository.java`
+- REST bridge: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/TransactionCommitService.java`

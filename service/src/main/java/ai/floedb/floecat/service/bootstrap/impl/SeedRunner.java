@@ -145,10 +145,12 @@ public class SeedRunner {
   }
 
   public void seedData() {
-    if (isFakeMode()) {
-      seedFakeData();
-    } else {
-      seedRealData();
+    synchronized (SeedRunner.class) {
+      if (isFakeMode()) {
+        seedFakeData();
+      } else {
+        seedRealData();
+      }
     }
   }
 

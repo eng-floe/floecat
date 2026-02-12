@@ -35,6 +35,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
@@ -171,24 +172,83 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void reserveAllOrRollback(String... keyBlobPairs) {
-    final var createdKeys = new ArrayList<String>(keyBlobPairs.length / 2);
-    try {
+    if (keyBlobPairs == null || keyBlobPairs.length == 0) {
+      return;
+    }
+
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      final var ops = new ArrayList<PointerStore.CasOp>(keyBlobPairs.length / 2);
       for (int i = 0; i < keyBlobPairs.length; i += 2) {
         final var key = keyBlobPairs[i];
         final var blobUri = keyBlobPairs[i + 1];
-        if (reserveIndexOrIdempotent(key, blobUri)) {
-          createdKeys.add(key);
+        final var ptr = pointerStore.get(key).orElse(null);
+        if (ptr == null) {
+          Pointer reserve =
+              Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
+          ops.add(new PointerStore.CasUpsert(key, 0L, reserve));
+          continue;
+        }
+        if (!blobUri.equals(ptr.getBlobUri())) {
+          throw new NameConflictException("pointer bound to different blob: " + key);
         }
       }
-    } catch (Throwable e) {
-      for (int i = createdKeys.size() - 1; i >= 0; i--) {
-        final var k = createdKeys.get(i);
-        try {
-          compareAndDeleteOrFalse(k, 1L);
-        } catch (Throwable ignore) {
-        }
+
+      if (ops.isEmpty() || pointerStore.compareAndSetBatch(ops)) {
+        return;
       }
-      throw e;
+
+      // Under eventually consistent implementations (for example LocalStack's DynamoDB emulation),
+      // a transactional CAS may transiently fail even when all target pointers converge to the
+      // desired blob URIs. Treat that converged state as success.
+      if (allPointersBoundToExpectedBlob(keyBlobPairs)) {
+        return;
+      }
+
+      // Fallback: reserve each pointer independently. This is less strict than the batch CAS, but
+      // significantly more robust under concurrent test seeding where multiple workers attempt to
+      // reserve identical pointers at once.
+      try {
+        for (int i = 0; i < keyBlobPairs.length; i += 2) {
+          reserveIndexOrIdempotent(keyBlobPairs[i], keyBlobPairs[i + 1]);
+        }
+      } catch (NameConflictException nce) {
+        throw nce;
+      } catch (AbortRetryableException ignored) {
+        // Continue to bounded retry loop below.
+      }
+      if (allPointersBoundToExpectedBlob(keyBlobPairs)) {
+        return;
+      }
+
+      // Back off before the next full re-read/retry to reduce hot contention loops.
+      sleepWithJitter(attempt);
+    }
+
+    throw new AbortRetryableException("failed to reserve pointers due to concurrent updates");
+  }
+
+  private boolean allPointersBoundToExpectedBlob(String... keyBlobPairs) {
+    for (int i = 0; i < keyBlobPairs.length; i += 2) {
+      String key = keyBlobPairs[i];
+      String blobUri = keyBlobPairs[i + 1];
+      var ptr = pointerStore.get(key).orElse(null);
+      if (ptr == null || !blobUri.equals(ptr.getBlobUri())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private void sleepWithJitter(int attempt) {
+    long baseMs = 5L;
+    long maxMs = 100L;
+    long expMs = Math.min(maxMs, baseMs * (1L << Math.min(attempt, 5)));
+    long delayMs = ThreadLocalRandom.current().nextLong(baseMs, expMs + 1);
+    try {
+      Thread.sleep(delayMs);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new AbortRetryableException("interrupted while reserving pointers");
     }
   }
 

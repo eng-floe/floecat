@@ -36,9 +36,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.FieldMask;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -78,9 +81,32 @@ public class TableCommitService {
     }
     ResourceId tableId = stageResolution.tableId();
     Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
+    Supplier<Table> requirementTableSupplier = createPersistedTableSupplier(tableId);
+    TableRequests.Commit planningRequest =
+        normalizeCommitRequestForStage(
+            req,
+            stageResolution.stageCommitResult() != null
+                && stageResolution.stageCommitResult().tableCreated());
+    CommitCommand planningCommand =
+        planningRequest == req
+            ? command
+            : new CommitCommand(
+                command.prefix(),
+                command.namespace(),
+                command.namespacePath(),
+                command.table(),
+                command.catalogName(),
+                command.catalogId(),
+                command.namespaceId(),
+                command.idempotencyKey(),
+                command.stageId(),
+                command.transactionId(),
+                planningRequest,
+                command.tableSupport());
 
     TableUpdatePlanner.UpdatePlan updatePlan =
-        tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
+        tableUpdatePlanner.planUpdates(
+            planningCommand, tableSupplier, requirementTableSupplier, tableId);
     if (updatePlan.hasError()) {
       return updatePlan.error();
     }
@@ -376,11 +402,26 @@ public class TableCommitService {
       @Override
       public Table get() {
         if (cached == null) {
-          cached = tableLifecycleService.getTable(tableId);
+          cached = loadPersistedTableOrDefault(tableId);
         }
         return cached;
       }
     };
+  }
+
+  private Supplier<Table> createPersistedTableSupplier(ResourceId tableId) {
+    return () -> loadPersistedTableOrDefault(tableId);
+  }
+
+  private Table loadPersistedTableOrDefault(ResourceId tableId) {
+    try {
+      return tableLifecycleService.getTable(tableId);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Table.getDefaultInstance();
+      }
+      throw e;
+    }
   }
 
   private Table applyTableUpdates(
@@ -398,5 +439,31 @@ public class TableCommitService {
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  private TableRequests.Commit normalizeCommitRequestForStage(
+      TableRequests.Commit request, boolean stageCreatedTable) {
+    if (!stageCreatedTable || request == null || request.requirements() == null) {
+      return request;
+    }
+    List<Map<String, Object>> requirements = request.requirements();
+    if (requirements.isEmpty()) {
+      return request;
+    }
+    List<Map<String, Object>> filtered = new ArrayList<>(requirements.size());
+    boolean removed = false;
+    for (Map<String, Object> requirement : requirements) {
+      String type =
+          requirement == null ? null : requirement.get("type") instanceof String s ? s : null;
+      if ("assert-create".equals(type)) {
+        removed = true;
+        continue;
+      }
+      filtered.add(requirement);
+    }
+    if (!removed) {
+      return request;
+    }
+    return new TableRequests.Commit(filtered, request.updates());
   }
 }

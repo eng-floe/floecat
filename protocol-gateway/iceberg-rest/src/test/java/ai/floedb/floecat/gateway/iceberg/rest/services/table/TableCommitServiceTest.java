@@ -133,7 +133,7 @@ class TableCommitServiceTest {
     TableUpdatePlanner.UpdatePlan failurePlan =
         TableUpdatePlanner.UpdatePlan.failure(
             TableSpec.newBuilder(), FieldMask.newBuilder(), conflict);
-    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(failurePlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(failurePlan);
 
     Response response = service.commit(command(emptyCommitRequest()));
 
@@ -156,7 +156,7 @@ class TableCommitServiceTest {
 
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
@@ -229,7 +229,7 @@ class TableCommitServiceTest {
     when(stageResolver.resolve(any())).thenReturn(resolution);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(null);
     ArgumentCaptor<CommitTableResponseDto> responseCaptor =
         ArgumentCaptor.forClass(CommitTableResponseDto.class);
@@ -266,7 +266,7 @@ class TableCommitServiceTest {
 
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata =
         FIXTURE.metadata().toBuilder().setMetadataLocation(catalogMetadataLocation).build();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
@@ -303,7 +303,7 @@ class TableCommitServiceTest {
     when(tableLifecycleService.getTable(any())).thenReturn(table);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(

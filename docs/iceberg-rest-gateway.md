@@ -30,7 +30,7 @@ Non-goals for the current release:
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
 | `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
 | `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
-| `/tables/rename`, `/transactions/commit` | Table services + staging store | Multi-table commit with atomic snapshot add/ref/remove + rollback; post-commit side effects are best-effort. |
+| `/tables/rename`, `/transactions/commit` | Table services + staging store | Multi-table transaction commit short-circuits on terminal backend states (`TS_APPLIED` => 204, `TS_APPLY_FAILED_CONFLICT` => 409); otherwise commit requires backend `TS_APPLIED`. |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
 | `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
 | `/register-view` | `ViewService` + `ViewMetadataService` | Registers an Iceberg view from a metadata location. |
@@ -108,13 +108,32 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 Receives Iceberg’s transaction payload (list of table changes). The gateway:
 
-1. Plans and validates all table changes (requirements + updates) before starting the transaction.
-2. Begins a gRPC transaction (idempotent) and prepares intent payloads for all tables.
-3. Applies pre-commit snapshot changes (add/ref/remove). Failures abort and roll back.
-4. Commits the transaction (idempotent). Commit failures return `CommitStateUnknownException`.
-5. Applies post-commit snapshot updates, then synchronizes connectors.
+1. Begins a gRPC transaction and records a deterministic request hash (`iceberg.commit.request-hash`) in transaction properties.
+   - When no client idempotency header is present, begin idempotency falls back to `req:<catalog>:<request-hash>`.
+2. Reads current transaction state and short-circuits terminal states:
+   - `TS_APPLIED` => HTTP 204 (no replay of side effects)
+   - `TS_APPLY_FAILED_CONFLICT` => `CommitFailedException` (409)
+3. For non-terminal states, resolves/plans/validates all table changes (requirements + updates), then prepares intent payloads.
+   - Each prepared change carries a backend pointer `expected_version` precondition from table `MutationMeta`.
+   - `stage-id` is rejected for multi-table `/transactions/commit` (stage-create materialization is not part of this atomic path).
+4. Applies pre-commit snapshot changes (add/ref/remove). If any pre-commit snapshot step fails, the gateway rolls back snapshot changes and aborts the backend transaction.
+5. Commits the transaction:
+   - backend must end in `TS_APPLIED` to return HTTP 204
+   - deterministic commit failures map to `CommitFailedException` (409)
+   - unknown commit state maps to `CommitStateUnknownException` with:
+     - 503 (`UNAVAILABLE` or retryable unknown state)
+     - 502 (`UNKNOWN` upstream response)
+     - 504 (`DEADLINE_EXCEEDED`)
+     - 500 fallback for other unknown/runtime failures
+   - auth failures map to:
+     - 401 (`UNAUTHENTICATED`)
+     - 403 (`PERMISSION_DENIED`)
+6. After successful backend apply, executes post-commit snapshot metadata updates and connector synchronization as best-effort (logged on failure; response remains 204 once apply is committed).
+7. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
 
-This provides cross-table atomicity for snapshot adds/refs/removes with rollback and safe retries. Post-commit side effects (connector sync and non-snapshot metadata updates) are best-effort.
+This provides cross-table atomicity for backend pointer application and safe retries. REST-layer
+post-commit side effects (snapshot metadata follow-ups and connector sync) are outside the atomic
+backend transaction boundary and remain best-effort.
 
 ---
 
@@ -153,7 +172,7 @@ Limits/Follow-ups:
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access delegation; per-request signing is not yet implemented.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
-- **Multi-table ACID:** `/transactions/commit` is atomic for snapshot adds/refs/removes with rollback. Post-commit side effects remain best-effort.
+- **Multi-table ACID:** `/transactions/commit` returns 204 only when backend transaction state is `TS_APPLIED`; `TS_APPLY_FAILED_CONFLICT` maps to 409 and unknown commit state maps to `CommitStateUnknownException` (`503`/`502`/`504`, with `500` fallback).
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---
