@@ -1,0 +1,356 @@
+{
+  "id": null,
+  "uid": null,
+  "title": "Floecat Telemetry Hub — Demo",
+  "schemaVersion": 40,
+  "version": 1,
+  "tags": ["telemetry", "floecat", "demo"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m"],
+    "time_options": ["5m", "15m", "30m", "1h", "3h"]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "label": "Prometheus datasource",
+        "query": "prometheus",
+        "current": { "text": "prometheus", "value": "prometheus" }
+      },
+      {
+        "name": "rate_interval",
+        "type": "interval",
+        "label": "Rate window",
+        "query": "30s,1m,5m",
+        "current": { "text": "1m", "value": "1m" }
+      },
+      {
+        "name": "component",
+        "type": "query",
+        "label": "Component",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(floecat_core_rpc_requests_total, component)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": ".*" }
+      },
+      {
+        "name": "operation",
+        "type": "query",
+        "label": "Operation",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(floecat_core_rpc_requests_total{component=~\"$component\"}, operation)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": ".*" }
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Floecat Telemetry Hub (demo)",
+      "gridPos": { "h": 2, "w": 24, "x": 0, "y": 0 },
+      "options": { "mode": "markdown" },
+      "content": "### What you’re seeing\nThis demo proves the **hub contract** (`floecat.core.*` / `floecat.service.*`) exports clean, low-cardinality Prometheus series.\n\nUse the filters (**Component/Operation**) and the **Rate window** to show how the same canonical metrics slice across workload patterns."
+    },
+
+    {
+      "type": "stat",
+      "title": "RPC RPS",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 2 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(floecat_core_rpc_requests_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval]))"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 200 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "RPC Error rate",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 2 },
+      "targets": [
+        {
+          "refId": "B",
+          "expr": "100 * (sum(rate(floecat_core_rpc_errors_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])) / clamp_min(sum(rate(floecat_core_rpc_requests_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])), 1))"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 2 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "RPC Latency (avg)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 2 },
+      "targets": [
+        {
+          "refId": "C",
+          "expr": "sum(rate(floecat_core_rpc_latency_seconds_sum{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])) / clamp_min(sum(rate(floecat_core_rpc_latency_seconds_count{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])), 1)"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.2 }, { "color": "red", "value": 1 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dropped tags (rate)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 2 },
+      "targets": [
+        { "refId": "D", "expr": "sum(rate(floecat_core_observability_dropped_tags_total[$rate_interval]))" }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.01 }, { "color": "red", "value": 0.1 }]
+          }
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "RPC Throughput (by status)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "refId": "E",
+          "expr": "sum by (status) (rate(floecat_core_rpc_requests_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "RPC Concurrency (active)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "refId": "F",
+          "expr": "sum by (component, operation) (floecat_core_rpc_active{component=~\"$component\", operation=~\"$operation\"})",
+          "legendFormat": "{{component}} / {{operation}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Storage (RPS + bytes/s)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "refId": "G",
+          "expr": "sum(rate(floecat_core_store_requests_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval]))",
+          "legendFormat": "store rps"
+        },
+        {
+          "refId": "H",
+          "expr": "sum(rate(floecat_core_store_bytes_total{component=~\"$component\", operation=~\"$operation\"}[$rate_interval]))",
+          "legendFormat": "bytes/s"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2 }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage Latency (avg)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "refId": "I",
+          "expr": "sum(rate(floecat_core_store_latency_seconds_sum{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])) / clamp_min(sum(rate(floecat_core_store_latency_seconds_count{component=~\"$component\", operation=~\"$operation\"}[$rate_interval])), 1)",
+          "legendFormat": "avg store latency"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 4,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.2 }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+
+    {
+      "type": "stat",
+      "title": "Cache enabled",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 22 },
+      "targets": [{ "refId": "J", "expr": "max(floecat_service_cache_enabled)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [{ "type": "value", "options": { "0": { "text": "DISABLED" }, "1": { "text": "ENABLED" } } }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Cache saturation",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 22 },
+      "targets": [
+        { "refId": "K", "expr": "100 * (max(floecat_service_cache_entries) / clamp_min(max(floecat_service_cache_max_size), 1))" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "GC running (any)",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 22 },
+      "targets": [
+        { "refId": "L", "expr": "max(floecat_service_gc_pointer_running) OR max(floecat_service_gc_idempotency_running) OR max(floecat_service_gc_cas_running)" }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [{ "type": "value", "options": { "0": { "text": "IDLE" }, "1": { "text": "RUNNING" } } }],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Contract tag",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 22 },
+      "targets": [
+        {
+          "refId": "M",
+          "expr": "count(floecat_core_rpc_requests_total{telemetry_contract_version=~\".*\"})"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "yellow", "value": null }, { "color": "green", "value": 1 }] },
+          "noValue": "n/a"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
