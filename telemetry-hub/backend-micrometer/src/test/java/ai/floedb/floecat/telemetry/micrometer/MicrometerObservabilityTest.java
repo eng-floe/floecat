@@ -65,7 +65,7 @@ class MicrometerObservabilityTest {
 
     assertThat(
             meters
-                .find("rpc.latency")
+                .find(Telemetry.Metrics.RPC_LATENCY.name())
                 .tags("component", "svc", "operation", "op", "account", "acct")
                 .timer())
         .isNotNull();
@@ -101,12 +101,12 @@ class MicrometerObservabilityTest {
 
     assertThat(
             meters
-                .find("rpc.requests")
+                .find(Telemetry.Metrics.RPC_REQUESTS.name())
                 .tags("component", "svc", "operation", "op", "account", "acc", "status", "ok")
                 .counter())
         .isNotNull();
-    assertThat(meters.find("observability.dropped.tags.total").counter()).isNotNull();
-    assertThat(meters.find("observability.dropped.tags.total").counter().count()).isEqualTo(1d);
+    assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter()).isNotNull();
+    assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter().count()).isEqualTo(1d);
   }
 
   @Test
@@ -116,8 +116,8 @@ class MicrometerObservabilityTest {
     observability.counter(
         Telemetry.Metrics.RPC_ERRORS, 1, Tag.of("component", "svc"), Tag.of("operation", "op"));
 
-    assertThat(meters.find("rpc.errors").counter()).isNull();
-    assertThat(meters.find("observability.dropped.tags.total").counter().count()).isEqualTo(0d);
+    assertThat(meters.find(Telemetry.Metrics.RPC_ERRORS.name()).counter()).isNull();
+    assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter().count()).isEqualTo(0d);
   }
 
   @Test
@@ -133,7 +133,7 @@ class MicrometerObservabilityTest {
 
     Timer timer =
         meters
-            .find("rpc.latency")
+            .find(Telemetry.Metrics.RPC_LATENCY.name())
             .tags("component", "svc", "operation", "op", TagKey.RESULT, "ok")
             .timer();
     assertThat(timer).isNotNull();
@@ -151,7 +151,7 @@ class MicrometerObservabilityTest {
     scope.close();
     Timer timer =
         meters
-            .find("rpc.latency")
+            .find(Telemetry.Metrics.RPC_LATENCY.name())
             .tags(
                 "component",
                 "svc",
@@ -171,7 +171,7 @@ class MicrometerObservabilityTest {
 
     Counter errorsCounter =
         meters
-            .find("rpc.errors")
+            .find(Telemetry.Metrics.RPC_ERRORS.name())
             .tags(
                 "component",
                 "svc",
@@ -188,7 +188,7 @@ class MicrometerObservabilityTest {
             .counter();
     assertThat(errorsCounter).isNotNull();
     assertThat(errorsCounter.count()).isEqualTo(1d);
-    assertThat(meters.find("observability.dropped.tags.total").counter().count()).isEqualTo(0d);
+    assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter().count()).isEqualTo(0d);
   }
 
   @Test
@@ -203,7 +203,7 @@ class MicrometerObservabilityTest {
 
     Timer timer =
         meters
-            .find("rpc.latency")
+            .find(Telemetry.Metrics.RPC_LATENCY.name())
             .tags(
                 "component",
                 "svc",
@@ -235,12 +235,12 @@ class MicrometerObservabilityTest {
 
     assertThat(
             meters
-                .find("rpc.retries")
+                .find(Telemetry.Metrics.RPC_RETRIES.name())
                 .tags("component", "svc", "operation", "op")
                 .counter()
                 .count())
         .isEqualTo(2d);
-    assertThat(meters.find("observability.dropped.tags.total").counter().count()).isEqualTo(0d);
+    assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter().count()).isEqualTo(0d);
   }
 
   @Test
@@ -255,7 +255,11 @@ class MicrometerObservabilityTest {
         Tag.of("component", "svc"),
         Tag.of("operation", "op"));
 
-    Gauge gauge = meters.find("rpc.active").tags("component", "svc", "operation", "op").gauge();
+    Gauge gauge =
+        meters
+            .find(Telemetry.Metrics.RPC_ACTIVE.name())
+            .tags("component", "svc", "operation", "op")
+            .gauge();
     assertThat(gauge).isNotNull();
     assertThat(gauge.value()).isEqualTo(42.0);
   }

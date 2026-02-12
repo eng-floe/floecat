@@ -75,6 +75,16 @@ Configuration flags are documented per module (for example storage backend selec
 [`docs/storage-spi.md`](storage-spi.md), GC cadence in [`docs/service.md`](service.md),
 Secrets Manager in [`docs/secrets-manager.md`](secrets-manager.md)).
 
+### Telemetry exporter matrix
+The `telemetry.exporters` flag (defined in `service/src/main/resources/application.properties`) tells the hub which backends to activate. Supported values are:
+
+| Exporter | Description | Activation | Notes |
+| --- | --- | --- | --- |
+| `prometheus` | Micrometer Prometheus registry that exposes `floecat.core.*` and `floecat.service.*` metrics via `/q/metrics`. | Enabled by default and controlled on the Micrometer side via `quarkus.micrometer.export.prometheus.enabled=true`. | This exporter simply scrapes the Micrometer registry that Observability feeds. Keep `telemetry.exporters` set to include `prometheus` in dev/test to keep dashboards working. |
+| `otlp` | OpenTelemetry exporter that forwards the hub’s metrics (and any traces/span data if you instrument other flows) to an OTLP collector via gRPC or HTTP. | Requires you to set `quarkus.otel.metrics.exporter=otlp` (and `quarkus.otel.traces.exporter=otlp` if you want traces). | Configure the OTLP endpoint with `quarkus.otel.exporter-otlp.endpoint`; switch protocols via `quarkus.otel.exporter-otlp.protocol=http/protobuf`. The hub doesn’t itself emit OTEL spans—`ObservationScope` currently powers Micrometer metrics, while Quarkus OpenTelemetry (plus your own instrumentation) controls tracing. |
+
+Drop an exporter by removing it from `telemetry.exporters` (or setting the property to the empty string), e.g., `%dev.telemetry.exporters=prometheus` keeps strict mode local without OTLP traffic. The hub simply skips wiring backends it isn’t asked for, so only the listed exporters get the meters/traces.
+
 ### Metrics
 Micrometer + Prometheus export is enabled by default. The scrape endpoint is:
 
@@ -82,34 +92,8 @@ Micrometer + Prometheus export is enabled by default. The scrape endpoint is:
 GET http://<host>:<http-port>/q/metrics
 ```
 
-GC counters:
-- `floecat_gc_cas_ticks`
-- `floecat_gc_cas_accounts`
-- `floecat_gc_cas_pointers_scanned`
-- `floecat_gc_cas_blobs_scanned`
-- `floecat_gc_cas_blobs_deleted`
-- `floecat_gc_cas_referenced`
-- `floecat_gc_cas_tables_scanned`
-- `floecat_gc_pointer_ticks`
-- `floecat_gc_pointer_accounts`
-- `floecat_gc_pointer_pointers_scanned`
-- `floecat_gc_pointer_pointers_deleted`
-- `floecat_gc_pointer_missing_blobs`
-- `floecat_gc_pointer_stale_secondaries`
-- `floecat_gc_idempotency_ticks`
-- `floecat_gc_idempotency_slices`
-- `floecat_gc_idempotency_scanned`
-- `floecat_gc_idempotency_expired`
-- `floecat_gc_idempotency_ptr_deleted`
-- `floecat_gc_idempotency_blob_deleted`
+See [`docs/telemetry/overview.md`](telemetry/overview.md) for the naming, tagging, and contribution rules, and view the generated catalog (`docs/telemetry/contract.md` and `docs/telemetry/contract.json`) for the current set of metrics. Regenerate the catalog any time you add or modify a metric:
 
-RPC metrics (via `MeteringInterceptor`):
-- `rpc_requests` (counter; tags: `account`, `op`, `status`)
-- `rpc_latency_seconds` (timer; tags: `account`, `op`, `status`)
-- `rpc_active_seconds` (long task timer; tags: `account`, `op`)
-
-Storage usage metrics (via `StorageUsageMetrics`):
-- `account.storage.refresh.errors` (counter)
-- `account.storage.refresh.ms` (timer)
-- `account.pointers.count` (gauge; tag: `account`)
-- `account.storage.bytes` (gauge; tag: `account`)
+```
+mvn -pl telemetry-hub/tool-docgen -am process-classes
+```

@@ -17,9 +17,17 @@ public final class MetricId {
   public MetricId(String name, MetricType type, String unit, String since, String origin) {
     this.name = requireNonBlank(name, "name");
     this.type = Objects.requireNonNull(type, "type");
-    this.unit = requireNonBlank(unit, "unit");
+    this.unit = requireUnit(unit);
     this.since = requireNonBlank(since, "since");
     this.origin = requireNonBlank(origin, "origin");
+  }
+
+  private static String requireUnit(String unit) {
+    Objects.requireNonNull(unit, "unit");
+    if (!unit.isEmpty() && unit.isBlank()) {
+      throw new IllegalArgumentException("unit must not be blank");
+    }
+    return unit;
   }
 
   private static String requireNonBlank(String value, String label) {

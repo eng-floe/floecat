@@ -36,12 +36,16 @@ public class QuarkusObservabilityProducer {
   @ConfigProperty(name = "telemetry.strict", defaultValue = "false")
   boolean strict;
 
+  @ConfigProperty(name = "telemetry.contract.version", defaultValue = "v1")
+  String contractVersion;
+
   private final TelemetryRegistry telemetryRegistry = Telemetry.newRegistryWithCore();
 
   @Produces
   @ApplicationScoped
   public Observability observability() {
     TelemetryPolicy policy = strict ? TelemetryPolicy.STRICT : TelemetryPolicy.LENIENT;
+    meterRegistry.config().commonTags("telemetry.contract.version", contractVersion);
     return new MicrometerObservability(meterRegistry, telemetryRegistry, policy);
   }
 

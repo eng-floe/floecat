@@ -10,14 +10,21 @@ public final class MetricDef {
   private final MetricId id;
   private final Set<String> requiredTags;
   private final Set<String> allowedTags;
+  private final String description;
 
   public MetricDef(MetricId id, Set<String> requiredTags, Set<String> allowedTags) {
+    this(id, requiredTags, allowedTags, "");
+  }
+
+  public MetricDef(
+      MetricId id, Set<String> requiredTags, Set<String> allowedTags, String description) {
     this.id = Objects.requireNonNull(id, "id");
     this.requiredTags = normalizeTags(requiredTags);
     this.allowedTags = normalizeTags(allowedTags);
     if (!this.allowedTags.containsAll(this.requiredTags)) {
       throw new IllegalArgumentException("allowedTags must include requiredTags");
     }
+    this.description = description == null ? "" : description;
   }
 
   private static Set<String> normalizeTags(Set<String> tags) {
@@ -48,6 +55,10 @@ public final class MetricDef {
 
   public Set<String> allowedTags() {
     return allowedTags;
+  }
+
+  public String description() {
+    return description;
   }
 
   @Override

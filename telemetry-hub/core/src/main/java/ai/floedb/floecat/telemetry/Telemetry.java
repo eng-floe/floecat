@@ -72,33 +72,34 @@ public final class Telemetry {
   /** Built-in metrics that every module can rely on. */
   public static final class Metrics {
     public static final MetricId DROPPED_TAGS =
-        new MetricId("observability.dropped.tags.total", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId(
+            "floecat.core.observability.dropped.tags.total", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId RPC_REQUESTS =
-        new MetricId("rpc.requests", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.rpc.requests", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId RPC_ACTIVE =
-        new MetricId("rpc.active", MetricType.GAUGE, "count", "v1", "core");
+        new MetricId("floecat.core.rpc.active", MetricType.GAUGE, "", "v1", "core");
     public static final MetricId RPC_LATENCY =
-        new MetricId("rpc.latency", MetricType.TIMER, "seconds", "v1", "core");
+        new MetricId("floecat.core.rpc.latency", MetricType.TIMER, "seconds", "v1", "core");
     public static final MetricId RPC_ERRORS =
-        new MetricId("rpc.errors", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.rpc.errors", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId RPC_RETRIES =
-        new MetricId("rpc.retries", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.rpc.retries", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId STORE_REQUESTS =
-        new MetricId("store.requests", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.store.requests", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId STORE_LATENCY =
-        new MetricId("store.latency", MetricType.TIMER, "seconds", "v1", "core");
+        new MetricId("floecat.core.store.latency", MetricType.TIMER, "seconds", "v1", "core");
     public static final MetricId STORE_BYTES =
-        new MetricId("store.bytes", MetricType.COUNTER, "bytes", "v1", "core");
+        new MetricId("floecat.core.store.bytes", MetricType.COUNTER, "bytes", "v1", "core");
     public static final MetricId CACHE_HITS =
-        new MetricId("cache.hits", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.cache.hits", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId CACHE_MISSES =
-        new MetricId("cache.misses", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.cache.misses", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId CACHE_SIZE =
-        new MetricId("cache.size", MetricType.GAUGE, "count", "v1", "core");
+        new MetricId("floecat.core.cache.size", MetricType.GAUGE, "", "v1", "core");
     public static final MetricId GC_COLLECTIONS =
-        new MetricId("gc.collections", MetricType.COUNTER, "count", "v1", "core");
+        new MetricId("floecat.core.gc.collections", MetricType.COUNTER, "", "v1", "core");
     public static final MetricId GC_PAUSE =
-        new MetricId("gc.pause", MetricType.TIMER, "seconds", "v1", "core");
+        new MetricId("floecat.core.gc.pause", MetricType.TIMER, "seconds", "v1", "core");
 
     private static final Map<MetricId, MetricDef> DEFINITIONS = buildDefinitions();
 
@@ -110,7 +111,12 @@ public final class Telemetry {
 
     private static Map<MetricId, MetricDef> buildDefinitions() {
       Map<MetricId, MetricDef> definitions = new LinkedHashMap<>();
-      add(definitions, DROPPED_TAGS, Set.of(), Set.of());
+      add(
+          definitions,
+          DROPPED_TAGS,
+          Set.of(),
+          Set.of(),
+          "Total number of tags dropped because they violated telemetry contracts.");
 
       Set<String> rpcReqTags =
           Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.ACCOUNT, TagKey.STATUS);
@@ -118,37 +124,89 @@ public final class Telemetry {
       Set<String> rpcScopeAllowed =
           addTags(rpcScopeRequired, TagKey.EXCEPTION, TagKey.ACCOUNT, TagKey.STATUS);
 
-      add(definitions, RPC_REQUESTS, rpcReqTags, rpcReqTags);
+      add(
+          definitions,
+          RPC_REQUESTS,
+          rpcReqTags,
+          rpcReqTags,
+          "Total RPC requests processed, tagged by account and status.");
       add(
           definitions,
           RPC_ACTIVE,
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
-          Set.of(TagKey.COMPONENT, TagKey.OPERATION));
-      add(definitions, RPC_LATENCY, rpcScopeRequired, rpcScopeAllowed);
-      add(definitions, RPC_ERRORS, rpcScopeRequired, rpcScopeAllowed);
+          Set.of(TagKey.COMPONENT, TagKey.OPERATION),
+          "Number of in-flight RPCs per component/operation.");
+      add(
+          definitions,
+          RPC_LATENCY,
+          rpcScopeRequired,
+          rpcScopeAllowed,
+          "Latency distribution for RPC operations.");
+      add(
+          definitions,
+          RPC_ERRORS,
+          rpcScopeRequired,
+          rpcScopeAllowed,
+          "Count of RPC failures per component/operation.");
       add(
           definitions,
           RPC_RETRIES,
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
-          Set.of(TagKey.COMPONENT, TagKey.OPERATION));
+          Set.of(TagKey.COMPONENT, TagKey.OPERATION),
+          "Number of RPC retries invoked.");
 
       Set<String> storeRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
       Set<String> storeAllowed =
           addTags(storeRequired, TagKey.ACCOUNT, TagKey.STATUS, TagKey.EXCEPTION);
-      add(definitions, STORE_REQUESTS, storeRequired, storeAllowed);
-      add(definitions, STORE_LATENCY, storeRequired, storeAllowed);
-      add(definitions, STORE_BYTES, storeRequired, storeAllowed);
+      add(
+          definitions,
+          STORE_REQUESTS,
+          storeRequired,
+          storeAllowed,
+          "Number of store requests emitted per component/operation.");
+      add(
+          definitions,
+          STORE_LATENCY,
+          storeRequired,
+          storeAllowed,
+          "Store operation latency distribution.");
+      add(
+          definitions,
+          STORE_BYTES,
+          storeRequired,
+          storeAllowed,
+          "Count of bytes processed by store operations.");
 
       Set<String> cacheRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.CACHE_NAME);
       Set<String> cacheAllowed = addTags(cacheRequired, TagKey.RESULT, TagKey.ACCOUNT);
-      add(definitions, CACHE_HITS, cacheRequired, cacheAllowed);
-      add(definitions, CACHE_MISSES, cacheRequired, cacheAllowed);
-      add(definitions, CACHE_SIZE, cacheRequired, cacheAllowed);
+      add(
+          definitions,
+          CACHE_HITS,
+          cacheRequired,
+          cacheAllowed,
+          "Cache hits count for the graph cache.");
+      add(
+          definitions,
+          CACHE_MISSES,
+          cacheRequired,
+          cacheAllowed,
+          "Cache misses count for the graph cache.");
+      add(
+          definitions,
+          CACHE_SIZE,
+          cacheRequired,
+          cacheAllowed,
+          "Approximate graph cache size by cache name.");
 
       Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.GC_NAME);
       Set<String> gcAllowed = addTags(gcRequired, TagKey.RESULT, TagKey.EXCEPTION);
-      add(definitions, GC_COLLECTIONS, gcRequired, gcAllowed);
-      add(definitions, GC_PAUSE, gcRequired, gcAllowed);
+      add(
+          definitions,
+          GC_COLLECTIONS,
+          gcRequired,
+          gcAllowed,
+          "Number of GC collections per GC type.");
+      add(definitions, GC_PAUSE, gcRequired, gcAllowed, "GC pause time per GC type.");
 
       return Collections.unmodifiableMap(definitions);
     }
@@ -157,8 +215,9 @@ public final class Telemetry {
         Map<MetricId, MetricDef> definitions,
         MetricId metric,
         Set<String> required,
-        Set<String> allowed) {
-      definitions.put(metric, new MetricDef(metric, required, allowed));
+        Set<String> allowed,
+        String description) {
+      definitions.put(metric, new MetricDef(metric, required, allowed, description));
     }
 
     private static Set<String> addTags(Set<String> base, String... extras) {

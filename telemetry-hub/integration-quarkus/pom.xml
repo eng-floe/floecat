@@ -9,7 +9,6 @@
 
   <artifactId>telemetry-hub-integration-quarkus</artifactId>
   <packaging>jar</packaging>
-  <name>Floecat Telemetry Hub Quarkus Integration</name>
 
   <dependencyManagement>
     <dependencies>

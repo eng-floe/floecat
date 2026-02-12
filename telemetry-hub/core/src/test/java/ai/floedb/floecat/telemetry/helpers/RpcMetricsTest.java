@@ -26,7 +26,7 @@ class RpcMetricsTest {
     metrics.decrementActiveRequests();
     assertThat(gauge.get().doubleValue()).isEqualTo(0d);
 
-    metrics.recordRequest("acct", "ok");
+    metrics.recordRequest("acct", "OK");
     assertThat(observability.counterValue(Telemetry.Metrics.RPC_REQUESTS)).isEqualTo(1d);
   }
 
@@ -36,7 +36,7 @@ class RpcMetricsTest {
     RpcMetrics metrics = new RpcMetrics(observability, "svc", "op");
 
     ObservationScope scope =
-        metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"), Tag.of(TagKey.STATUS, "ok"));
+        metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"), Tag.of(TagKey.STATUS, "OK"));
     scope.success();
     scope.close();
 

@@ -27,7 +27,6 @@
 
   <artifactId>telemetry-hub-core</artifactId>
   <packaging>jar</packaging>
-  <name>Floecat Telemetry Hub Core</name>
 
   <dependencies>
     <dependency>

@@ -7,7 +7,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,10 +21,10 @@ public final class MetricCatalogDocgen {
   static final String SECTION_END = "<!-- METRICS:END -->";
   private static final String MARKDOWN_HEADER =
       "# Telemetry Hub Contract\n\n"
-          + "Here is a global overview of all metrics defined in the repo right now:";
+          + "This lists all metrics available in the repository right now:";
   private static final String TABLE_HEADER =
-      "| Metric | Type | Unit | Required Tags | Allowed Tags |\n"
-          + "| --- | --- | --- | --- | --- |";
+      "| Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |\n"
+          + "| --- | --- | --- | --- | --- | --- | --- |";
   static final String DEFAULT_MARKDOWN_TEMPLATE =
       MARKDOWN_HEADER + "\n\n" + SECTION_START + "\n" + TABLE_HEADER + SECTION_END + "\n";
   private static final Path DOC_DIR = determineDocDir();
@@ -63,8 +65,44 @@ public final class MetricCatalogDocgen {
     writeIfChanged(contractJson, json);
   }
 
-  static String buildTableRows(Map<String, MetricDef> catalog) {
-    return catalog.values().stream()
+  static String buildTableSection(Map<String, MetricDef> catalog) {
+    Map<String, List<MetricDef>> grouped =
+        catalog.values().stream()
+            .collect(
+                Collectors.groupingBy(
+                    def -> def.id().origin(),
+                    LinkedHashMap::new,
+                    Collectors.toCollection(ArrayList::new)));
+    List<String> origins = new ArrayList<>();
+    if (grouped.containsKey("core")) {
+      origins.add("core");
+    }
+    grouped.keySet().stream()
+        .filter(origin -> !origin.equals("core"))
+        .sorted()
+        .forEach(origins::add);
+
+    StringBuilder section = new StringBuilder();
+    for (String origin : origins) {
+      if (section.length() > 0) {
+        section.append("\n");
+      }
+      if ("core".equals(origin)) {
+        section.append("**Core Metrics**\n");
+      } else {
+        section.append("**").append(capitalize(origin)).append(" Metrics**\n");
+      }
+      section.append(TABLE_HEADER).append("\n");
+      section.append(buildTableRows(grouped.get(origin))).append("\n");
+    }
+    return section.toString();
+  }
+
+  private static String buildTableRows(List<MetricDef> defs) {
+    if (defs == null || defs.isEmpty()) {
+      return "";
+    }
+    return defs.stream()
         .sorted(Comparator.comparing(def -> def.id().name()))
         .map(MetricCatalogDocgen::formatTableRow)
         .collect(Collectors.joining("\n"));
@@ -72,10 +110,12 @@ public final class MetricCatalogDocgen {
 
   private static String formatTableRow(MetricDef def) {
     return String.format(
-        "| %s | %s | %s | %s | %s |",
+        "| %s | %s | %s | %s | %s | %s | %s |",
         escapeMarkdown(def.id().name()),
         escapeMarkdown(def.id().type().toString()),
         escapeMarkdown(def.id().unit()),
+        escapeMarkdown(def.id().since()),
+        escapeMarkdown(def.description()),
         joinTags(def.requiredTags()),
         joinTags(def.allowedTags()));
   }
@@ -87,12 +127,11 @@ public final class MetricCatalogDocgen {
     return tags.stream().sorted().collect(Collectors.joining(", "));
   }
 
-  static String buildTableSection(Map<String, MetricDef> catalog) {
-    String rows = buildTableRows(catalog);
-    if (rows.isEmpty()) {
-      return TABLE_HEADER + "\n";
+  private static String capitalize(String value) {
+    if (value == null || value.isEmpty()) {
+      return value;
     }
-    return TABLE_HEADER + "\n" + rows;
+    return Character.toUpperCase(value.charAt(0)) + value.substring(1);
   }
 
   static String injectGeneratedRows(String markdown, String tableSection) {

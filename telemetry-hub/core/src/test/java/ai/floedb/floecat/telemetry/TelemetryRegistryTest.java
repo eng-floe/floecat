@@ -44,13 +44,14 @@ class TelemetryRegistryTest {
   @Test
   void contributorRegistrationIsAtomic() {
     registry.register(new CoreTelemetryContributor());
+    String rpcErrorsName = Telemetry.Metrics.RPC_ERRORS.name();
     TelemetryContributor badContributor =
-        target -> target.register(new MetricDef(sampleId("rpc.errors"), Set.of(), Set.of()));
+        target -> target.register(new MetricDef(sampleId(rpcErrorsName), Set.of(), Set.of()));
 
     assertThatThrownBy(() -> registry.register(badContributor))
         .isInstanceOf(IllegalArgumentException.class);
 
-    assertThat(registry.metrics()).containsKey("rpc.errors");
+    assertThat(registry.metrics()).containsKey(Telemetry.Metrics.RPC_ERRORS.name());
   }
 
   @Test

@@ -1,35 +1,134 @@
 [
   {
-    "name": "cache.hits",
+    "name": "floecat.core.cache.hits",
     "type": "COUNTER",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "core",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
   {
-    "name": "cache.misses",
+    "name": "floecat.core.cache.misses",
     "type": "COUNTER",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "core",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
   {
-    "name": "cache.size",
+    "name": "floecat.core.cache.size",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "core",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.collections",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.pause",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.observability.dropped.tags.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.core.rpc.active",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.rpc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["account", "component", "operation", "status"],
+    "allowedTags": ["account", "component", "operation", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.store.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.store.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.store.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
   {
     "name": "floecat.service.cache.accounts",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -38,7 +137,7 @@
   {
     "name": "floecat.service.cache.enabled",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -47,7 +146,7 @@
   {
     "name": "floecat.service.cache.entries",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -60,12 +159,12 @@
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
-    "allowedTags": ["result"]
+    "allowedTags": []
   },
   {
     "name": "floecat.service.cache.max.size",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -74,7 +173,7 @@
   {
     "name": "floecat.service.gc.cas.enabled",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -101,7 +200,7 @@
   {
     "name": "floecat.service.gc.cas.running",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -110,7 +209,7 @@
   {
     "name": "floecat.service.gc.idempotency.enabled",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -137,7 +236,7 @@
   {
     "name": "floecat.service.gc.idempotency.running",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -146,7 +245,7 @@
   {
     "name": "floecat.service.gc.pointer.enabled",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -173,7 +272,7 @@
   {
     "name": "floecat.service.gc.pointer.running",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": [],
@@ -218,109 +317,10 @@
   {
     "name": "floecat.service.storage.account.pointers",
     "type": "GAUGE",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
-  },
-  {
-    "name": "gc.collections",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "gc", "operation"],
-    "allowedTags": ["component", "exception", "gc", "operation", "result"]
-  },
-  {
-    "name": "gc.pause",
-    "type": "TIMER",
-    "unit": "seconds",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "gc", "operation"],
-    "allowedTags": ["component", "exception", "gc", "operation", "result"]
-  },
-  {
-    "name": "observability.dropped.tags.total",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "rpc.active",
-    "type": "GAUGE",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation"],
-    "allowedTags": ["component", "operation"]
-  },
-  {
-    "name": "rpc.errors",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
-  },
-  {
-    "name": "rpc.latency",
-    "type": "TIMER",
-    "unit": "seconds",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
-  },
-  {
-    "name": "rpc.requests",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["account", "component", "operation", "status"],
-    "allowedTags": ["account", "component", "operation", "status"]
-  },
-  {
-    "name": "rpc.retries",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation"],
-    "allowedTags": ["component", "operation"]
-  },
-  {
-    "name": "store.bytes",
-    "type": "COUNTER",
-    "unit": "bytes",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
-  },
-  {
-    "name": "store.latency",
-    "type": "TIMER",
-    "unit": "seconds",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
-  },
-  {
-    "name": "store.requests",
-    "type": "COUNTER",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   }
 ]
