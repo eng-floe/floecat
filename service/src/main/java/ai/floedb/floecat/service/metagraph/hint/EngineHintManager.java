@@ -25,8 +25,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
-import ai.floedb.floecat.telemetry.Tag;
-import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.Weigher;
@@ -49,8 +48,7 @@ public class EngineHintManager {
   private final List<EngineHintProvider> providers;
   private final Cache<HintCacheKey, EngineHint> cache;
   private final Observability observability;
-  private final MetricId hitMetric;
-  private final MetricId missMetric;
+  private final CacheMetrics cacheMetrics;
   private final MetricId weightMetric;
 
   @Inject
@@ -80,8 +78,8 @@ public class EngineHintManager {
       boolean forceSynchronous) {
     this.providers = List.copyOf(providers == null ? List.of() : providers);
     this.observability = Objects.requireNonNull(observability, "observability");
-    this.hitMetric = ServiceMetrics.Hint.CACHE_HITS;
-    this.missMetric = ServiceMetrics.Hint.CACHE_MISSES;
+    this.cacheMetrics =
+        new CacheMetrics(observability, "service", "engine-hint-cache", "engine-hint-cache");
     this.weightMetric = ServiceMetrics.Hint.CACHE_WEIGHT;
 
     long bounded = Math.max(1, Math.min(Integer.MAX_VALUE, maxWeightBytes));
@@ -190,11 +188,11 @@ public class EngineHintManager {
   }
 
   private void recordHit() {
-    observability.counter(hitMetric, 1, Tag.of(TagKey.RESULT, "hit"));
+    cacheMetrics.recordHit();
   }
 
   private void recordMiss() {
-    observability.counter(missMetric, 1, Tag.of(TagKey.RESULT, "miss"));
+    cacheMetrics.recordMiss();
   }
 
   static final record HintCacheKey(

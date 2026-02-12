@@ -151,6 +151,13 @@ public class GraphCacheManager {
     if (!cacheEnabled) {
       return;
     }
-    observability.timer(ServiceMetrics.Cache.LOAD_LATENCY, duration);
+    cacheMetrics.recordLoad(duration, true);
+  }
+
+  public void recordLoadFailure(Duration duration, Throwable error) {
+    if (duration == null || !cacheEnabled) {
+      return;
+    }
+    cacheMetrics.recordLoadFailure(duration, error);
   }
 }

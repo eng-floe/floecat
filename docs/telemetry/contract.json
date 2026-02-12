@@ -1,5 +1,15 @@
 [
   {
+    "name": "floecat.core.cache.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Cache failures per cache name.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
     "name": "floecat.core.cache.hits",
     "type": "COUNTER",
     "unit": "",
@@ -7,7 +17,17 @@
     "origin": "core",
     "description": "Cache hits count for the graph cache.",
     "requiredTags": ["cache", "component", "operation"],
-    "allowedTags": ["account", "cache", "component", "operation", "result"]
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Cache latency distribution for operations.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
   },
   {
     "name": "floecat.core.cache.misses",
@@ -17,7 +37,7 @@
     "origin": "core",
     "description": "Cache misses count for the graph cache.",
     "requiredTags": ["cache", "component", "operation"],
-    "allowedTags": ["account", "cache", "component", "operation", "result"]
+    "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
     "name": "floecat.core.cache.size",
@@ -27,7 +47,7 @@
     "origin": "core",
     "description": "Approximate graph cache size by cache name.",
     "requiredTags": ["cache", "component", "operation"],
-    "allowedTags": ["account", "cache", "component", "operation", "result"]
+    "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
     "name": "floecat.core.gc.collections",
@@ -36,7 +56,17 @@
     "since": "v1",
     "origin": "core",
     "description": "Number of GC collections per GC type.",
-    "requiredTags": ["component", "gc", "operation"],
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC failures per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
     "allowedTags": ["component", "exception", "gc", "operation", "result"]
   },
   {
@@ -46,8 +76,18 @@
     "since": "v1",
     "origin": "core",
     "description": "GC pause time per GC type.",
-    "requiredTags": ["component", "gc", "operation"],
+    "requiredTags": ["component", "gc", "operation", "result"],
     "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.core.observability.dropped.tags.total",
@@ -117,7 +157,17 @@
     "origin": "core",
     "description": "Count of bytes processed by store operations.",
     "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store failure count per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
   },
   {
     "name": "floecat.core.store.latency",
@@ -127,7 +177,7 @@
     "origin": "core",
     "description": "Store operation latency distribution.",
     "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
   },
   {
     "name": "floecat.core.store.requests",
@@ -137,7 +187,17 @@
     "origin": "core",
     "description": "Number of store requests emitted per component/operation.",
     "requiredTags": ["component", "operation", "result"],
-    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.service.cache.accounts",
@@ -306,26 +366,6 @@
     "since": "v1",
     "origin": "service",
     "description": "Indicator that the pointer GC tick is currently active (1 when running, 0 when idle).",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.hint.cache.hits",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Engine hint cache hits.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.hint.cache.misses",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Engine hint cache misses.",
     "requiredTags": [],
     "allowedTags": []
   },

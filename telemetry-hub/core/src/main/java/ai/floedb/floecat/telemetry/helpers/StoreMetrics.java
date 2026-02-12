@@ -2,6 +2,8 @@ package ai.floedb.floecat.telemetry.helpers;
 
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Observability.Category;
+import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -31,17 +33,27 @@ public final class StoreMetrics extends BaseMetrics {
     recording(Telemetry.Metrics.STORE_BYTES, bytes, result, extraTags);
   }
 
+  public ObservationScope observe(Tag... extraTags) {
+    return observability.observe(Category.STORE, component(), operation(), scopeTags(extraTags));
+  }
+
   private void recording(MetricId metric, double amount, String result, Tag... extraTags) {
     List<Tag> dynamic = new ArrayList<>();
-    dynamic.add(Tag.of(TagKey.RESULT, result));
     addExtra(dynamic, extraTags);
-    observability.counter(metric, amount, metricTags(dynamic));
+    observability.counter(metric, amount, metricTagsWithResult(result, dynamic));
   }
 
   private void recordTimer(MetricId metric, Duration duration, String result, Tag... extraTags) {
     List<Tag> dynamic = new ArrayList<>();
-    dynamic.add(Tag.of(TagKey.RESULT, result));
     addExtra(dynamic, extraTags);
-    observability.timer(metric, duration, metricTags(dynamic));
+    observability.timer(metric, duration, metricTagsWithResult(result, dynamic));
+  }
+
+  private Tag[] metricTagsWithResult(String result, List<Tag> extra) {
+    List<Tag> tags = new ArrayList<>(metricTagList(extra));
+    if (result != null) {
+      tags.add(Tag.of(TagKey.RESULT, result));
+    }
+    return tags.toArray(Tag[]::new);
   }
 }

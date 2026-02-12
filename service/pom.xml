@@ -256,18 +256,18 @@
         <goals>
           <goal>jar</goal>
         </goals>
-        <configuration>
-          <classifier>telemetry</classifier>
-          <includes>
-            <include>ai/floedb/floecat/service/telemetry/**</include>
-            <include>META-INF/services/ai.floedb.floecat.telemetry.TelemetryContributor</include>
-          </includes>
-          <archive>
-            <manifest>
-              <addClasspath>false</addClasspath>
-            </manifest>
-          </archive>
-        </configuration>
+          <configuration>
+            <classifier>telemetry</classifier>
+            <includes>
+              <include>ai/floedb/floecat/service/telemetry/**</include>
+              <include>META-INF/services/ai.floedb.floecat.telemetry.TelemetryContributor</include>
+            </includes>
+            <archive>
+              <manifest>
+                <addClasspath>false</addClasspath>
+              </manifest>
+            </archive>
+          </configuration>
       </execution>
         </executions>
       </plugin>

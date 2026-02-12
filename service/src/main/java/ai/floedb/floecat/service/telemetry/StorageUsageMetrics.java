@@ -23,6 +23,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
@@ -30,7 +31,6 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,9 +67,8 @@ public class StorageUsageMetrics {
 
   @Scheduled(every = "${floecat.metrics.storage.refresh:30s}")
   void refresh() {
-    long refreshStart = System.nanoTime();
+    ObservationScope refreshScope = storeMetrics.observe();
     boolean error = false;
-
     try {
       String token = "";
       StringBuilder next = new StringBuilder();
@@ -80,7 +79,7 @@ public class StorageUsageMetrics {
 
         for (var t : page) {
           final String accountId = t.getResourceId().getId();
-          long accountStart = System.nanoTime();
+          ObservationScope accountScope = storeMetrics.observe(Tag.of(TagKey.ACCOUNT, accountId));
           try {
             int ptrCount = pointerStore.countByPrefix(Keys.accountRootPointer(accountId));
             updateGauge(
@@ -89,29 +88,23 @@ public class StorageUsageMetrics {
             long bytes = estimateBytesForAccount(accountId, ptrCount);
             updateGauge(accountBytes, ServiceMetrics.Storage.ACCOUNT_BYTES, accountId, bytes);
 
-            storeMetrics.recordRequest("success", Tag.of(TagKey.ACCOUNT, accountId));
             storeMetrics.recordBytes(bytes, "success", Tag.of(TagKey.ACCOUNT, accountId));
-            storeMetrics.recordLatency(
-                Duration.ofNanos(System.nanoTime() - accountStart),
-                "success",
-                Tag.of(TagKey.ACCOUNT, accountId));
-
+            accountScope.success();
           } catch (Throwable e) {
             error = true;
-            storeMetrics.recordRequest("error", Tag.of(TagKey.ACCOUNT, accountId));
-            storeMetrics.recordLatency(
-                Duration.ofNanos(System.nanoTime() - accountStart),
-                "error",
-                Tag.of(TagKey.ACCOUNT, accountId));
+            accountScope.error(e);
+          } finally {
+            accountScope.close();
           }
         }
       } while (!token.isBlank());
     } finally {
-      Duration refreshDuration = Duration.ofNanos(System.nanoTime() - refreshStart);
-      storeMetrics.recordLatency(
-          refreshDuration,
-          error ? "error" : "success",
-          Tag.of(TagKey.RESULT, error ? "error" : "success"));
+      if (error) {
+        refreshScope.error(new IllegalStateException("storage refresh encountered errors"));
+      } else {
+        refreshScope.success();
+      }
+      refreshScope.close();
     }
   }
 

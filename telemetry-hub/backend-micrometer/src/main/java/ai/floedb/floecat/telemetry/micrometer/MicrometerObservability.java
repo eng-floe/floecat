@@ -115,12 +115,44 @@ public final class MicrometerObservability implements Observability {
   @Override
   public ObservationScope observe(
       Category category, String component, String operation, Tag... tags) {
-    if (category != Category.RPC) {
+    ScopeMetrics metrics = metricsFor(category);
+    if (metrics == null) {
       return NOOP_SCOPE;
     }
     List<Tag> baseTags = buildScopeTags(component, operation, tags);
-    return new MicrometerObservationScope(component, operation, baseTags);
+    return new MicrometerObservationScope(category, component, operation, baseTags, metrics);
   }
+
+  private ScopeMetrics metricsFor(Category category) {
+    return switch (category) {
+      case RPC -> RPC_SCOPE_METRICS;
+      case STORE -> STORE_SCOPE_METRICS;
+      case CACHE -> CACHE_SCOPE_METRICS;
+      case GC -> GC_SCOPE_METRICS;
+      default -> null;
+    };
+  }
+
+  private static final ScopeMetrics RPC_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.RPC_LATENCY,
+          Telemetry.Metrics.RPC_ERRORS,
+          Telemetry.Metrics.RPC_RETRIES);
+
+  private static final ScopeMetrics STORE_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.STORE_LATENCY,
+          Telemetry.Metrics.STORE_ERRORS,
+          Telemetry.Metrics.STORE_RETRIES);
+
+  private static final ScopeMetrics CACHE_SCOPE_METRICS =
+      new ScopeMetrics(Telemetry.Metrics.CACHE_LATENCY, Telemetry.Metrics.CACHE_ERRORS, null);
+
+  private static final ScopeMetrics GC_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.GC_PAUSE, Telemetry.Metrics.GC_ERRORS, Telemetry.Metrics.GC_RETRIES);
+
+  private record ScopeMetrics(MetricId latency, MetricId errors, MetricId retries) {}
 
   private MeterKey validate(MetricType expected, MetricId id, Tag... tags) {
     MetricValidator.ValidationResult result = validator.validate(id, expected, tags);
@@ -200,6 +232,7 @@ public final class MicrometerObservability implements Observability {
   }
 
   private final class MicrometerObservationScope implements ObservationScope {
+    private final Category category;
     private final String component;
     private final String operation;
     private final List<Tag> baseTags;
@@ -209,11 +242,19 @@ public final class MicrometerObservability implements Observability {
     private int retries;
     private boolean successCalled;
     private String grpcStatus;
+    private final ScopeMetrics metrics;
 
-    private MicrometerObservationScope(String component, String operation, List<Tag> baseTags) {
+    private MicrometerObservationScope(
+        Category category,
+        String component,
+        String operation,
+        List<Tag> baseTags,
+        ScopeMetrics metrics) {
+      this.category = category;
       this.component = component;
       this.operation = operation;
       this.baseTags = baseTags;
+      this.metrics = metrics;
     }
 
     @Override
@@ -259,7 +300,6 @@ public final class MicrometerObservability implements Observability {
       Duration elapsed = Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos));
       List<Tag> latencyTags = new ArrayList<>(baseTags.size() + 3);
       latencyTags.addAll(baseTags);
-      latencyTags.add(Tag.of(Telemetry.TagKey.STATUS, grpcStatus == null ? "UNKNOWN" : grpcStatus));
       String resultTag;
       boolean outcomeMissing = !successCalled && error == null;
       if (outcomeMissing && MicrometerObservability.this.policy.isStrict()) {
@@ -275,21 +315,28 @@ public final class MicrometerObservability implements Observability {
       } else {
         resultTag = (error != null) ? "error" : "success";
       }
+      if (category == Category.RPC) {
+        latencyTags.add(
+            Tag.of(Telemetry.TagKey.STATUS, grpcStatus == null ? "UNKNOWN" : grpcStatus));
+      }
       latencyTags.add(Tag.of(Telemetry.TagKey.RESULT, resultTag));
       if (error != null) {
         latencyTags.add(Tag.of(Telemetry.TagKey.EXCEPTION, error.getClass().getSimpleName()));
       }
       Tag[] latencyArray = latencyTags.toArray(Tag[]::new);
-      timer(Telemetry.Metrics.RPC_LATENCY, elapsed, latencyArray);
+      timer(metrics.latency(), elapsed, latencyArray);
       if (error != null) {
-        counter(Telemetry.Metrics.RPC_ERRORS, 1, latencyArray);
+        counter(metrics.errors(), 1, latencyArray);
       }
       if (retries > 0) {
-        counter(
-            Telemetry.Metrics.RPC_RETRIES,
-            retries,
-            Tag.of(Telemetry.TagKey.COMPONENT, component),
-            Tag.of(Telemetry.TagKey.OPERATION, operation));
+        MetricId retriesMetric = metrics.retries();
+        if (retriesMetric != null) {
+          counter(
+              retriesMetric,
+              retries,
+              Tag.of(Telemetry.TagKey.COMPONENT, component),
+              Tag.of(Telemetry.TagKey.OPERATION, operation));
+        }
       }
     }
   }

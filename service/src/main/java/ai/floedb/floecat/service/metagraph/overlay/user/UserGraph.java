@@ -245,11 +245,16 @@ public final class UserGraph {
     if (cached != null) return Optional.of(cached);
 
     long loadStart = System.nanoTime();
-    Optional<GraphNode> loaded = nodes.load(id, meta);
-    loaded.ifPresent(node -> cache.put(id, key, node));
-    cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
-
-    return loaded;
+    try {
+      Optional<GraphNode> loaded = nodes.load(id, meta);
+      loaded.ifPresent(node -> cache.put(id, key, node));
+      cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
+      return loaded;
+    } catch (Throwable t) {
+      Duration duration = Duration.ofNanos(System.nanoTime() - loadStart);
+      cache.recordLoadFailure(duration, t);
+      throw t;
+    }
   }
 
   /**

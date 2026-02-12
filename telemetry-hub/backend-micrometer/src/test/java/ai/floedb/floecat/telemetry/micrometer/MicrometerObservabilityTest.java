@@ -244,6 +244,115 @@ class MicrometerObservabilityTest {
   }
 
   @Test
+  void storeScopeRecordsErrorsAndRetries() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    ObservationScope scope =
+        observability.observe(Category.STORE, "svc", "store-op", Tag.of(TagKey.ACCOUNT, "acct"));
+    scope.error(new IllegalStateException("boom"));
+    scope.retry();
+    scope.close();
+
+    Timer timer =
+        meters
+            .find(Telemetry.Metrics.STORE_LATENCY.name())
+            .tags(
+                "component",
+                "svc",
+                "operation",
+                "store-op",
+                "account",
+                "acct",
+                TagKey.RESULT,
+                "error",
+                TagKey.EXCEPTION,
+                "IllegalStateException")
+            .timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1);
+
+    Counter errors =
+        meters
+            .find(Telemetry.Metrics.STORE_ERRORS.name())
+            .tags(
+                "component",
+                "svc",
+                "operation",
+                "store-op",
+                "account",
+                "acct",
+                TagKey.RESULT,
+                "error",
+                TagKey.EXCEPTION,
+                "IllegalStateException")
+            .counter();
+    assertThat(errors).isNotNull();
+    assertThat(errors.count()).isEqualTo(1d);
+
+    assertThat(
+            meters
+                .find(Telemetry.Metrics.STORE_RETRIES.name())
+                .tags("component", "svc", "operation", "store-op")
+                .counter()
+                .count())
+        .isEqualTo(1d);
+  }
+
+  @Test
+  void cacheScopeHonorsOperation() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    ObservationScope scope =
+        observability.observe(
+            Category.CACHE, "svc", "cache-load", Tag.of(TagKey.CACHE_NAME, "users"));
+    scope.success();
+    scope.close();
+
+    Timer timer =
+        meters
+            .find(Telemetry.Metrics.CACHE_LATENCY.name())
+            .tags(
+                "component",
+                "svc",
+                "operation",
+                "cache-load",
+                TagKey.CACHE_NAME,
+                "users",
+                TagKey.RESULT,
+                "success")
+            .timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1);
+  }
+
+  @Test
+  void gcScopeRecordsPauseAndRetries() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    ObservationScope scope =
+        observability.observe(Category.GC, "svc", "gc.tick", Tag.of(TagKey.GC_NAME, "pointer"));
+    scope.retry();
+    scope.success();
+    scope.close();
+
+    Timer timer =
+        meters
+            .find(Telemetry.Metrics.GC_PAUSE.name())
+            .tags("component", "svc", "operation", "gc.tick", TagKey.RESULT, "success")
+            .timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1);
+
+    assertThat(
+            meters
+                .find(Telemetry.Metrics.GC_RETRIES.name())
+                .tags("component", "svc", "operation", "gc.tick")
+                .counter()
+                .count())
+        .isEqualTo(1d);
+  }
+
+  @Test
   void gaugeRegistersSupplier() {
     MicrometerObservability observability =
         new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);

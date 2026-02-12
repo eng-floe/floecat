@@ -21,7 +21,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Map<MetricId, MetricDef> defs = new LinkedHashMap<>();
     Set<String> empty = Collections.emptySet();
     Set<String> accountTag = Set.of(TagKey.ACCOUNT);
-    Set<String> resultTag = Set.of(TagKey.RESULT);
 
     add(defs, Cache.ENABLED, empty, empty, "Indicator that the graph cache is enabled.");
     add(defs, Cache.MAX_SIZE, empty, empty, "Configured max entries for the graph cache.");
@@ -51,7 +50,8 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         GC.POINTER_LAST_TICK_START,
         empty,
         empty,
-        "Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via `floecat.gc.pointer.tick-every`.");
+        "Timestamp when the pointer GC last started (ms since epoch from the most recent tick)."
+            + " Tick interval is controlled via `floecat.gc.pointer.tick-every`.");
     add(
         defs,
         GC.POINTER_LAST_TICK_END,
@@ -77,7 +77,8 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         GC.IDEMP_RUNNING,
         empty,
         empty,
-        "Indicator that the idempotency GC tick is currently active (1 when running, 0 when idle).");
+        "Indicator that the idempotency GC tick is currently active (1 when running, 0 when"
+            + " idle).");
     add(
         defs,
         GC.IDEMP_ENABLED,
@@ -96,7 +97,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         empty,
         empty,
         "Timestamp when the idempotency GC last finished.");
-
     add(
         defs,
         Storage.ACCOUNT_POINTERS,
@@ -109,8 +109,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         accountTag,
         accountTag,
         "Per-account byte consumption for storage.");
-    add(defs, Hint.CACHE_HITS, empty, empty, "Engine hint cache hits.");
-    add(defs, Hint.CACHE_MISSES, empty, empty, "Engine hint cache misses.");
     add(defs, Hint.CACHE_WEIGHT, empty, empty, "Estimated weight of the hint cache.");
     return Collections.unmodifiableMap(defs);
   }
@@ -121,7 +119,11 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
       Set<String> required,
       Set<String> allowed,
       String description) {
-    defs.put(metric, new MetricDef(metric, required, allowed, description));
+    MetricDef prev = defs.put(metric, new MetricDef(metric, required, allowed, description));
+    if (prev != null) {
+      throw new IllegalArgumentException(
+          "Duplicate metric def in ServiceTelemetryContributor: " + metric.name());
+    }
   }
 
   @Override

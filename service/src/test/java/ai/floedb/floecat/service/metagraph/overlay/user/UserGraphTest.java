@@ -40,13 +40,15 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -260,7 +262,15 @@ class UserGraphTest {
 
     var ids = seedTable("enabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
-    assertThat(observability.timerValues(ServiceMetrics.Cache.LOAD_LATENCY)).isNotEmpty();
+    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isNotEmpty();
+    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
+        .anySatisfy(
+            tags ->
+                assertThat(tags)
+                    .anyMatch(
+                        tag ->
+                            TagKey.CACHE_NAME.equals(tag.key())
+                                && "graph-cache".equals(tag.value())));
   }
 
   @Test
@@ -283,7 +293,7 @@ class UserGraphTest {
 
     var ids = seedTable("disabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
-    assertThat(observability.timerValues(ServiceMetrics.Cache.LOAD_LATENCY)).isEmpty();
+    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isEmpty();
   }
 
   @Test
@@ -292,10 +302,18 @@ class UserGraphTest {
     UserTableNode node = graph.table(ids.tableId()).orElseThrow();
 
     assertThat(node).isNotNull();
-    List<Duration> latencies = observability.timerValues(ServiceMetrics.Cache.LOAD_LATENCY);
+    List<Duration> latencies = observability.timerValues(Telemetry.Metrics.CACHE_LATENCY);
     assertThat(latencies).isNotEmpty();
     assertThat(latencies.get(0)).isGreaterThan(Duration.ZERO);
-    assertThat(observability.timerTagHistory(ServiceMetrics.Cache.LOAD_LATENCY).get(0)).isEmpty();
+    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
+        .anySatisfy(
+            tags ->
+                assertThat(tags.stream().map(Tag::key))
+                    .contains(
+                        Telemetry.TagKey.COMPONENT,
+                        Telemetry.TagKey.OPERATION,
+                        Telemetry.TagKey.CACHE_NAME,
+                        Telemetry.TagKey.RESULT));
   }
 
   @Test

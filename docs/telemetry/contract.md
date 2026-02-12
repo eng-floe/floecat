@@ -6,20 +6,26 @@ This lists all metrics available in the repository right now:
 **Core Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| floecat.core.cache.hits | COUNTER |  | v1 | Cache hits count for the graph cache. | cache, component, operation | account, cache, component, operation, result |
-| floecat.core.cache.misses | COUNTER |  | v1 | Cache misses count for the graph cache. | cache, component, operation | account, cache, component, operation, result |
-| floecat.core.cache.size | GAUGE |  | v1 | Approximate graph cache size by cache name. | cache, component, operation | account, cache, component, operation, result |
-| floecat.core.gc.collections | COUNTER |  | v1 | Number of GC collections per GC type. | component, gc, operation | component, exception, gc, operation, result |
-| floecat.core.gc.pause | TIMER | seconds | v1 | GC pause time per GC type. | component, gc, operation | component, exception, gc, operation, result |
+| floecat.core.cache.errors | COUNTER |  | v1 | Cache failures per cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |
+| floecat.core.cache.hits | COUNTER |  | v1 | Cache hits count for the graph cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
+| floecat.core.cache.misses | COUNTER |  | v1 | Cache misses count for the graph cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.size | GAUGE |  | v1 | Approximate graph cache size by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.gc.collections | COUNTER |  | v1 | Number of GC collections per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
+| floecat.core.gc.errors | COUNTER |  | v1 | GC failures per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
+| floecat.core.gc.pause | TIMER | seconds | v1 | GC pause time per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
+| floecat.core.gc.retries | COUNTER |  | v1 | GC retries per component/operation. | component, operation | component, operation |
 | floecat.core.observability.dropped.tags.total | COUNTER |  | v1 | Total number of tags dropped because they violated telemetry contracts. |  |  |
 | floecat.core.rpc.active | GAUGE |  | v1 | Number of in-flight RPCs per component/operation. | component, operation | component, operation |
 | floecat.core.rpc.errors | COUNTER |  | v1 | Count of RPC failures per component/operation. | component, operation, result | account, component, exception, operation, result, status |
 | floecat.core.rpc.latency | TIMER | seconds | v1 | Latency distribution for RPC operations. | component, operation, result | account, component, exception, operation, result, status |
 | floecat.core.rpc.requests | COUNTER |  | v1 | Total RPC requests processed, tagged by account and status. | account, component, operation, status | account, component, operation, status |
 | floecat.core.rpc.retries | COUNTER |  | v1 | Number of RPC retries invoked. | component, operation | component, operation |
-| floecat.core.store.bytes | COUNTER | bytes | v1 | Count of bytes processed by store operations. | component, operation, result | account, component, exception, operation, result, status |
-| floecat.core.store.latency | TIMER | seconds | v1 | Store operation latency distribution. | component, operation, result | account, component, exception, operation, result, status |
-| floecat.core.store.requests | COUNTER |  | v1 | Number of store requests emitted per component/operation. | component, operation, result | account, component, exception, operation, result, status |
+| floecat.core.store.bytes | COUNTER | bytes | v1 | Count of bytes processed by store operations. | component, operation, result | account, component, exception, operation, result |
+| floecat.core.store.errors | COUNTER |  | v1 | Store failure count per component/operation. | component, operation, result | account, component, exception, operation, result |
+| floecat.core.store.latency | TIMER | seconds | v1 | Store operation latency distribution. | component, operation, result | account, component, exception, operation, result |
+| floecat.core.store.requests | COUNTER |  | v1 | Number of store requests emitted per component/operation. | component, operation, result | account, component, exception, operation, result |
+| floecat.core.store.retries | COUNTER |  | v1 | Store retries per component/operation. | component, operation | component, operation |
 
 **Service Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
@@ -41,8 +47,6 @@ This lists all metrics available in the repository right now:
 | floecat.service.gc.pointer.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last finished. |  |  |
 | floecat.service.gc.pointer.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via \`floecat.gc.pointer.tick-every\`. |  |  |
 | floecat.service.gc.pointer.running | GAUGE |  | v1 | Indicator that the pointer GC tick is currently active (1 when running, 0 when idle). |  |  |
-| floecat.service.hint.cache.hits | COUNTER |  | v1 | Engine hint cache hits. |  |  |
-| floecat.service.hint.cache.misses | COUNTER |  | v1 | Engine hint cache misses. |  |  |
 | floecat.service.hint.cache.weight | GAUGE | bytes | v1 | Estimated weight of the hint cache. |  |  |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Per-account byte consumption for storage. | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |

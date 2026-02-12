@@ -4,6 +4,9 @@ import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
@@ -40,5 +43,25 @@ public final class CacheMetrics extends BaseMetrics {
 
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     observability.gauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
+  }
+
+  public void recordLoad(Duration duration, boolean hit, Tag... extraTags) {
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, hit ? "hit" : "miss"));
+    addExtra(dynamic, extraTags);
+    Tag[] tags = metricTags(dynamic);
+    observability.timer(Telemetry.Metrics.CACHE_LATENCY, duration, tags);
+  }
+
+  public void recordLoadFailure(Duration duration, Throwable error, Tag... extraTags) {
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, "error"));
+    if (error != null) {
+      dynamic.add(Tag.of(TagKey.EXCEPTION, error.getClass().getSimpleName()));
+    }
+    addExtra(dynamic, extraTags);
+    Tag[] tags = metricTags(dynamic);
+    observability.timer(Telemetry.Metrics.CACHE_LATENCY, duration, tags);
+    observability.counter(Telemetry.Metrics.CACHE_ERRORS, 1, tags);
   }
 }

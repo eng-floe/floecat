@@ -100,12 +100,6 @@ public final class ServiceMetrics {
   }
 
   public static final class Hint {
-    public static final MetricId CACHE_HITS =
-        new MetricId(
-            "floecat.service.hint.cache.hits", MetricType.COUNTER, "", CONTRACT, "service");
-    public static final MetricId CACHE_MISSES =
-        new MetricId(
-            "floecat.service.hint.cache.misses", MetricType.COUNTER, "", CONTRACT, "service");
     public static final MetricId CACHE_WEIGHT =
         new MetricId(
             "floecat.service.hint.cache.weight", MetricType.GAUGE, "bytes", CONTRACT, "service");

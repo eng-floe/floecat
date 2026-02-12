@@ -1,5 +1,6 @@
 package ai.floedb.floecat.telemetry;
 
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -50,8 +51,12 @@ public final class TestObservability implements Observability {
   @Override
   public ObservationScope observe(
       Category category, String component, String operation, Tag... tags) {
+    List<Tag> baseTags = new ArrayList<>();
+    baseTags.add(Tag.of(TagKey.COMPONENT, component));
+    baseTags.add(Tag.of(TagKey.OPERATION, operation));
+    baseTags.addAll(copyTags(tags));
     TestObservationScope scope =
-        new TestObservationScope(category, component, operation, copyTags(tags));
+        new TestObservationScope(this, category, component, operation, List.copyOf(baseTags));
     scopes.computeIfAbsent(category.name(), key -> new ArrayList<>()).add(scope);
     return scope;
   }
@@ -108,16 +113,25 @@ public final class TestObservability implements Observability {
   }
 
   public static final class TestObservationScope implements ObservationScope {
-    private final Observability.Category category;
+    private final TestObservability parent;
+    private final Category category;
     private final String component;
     private final String operation;
     private final List<Tag> tags;
+    private final long startNanos = System.nanoTime();
+    private boolean closed;
     private boolean success;
     private Throwable error;
     private int retries;
+    private String status;
 
     private TestObservationScope(
-        Observability.Category category, String component, String operation, List<Tag> tags) {
+        TestObservability parent,
+        Category category,
+        String component,
+        String operation,
+        List<Tag> tags) {
+      this.parent = Objects.requireNonNull(parent, "parent");
       this.category = category;
       this.component = component;
       this.operation = operation;
@@ -140,6 +154,23 @@ public final class TestObservability implements Observability {
     @Override
     public void retry() {
       retries++;
+    }
+
+    @Override
+    public void status(String status) {
+      if (status != null && !status.isBlank()) {
+        this.status = status;
+      }
+    }
+
+    @Override
+    public void close() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      Duration elapsed = Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos));
+      parent.recordScope(this, elapsed);
     }
 
     public boolean isSuccess() {
@@ -169,5 +200,81 @@ public final class TestObservability implements Observability {
     public Observability.Category category() {
       return category;
     }
+
+    private String status() {
+      return status;
+    }
+
+    private boolean closed() {
+      return closed;
+    }
   }
+
+  void recordScope(TestObservationScope scope, Duration elapsed) {
+    ScopeMetrics metrics = metricsFor(scope.category());
+    List<Tag> tags = new ArrayList<>(scope.tags());
+    if (metrics == null) {
+      return;
+    }
+    String grpcStatus = scope.status() == null ? "UNKNOWN" : scope.status();
+    if (scope.category() == Category.RPC) {
+      tags.add(Tag.of(TagKey.STATUS, grpcStatus));
+    }
+    String result;
+    Throwable error = scope.error;
+    if (!scope.success && error == null) {
+      result = "unknown";
+    } else {
+      result = (error == null) ? "success" : "error";
+    }
+    tags.add(Tag.of(TagKey.RESULT, result));
+    if (error != null) {
+      tags.add(Tag.of(TagKey.EXCEPTION, error.getClass().getSimpleName()));
+    }
+    timer(metrics.latency(), elapsed, tags.toArray(Tag[]::new));
+    if (error != null) {
+      counter(metrics.errors(), 1, tags.toArray(Tag[]::new));
+    }
+    if (scope.retries() > 0) {
+      MetricId retriesMetric = metrics.retries();
+      if (retriesMetric != null) {
+        counter(
+            retriesMetric,
+            scope.retries(),
+            Tag.of(TagKey.COMPONENT, scope.component()),
+            Tag.of(TagKey.OPERATION, scope.operation()));
+      }
+    }
+  }
+
+  private ScopeMetrics metricsFor(Category category) {
+    return switch (category) {
+      case RPC -> RPC_SCOPE_METRICS;
+      case STORE -> STORE_SCOPE_METRICS;
+      case CACHE -> CACHE_SCOPE_METRICS;
+      case GC -> GC_SCOPE_METRICS;
+      default -> null;
+    };
+  }
+
+  private static final ScopeMetrics RPC_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.RPC_LATENCY,
+          Telemetry.Metrics.RPC_ERRORS,
+          Telemetry.Metrics.RPC_RETRIES);
+
+  private static final ScopeMetrics STORE_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.STORE_LATENCY,
+          Telemetry.Metrics.STORE_ERRORS,
+          Telemetry.Metrics.STORE_RETRIES);
+
+  private static final ScopeMetrics CACHE_SCOPE_METRICS =
+      new ScopeMetrics(Telemetry.Metrics.CACHE_LATENCY, Telemetry.Metrics.CACHE_ERRORS, null);
+
+  private static final ScopeMetrics GC_SCOPE_METRICS =
+      new ScopeMetrics(
+          Telemetry.Metrics.GC_PAUSE, Telemetry.Metrics.GC_ERRORS, Telemetry.Metrics.GC_RETRIES);
+
+  private record ScopeMetrics(MetricId latency, MetricId errors, MetricId retries) {}
 }

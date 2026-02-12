@@ -23,7 +23,9 @@ public final class GcMetrics extends BaseMetrics {
   }
 
   public void recordPause(Duration duration, Tag... extraTags) {
-    List<Tag> dynamic = buildDynamicTags(extraTags);
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, "success"));
+    addExtra(dynamic, extraTags);
     observability.timer(Telemetry.Metrics.GC_PAUSE, duration, metricTags(dynamic));
   }
 

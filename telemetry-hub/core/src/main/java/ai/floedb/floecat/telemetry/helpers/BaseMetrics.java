@@ -69,6 +69,15 @@ abstract class BaseMetrics {
     return metricTags(extra);
   }
 
+  protected Tag[] scopeTagsWithResult(String result, Tag... extra) {
+    List<Tag> tags = new ArrayList<>();
+    if (result != null && !result.isBlank()) {
+      tags.add(Tag.of(TagKey.RESULT, result));
+    }
+    addExtra(tags, extra);
+    return scopeTags(tags);
+  }
+
   protected Tag[] scopeExtraTags(Tag... extra) {
     return scopeExtraTagList(extra).toArray(Tag[]::new);
   }
