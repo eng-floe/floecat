@@ -33,6 +33,12 @@ public final class TagSanitizer {
       }
       return Optional.empty();
     }
+    if (value.isEmpty()) {
+      if (policy.isStrict()) {
+        throw new IllegalArgumentException("tag value must not be blank");
+      }
+      return Optional.empty();
+    }
     return Optional.of(Tag.of(key, value));
   }
 

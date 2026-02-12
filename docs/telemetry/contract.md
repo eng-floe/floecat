@@ -41,8 +41,8 @@ This lists all metrics available in the repository right now:
 | floecat.service.gc.pointer.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last finished. |  |  |
 | floecat.service.gc.pointer.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via \`floecat.gc.pointer.tick-every\`. |  |  |
 | floecat.service.gc.pointer.running | GAUGE |  | v1 | Indicator that the pointer GC tick is currently active (1 when running, 0 when idle). |  |  |
-| floecat.service.hint.cache.hits | COUNTER | count | v1 | Engine hint cache hits. |  |  |
-| floecat.service.hint.cache.misses | COUNTER | count | v1 | Engine hint cache misses. |  |  |
+| floecat.service.hint.cache.hits | COUNTER |  | v1 | Engine hint cache hits. |  |  |
+| floecat.service.hint.cache.misses | COUNTER |  | v1 | Engine hint cache misses. |  |  |
 | floecat.service.hint.cache.weight | GAUGE | bytes | v1 | Estimated weight of the hint cache. |  |  |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Per-account byte consumption for storage. | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |

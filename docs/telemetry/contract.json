@@ -5,6 +5,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Cache hits count for the graph cache.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
@@ -14,6 +15,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Cache misses count for the graph cache.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
@@ -23,6 +25,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Approximate graph cache size by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
@@ -32,6 +35,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Number of GC collections per GC type.",
     "requiredTags": ["component", "gc", "operation"],
     "allowedTags": ["component", "exception", "gc", "operation", "result"]
   },
@@ -41,6 +45,7 @@
     "unit": "seconds",
     "since": "v1",
     "origin": "core",
+    "description": "GC pause time per GC type.",
     "requiredTags": ["component", "gc", "operation"],
     "allowedTags": ["component", "exception", "gc", "operation", "result"]
   },
@@ -50,6 +55,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Total number of tags dropped because they violated telemetry contracts.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -59,6 +65,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Number of in-flight RPCs per component/operation.",
     "requiredTags": ["component", "operation"],
     "allowedTags": ["component", "operation"]
   },
@@ -68,6 +75,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Count of RPC failures per component/operation.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
@@ -77,6 +85,7 @@
     "unit": "seconds",
     "since": "v1",
     "origin": "core",
+    "description": "Latency distribution for RPC operations.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
@@ -86,6 +95,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Total RPC requests processed, tagged by account and status.",
     "requiredTags": ["account", "component", "operation", "status"],
     "allowedTags": ["account", "component", "operation", "status"]
   },
@@ -95,6 +105,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Number of RPC retries invoked.",
     "requiredTags": ["component", "operation"],
     "allowedTags": ["component", "operation"]
   },
@@ -104,6 +115,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "core",
+    "description": "Count of bytes processed by store operations.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
@@ -113,6 +125,7 @@
     "unit": "seconds",
     "since": "v1",
     "origin": "core",
+    "description": "Store operation latency distribution.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
@@ -122,6 +135,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
+    "description": "Number of store requests emitted per component/operation.",
     "requiredTags": ["component", "operation", "result"],
     "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
   },
@@ -131,6 +145,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Number of accounts with active caches.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -140,6 +155,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the graph cache is enabled.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -149,6 +165,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Estimated total graph cache entries across accounts.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -158,6 +175,7 @@
     "unit": "seconds",
     "since": "v1",
     "origin": "service",
+    "description": "Latency for loading graph entries when caching is enabled.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -167,6 +185,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Configured max entries for the graph cache.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -176,6 +195,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the CAS GC scheduler is enabled (1=enabled, 0=disabled).",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -185,6 +205,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the CAS GC last finished.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -194,6 +215,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the CAS GC last started.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -203,6 +225,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the CAS GC tick is currently active (1 when running, 0 when idle).",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -212,6 +235,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the idempotency GC scheduler is enabled (1=enabled, 0=disabled).",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -221,6 +245,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the idempotency GC last finished.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -230,6 +255,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the idempotency GC last started.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -239,6 +265,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the idempotency GC tick is currently active (1 when running, 0 when idle).",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -248,6 +275,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the pointer GC scheduler is enabled (1=enabled, 0=disabled).",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -257,6 +285,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the pointer GC last finished.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -266,6 +295,7 @@
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
+    "description": "Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via `floecat.gc.pointer.tick-every`.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -275,24 +305,27 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Indicator that the pointer GC tick is currently active (1 when running, 0 when idle).",
     "requiredTags": [],
     "allowedTags": []
   },
   {
     "name": "floecat.service.hint.cache.hits",
     "type": "COUNTER",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Engine hint cache hits.",
     "requiredTags": [],
     "allowedTags": []
   },
   {
     "name": "floecat.service.hint.cache.misses",
     "type": "COUNTER",
-    "unit": "count",
+    "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Engine hint cache misses.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -302,6 +335,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
+    "description": "Estimated weight of the hint cache.",
     "requiredTags": [],
     "allowedTags": []
   },
@@ -311,6 +345,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
+    "description": "Per-account byte consumption for storage.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
@@ -320,6 +355,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
+    "description": "Per-account pointer count stored in the service.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   }

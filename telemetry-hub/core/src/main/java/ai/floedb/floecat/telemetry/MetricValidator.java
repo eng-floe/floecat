@@ -21,7 +21,19 @@ public final class MetricValidator {
   public ValidationResult validate(MetricId metric, MetricType expected, Tag... tags) {
     Objects.requireNonNull(metric, "metric");
     Objects.requireNonNull(expected, "expected");
-    MetricDef def = Telemetry.requireMetricDef(registry, metric);
+    MetricDef def = Telemetry.metricDef(registry, metric).orElse(null);
+    if (def == null) {
+      if (policy.isStrict()) {
+        throw new IllegalArgumentException(
+            "Metric not registered: " + metric.name() + " (ensure the registry has core metrics)");
+      }
+      return new ValidationResult(
+          Collections.emptyList(),
+          false,
+          0,
+          DropMetricReason.UNKNOWN_METRIC,
+          "metric not registered: " + metric.name());
+    }
     if (def.id().type() != expected) {
       throw new IllegalArgumentException(
           "Metric type mismatch: expected " + expected + " but got " + def.id().type());

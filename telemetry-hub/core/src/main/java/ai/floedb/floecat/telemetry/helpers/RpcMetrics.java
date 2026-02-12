@@ -6,16 +6,17 @@ import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Helper that emits RPC metrics with canonical tags. */
 public final class RpcMetrics extends BaseMetrics {
-  private static final ConcurrentMap<List<Tag>, AtomicInteger> ACTIVE_REQUESTS =
-      new ConcurrentHashMap<>();
+  private static final Map<List<Tag>, AtomicInteger> ACTIVE_REQUESTS =
+      Collections.synchronizedMap(new WeakHashMap<>());
 
   private final Observability observability;
   private final List<Tag> canonicalTags;
@@ -29,17 +30,19 @@ public final class RpcMetrics extends BaseMetrics {
   }
 
   private AtomicInteger registerActiveGauge() {
-    return ACTIVE_REQUESTS.computeIfAbsent(
-        canonicalTags,
-        tags -> {
-          AtomicInteger counter = new AtomicInteger();
-          observability.gauge(
-              Telemetry.Metrics.RPC_ACTIVE,
-              counter::get,
-              "Active RPC requests",
-              tags.toArray(Tag[]::new));
-          return counter;
-        });
+    synchronized (ACTIVE_REQUESTS) {
+      AtomicInteger counter = ACTIVE_REQUESTS.get(canonicalTags);
+      if (counter == null) {
+        counter = new AtomicInteger();
+        ACTIVE_REQUESTS.put(canonicalTags, counter);
+        observability.gauge(
+            Telemetry.Metrics.RPC_ACTIVE,
+            counter::get,
+            "Active RPC requests",
+            canonicalTags.toArray(Tag[]::new));
+      }
+      return counter;
+    }
   }
 
   private static List<Tag> sortTags(List<Tag> tags) {

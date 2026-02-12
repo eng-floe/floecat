@@ -91,6 +91,13 @@ public final class MicrometerObservability implements Observability {
         key,
         (ignored, existing) -> {
           if (existing != null) {
+            if (policy.isStrict()) {
+              throw new IllegalArgumentException(
+                  "Gauge already registered for metric "
+                      + metric.name()
+                      + " with tags "
+                      + key.tags());
+            }
             registry.remove(existing);
           }
           Supplier<Number> safeSupplier =

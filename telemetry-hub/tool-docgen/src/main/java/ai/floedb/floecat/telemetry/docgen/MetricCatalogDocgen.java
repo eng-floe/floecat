@@ -163,6 +163,7 @@ public final class MetricCatalogDocgen {
       sb.append("    \"unit\": \"").append(escapeJson(def.id().unit())).append("\",\n");
       sb.append("    \"since\": \"").append(escapeJson(def.id().since())).append("\",\n");
       sb.append("    \"origin\": \"").append(escapeJson(def.id().origin())).append("\",\n");
+      sb.append("    \"description\": \"").append(escapeJson(def.description())).append("\",\n");
       sb.append("    \"requiredTags\": ").append(toJsonArray(def.requiredTags())).append(",\n");
       sb.append("    \"allowedTags\": ").append(toJsonArray(def.allowedTags())).append("\n");
       sb.append("  }");
