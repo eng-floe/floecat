@@ -18,8 +18,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 
+import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -89,6 +91,10 @@ public class SnapshotMetadataService {
         tableSupport, tableId, namespacePath, tableName, tableSupplier, updates, idempotencyKey);
   }
 
+  public Response validateSnapshotUpdates(List<Map<String, Object>> updates) {
+    return updateService.validateSnapshotUpdates(updates);
+  }
+
   public Response ensureImportedCurrentSnapshot(
       TableGatewaySupport tableSupport,
       ResourceId tableId,
@@ -149,8 +155,78 @@ public class SnapshotMetadataService {
         idempotencyKey);
   }
 
-  void deleteSnapshots(ResourceId tableId, List<Long> snapshotIds) {
+  public void deleteSnapshots(ResourceId tableId, List<Long> snapshotIds) {
     updateService.deleteSnapshots(tableId, snapshotIds);
+  }
+
+  public List<Snapshot> fetchSnapshots(ResourceId tableId, List<Long> snapshotIds) {
+    if (tableId == null || snapshotIds == null || snapshotIds.isEmpty()) {
+      return List.of();
+    }
+    List<Snapshot> out = new ArrayList<>();
+    for (Long snapshotId : snapshotIds) {
+      if (snapshotId == null || snapshotId <= 0) {
+        continue;
+      }
+      try {
+        var resp =
+            snapshotClient.getSnapshot(
+                GetSnapshotRequest.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+                    .build());
+        if (resp != null && resp.hasSnapshot()) {
+          out.add(resp.getSnapshot());
+        }
+      } catch (StatusRuntimeException ignored) {
+      }
+    }
+    return out;
+  }
+
+  public void restoreSnapshots(ResourceId tableId, List<Snapshot> snapshots) {
+    if (tableId == null || snapshots == null || snapshots.isEmpty()) {
+      return;
+    }
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot == null) {
+        continue;
+      }
+      SnapshotSpec.Builder spec =
+          SnapshotSpec.newBuilder().setTableId(tableId).setSnapshotId(snapshot.getSnapshotId());
+      if (snapshot.hasUpstreamCreatedAt()) {
+        spec.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
+      }
+      if (snapshot.hasIngestedAt()) {
+        spec.setIngestedAt(snapshot.getIngestedAt());
+      }
+      if (snapshot.getParentSnapshotId() > 0) {
+        spec.setParentSnapshotId(snapshot.getParentSnapshotId());
+      }
+      if (!snapshot.getSchemaJson().isBlank()) {
+        spec.setSchemaJson(snapshot.getSchemaJson());
+      }
+      if (snapshot.hasPartitionSpec()) {
+        spec.setPartitionSpec(snapshot.getPartitionSpec());
+      }
+      if (snapshot.getSequenceNumber() > 0) {
+        spec.setSequenceNumber(snapshot.getSequenceNumber());
+      }
+      if (!snapshot.getManifestList().isBlank()) {
+        spec.setManifestList(snapshot.getManifestList());
+      }
+      if (!snapshot.getSummaryMap().isEmpty()) {
+        spec.putAllSummary(snapshot.getSummaryMap());
+      }
+      if (snapshot.getSchemaId() != 0) {
+        spec.setSchemaId(snapshot.getSchemaId());
+      }
+      if (!snapshot.getFormatMetadataMap().isEmpty()) {
+        spec.putAllFormatMetadata(snapshot.getFormatMetadataMap());
+      }
+      snapshotClient.createSnapshot(
+          CreateSnapshotRequest.newBuilder().setSpec(spec.build()).build());
+    }
   }
 
   public void updateSnapshotMetadataLocation(

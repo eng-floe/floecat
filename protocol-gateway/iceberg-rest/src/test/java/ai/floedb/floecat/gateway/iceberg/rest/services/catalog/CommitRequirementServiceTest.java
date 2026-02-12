@@ -28,6 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import jakarta.ws.rs.core.Response;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -216,11 +217,132 @@ class CommitRequirementServiceTest {
     assertNull(resp);
   }
 
+  @Test
+  void validateRequirementsAssertCreateFailsWhenTableExists() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-create")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNotNull(resp);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
+    assertEquals("assert-create failed", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsAssertCreatePassesWhenTableMissing() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-create")),
+            Table::getDefaultInstance,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsRefSnapshotIdNullRequiresRefNotExist() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder()
+            .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(42L).build())
+            .build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(requirementWithNullSnapshotId("branch")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNotNull(resp);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
+    assertEquals("assert-ref-snapshot-id failed for ref branch", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsRefSnapshotIdNullPassesWhenRefMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+    when(tableSupport.loadCurrentMetadata(table))
+        .thenReturn(FIXTURE.metadata().toBuilder().clearRefs().build());
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(requirementWithNullSnapshotId("dev")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsRefSnapshotIdRequiresSnapshotIdKey() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .build();
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main")),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNotNull(resp);
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("assert-ref-snapshot-id requires snapshot-id", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsRejectsUnsupportedRequirementType() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-unknown-requirement")),
+            Table::getDefaultInstance,
+            validation(),
+            conflict());
+
+    assertNotNull(resp);
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("unsupported commit requirement: assert-unknown-requirement", resp.getEntity());
+  }
+
   private Function<String, Response> validation() {
     return message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build();
   }
 
   private Function<String, Response> conflict() {
     return message -> Response.status(Response.Status.CONFLICT).entity(message).build();
+  }
+
+  private Map<String, Object> requirementWithNullSnapshotId(String ref) {
+    Map<String, Object> requirement = new LinkedHashMap<>();
+    requirement.put("type", "assert-ref-snapshot-id");
+    requirement.put("ref", ref);
+    requirement.put("snapshot-id", null);
+    return requirement;
   }
 }

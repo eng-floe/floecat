@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableStatsKey;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -78,6 +79,7 @@ public class StatsRepository {
     this(
         pointerStore,
         blobStore,
+        PointerOverlay.NOOP,
         DEFAULT_SMART_SCAN_THRESHOLD,
         DEFAULT_SCAN_COLUMNS_PER_PAGE,
         DEFAULT_MAX_SCAN_PAGES);
@@ -87,6 +89,7 @@ public class StatsRepository {
   public StatsRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
+      PointerOverlay overlay,
       @ConfigProperty(
               name = "floecat.stats.batch.smart-threshold",
               defaultValue = "" + DEFAULT_SMART_SCAN_THRESHOLD)
@@ -107,6 +110,7 @@ public class StatsRepository {
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            overlay,
             Schemas.TABLE_STATS,
             TableStats::parseFrom,
             TableStats::toByteArray,
@@ -116,6 +120,7 @@ public class StatsRepository {
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            overlay,
             Schemas.COLUMN_STATS,
             ColumnStats::parseFrom,
             ColumnStats::toByteArray,
@@ -125,6 +130,7 @@ public class StatsRepository {
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            overlay,
             Schemas.FILE_COLUMN_STATS,
             FileColumnStats::parseFrom,
             FileColumnStats::toByteArray,
@@ -145,7 +151,12 @@ public class StatsRepository {
       int scanColumnsPerPage,
       int maxScanPages) {
     return new StatsRepository(
-        pointerStore, blobStore, smartThreshold, scanColumnsPerPage, maxScanPages);
+        pointerStore,
+        blobStore,
+        PointerOverlay.NOOP,
+        smartThreshold,
+        scanColumnsPerPage,
+        maxScanPages);
   }
 
   public void putTableStats(ResourceId tableId, long snapshotId, TableStats value) {

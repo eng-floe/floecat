@@ -138,7 +138,7 @@ public class StageCommitProcessor {
             ? tableRecord.getResourceId().getId()
             : "<missing>");
     stagedTableService.deleteStage(key);
-    return new StageCommitResult(tableRecord, loadResult);
+    return new StageCommitResult(tableRecord, loadResult, !tableExists);
   }
 
   private LoadTableResultDto toLoadResult(
@@ -203,10 +203,16 @@ public class StageCommitProcessor {
   public static final class StageCommitResult {
     private final Table table;
     private final LoadTableResultDto loadResult;
+    private final boolean tableCreated;
 
     public StageCommitResult(Table table, LoadTableResultDto loadResult) {
+      this(table, loadResult, false);
+    }
+
+    public StageCommitResult(Table table, LoadTableResultDto loadResult, boolean tableCreated) {
       this.table = table;
       this.loadResult = loadResult;
+      this.tableCreated = tableCreated;
     }
 
     public Table table() {
@@ -215,6 +221,10 @@ public class StageCommitProcessor {
 
     public LoadTableResultDto loadResult() {
       return loadResult;
+    }
+
+    public boolean tableCreated() {
+      return tableCreated;
     }
   }
 }

@@ -86,16 +86,14 @@ public class SnapshotUpdateService {
       Supplier<Table> tableSupplier,
       List<Map<String, Object>> updates,
       String idempotencyKey) {
-    if (updates == null || updates.isEmpty()) {
-      return null;
+    Response validationError = validateSnapshotUpdates(updates);
+    if (validationError != null) {
+      return validationError;
     }
     Table existing = null;
     Long lastSnapshotId = null;
     SnapshotMetadataChanges metadataChanges = new SnapshotMetadataChanges();
     for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
       String action = asString(update.get("action"));
       if ("add-snapshot".equals(action)) {
         @SuppressWarnings("unchecked")
@@ -302,6 +300,14 @@ public class SnapshotUpdateService {
           return validationError("remove-schemas requires schema-ids");
         }
         metadataChanges.schemaIdsToRemove.addAll(schemaIds);
+      } else if ("set-location".equals(action)
+          || "set-properties".equals(action)
+          || "remove-properties".equals(action)) {
+        // Table-level updates are handled by table update planning; snapshot metadata flow is a
+        // no-op.
+        continue;
+      } else {
+        return validationError("unsupported commit update action: " + action);
       }
     }
     if (metadataChanges.hasChanges()) {
@@ -313,6 +319,188 @@ public class SnapshotUpdateService {
               tableId, tableSupplier, existing, lastSnapshotId, metadataChanges);
       if (error != null) {
         return error;
+      }
+    }
+    return null;
+  }
+
+  public Response validateSnapshotUpdates(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return null;
+    }
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        return validationError("commit update entry cannot be null");
+      }
+      String action = asString(update.get("action"));
+      if (action == null || action.isBlank()) {
+        return validationError("commit update missing action");
+      }
+      if ("add-snapshot".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> snapshot =
+            update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (snapshot == null || snapshot.isEmpty()) {
+          return validationError("add-snapshot requires snapshot");
+        }
+        Long snapshotId = asLong(snapshot.get("snapshot-id"));
+        if (snapshotId == null) {
+          return validationError("add-snapshot requires snapshot-id");
+        }
+      } else if ("remove-snapshots".equals(action)) {
+        List<Long> ids = asLongList(update.get("snapshot-ids"));
+        if (ids.isEmpty()) {
+          return validationError("remove-snapshots requires snapshot-ids");
+        }
+      } else if ("set-snapshot-ref".equals(action)) {
+        String refName = asString(update.get("ref-name"));
+        if (refName == null || refName.isBlank()) {
+          return validationError("set-snapshot-ref requires ref-name");
+        }
+        String type = asString(update.get("type"));
+        if (type == null || type.isBlank()) {
+          return validationError("set-snapshot-ref requires type");
+        }
+        Long pointedSnapshot = asLong(update.get("snapshot-id"));
+        if (pointedSnapshot == null) {
+          return validationError("set-snapshot-ref requires snapshot-id");
+        }
+      } else if ("remove-snapshot-ref".equals(action)) {
+        String ref = asString(update.get("ref-name"));
+        if (ref == null || ref.isBlank()) {
+          return validationError("remove-snapshot-ref requires ref-name");
+        }
+      } else if ("assign-uuid".equals(action)) {
+        String uuid = asString(update.get("uuid"));
+        if (uuid == null || uuid.isBlank()) {
+          return validationError("assign-uuid requires uuid");
+        }
+      } else if ("upgrade-format-version".equals(action)) {
+        Integer version = asInteger(update.get("format-version"));
+        if (version == null) {
+          return validationError("upgrade-format-version requires format-version");
+        }
+      } else if ("add-schema".equals(action)) {
+        Map<String, Object> schemaMap = asObjectMap(update.get("schema"));
+        if (schemaMap == null || schemaMap.isEmpty()) {
+          return validationError("add-schema requires schema");
+        }
+        try {
+          buildIcebergSchema(schemaMap, update);
+        } catch (IllegalArgumentException | JsonProcessingException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("set-current-schema".equals(action)) {
+        Integer schemaId = asInteger(update.get("schema-id"));
+        if (schemaId == null) {
+          return validationError("set-current-schema requires schema-id");
+        }
+      } else if ("add-spec".equals(action)) {
+        Map<String, Object> specMap = asObjectMap(update.get("spec"));
+        if (specMap == null || specMap.isEmpty()) {
+          return validationError("add-spec requires spec");
+        }
+        try {
+          buildPartitionSpec(specMap);
+        } catch (IllegalArgumentException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("set-default-spec".equals(action)) {
+        Integer specId = asInteger(update.get("spec-id"));
+        if (specId == null) {
+          return validationError("set-default-spec requires spec-id");
+        }
+      } else if ("remove-partition-specs".equals(action)) {
+        List<Integer> specIds = asIntegerList(update.get("spec-ids"));
+        if (specIds.isEmpty()) {
+          return validationError("remove-partition-specs requires spec-ids");
+        }
+      } else if ("add-sort-order".equals(action)) {
+        Map<String, Object> orderMap = asObjectMap(update.get("sort-order"));
+        if (orderMap == null || orderMap.isEmpty()) {
+          return validationError("add-sort-order requires sort-order");
+        }
+        try {
+          buildSortOrder(orderMap);
+        } catch (IllegalArgumentException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("set-default-sort-order".equals(action)) {
+        Integer orderId = asInteger(update.get("sort-order-id"));
+        if (orderId == null) {
+          return validationError("set-default-sort-order requires sort-order-id");
+        }
+      } else if ("set-location".equals(action)) {
+        String location = asString(update.get("location"));
+        if (location == null || location.isBlank()) {
+          return validationError("set-location requires location");
+        }
+      } else if ("set-properties".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> props =
+            update.get("updates") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (props == null || props.isEmpty()) {
+          return validationError("set-properties requires updates");
+        }
+      } else if ("remove-properties".equals(action)) {
+        @SuppressWarnings("unchecked")
+        List<Object> removals =
+            update.get("removals") instanceof List<?> l ? (List<Object>) l : null;
+        if (removals == null || removals.isEmpty()) {
+          return validationError("remove-properties requires removals");
+        }
+      } else if ("set-statistics".equals(action)) {
+        Map<String, Object> statsMap = asObjectMap(update.get("statistics"));
+        if (statsMap == null || statsMap.isEmpty()) {
+          return validationError("set-statistics requires statistics");
+        }
+        try {
+          buildStatisticsFile(statsMap);
+        } catch (IllegalArgumentException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("remove-statistics".equals(action)) {
+        Long snapId = asLong(update.get("snapshot-id"));
+        if (snapId == null) {
+          return validationError("remove-statistics requires snapshot-id");
+        }
+      } else if ("set-partition-statistics".equals(action)) {
+        Map<String, Object> statsMap = asObjectMap(update.get("partition-statistics"));
+        if (statsMap == null || statsMap.isEmpty()) {
+          return validationError("set-partition-statistics requires partition-statistics");
+        }
+        try {
+          buildPartitionStatisticsFile(statsMap);
+        } catch (IllegalArgumentException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("remove-partition-statistics".equals(action)) {
+        Long snapId = asLong(update.get("snapshot-id"));
+        if (snapId == null) {
+          return validationError("remove-partition-statistics requires snapshot-id");
+        }
+      } else if ("add-encryption-key".equals(action)) {
+        Map<String, Object> keyMap = asObjectMap(update.get("encryption-key"));
+        if (keyMap == null || keyMap.isEmpty()) {
+          return validationError("add-encryption-key requires encryption-key");
+        }
+        try {
+          buildEncryptionKey(keyMap);
+        } catch (IllegalArgumentException e) {
+          return validationError(e.getMessage());
+        }
+      } else if ("remove-encryption-key".equals(action)) {
+        String keyId = asString(update.get("key-id"));
+        if (keyId == null || keyId.isBlank()) {
+          return validationError("remove-encryption-key requires key-id");
+        }
+      } else if ("remove-schemas".equals(action)) {
+        List<Integer> schemaIds = asIntegerList(update.get("schema-ids"));
+        if (schemaIds.isEmpty()) {
+          return validationError("remove-schemas requires schema-ids");
+        }
+      } else {
+        return validationError("unsupported commit update action: " + action);
       }
     }
     return null;
@@ -362,8 +550,16 @@ public class SnapshotUpdateService {
       if (id == null) {
         continue;
       }
-      snapshotClient.deleteSnapshot(
-          DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(id).build());
+      try {
+        snapshotClient.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(id).build());
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+          // Treat "already removed" as idempotent success.
+          continue;
+        }
+        throw e;
+      }
     }
   }
 

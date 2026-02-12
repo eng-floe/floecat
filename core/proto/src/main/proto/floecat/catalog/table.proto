@@ -75,6 +75,7 @@ message GetTableRequest {
 }
 message GetTableResponse {
   Table table = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
 message TableSpec {

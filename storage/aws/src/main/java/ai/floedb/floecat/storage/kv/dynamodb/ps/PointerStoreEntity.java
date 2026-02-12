@@ -20,10 +20,14 @@ import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.KvStore.Key;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -89,12 +93,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   static KvStore.Key prefixKey(String prefix) {
     String p = prefix.startsWith("/") ? prefix.substring(1) : prefix;
-    if (!p.endsWith("/")) {
-      p = p + "/";
+    if (p.isBlank()) {
+      throw new IllegalArgumentException("unexpected prefix: " + prefix);
     }
-
-    if (p.equals("accounts/")) {
-      return new KvStore.Key("accounts", "/");
+    if (p.equals("accounts/") || p.equals("accounts")) {
+      return new KvStore.Key("accounts", "");
     }
 
     if (p.startsWith("accounts/by-id/") || p.startsWith("accounts/by-name/")) {
@@ -107,15 +110,12 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
     int firstSlash = p.indexOf('/');
     int secondSlash = p.indexOf('/', firstSlash + 1);
-    if (secondSlash < 0) {
-      throw new IllegalArgumentException("bad prefix: " + prefix);
-    }
-
-    String accountId = p.substring(firstSlash + 1, secondSlash);
+    String accountId =
+        secondSlash < 0 ? p.substring(firstSlash + 1) : p.substring(firstSlash + 1, secondSlash);
     if (accountId.isEmpty()) {
       throw new IllegalArgumentException("bad prefix: " + prefix);
     }
-    String remainderPrefix = p.substring(secondSlash + 1);
+    String remainderPrefix = secondSlash < 0 ? "" : p.substring(secondSlash + 1);
     return new KvStore.Key("accounts/" + accountId, remainderPrefix);
   }
 
@@ -209,6 +209,31 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return deleteCas(pointerKey(key), expectedVersion);
   }
 
+  public Uni<Boolean> compareAndSetBatch(List<PointerStore.CasOp> ops) {
+    if (ops == null || ops.isEmpty()) {
+      return Uni.createFrom().item(true);
+    }
+    var txOps = new ArrayList<KvStore.TxnOp>(ops.size());
+    for (var op : ops) {
+      if (op instanceof PointerStore.CasUpsert upsert) {
+        long nextVersion = upsert.expectedVersion() + 1L;
+        var attrs = new HashMap<String, String>();
+        attrs.put(ATTR_BLOB_URI, upsert.next().getBlobUri());
+        if (upsert.next().hasExpiresAt()) {
+          long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
+          attrs.put(ATTR_EXPIRES_AT, Long.toString(ttl));
+        }
+        var rec =
+            new KvStore.Record(
+                pointerKey(upsert.key()), KIND_POINTER, new byte[0], attrs, nextVersion);
+        txOps.add(new KvStore.TxnPut(rec, upsert.expectedVersion()));
+      } else if (op instanceof PointerStore.CasDelete delete) {
+        txOps.add(new KvStore.TxnDelete(pointerKey(delete.key()), delete.expectedVersion()));
+      }
+    }
+    return kv.txnWriteCas(txOps);
+  }
+
   // ---- List
 
   public Uni<EntityPage<Pointer>> listByPrefix(
@@ -254,7 +279,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   private String keyOf(Key key) {
     if (key.partitionKey().equals(GLOBAL_PK)) {
-      return key.sortKey();
+      return "/" + key.sortKey();
     } else {
       return key.toString();
     }

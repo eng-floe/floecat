@@ -173,7 +173,7 @@ public abstract class BaseServiceImpl {
       return;
     }
 
-    boolean checkVer = precondition.getExpectedVersion() > 0;
+    boolean checkVer = precondition.hasExpectedVersion();
 
     boolean checkTag =
         precondition.getExpectedEtag() != null && !precondition.getExpectedEtag().isBlank();
@@ -200,7 +200,7 @@ public abstract class BaseServiceImpl {
     if (precondition == null) {
       return false;
     }
-    return precondition.getExpectedVersion() != 0L
+    return precondition.hasExpectedVersion()
         || (precondition.getExpectedEtag() != null && !precondition.getExpectedEtag().isBlank());
   }
 
@@ -273,7 +273,7 @@ public abstract class BaseServiceImpl {
         return;
       }
 
-      final boolean checkVer = p.getExpectedVersion() > 0L;
+      final boolean checkVer = p.hasExpectedVersion();
       final boolean checkTag = p.getExpectedEtag() != null && !p.getExpectedEtag().isBlank();
 
       if (checkVer && meta.getPointerVersion() != p.getExpectedVersion()) {

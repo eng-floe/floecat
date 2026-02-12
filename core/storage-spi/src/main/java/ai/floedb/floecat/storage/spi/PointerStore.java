@@ -21,6 +21,33 @@ import java.util.List;
 import java.util.Optional;
 
 public interface PointerStore {
+  sealed interface CasOp permits CasUpsert, CasDelete {}
+
+  record CasUpsert(String key, long expectedVersion, Pointer next) implements CasOp {
+    public CasUpsert {
+      if (key == null || key.isBlank()) {
+        throw new IllegalArgumentException("key must be non-blank");
+      }
+      if (expectedVersion < 0) {
+        throw new IllegalArgumentException("expectedVersion must be >= 0");
+      }
+      if (next == null) {
+        throw new IllegalArgumentException("next pointer must be set");
+      }
+    }
+  }
+
+  record CasDelete(String key, long expectedVersion) implements CasOp {
+    public CasDelete {
+      if (key == null || key.isBlank()) {
+        throw new IllegalArgumentException("key must be non-blank");
+      }
+      if (expectedVersion <= 0) {
+        throw new IllegalArgumentException("expectedVersion must be > 0");
+      }
+    }
+  }
+
   Optional<Pointer> get(String key);
 
   boolean compareAndSet(String key, long expectedVersion, Pointer next);
@@ -28,6 +55,8 @@ public interface PointerStore {
   boolean delete(String key);
 
   boolean compareAndDelete(String key, long expectedVersion);
+
+  boolean compareAndSetBatch(List<CasOp> ops);
 
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
