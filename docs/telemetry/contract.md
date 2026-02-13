@@ -6,11 +6,16 @@ This lists all metrics available in the repository right now:
 **Core Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
+| floecat.core.cache.accounts | GAUGE | count | v1 | Number of accounts with an active cache entry, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.enabled | GAUGE |  | v1 | Indicator that the cache is enabled (1=enabled, 0=disabled). | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.entries | GAUGE | count | v1 | Approximate number of entries in the cache, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.errors | COUNTER |  | v1 | Number of cache operation failures (load errors), tagged by cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |
 | floecat.core.cache.hits | COUNTER |  | v1 | Number of cache lookup hits, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
+| floecat.core.cache.max.entries | GAUGE | count | v1 | Configured max entries for the cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured max weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
-| floecat.core.cache.size | GAUGE |  | v1 | Approximate number of entries in the cache, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of entries in the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.gc.collections | COUNTER |  | v1 | Number of GC collections per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.errors | COUNTER |  | v1 | GC failures per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.pause | TIMER | seconds | v1 | GC pause time per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
@@ -34,10 +39,6 @@ This lists all metrics available in the repository right now:
 **Service Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| floecat.service.cache.accounts | GAUGE |  | v1 | Number of accounts with active caches. |  |  |
-| floecat.service.cache.enabled | GAUGE |  | v1 | Indicator that the graph cache is enabled. |  |  |
-| floecat.service.cache.max.size | GAUGE |  | v1 | Configured max entries for the graph cache. |  |  |
-| floecat.service.hint.cache.weight | GAUGE | bytes | v1 | Estimated weight of the hint cache. |  |  |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 

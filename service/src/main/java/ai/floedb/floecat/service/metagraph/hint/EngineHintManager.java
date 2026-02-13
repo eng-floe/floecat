@@ -22,8 +22,6 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -49,7 +47,6 @@ public class EngineHintManager {
   private final Cache<HintCacheKey, EngineHint> cache;
   private final Observability observability;
   private final CacheMetrics cacheMetrics;
-  private final MetricId weightMetric;
 
   @Inject
   public EngineHintManager(
@@ -80,7 +77,6 @@ public class EngineHintManager {
     this.observability = Objects.requireNonNull(observability, "observability");
     this.cacheMetrics =
         new CacheMetrics(observability, "service", "engine-hint-cache", "engine-hint-cache");
-    this.weightMetric = ServiceMetrics.Hint.CACHE_WEIGHT;
 
     long bounded = Math.max(1, Math.min(Integer.MAX_VALUE, maxWeightBytes));
 
@@ -98,7 +94,11 @@ public class EngineHintManager {
     }
 
     this.cache = builder.build();
-    observability.gauge(weightMetric, () -> weightedSize(cache), "Engine hint cache weight bytes");
+    cacheMetrics.trackEnabled(() -> 1.0, "Engine hint cache enabled");
+    cacheMetrics.trackMaxWeight(() -> (double) bounded, "Engine hint cache max weight bytes");
+    cacheMetrics.trackSize(
+        () -> (double) cache.estimatedSize(), "Engine hint cache entry estimate");
+    cacheMetrics.trackWeightedSize(() -> weightedSize(cache), "Engine hint cache weight bytes");
   }
 
   private static double weightedSize(Cache<HintCacheKey, EngineHint> cache) {

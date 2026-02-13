@@ -1,5 +1,6 @@
 package ai.floedb.floecat.telemetry.helpers;
 
+import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
@@ -42,7 +43,47 @@ public final class CacheMetrics extends BaseMetrics {
   }
 
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
-    observability.gauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
+    registerGauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackEnabled(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(Telemetry.Metrics.CACHE_ENABLED, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackMaxEntries(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(
+        Telemetry.Metrics.CACHE_MAX_ENTRIES, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackMaxWeight(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(Telemetry.Metrics.CACHE_MAX_WEIGHT, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackPoolSize(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(Telemetry.Metrics.CACHE_ACCOUNTS, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackWeightedSize(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(
+        Telemetry.Metrics.CACHE_WEIGHTED_SIZE, supplier, description, metricTags(extraTags));
+  }
+
+  private void registerGauge(
+      MetricId metric, Supplier<? extends Number> supplier, String description, Tag... tags) {
+    observability.gauge(metric, safeSupplier(supplier), description, tags);
+  }
+
+  private Supplier<Number> safeSupplier(Supplier<? extends Number> supplier) {
+    Objects.requireNonNull(supplier, "supplier");
+    return () -> {
+      Number value = supplier.get();
+      return value == null ? Double.NaN : value;
+    };
   }
 
   public void recordLoad(Duration duration, boolean hit, Tag... extraTags) {

@@ -1,5 +1,35 @@
 [
   {
+    "name": "floecat.core.cache.accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of accounts with an active cache entry, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that the cache is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Approximate number of entries in the cache, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
     "name": "floecat.core.cache.errors",
     "type": "COUNTER",
     "unit": "",
@@ -30,6 +60,26 @@
     "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
   },
   {
+    "name": "floecat.core.cache.max.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured max entries for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.max.weight.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured max weight (bytes) for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
     "name": "floecat.core.cache.misses",
     "type": "COUNTER",
     "unit": "",
@@ -40,12 +90,12 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
-    "name": "floecat.core.cache.size",
+    "name": "floecat.core.cache.weighted.size.bytes",
     "type": "GAUGE",
-    "unit": "",
+    "unit": "bytes",
     "since": "v1",
     "origin": "core",
-    "description": "Approximate number of entries in the cache, tagged by cache name.",
+    "description": "Total weight (bytes) of entries in the cache.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },
@@ -238,46 +288,6 @@
     "description": "Number of active ticks for the scheduled task (usually 0 or 1).",
     "requiredTags": ["component", "operation", "task"],
     "allowedTags": ["account", "component", "operation", "task"]
-  },
-  {
-    "name": "floecat.service.cache.accounts",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Number of accounts with active caches.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.cache.enabled",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Indicator that the graph cache is enabled.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.cache.max.size",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Configured max entries for the graph cache.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.hint.cache.weight",
-    "type": "GAUGE",
-    "unit": "bytes",
-    "since": "v1",
-    "origin": "service",
-    "description": "Estimated weight of the hint cache.",
-    "requiredTags": [],
-    "allowedTags": []
   },
   {
     "name": "floecat.service.storage.account.bytes",

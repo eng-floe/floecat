@@ -43,4 +43,44 @@ class CacheMetricsTest {
         .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
         .contains(Tag.of(TagKey.CACHE_NAME, "users"));
   }
+
+  @Test
+  void tracksPoolSizeAccountsGauge() {
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
+
+    AtomicInteger accounts = new AtomicInteger(2);
+    metrics.trackPoolSize(accounts::get, "account cache count");
+
+    Supplier<? extends Number> gauge = observability.gauge(Telemetry.Metrics.CACHE_ACCOUNTS);
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.get().doubleValue()).isEqualTo(2d);
+    accounts.set(5);
+    assertThat(gauge.get().doubleValue()).isEqualTo(5d);
+
+    List<Tag> tags = observability.gaugeTags(Telemetry.Metrics.CACHE_ACCOUNTS);
+    assertThat(tags)
+        .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
+        .contains(Tag.of(TagKey.CACHE_NAME, "users"));
+  }
+
+  @Test
+  void tracksWeightedSizeGauge() {
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
+
+    AtomicInteger weight = new AtomicInteger(1024);
+    metrics.trackWeightedSize(weight::get, "weighted size");
+
+    Supplier<? extends Number> gauge = observability.gauge(Telemetry.Metrics.CACHE_WEIGHTED_SIZE);
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.get().doubleValue()).isEqualTo(1024d);
+    weight.set(2048);
+    assertThat(gauge.get().doubleValue()).isEqualTo(2048d);
+
+    List<Tag> tags = observability.gaugeTags(Telemetry.Metrics.CACHE_WEIGHTED_SIZE);
+    assertThat(tags)
+        .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
+        .contains(Tag.of(TagKey.CACHE_NAME, "users"));
+  }
 }

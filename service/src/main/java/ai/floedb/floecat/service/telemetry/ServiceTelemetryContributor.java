@@ -1,7 +1,5 @@
 package ai.floedb.floecat.service.telemetry;
 
-import ai.floedb.floecat.service.telemetry.ServiceMetrics.Cache;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics.Hint;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics.Storage;
 import ai.floedb.floecat.telemetry.MetricDef;
 import ai.floedb.floecat.telemetry.MetricId;
@@ -18,12 +16,8 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
 
   private static Map<MetricId, MetricDef> buildDefinitions() {
     Map<MetricId, MetricDef> defs = new LinkedHashMap<>();
-    Set<String> empty = Collections.emptySet();
     Set<String> accountTag = Set.of(TagKey.ACCOUNT);
 
-    add(defs, Cache.ENABLED, empty, empty, "Indicator that the graph cache is enabled.");
-    add(defs, Cache.MAX_SIZE, empty, empty, "Configured max entries for the graph cache.");
-    add(defs, Cache.ACCOUNTS, empty, empty, "Number of accounts with active caches.");
     add(
         defs,
         Storage.ACCOUNT_POINTERS,
@@ -36,7 +30,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         accountTag,
         accountTag,
         "Estimated per-account storage byte consumption (sampled, not exact).");
-    add(defs, Hint.CACHE_WEIGHT, empty, empty, "Estimated weight of the hint cache.");
     return Collections.unmodifiableMap(defs);
   }
 

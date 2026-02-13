@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.metagraph.cache;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -128,16 +127,10 @@ public class GraphCacheManager {
   }
 
   private void registerGauges() {
-    observability.gauge(
-        ServiceMetrics.Cache.ENABLED, () -> cacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
-    observability.gauge(
-        ServiceMetrics.Cache.MAX_SIZE,
-        () -> cacheEnabled ? (double) cacheMaxSize : 0.0,
-        "Graph cache configured max size");
-    observability.gauge(
-        ServiceMetrics.Cache.ACCOUNTS,
-        () -> (double) accountCaches.size(),
-        "Graph cache account count");
+    cacheMetrics.trackEnabled(() -> cacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
+    cacheMetrics.trackMaxEntries(
+        () -> cacheEnabled ? (double) cacheMaxSize : 0.0, "Graph cache configured max entries");
+    cacheMetrics.trackPoolSize(() -> (double) accountCaches.size(), "Graph cache account count");
   }
 
   public void recordLoad(Duration duration) {

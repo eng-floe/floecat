@@ -109,12 +109,24 @@ public final class Telemetry {
     }
 
     public static final class Cache {
+      public static final MetricId ENABLED =
+          new MetricId("floecat.core.cache.enabled", MetricType.GAUGE, "", "v1", "core");
+      public static final MetricId MAX_ENTRIES =
+          new MetricId("floecat.core.cache.max.entries", MetricType.GAUGE, "count", "v1", "core");
+      public static final MetricId MAX_WEIGHT =
+          new MetricId(
+              "floecat.core.cache.max.weight.bytes", MetricType.GAUGE, "bytes", "v1", "core");
+      public static final MetricId ENTRIES =
+          new MetricId("floecat.core.cache.entries", MetricType.GAUGE, "count", "v1", "core");
+      public static final MetricId ACCOUNTS =
+          new MetricId("floecat.core.cache.accounts", MetricType.GAUGE, "count", "v1", "core");
+      public static final MetricId WEIGHTED_SIZE =
+          new MetricId(
+              "floecat.core.cache.weighted.size.bytes", MetricType.GAUGE, "bytes", "v1", "core");
       public static final MetricId HITS =
           new MetricId("floecat.core.cache.hits", MetricType.COUNTER, "", "v1", "core");
       public static final MetricId MISSES =
           new MetricId("floecat.core.cache.misses", MetricType.COUNTER, "", "v1", "core");
-      public static final MetricId SIZE =
-          new MetricId("floecat.core.cache.size", MetricType.GAUGE, "", "v1", "core");
       public static final MetricId LATENCY =
           new MetricId("floecat.core.cache.latency", MetricType.TIMER, "seconds", "v1", "core");
       public static final MetricId ERRORS =
@@ -160,9 +172,14 @@ public final class Telemetry {
     public static final MetricId STORE_BYTES = Store.BYTES;
     public static final MetricId STORE_ERRORS = Store.ERRORS;
     public static final MetricId STORE_RETRIES = Store.RETRIES;
+    public static final MetricId CACHE_ENABLED = Cache.ENABLED;
+    public static final MetricId CACHE_MAX_ENTRIES = Cache.MAX_ENTRIES;
+    public static final MetricId CACHE_MAX_WEIGHT = Cache.MAX_WEIGHT;
     public static final MetricId CACHE_HITS = Cache.HITS;
     public static final MetricId CACHE_MISSES = Cache.MISSES;
-    public static final MetricId CACHE_SIZE = Cache.SIZE;
+    public static final MetricId CACHE_SIZE = Cache.ENTRIES;
+    public static final MetricId CACHE_ACCOUNTS = Cache.ACCOUNTS;
+    public static final MetricId CACHE_WEIGHTED_SIZE = Cache.WEIGHTED_SIZE;
     public static final MetricId CACHE_LATENCY = Cache.LATENCY;
     public static final MetricId CACHE_ERRORS = Cache.ERRORS;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
@@ -279,10 +296,64 @@ public final class Telemetry {
           "Number of cache lookup misses, tagged by cache name.");
       add(
           definitions,
+          CACHE_ENABLED,
+          cacheBase,
+          cacheWithAccount,
+          "Indicator that the cache is enabled (1=enabled, 0=disabled).");
+      add(
+          definitions,
+          CACHE_MAX_ENTRIES,
+          cacheBase,
+          cacheWithAccount,
+          "Configured max entries for the cache.");
+      add(
+          definitions,
+          CACHE_MAX_WEIGHT,
+          cacheBase,
+          cacheWithAccount,
+          "Configured maximum weight (bytes) for the cache.");
+      add(
+          definitions,
+          CACHE_ENABLED,
+          cacheBase,
+          cacheWithAccount,
+          "Indicator that the cache is enabled (1=enabled, 0=disabled).");
+      add(
+          definitions,
+          CACHE_MAX_ENTRIES,
+          cacheBase,
+          cacheWithAccount,
+          "Configured max entries for the cache.");
+      add(
+          definitions,
+          CACHE_MAX_WEIGHT,
+          cacheBase,
+          cacheWithAccount,
+          "Configured max weight (bytes) for the cache.");
+      add(
+          definitions,
           CACHE_SIZE,
           cacheBase,
           cacheWithAccount,
           "Approximate number of entries in the cache, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_ACCOUNTS,
+          cacheBase,
+          cacheWithAccount,
+          "Number of accounts with an active cache entry, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_WEIGHTED_SIZE,
+          cacheBase,
+          cacheWithAccount,
+          "Total weight (bytes) of cache entries, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_WEIGHTED_SIZE,
+          cacheBase,
+          cacheWithAccount,
+          "Total weight (bytes) of entries in the cache.");
       add(
           definitions,
           CACHE_LATENCY,
