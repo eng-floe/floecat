@@ -20,15 +20,19 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.grpc.GrpcTelemetryServerInterceptor;
+import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
+import io.grpc.Status;
+import io.opentelemetry.api.trace.Span;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Objects;
+import org.jboss.logging.MDC;
 
 /** Service-specific gRPC interceptor that publishes RPC metrics through the telemetry hub. */
 @ApplicationScoped
@@ -52,6 +56,51 @@ public final class ServiceTelemetryInterceptor implements ServerInterceptor {
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
-    return delegate.interceptCall(call, headers, next);
+    String operation = GrpcTelemetryServerInterceptor.simplifyOp(call.getMethodDescriptor());
+    Span span = Span.current();
+    if (span.getSpanContext().isValid()) {
+      String queryId = InboundContextInterceptor.QUERY_KEY.get();
+      if (queryId != null && !queryId.isBlank()) {
+        span.setAttribute("query_id", queryId);
+      }
+      String correlationId = InboundContextInterceptor.CORR_KEY.get();
+      if (correlationId != null && !correlationId.isBlank()) {
+        span.setAttribute("correlation_id", correlationId);
+      }
+      PrincipalContext principalContext = InboundContextInterceptor.PC_KEY.get();
+      if (principalContext != null) {
+        span.setAttribute("floecat_account_id", principalContext.getAccountId());
+        span.setAttribute("floecat_subject", principalContext.getSubject());
+      }
+      String engineVersion = InboundContextInterceptor.ENGINE_VERSION_KEY.get();
+      if (engineVersion != null && !engineVersion.isBlank()) {
+        span.setAttribute("floecat_engine_version", engineVersion);
+      }
+      String engineKind = InboundContextInterceptor.ENGINE_KIND_KEY.get();
+      if (engineKind != null && !engineKind.isBlank()) {
+        span.setAttribute("floecat_engine_kind", engineKind);
+      }
+    }
+    MDC.put("floecat_component", "service");
+    MDC.put("floecat_operation", operation);
+    ServerCall<ReqT, RespT> wrapped =
+        new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
+          @Override
+          public void close(Status status, Metadata trailers) {
+            try {
+              MDC.remove("floecat_component");
+              MDC.remove("floecat_operation");
+            } finally {
+              super.close(status, trailers);
+            }
+          }
+        };
+    try {
+      return delegate.interceptCall(wrapped, headers, next);
+    } catch (RuntimeException e) {
+      MDC.remove("floecat_component");
+      MDC.remove("floecat_operation");
+      throw e;
+    }
   }
 }

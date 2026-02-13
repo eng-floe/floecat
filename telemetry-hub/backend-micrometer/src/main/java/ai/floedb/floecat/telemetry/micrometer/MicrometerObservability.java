@@ -21,6 +21,7 @@ import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.MetricValidator;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.TelemetryPolicy;
@@ -30,6 +31,14 @@ import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanBuilder;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,6 +65,7 @@ public final class MicrometerObservability implements Observability {
   private final ConcurrentMap<MeterKey, Gauge> gauges = new ConcurrentHashMap<>();
 
   private final TelemetryPolicy policy;
+  private final Tracer tracer;
 
   private static final Logger LOG = LoggerFactory.getLogger(MicrometerObservability.class);
 
@@ -67,6 +77,7 @@ public final class MicrometerObservability implements Observability {
         new MetricValidator(telemetryRegistry, Objects.requireNonNull(policy, "policy"));
     this.droppedTagsCounter = registry.counter(Telemetry.Metrics.DROPPED_TAGS.name());
     this.policy = policy;
+    this.tracer = GlobalOpenTelemetry.getTracer("ai.floedb.floecat.telemetry");
   }
 
   @Override
@@ -381,4 +392,72 @@ public final class MicrometerObservability implements Observability {
         @Override
         public void retry() {}
       };
+
+  @Override
+  public StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
+    Span parent = Span.current();
+    if (!parent.getSpanContext().isValid() || !parent.isRecording()) {
+      return StoreTraceScope.NOOP;
+    }
+    String safeOperation = sanitizeOperation(operation);
+    Context parentContext = Context.current().with(parent);
+    SpanBuilder builder =
+        tracer
+            .spanBuilder("store." + safeOperation)
+            .setParent(parentContext)
+            .setSpanKind(SpanKind.INTERNAL);
+    Span span = builder.startSpan();
+    Scope scope = span.makeCurrent();
+    span.setAttribute("floecat.store.operation", operation);
+    span.setAttribute("floecat.component", component);
+    for (Tag tag : buildScopeTags(component, operation, tags)) {
+      if ("telemetry.contract.version".equals(tag.key())) {
+        span.setAttribute(tag.key(), tag.value());
+      }
+    }
+    return new OtelStoreTraceScope(span, scope);
+  }
+
+  private static String sanitizeOperation(String operation) {
+    if (operation == null || operation.isBlank()) {
+      return "unknown";
+    }
+    return operation.replaceAll("[^A-Za-z0-9_.-]", "_");
+  }
+
+  private static final class OtelStoreTraceScope implements StoreTraceScope {
+    private final Span span;
+    private final Scope scope;
+
+    private OtelStoreTraceScope(Span span, Scope scope) {
+      this.span = span;
+      this.scope = scope;
+    }
+
+    @Override
+    public void success() {
+      if (span.isRecording()) {
+        span.setStatus(StatusCode.OK);
+      }
+    }
+
+    @Override
+    public void error(Throwable throwable) {
+      if (span.isRecording()) {
+        span.recordException(throwable);
+        span.setStatus(StatusCode.ERROR);
+      }
+    }
+
+    @Override
+    public void close() {
+      try {
+        if (scope != null) {
+          scope.close();
+        }
+      } finally {
+        span.end();
+      }
+    }
+  }
 }

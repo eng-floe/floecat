@@ -29,6 +29,7 @@
 
   <properties>
     <grpc.version>1.78.0</grpc.version>
+    <otel.version>1.50.0</otel.version>
   </properties>
 
   <dependencies>
@@ -36,6 +37,11 @@
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>telemetry-hub-core</artifactId>
       <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>${otel.version}</version>
     </dependency>
     <dependency>
       <groupId>io.grpc</groupId>

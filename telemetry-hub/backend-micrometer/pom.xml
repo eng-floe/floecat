@@ -28,11 +28,33 @@
   <packaging>jar</packaging>
 
     <dependencies>
-      <dependency>
-        <groupId>ai.floedb.floecat</groupId>
-        <artifactId>telemetry-hub-core</artifactId>
-        <version>${project.version}</version>
-      </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>${otel.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+      <version>${otel.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <version>${otel.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-context</artifactId>
+      <version>${otel.version}</version>
+    </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>

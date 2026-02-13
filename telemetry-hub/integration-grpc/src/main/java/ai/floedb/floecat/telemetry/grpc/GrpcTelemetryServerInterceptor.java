@@ -27,6 +27,7 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.Status;
+import io.opentelemetry.api.trace.Span;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -62,14 +63,24 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
     RpcMetrics rpcMetrics =
         metricsByOperation.computeIfAbsent(
             operation, op -> new RpcMetrics(observability, component, op));
+    Span span = Span.current();
+    if (span.getSpanContext().isValid()) {
+      span.setAttribute("floecat.component", component);
+      span.setAttribute("floecat.operation", operation);
+    }
     String account = nullToDash(accountResolver.resolve(call, headers));
     ObservationScope scope = rpcMetrics.observe(Tag.of(TagKey.ACCOUNT, account));
     ServerCall<ReqT, RespT> scopedCall =
-        new ScopeAwareServerCall<>(call, scope, rpcMetrics, account);
-    return next.startCall(scopedCall, headers);
+        new ScopeAwareServerCall<>(call, scope, rpcMetrics, account, span);
+    try {
+      return next.startCall(scopedCall, headers);
+    } catch (RuntimeException | Error e) {
+      scope.close();
+      throw e;
+    }
   }
 
-  private static String simplifyOp(MethodDescriptor<?, ?> descriptor) {
+  public static String simplifyOp(MethodDescriptor<?, ?> descriptor) {
     String full = Objects.requireNonNull(descriptor, "descriptor").getFullMethodName();
     if (full == null || full.isBlank()) {
       return "-";
@@ -99,16 +110,19 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
     private final ObservationScope scope;
     private final RpcMetrics rpcMetrics;
     private final String account;
+    private final Span serverSpan;
 
     private ScopeAwareServerCall(
         ServerCall<ReqT, RespT> delegate,
         ObservationScope scope,
         RpcMetrics rpcMetrics,
-        String account) {
+        String account,
+        Span serverSpan) {
       super(delegate);
       this.scope = Objects.requireNonNull(scope, "scope");
       this.rpcMetrics = Objects.requireNonNull(rpcMetrics, "rpcMetrics");
       this.account = account;
+      this.serverSpan = serverSpan;
     }
 
     @Override
@@ -116,6 +130,9 @@ public final class GrpcTelemetryServerInterceptor implements ServerInterceptor {
       Objects.requireNonNull(status, "status");
       try {
         String code = status.getCode().name();
+        if (serverSpan != null && serverSpan.getSpanContext().isValid()) {
+          serverSpan.setAttribute("floecat.rpc.status", code);
+        }
         scope.status(code);
         if (status.isOk()) {
           scope.success();
