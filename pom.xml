@@ -226,6 +226,7 @@
           <inputExcludes>
             <inputExclude>**/*.csv</inputExclude>
             <inputExclude>**/*.json</inputExclude>
+            <inputExclude>**/*.yml</inputExclude>
             <inputExclude>**/*.avro</inputExclude>
             <inputExclude>**/*.log</inputExclude>
             <inputExclude>log/*</inputExclude>
