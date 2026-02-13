@@ -107,7 +107,7 @@
       "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "### Floecat Telemetry Hub\n**At-a-glance health for DBAs & devs**. Metrics via Prometheus at `/q/metrics`, Grafana at `http://localhost:3000`. Optional OTLP: enable `telemetry.exporters=prometheus,otlp` + `quarkus.otel.metrics.exporter=otlp`.\n\nGenerate load: `make run-cli` → `account <id>` + `tables examples.iceberg`. Use *Component* and *Operation* filters + *Rate window* to slice workloads."
+        "content": "### Floecat Telemetry Hub\n**At-a-glance health for DBAs & devs**. Metrics via Prometheus at `/q/metrics`, Grafana at `http://localhost:3000`. Optional OTLP: enable `telemetry.exporters=prometheus,otlp` + `quarkus.otel.metrics.exporter=otlp`.\n\nGenerate load: `make run-cli` \u2192 `account <id>` + `tables examples.iceberg`. Use *Component* and *Operation* filters + *Rate window* to slice workloads."
       }
     },
 
@@ -139,7 +139,7 @@
       "title": "Avg latency (ms)",
       "id": 4,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 4 },
+      "gridPos": { "h": 4, "w": 3, "x": 4, "y": 4 },
       "targets": [
         {
           "refId": "B",
@@ -154,7 +154,7 @@
       "title": "Error %",
       "id": 5,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 4 },
+      "gridPos": { "h": 4, "w": 3, "x": 7, "y": 4 },
       "targets": [
         {
           "refId": "C",
@@ -169,7 +169,7 @@
       "title": "Active RPC",
       "id": 6,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 4 },
+      "gridPos": { "h": 4, "w": 3, "x": 10, "y": 4 },
       "targets": [
         {
           "refId": "D",
@@ -184,7 +184,7 @@
       "title": "Cache saturation",
       "id": 7,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 4 },
+      "gridPos": { "h": 4, "w": 4, "x": 13, "y": 4 },
       "targets": [
         {
           "refId": "E",
@@ -199,7 +199,7 @@
       "title": "Heap used",
       "id": 8,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 4 },
+      "gridPos": { "h": 4, "w": 4, "x": 17, "y": 4 },
       "targets": [
         {
           "refId": "F",
@@ -208,6 +208,22 @@
       ],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
       "fieldConfig": { "defaults": { "unit": "percent", "decimals": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 80 } ] } }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Dropped tags",
+      "id": 33,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 4 },
+      "targets": [
+        {
+          "refId": "G",
+          "expr": "sum(increase(floecat_core_observability_dropped_tags_total[$rate_interval]))"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "noValue": "0", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 10 } ] } }, "overrides": [] },
+      "description": "Tags dropped due to telemetry contract violations. Non-zero means a metric was emitted with disallowed or missing tags."
     },
 
     {
@@ -285,32 +301,42 @@
     },
     {
       "type": "timeseries",
-      "title": "Storage throughput (req/s, MB/s)",
+      "title": "Store requests (req/s)",
       "id": 15,
       "datasource": "${DS_PROMETHEUS}",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(floecat_core_store_requests_total{component=~\"$component\"}[$rate_interval]))"
-        },
-        {
-          "refId": "B",
-          "expr": "sum(rate(floecat_core_store_bytes_total{component=~\"$component\"}[$rate_interval])) / 1024 / 1024"
+          "expr": "sum by (operation) (rate(floecat_core_store_requests_total{component=~\"$component\"}[$rate_interval]))"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
     },
     {
       "type": "timeseries",
-      "title": "Storage latency (ms)",
-      "id": 16,
+      "title": "Store throughput (bytes/s)",
+      "id": 34,
       "datasource": "${DS_PROMETHEUS}",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
       "targets": [
         {
+          "refId": "A",
+          "expr": "sum(rate(floecat_core_store_bytes_total{component=~\"$component\"}[$rate_interval]))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Store latency (ms)",
+      "id": 16,
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "targets": [
+        {
           "refId": "C",
-          "expr": "1000 * (sum(rate(floecat_core_store_latency_seconds_sum{component=~\"$component\"}[$rate_interval])) / clamp_min(sum(rate(floecat_core_store_latency_seconds_count{component=~\"$component\"}[$rate_interval])), 1))"
+          "expr": "1000 * (sum by (operation) (rate(floecat_core_store_latency_seconds_sum{component=~\"$component\"}[$rate_interval])) / clamp_min(sum by (operation) (rate(floecat_core_store_latency_seconds_count{component=~\"$component\"}[$rate_interval])), 1))"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
@@ -320,7 +346,7 @@
       "title": "Store errors (req/s)",
       "id": 17,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 31 },
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 31 },
       "targets": [
         {
           "refId": "D",
@@ -330,26 +356,36 @@
       "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
     },
     {
-      "type": "stat",
-      "title": "Account size (bytes)",
+      "type": "table",
+      "title": "Per-account storage",
       "id": 18,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 31 },
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 31 },
       "targets": [
         {
           "refId": "E",
-          "expr": "max(floecat_service_storage_account_bytes)"
+          "expr": "floecat_service_storage_account_bytes",
+          "format": "table",
+          "instant": true
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
-      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "telemetry_contract_version": true },
+            "renameByName": { "account": "Account", "Value": "Bytes" }
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [ { "matcher": { "id": "byName", "options": "Account" }, "properties": [ { "id": "custom.width", "value": 150 } ] } ] }
     },
 
     {
       "type": "row",
       "title": "Cache",
       "id": 19,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
       "collapsed": false,
       "panels": []
     },
@@ -358,21 +394,21 @@
       "title": "Cache entries",
       "id": 20,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 38 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 39 },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (cache) (floecat_core_cache_entries{component=~\"$component\"})"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "count" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
     },
     {
       "type": "timeseries",
       "title": "Cache weight (bytes)",
       "id": 21,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 38 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 39 },
       "targets": [
         {
           "refId": "B",
@@ -383,31 +419,33 @@
     },
     {
       "type": "timeseries",
-      "title": "Cache misses (req/s)",
+      "title": "Cache hit rate (%)",
       "id": 22,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 45 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 46 },
       "targets": [
         {
-          "refId": "C",
-          "expr": "sum(rate(floecat_core_cache_misses_total{component=~\"$component\"}[$rate_interval]))"
+          "refId": "A",
+          "expr": "100 * sum by (cache) (rate(floecat_core_cache_hits_total{component=~\"$component\"}[$rate_interval])) / clamp_min(sum by (cache) (rate(floecat_core_cache_hits_total{component=~\"$component\"}[$rate_interval])) + sum by (cache) (rate(floecat_core_cache_misses_total{component=~\"$component\"}[$rate_interval])), 1)",
+          "legendFormat": "{{cache}}"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 50 }, { "color": "green", "value": 90 } ] } }, "overrides": [] }
     },
     {
       "type": "stat",
       "title": "Cache enabled",
       "id": 23,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 45 },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 46 },
       "targets": [
         {
           "refId": "D",
-          "expr": "max(floecat_core_cache_enabled{component=~\"$component\"})"
+          "expr": "max by (cache) (floecat_core_cache_enabled{component=~\"$component\"})",
+          "legendFormat": "{{cache}}"
         }
       ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "value", "textMode": "value", "colorMode": "value", "graphMode": "none", "justifyMode": "center" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "auto", "textMode": "value_and_name", "colorMode": "value", "graphMode": "none", "justifyMode": "center" },
       "fieldConfig": { "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "Disabled" }, "1": { "text": "Enabled" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] }
     },
 
@@ -415,7 +453,7 @@
       "type": "row",
       "title": "Background tasks",
       "id": 24,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 },
       "collapsed": false,
       "panels": []
     },
@@ -424,7 +462,7 @@
       "title": "Tasks running",
       "id": 25,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 52 },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 54 },
       "targets": [
         {
           "refId": "A",
@@ -439,7 +477,7 @@
       "title": "Last task tick age (s)",
       "id": 26,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 52 },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 54 },
       "targets": [
         {
           "refId": "B",
@@ -451,14 +489,15 @@
     },
     {
       "type": "timeseries",
-      "title": "GC ticks (rate)",
+      "title": "GC collections (rate by type)",
       "id": 27,
       "datasource": "${DS_PROMETHEUS}",
-      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 52 },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 54 },
       "targets": [
         {
           "refId": "C",
-          "expr": "sum by (gc, result) (rate(floecat_core_gc_collections_total{component=~\"$component\"}[$rate_interval]))"
+          "expr": "sum by (gc) (rate(floecat_core_gc_collections_total{component=~\"$component\"}[$rate_interval]))",
+          "legendFormat": "{{gc}}"
         }
       ],
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
@@ -468,7 +507,7 @@
       "type": "row",
       "title": "System (JVM / host)",
       "id": 28,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
       "collapsed": true,
       "panels": [
         {
@@ -476,7 +515,7 @@
           "title": "CPU usage",
           "id": 29,
           "datasource": "${DS_PROMETHEUS}",
-          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 58 },
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 60 },
           "targets": [
             { "refId": "A", "expr": "system_cpu_usage" },
             { "refId": "B", "expr": "process_cpu_usage" }
@@ -488,7 +527,7 @@
           "title": "Load avg (1m)",
           "id": 30,
           "datasource": "${DS_PROMETHEUS}",
-          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 58 },
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 60 },
           "targets": [
             { "refId": "C", "expr": "system_load_average_1m" }
           ],
@@ -499,7 +538,7 @@
           "title": "Threads (live / daemon)",
           "id": 31,
           "datasource": "${DS_PROMETHEUS}",
-          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 65 },
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 67 },
           "targets": [
             { "refId": "D", "expr": "jvm_threads_live_threads" },
             { "refId": "E", "expr": "jvm_threads_daemon_threads" }
@@ -511,7 +550,7 @@
           "title": "Open files",
           "id": 32,
           "datasource": "${DS_PROMETHEUS}",
-          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 65 },
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 67 },
           "targets": [
             { "refId": "F", "expr": "process_files_open_files" }
           ],

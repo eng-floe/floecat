@@ -75,7 +75,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "core",
-    "description": "Configured max weight (bytes) for the cache.",
+    "description": "Configured maximum weight (bytes) for the cache.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },
@@ -95,7 +95,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "core",
-    "description": "Total weight (bytes) of entries in the cache.",
+    "description": "Total weight (bytes) of cache entries, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },

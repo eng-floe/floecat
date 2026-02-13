@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /** Common helpers for metrics wrappers that share component/operation tags. */
 abstract class BaseMetrics {
@@ -100,6 +101,15 @@ abstract class BaseMetrics {
     List<Tag> tags = new ArrayList<>(extraTags);
     addExtra(tags, extra);
     return List.copyOf(tags);
+  }
+
+  /** Wraps a supplier to return {@link Double#NaN} when the delegate returns {@code null}. */
+  protected static Supplier<Number> safeSupplier(Supplier<? extends Number> supplier) {
+    Objects.requireNonNull(supplier, "supplier");
+    return () -> {
+      Number value = supplier.get();
+      return value == null ? Double.NaN : value;
+    };
   }
 
   protected static void addExtra(List<Tag> target, Tag... extra) {

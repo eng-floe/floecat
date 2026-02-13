@@ -13,9 +13,9 @@ This lists all metrics available in the repository right now:
 | floecat.core.cache.hits | COUNTER |  | v1 | Number of cache lookup hits, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
 | floecat.core.cache.max.entries | GAUGE | count | v1 | Configured max entries for the cache. | cache, component, operation | account, cache, component, operation |
-| floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured max weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured maximum weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
-| floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of entries in the cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of cache entries, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.gc.collections | COUNTER |  | v1 | Number of GC collections per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.errors | COUNTER |  | v1 | GC failures per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.pause | TIMER | seconds | v1 | GC pause time per GC type. | component, gc, operation, result | component, exception, gc, operation, result |

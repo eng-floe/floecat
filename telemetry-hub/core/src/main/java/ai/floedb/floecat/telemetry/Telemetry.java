@@ -314,24 +314,6 @@ public final class Telemetry {
           "Configured maximum weight (bytes) for the cache.");
       add(
           definitions,
-          CACHE_ENABLED,
-          cacheBase,
-          cacheWithAccount,
-          "Indicator that the cache is enabled (1=enabled, 0=disabled).");
-      add(
-          definitions,
-          CACHE_MAX_ENTRIES,
-          cacheBase,
-          cacheWithAccount,
-          "Configured max entries for the cache.");
-      add(
-          definitions,
-          CACHE_MAX_WEIGHT,
-          cacheBase,
-          cacheWithAccount,
-          "Configured max weight (bytes) for the cache.");
-      add(
-          definitions,
           CACHE_SIZE,
           cacheBase,
           cacheWithAccount,
@@ -348,12 +330,6 @@ public final class Telemetry {
           cacheBase,
           cacheWithAccount,
           "Total weight (bytes) of cache entries, tagged by cache name.");
-      add(
-          definitions,
-          CACHE_WEIGHTED_SIZE,
-          cacheBase,
-          cacheWithAccount,
-          "Total weight (bytes) of entries in the cache.");
       add(
           definitions,
           CACHE_LATENCY,
@@ -421,7 +397,12 @@ public final class Telemetry {
         Set<String> required,
         Set<String> allowed,
         String description) {
-      definitions.put(metric, new MetricDef(metric, required, allowed, description));
+      MetricDef prev =
+          definitions.put(metric, new MetricDef(metric, required, allowed, description));
+      if (prev != null) {
+        throw new IllegalArgumentException(
+            "Duplicate metric def in core Telemetry.Metrics: " + metric.name());
+      }
     }
 
     private static Set<String> addTags(Set<String> base, String... extras) {

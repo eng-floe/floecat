@@ -45,12 +45,12 @@ class CacheMetricsTest {
   }
 
   @Test
-  void tracksPoolSizeAccountsGauge() {
+  void tracksAccountsGauge() {
     TestObservability observability = new TestObservability();
     CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
 
     AtomicInteger accounts = new AtomicInteger(2);
-    metrics.trackPoolSize(accounts::get, "account cache count");
+    metrics.trackAccounts(accounts::get, "account cache count");
 
     Supplier<? extends Number> gauge = observability.gauge(Telemetry.Metrics.CACHE_ACCOUNTS);
     assertThat(gauge).isNotNull();

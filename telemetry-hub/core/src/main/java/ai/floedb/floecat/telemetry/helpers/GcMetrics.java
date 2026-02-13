@@ -18,10 +18,6 @@ public final class GcMetrics extends BaseMetrics {
     this.observability = observability;
   }
 
-  public Tag[] baseTags() {
-    return metricTags();
-  }
-
   public void recordCollection(double count, Tag... extraTags) {
     record(Telemetry.Metrics.GC_COLLECTIONS, count, extraTags);
   }

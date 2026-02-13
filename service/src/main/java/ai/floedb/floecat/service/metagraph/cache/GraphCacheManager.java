@@ -130,7 +130,7 @@ public class GraphCacheManager {
     cacheMetrics.trackEnabled(() -> cacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
     cacheMetrics.trackMaxEntries(
         () -> cacheEnabled ? (double) cacheMaxSize : 0.0, "Graph cache configured max entries");
-    cacheMetrics.trackPoolSize(() -> (double) accountCaches.size(), "Graph cache account count");
+    cacheMetrics.trackAccounts(() -> (double) accountCaches.size(), "Graph cache account count");
   }
 
   public void recordLoad(Duration duration) {

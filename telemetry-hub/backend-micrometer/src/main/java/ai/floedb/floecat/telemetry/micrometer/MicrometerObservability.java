@@ -1,5 +1,6 @@
 package ai.floedb.floecat.telemetry.micrometer;
 
+import ai.floedb.floecat.telemetry.MetricDef;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.MetricValidator;
@@ -31,6 +32,7 @@ import org.slf4j.LoggerFactory;
 /** Micrometer-based {@link Observability} implementation. */
 public final class MicrometerObservability implements Observability {
   private final MeterRegistry registry;
+  private final TelemetryRegistry telemetryRegistry;
   private final MetricValidator validator;
   private final Counter droppedTagsCounter;
   private final ConcurrentMap<MeterKey, Counter> counters = new ConcurrentHashMap<>();
@@ -45,7 +47,7 @@ public final class MicrometerObservability implements Observability {
   public MicrometerObservability(
       MeterRegistry registry, TelemetryRegistry telemetryRegistry, TelemetryPolicy policy) {
     this.registry = Objects.requireNonNull(registry, "registry");
-    Objects.requireNonNull(telemetryRegistry, "telemetryRegistry");
+    this.telemetryRegistry = Objects.requireNonNull(telemetryRegistry, "telemetryRegistry");
     this.validator =
         new MetricValidator(telemetryRegistry, Objects.requireNonNull(policy, "policy"));
     this.droppedTagsCounter = registry.counter(Telemetry.Metrics.DROPPED_TAGS.name());
@@ -166,17 +168,29 @@ public final class MicrometerObservability implements Observability {
   }
 
   private Counter registerCounter(MeterKey key) {
-    return Counter.builder(key.metric().name()).tags(micrometerTags(key.tags())).register(registry);
+    return Counter.builder(key.metric().name())
+        .description(descriptionFor(key.metric()))
+        .tags(micrometerTags(key.tags()))
+        .register(registry);
   }
 
   private DistributionSummary registerSummary(MeterKey key) {
     return DistributionSummary.builder(key.metric().name())
+        .description(descriptionFor(key.metric()))
         .tags(micrometerTags(key.tags()))
         .register(registry);
   }
 
   private Timer registerTimer(MeterKey key) {
-    return Timer.builder(key.metric().name()).tags(micrometerTags(key.tags())).register(registry);
+    return Timer.builder(key.metric().name())
+        .description(descriptionFor(key.metric()))
+        .tags(micrometerTags(key.tags()))
+        .register(registry);
+  }
+
+  private String descriptionFor(MetricId metric) {
+    MetricDef def = telemetryRegistry.metric(metric.name());
+    return def != null ? def.description() : "";
   }
 
   private static List<Tag> sort(List<Tag> tags) {

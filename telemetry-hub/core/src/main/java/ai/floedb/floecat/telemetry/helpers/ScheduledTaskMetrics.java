@@ -37,12 +37,4 @@ public final class ScheduledTaskMetrics extends BaseMetrics {
       MetricId metric, Supplier<? extends Number> supplier, String description) {
     observability.gauge(metric, safeSupplier(supplier), description, metricTags());
   }
-
-  private Supplier<Number> safeSupplier(Supplier<? extends Number> supplier) {
-    Objects.requireNonNull(supplier, "supplier");
-    return () -> {
-      Number value = supplier.get();
-      return value == null ? Double.NaN : value;
-    };
-  }
 }

@@ -62,7 +62,7 @@ public final class CacheMetrics extends BaseMetrics {
     registerGauge(Telemetry.Metrics.CACHE_MAX_WEIGHT, supplier, description, metricTags(extraTags));
   }
 
-  public void trackPoolSize(
+  public void trackAccounts(
       Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_ACCOUNTS, supplier, description, metricTags(extraTags));
   }
@@ -76,14 +76,6 @@ public final class CacheMetrics extends BaseMetrics {
   private void registerGauge(
       MetricId metric, Supplier<? extends Number> supplier, String description, Tag... tags) {
     observability.gauge(metric, safeSupplier(supplier), description, tags);
-  }
-
-  private Supplier<Number> safeSupplier(Supplier<? extends Number> supplier) {
-    Objects.requireNonNull(supplier, "supplier");
-    return () -> {
-      Number value = supplier.get();
-      return value == null ? Double.NaN : value;
-    };
   }
 
   public void recordLoad(Duration duration, boolean hit, Tag... extraTags) {
