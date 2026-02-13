@@ -40,13 +40,12 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.telemetry.Observability;
 import com.google.protobuf.Timestamp;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import io.quarkus.grpc.GrpcClient;
-import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -76,8 +75,6 @@ public final class UserGraph {
   private EngineHintManager hints;
   private PrincipalProvider principal;
 
-  private Timer loadTimer;
-
   // ----------------------------------------------------------------------
   // Constructor
   // ----------------------------------------------------------------------
@@ -104,13 +101,13 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       @GrpcClient("floecat") SnapshotServiceBlockingStub snapshotStub,
-      MeterRegistry meter,
+      Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
       EngineHintManager engineHints) {
 
-    this.cache = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, meter);
+    this.cache = new GraphCacheManager(cacheMaxSize > 0, cacheMaxSize, observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -125,9 +122,10 @@ public final class UserGraph {
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
-      ViewRepository viewRepo) {
+      ViewRepository viewRepo,
+      Observability observability) {
 
-    this.cache = new GraphCacheManager(true, 1024, null);
+    this.cache = new GraphCacheManager(true, 1024, observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -144,7 +142,6 @@ public final class UserGraph {
         };
 
     this.hints = null;
-    this.loadTimer = null;
   }
 
   public void invalidate(ResourceId id) {
@@ -223,13 +220,6 @@ public final class UserGraph {
                                             vw.displayName(), vw.id(), ns, cat.displayName()))));
   }
 
-  @PostConstruct
-  void initMetrics() {
-    if (cache.meterRegistry() != null) {
-      this.loadTimer = cache.meterRegistry().timer("floecat.metadata.graph.load");
-    }
-  }
-
   // ----------------------------------------------------------------------
   // Node resolution (cached)
   // ----------------------------------------------------------------------
@@ -254,14 +244,17 @@ public final class UserGraph {
     GraphNode cached = cache.get(id, key);
     if (cached != null) return Optional.of(cached);
 
-    Timer.Sample sample = (loadTimer != null) ? Timer.start(cache.meterRegistry()) : null;
-
-    Optional<GraphNode> loaded = nodes.load(id, meta);
-    loaded.ifPresent(node -> cache.put(id, key, node));
-
-    if (sample != null) sample.stop(loadTimer);
-
-    return loaded;
+    long loadStart = System.nanoTime();
+    try {
+      Optional<GraphNode> loaded = nodes.load(id, meta);
+      loaded.ifPresent(node -> cache.put(id, key, node));
+      cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
+      return loaded;
+    } catch (Throwable t) {
+      Duration duration = Duration.ofNanos(System.nanoTime() - loadStart);
+      cache.recordLoadFailure(duration, t);
+      throw t;
+    }
   }
 
   /**

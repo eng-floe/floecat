@@ -25,7 +25,7 @@ import ai.floedb.floecat.metagraph.model.EngineKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -37,7 +37,7 @@ class HintCacheTest {
   @Test
   void cachesAndInvalidates() {
     var provider = new TestProvider();
-    var mgr = new EngineHintManager(java.util.List.of(provider), new SimpleMeterRegistry(), 1024);
+    var mgr = new EngineHintManager(java.util.List.of(provider), new TestObservability(), 1024);
 
     var table = tableNode(1L);
     var h1 = mgr.get(table, new EngineKey("demo", "1"), "test", "cid").orElseThrow();

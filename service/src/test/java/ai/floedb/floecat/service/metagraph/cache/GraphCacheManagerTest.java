@@ -23,19 +23,19 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.service.testsupport.TestNodes;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import ai.floedb.floecat.telemetry.TestObservability;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class GraphCacheManagerTest {
 
-  private SimpleMeterRegistry registry;
   private GraphCacheManager cacheManager;
+  private TestObservability observability;
 
   @BeforeEach
   void setUp() {
-    registry = new SimpleMeterRegistry();
-    cacheManager = new GraphCacheManager(true, 10, registry);
+    observability = new TestObservability();
+    cacheManager = new GraphCacheManager(true, 10, observability);
   }
 
   @Test
@@ -75,7 +75,7 @@ class GraphCacheManagerTest {
 
   @Test
   void disabledCacheReturnsNull() {
-    GraphCacheManager disabled = new GraphCacheManager(false, 10, registry);
+    GraphCacheManager disabled = new GraphCacheManager(false, 10, new TestObservability());
     ResourceId tableId = rid("account", "tbl");
     GraphCacheKey key = new GraphCacheKey(tableId, 1L);
 

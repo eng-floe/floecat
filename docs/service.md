@@ -47,7 +47,7 @@ query lifecycle / scan bundle logic.
   (see [`docs/metadata-graph.md`](metadata-graph.md)).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
 - `service/bootstrap` – Optional seeding of demo accounts and catalog data.
-- `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.
+- `service/metrics` – `ServiceTelemetryInterceptor` + `StorageUsageMetrics` for Micrometer integration.
 
 ## Public API / Surface Area
 Each gRPC implementation derives from `BaseServiceImpl`, gaining retry semantics, error mapping, and
@@ -140,7 +140,7 @@ rows upserted after all batches have been consumed.
 client → Quarkus Server
   → InboundContextInterceptor (principal/query/correlation)
   → LocalizeErrorsInterceptor (message catalog)
-  → MeteringInterceptor (metrics/latency)
+  → ServiceTelemetryInterceptor (metrics/latency)
   → ServiceImpl (authz + validation)
       → Repository (CAS pointer/blob operations)
   ← response + MutationMeta

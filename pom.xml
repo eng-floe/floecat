@@ -72,6 +72,9 @@
       <module>tools/builtin-validator</module>
       <module>tools/error-messages-generator</module>
 
+      <!-- Telemetry hub -->
+      <module>telemetry-hub</module>
+
       <!-- Service -->
       <module>service</module>
 
@@ -223,6 +226,7 @@
           <inputExcludes>
             <inputExclude>**/*.csv</inputExclude>
             <inputExclude>**/*.json</inputExclude>
+            <inputExclude>**/*.yml</inputExclude>
             <inputExclude>**/*.avro</inputExclude>
             <inputExclude>**/*.log</inputExclude>
             <inputExclude>log/*</inputExclude>
