@@ -138,18 +138,27 @@ public class PointerGcScheduler {
   }
 
   private void registerGauges() {
+    Tag gcTag = Tag.of(TagKey.GC_NAME, "pointer");
     observability.gauge(
-        ServiceMetrics.GC.POINTER_RUNNING, () -> (double) running.get(), "Pointer GC running flag");
+        ServiceMetrics.GC.SCHEDULER_RUNNING,
+        () -> (double) running.get(),
+        "Pointer GC running flag",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.POINTER_ENABLED, () -> (double) enabledGauge.get(), "Pointer GC enabled");
+        ServiceMetrics.GC.SCHEDULER_ENABLED,
+        () -> (double) enabledGauge.get(),
+        "Pointer GC enabled",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.POINTER_LAST_TICK_START,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_START,
         () -> (double) lastTickStartMs.get(),
-        "Pointer GC last tick start millis");
+        "Pointer GC last tick start millis",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.POINTER_LAST_TICK_END,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_END,
         () -> (double) lastTickEndMs.get(),
-        "Pointer GC last tick end millis");
+        "Pointer GC last tick end millis",
+        gcTag);
   }
 
   private static List<Account> fetchAllAccounts(AccountRepository repo, int pageSize) {

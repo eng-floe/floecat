@@ -248,19 +248,19 @@ public final class Telemetry {
           CACHE_HITS,
           cacheBase,
           cacheWithAccount,
-          "Cache hits count for the graph cache.");
+          "Number of cache lookup hits, tagged by cache name.");
       add(
           definitions,
           CACHE_MISSES,
           cacheBase,
           cacheWithAccount,
-          "Cache misses count for the graph cache.");
+          "Number of cache lookup misses, tagged by cache name.");
       add(
           definitions,
           CACHE_SIZE,
           cacheBase,
           cacheWithAccount,
-          "Approximate graph cache size by cache name.");
+          "Approximate number of entries in the cache, tagged by cache name.");
       add(
           definitions,
           CACHE_LATENCY,
@@ -272,7 +272,7 @@ public final class Telemetry {
           CACHE_ERRORS,
           cacheWithResult,
           cacheLatencyAllowed,
-          "Cache failures per cache name.");
+          "Number of cache operation failures (load errors), tagged by cache name.");
 
       Set<String> gcRequired =
           Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.GC_NAME, TagKey.RESULT);

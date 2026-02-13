@@ -61,22 +61,27 @@ public class IdempotencyGcScheduler {
   }
 
   private void registerGauges() {
+    Tag gcTag = Tag.of(TagKey.GC_NAME, "idempotency");
     observability.gauge(
-        ServiceMetrics.GC.IDEMP_RUNNING,
+        ServiceMetrics.GC.SCHEDULER_RUNNING,
         () -> (double) running.get(),
-        "Idempotency GC running flag");
+        "Idempotency GC running flag",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.IDEMP_ENABLED,
+        ServiceMetrics.GC.SCHEDULER_ENABLED,
         () -> (double) enabledGauge.get(),
-        "Idempotency GC enabled");
+        "Idempotency GC enabled",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.IDEMP_LAST_TICK_START,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_START,
         () -> (double) lastTickStartMs.get(),
-        "Idempotency GC last tick start millis");
+        "Idempotency GC last tick start millis",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.IDEMP_LAST_TICK_END,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_END,
         () -> (double) lastTickEndMs.get(),
-        "Idempotency GC last tick end millis");
+        "Idempotency GC last tick end millis",
+        gcTag);
   }
 
   private final Map<String, String> tokenByAccount = new ConcurrentHashMap<>();

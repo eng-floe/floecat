@@ -6,11 +6,11 @@ This lists all metrics available in the repository right now:
 **Core Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| floecat.core.cache.errors | COUNTER |  | v1 | Cache failures per cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |
-| floecat.core.cache.hits | COUNTER |  | v1 | Cache hits count for the graph cache. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.errors | COUNTER |  | v1 | Number of cache operation failures (load errors), tagged by cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |
+| floecat.core.cache.hits | COUNTER |  | v1 | Number of cache lookup hits, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
-| floecat.core.cache.misses | COUNTER |  | v1 | Cache misses count for the graph cache. | cache, component, operation | account, cache, component, operation |
-| floecat.core.cache.size | GAUGE |  | v1 | Approximate graph cache size by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.size | GAUGE |  | v1 | Approximate number of entries in the cache, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.gc.collections | COUNTER |  | v1 | Number of GC collections per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.errors | COUNTER |  | v1 | GC failures per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
 | floecat.core.gc.pause | TIMER | seconds | v1 | GC pause time per GC type. | component, gc, operation, result | component, exception, gc, operation, result |
@@ -32,23 +32,13 @@ This lists all metrics available in the repository right now:
 | --- | --- | --- | --- | --- | --- | --- |
 | floecat.service.cache.accounts | GAUGE |  | v1 | Number of accounts with active caches. |  |  |
 | floecat.service.cache.enabled | GAUGE |  | v1 | Indicator that the graph cache is enabled. |  |  |
-| floecat.service.cache.entries | GAUGE |  | v1 | Estimated total graph cache entries across accounts. |  |  |
-| floecat.service.cache.load.latency | TIMER | seconds | v1 | Latency for loading graph entries when caching is enabled. |  |  |
 | floecat.service.cache.max.size | GAUGE |  | v1 | Configured max entries for the graph cache. |  |  |
-| floecat.service.gc.cas.enabled | GAUGE |  | v1 | Indicator that the CAS GC scheduler is enabled (1=enabled, 0=disabled). |  |  |
-| floecat.service.gc.cas.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp when the CAS GC last finished. |  |  |
-| floecat.service.gc.cas.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp when the CAS GC last started. |  |  |
-| floecat.service.gc.cas.running | GAUGE |  | v1 | Indicator that the CAS GC tick is currently active (1 when running, 0 when idle). |  |  |
-| floecat.service.gc.idempotency.enabled | GAUGE |  | v1 | Indicator that the idempotency GC scheduler is enabled (1=enabled, 0=disabled). |  |  |
-| floecat.service.gc.idempotency.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp when the idempotency GC last finished. |  |  |
-| floecat.service.gc.idempotency.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp when the idempotency GC last started. |  |  |
-| floecat.service.gc.idempotency.running | GAUGE |  | v1 | Indicator that the idempotency GC tick is currently active (1 when running, 0 when idle). |  |  |
-| floecat.service.gc.pointer.enabled | GAUGE |  | v1 | Indicator that the pointer GC scheduler is enabled (1=enabled, 0=disabled). |  |  |
-| floecat.service.gc.pointer.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last finished. |  |  |
-| floecat.service.gc.pointer.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via \`floecat.gc.pointer.tick-every\`. |  |  |
-| floecat.service.gc.pointer.running | GAUGE |  | v1 | Indicator that the pointer GC tick is currently active (1 when running, 0 when idle). |  |  |
+| floecat.service.gc.scheduler.enabled | GAUGE |  | v1 | Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type. | gc | gc |
+| floecat.service.gc.scheduler.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type. | gc | gc |
+| floecat.service.gc.scheduler.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type. | gc | gc |
+| floecat.service.gc.scheduler.running | GAUGE |  | v1 | Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type. | gc | gc |
 | floecat.service.hint.cache.weight | GAUGE | bytes | v1 | Estimated weight of the hint cache. |  |  |
-| floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Per-account byte consumption for storage. | account | account |
+| floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 
 <!-- METRICS:END -->

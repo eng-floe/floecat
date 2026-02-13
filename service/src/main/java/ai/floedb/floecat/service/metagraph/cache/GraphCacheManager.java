@@ -138,10 +138,6 @@ public class GraphCacheManager {
         ServiceMetrics.Cache.ACCOUNTS,
         () -> (double) accountCaches.size(),
         "Graph cache account count");
-    observability.gauge(
-        ServiceMetrics.Cache.ENTRIES,
-        () -> accountCaches.values().stream().mapToDouble(Cache::estimatedSize).sum(),
-        "Graph cache entry estimate");
   }
 
   public void recordLoad(Duration duration) {

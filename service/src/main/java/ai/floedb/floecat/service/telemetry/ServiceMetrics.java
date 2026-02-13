@@ -16,70 +16,25 @@ public final class ServiceMetrics {
         new MetricId("floecat.service.cache.max.size", MetricType.GAUGE, "", CONTRACT, "service");
     public static final MetricId ACCOUNTS =
         new MetricId("floecat.service.cache.accounts", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId ENTRIES =
-        new MetricId("floecat.service.cache.entries", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId LOAD_LATENCY =
-        new MetricId(
-            "floecat.service.cache.load.latency", MetricType.TIMER, "seconds", CONTRACT, "service");
   }
 
   public static final class GC {
-    public static final MetricId POINTER_RUNNING =
+    public static final MetricId SCHEDULER_RUNNING =
         new MetricId(
-            "floecat.service.gc.pointer.running", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId POINTER_ENABLED =
+            "floecat.service.gc.scheduler.running", MetricType.GAUGE, "", CONTRACT, "service");
+    public static final MetricId SCHEDULER_ENABLED =
         new MetricId(
-            "floecat.service.gc.pointer.enabled", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId POINTER_LAST_TICK_START =
+            "floecat.service.gc.scheduler.enabled", MetricType.GAUGE, "", CONTRACT, "service");
+    public static final MetricId SCHEDULER_LAST_TICK_START =
         new MetricId(
-            "floecat.service.gc.pointer.last.tick.start.ms",
+            "floecat.service.gc.scheduler.last.tick.start.ms",
             MetricType.GAUGE,
             "milliseconds",
             CONTRACT,
             "service");
-    public static final MetricId POINTER_LAST_TICK_END =
+    public static final MetricId SCHEDULER_LAST_TICK_END =
         new MetricId(
-            "floecat.service.gc.pointer.last.tick.end.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-
-    public static final MetricId CAS_RUNNING =
-        new MetricId("floecat.service.gc.cas.running", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId CAS_ENABLED =
-        new MetricId("floecat.service.gc.cas.enabled", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId CAS_LAST_TICK_START =
-        new MetricId(
-            "floecat.service.gc.cas.last.tick.start.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-    public static final MetricId CAS_LAST_TICK_END =
-        new MetricId(
-            "floecat.service.gc.cas.last.tick.end.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-
-    public static final MetricId IDEMP_RUNNING =
-        new MetricId(
-            "floecat.service.gc.idempotency.running", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId IDEMP_ENABLED =
-        new MetricId(
-            "floecat.service.gc.idempotency.enabled", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId IDEMP_LAST_TICK_START =
-        new MetricId(
-            "floecat.service.gc.idempotency.last.tick.start.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-    public static final MetricId IDEMP_LAST_TICK_END =
-        new MetricId(
-            "floecat.service.gc.idempotency.last.tick.end.ms",
+            "floecat.service.gc.scheduler.last.tick.end.ms",
             MetricType.GAUGE,
             "milliseconds",
             CONTRACT,

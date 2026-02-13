@@ -5,7 +5,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
-    "description": "Cache failures per cache name.",
+    "description": "Number of cache operation failures (load errors), tagged by cache name.",
     "requiredTags": ["cache", "component", "operation", "result"],
     "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
   },
@@ -15,7 +15,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
-    "description": "Cache hits count for the graph cache.",
+    "description": "Number of cache lookup hits, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },
@@ -35,7 +35,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
-    "description": "Cache misses count for the graph cache.",
+    "description": "Number of cache lookup misses, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },
@@ -45,7 +45,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
-    "description": "Approximate graph cache size by cache name.",
+    "description": "Approximate number of entries in the cache, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },
@@ -220,26 +220,6 @@
     "allowedTags": []
   },
   {
-    "name": "floecat.service.cache.entries",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Estimated total graph cache entries across accounts.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.cache.load.latency",
-    "type": "TIMER",
-    "unit": "seconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Latency for loading graph entries when caching is enabled.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
     "name": "floecat.service.cache.max.size",
     "type": "GAUGE",
     "unit": "",
@@ -250,124 +230,44 @@
     "allowedTags": []
   },
   {
-    "name": "floecat.service.gc.cas.enabled",
+    "name": "floecat.service.gc.scheduler.enabled",
     "type": "GAUGE",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Indicator that the CAS GC scheduler is enabled (1=enabled, 0=disabled).",
-    "requiredTags": [],
-    "allowedTags": []
+    "description": "Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type.",
+    "requiredTags": ["gc"],
+    "allowedTags": ["gc"]
   },
   {
-    "name": "floecat.service.gc.cas.last.tick.end.ms",
+    "name": "floecat.service.gc.scheduler.last.tick.end.ms",
     "type": "GAUGE",
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
-    "description": "Timestamp when the CAS GC last finished.",
-    "requiredTags": [],
-    "allowedTags": []
+    "description": "Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type.",
+    "requiredTags": ["gc"],
+    "allowedTags": ["gc"]
   },
   {
-    "name": "floecat.service.gc.cas.last.tick.start.ms",
+    "name": "floecat.service.gc.scheduler.last.tick.start.ms",
     "type": "GAUGE",
     "unit": "milliseconds",
     "since": "v1",
     "origin": "service",
-    "description": "Timestamp when the CAS GC last started.",
-    "requiredTags": [],
-    "allowedTags": []
+    "description": "Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type.",
+    "requiredTags": ["gc"],
+    "allowedTags": ["gc"]
   },
   {
-    "name": "floecat.service.gc.cas.running",
+    "name": "floecat.service.gc.scheduler.running",
     "type": "GAUGE",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Indicator that the CAS GC tick is currently active (1 when running, 0 when idle).",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.idempotency.enabled",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Indicator that the idempotency GC scheduler is enabled (1=enabled, 0=disabled).",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.idempotency.last.tick.end.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp when the idempotency GC last finished.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.idempotency.last.tick.start.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp when the idempotency GC last started.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.idempotency.running",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Indicator that the idempotency GC tick is currently active (1 when running, 0 when idle).",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.pointer.enabled",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Indicator that the pointer GC scheduler is enabled (1=enabled, 0=disabled).",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.pointer.last.tick.end.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp when the pointer GC last finished.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.pointer.last.tick.start.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp when the pointer GC last started (ms since epoch from the most recent tick). Tick interval is controlled via `floecat.gc.pointer.tick-every`.",
-    "requiredTags": [],
-    "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.pointer.running",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Indicator that the pointer GC tick is currently active (1 when running, 0 when idle).",
-    "requiredTags": [],
-    "allowedTags": []
+    "description": "Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type.",
+    "requiredTags": ["gc"],
+    "allowedTags": ["gc"]
   },
   {
     "name": "floecat.service.hint.cache.weight",
@@ -385,7 +285,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
-    "description": "Per-account byte consumption for storage.",
+    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },

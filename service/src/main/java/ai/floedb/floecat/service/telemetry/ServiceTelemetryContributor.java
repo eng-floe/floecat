@@ -25,78 +25,32 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     add(defs, Cache.ENABLED, empty, empty, "Indicator that the graph cache is enabled.");
     add(defs, Cache.MAX_SIZE, empty, empty, "Configured max entries for the graph cache.");
     add(defs, Cache.ACCOUNTS, empty, empty, "Number of accounts with active caches.");
-    add(defs, Cache.ENTRIES, empty, empty, "Estimated total graph cache entries across accounts.");
-    add(
-        defs,
-        Cache.LOAD_LATENCY,
-        empty,
-        empty,
-        "Latency for loading graph entries when caching is enabled.");
 
+    Set<String> gcTag = Set.of(TagKey.GC_NAME);
     add(
         defs,
-        GC.POINTER_RUNNING,
-        empty,
-        empty,
-        "Indicator that the pointer GC tick is currently active (1 when running, 0 when idle).");
+        GC.SCHEDULER_RUNNING,
+        gcTag,
+        gcTag,
+        "Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type.");
     add(
         defs,
-        GC.POINTER_ENABLED,
-        empty,
-        empty,
-        "Indicator that the pointer GC scheduler is enabled (1=enabled, 0=disabled).");
+        GC.SCHEDULER_ENABLED,
+        gcTag,
+        gcTag,
+        "Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type.");
     add(
         defs,
-        GC.POINTER_LAST_TICK_START,
-        empty,
-        empty,
-        "Timestamp when the pointer GC last started (ms since epoch from the most recent tick)."
-            + " Tick interval is controlled via `floecat.gc.pointer.tick-every`.");
+        GC.SCHEDULER_LAST_TICK_START,
+        gcTag,
+        gcTag,
+        "Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type.");
     add(
         defs,
-        GC.POINTER_LAST_TICK_END,
-        empty,
-        empty,
-        "Timestamp when the pointer GC last finished.");
-    add(
-        defs,
-        GC.CAS_RUNNING,
-        empty,
-        empty,
-        "Indicator that the CAS GC tick is currently active (1 when running, 0 when idle).");
-    add(
-        defs,
-        GC.CAS_ENABLED,
-        empty,
-        empty,
-        "Indicator that the CAS GC scheduler is enabled (1=enabled, 0=disabled).");
-    add(defs, GC.CAS_LAST_TICK_START, empty, empty, "Timestamp when the CAS GC last started.");
-    add(defs, GC.CAS_LAST_TICK_END, empty, empty, "Timestamp when the CAS GC last finished.");
-    add(
-        defs,
-        GC.IDEMP_RUNNING,
-        empty,
-        empty,
-        "Indicator that the idempotency GC tick is currently active (1 when running, 0 when"
-            + " idle).");
-    add(
-        defs,
-        GC.IDEMP_ENABLED,
-        empty,
-        empty,
-        "Indicator that the idempotency GC scheduler is enabled (1=enabled, 0=disabled).");
-    add(
-        defs,
-        GC.IDEMP_LAST_TICK_START,
-        empty,
-        empty,
-        "Timestamp when the idempotency GC last started.");
-    add(
-        defs,
-        GC.IDEMP_LAST_TICK_END,
-        empty,
-        empty,
-        "Timestamp when the idempotency GC last finished.");
+        GC.SCHEDULER_LAST_TICK_END,
+        gcTag,
+        gcTag,
+        "Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type.");
     add(
         defs,
         Storage.ACCOUNT_POINTERS,
@@ -108,7 +62,7 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Storage.ACCOUNT_BYTES,
         accountTag,
         accountTag,
-        "Per-account byte consumption for storage.");
+        "Estimated per-account storage byte consumption (sampled, not exact).");
     add(defs, Hint.CACHE_WEIGHT, empty, empty, "Estimated weight of the hint cache.");
     return Collections.unmodifiableMap(defs);
   }

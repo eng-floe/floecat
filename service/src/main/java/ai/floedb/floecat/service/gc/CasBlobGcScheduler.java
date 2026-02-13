@@ -61,18 +61,27 @@ public class CasBlobGcScheduler {
   }
 
   private void registerGauges() {
+    Tag gcTag = Tag.of(TagKey.GC_NAME, "cas");
     observability.gauge(
-        ServiceMetrics.GC.CAS_RUNNING, () -> (double) running.get(), "CAS GC running flag");
+        ServiceMetrics.GC.SCHEDULER_RUNNING,
+        () -> (double) running.get(),
+        "CAS GC running flag",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.CAS_ENABLED, () -> (double) enabledGauge.get(), "CAS GC enabled");
+        ServiceMetrics.GC.SCHEDULER_ENABLED,
+        () -> (double) enabledGauge.get(),
+        "CAS GC enabled",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.CAS_LAST_TICK_START,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_START,
         () -> (double) lastTickStartMs.get(),
-        "CAS GC last tick start millis");
+        "CAS GC last tick start millis",
+        gcTag);
     observability.gauge(
-        ServiceMetrics.GC.CAS_LAST_TICK_END,
+        ServiceMetrics.GC.SCHEDULER_LAST_TICK_END,
         () -> (double) lastTickEndMs.get(),
-        "CAS GC last tick end millis");
+        "CAS GC last tick end millis",
+        gcTag);
   }
 
   void onStop(@Observes ShutdownEvent ev) {
