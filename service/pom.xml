@@ -198,6 +198,11 @@
       <artifactId>telemetry-hub-backend-micrometer</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-grpc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
