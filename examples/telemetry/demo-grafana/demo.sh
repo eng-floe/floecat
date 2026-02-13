@@ -14,15 +14,22 @@ echo "Starting the telemetry stack (Prometheus + Grafana)..."
 docker compose up -d
 
 echo "Waiting for Prometheus to scrape the service (/q/metrics on port 9100)..."
+prometheus_up=false
 for i in {1..12}; do
-  targets=$(curl -s http://localhost:9091/api/v1/targets)
-  if echo "$targets" | grep -q '"health":"up"' && echo "$targets" | grep -q '"job":"floecat-service"'; then
-    echo "Prometheus target is UP."
-    break
+  if targets=$(curl -s http://localhost:9091/api/v1/targets); then
+    if echo "$targets" | grep -q '"health":"up"' && echo "$targets" | grep -q '"job":"floecat-service"'; then
+      echo "Prometheus target is UP."
+      prometheus_up=true
+      break
+    fi
   fi
   echo "  (${i}/12) waiting for target to become UP..."
   sleep 5
 done
+
+if ! $prometheus_up; then
+  echo "WARNING: Prometheus target never reached UP state. Logs at http://localhost:9091/targets may help." >&2
+fi
 
 cat <<'MSG'
 The telemetry stack is running:

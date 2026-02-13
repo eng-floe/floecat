@@ -7,11 +7,11 @@ The telemetry hub lives under `telemetry-hub/` and provides:
 - `telemetry-hub-integration-grpc`: interceptors/helpers that reuse the core API to instrument gRPC.
 - `telemetry-hub-tool-docgen`: generates the canonical `docs/telemetry/contract.*` artifacts from the registry.
 
-Use this overview to understand how metrics are named, tagged, versioned, contributed, and documented.
+Use this overview to understand how metrics are named, tagged, versioned, contributed, and documented. The contract tables in `docs/telemetry/contract.md`/`contract.json`, the docgen regression test, and the demo dashboards all derive from the same registry, so keep those artifacts in sync with the ideas outlined below.
 
 ## Core naming & units
 
-All built-in metrics start with `floecat.core.` so dashboards and tooling can easily filter hub-supplied data. Service-specific metrics follow `floecat.service.*` (and any future origins should use `floecat.<origin>.*`) so it remains obvious where each metric comes from and there are no collisions between module contracts. For example, `floecat.core.rpc.requests` counts RPC requests while `floecat.service.gc.pointer.running` tracks the service pointer GC.
+All built-in metrics start with `floecat.core.` so dashboards and tooling can easily filter hub-supplied data. Service-specific metrics follow `floecat.service.*` (and any future origins should use `floecat.<origin>.*`) so it remains obvious where each metric comes from and there are no collisions between module contracts. For example, `floecat.core.rpc.requests` counts RPC requests while `floecat.service.gc.pointer.running` tracks the service pointer GC. Cache instrumentation now exposes the full set of `floecat.core.cache.*` gauges and counters (configuration knobs, account counts, entry counts, weighted size, hits/misses, latency, errors) so operators can monitor any cache with the same metric names.
 
 - Counters and gauges that represent raw counts omit a unit (`unit = ""`); note that empty string is intentional (not `null`) and backends may still treat those metrics as dimensionless counts if they need to pick a base. For timers or byte counters, declare the appropriate unit (`seconds`, `bytes`).
 - Each metric has a `since` version (currently `v1`). Bump that value if you rename, retype, or otherwise break the public contract.
@@ -28,9 +28,9 @@ This two-set approach keeps cardinality in check while giving you control over w
 
 ### Result/Status conventions
 
-- `result` (used in RPC scopes, store/GC helpers) conveys the logical outcome and expects values such as `success`, `error`, `retry`, `unknown`, etc. Keep the values lowercase and stable; `unknown` is reserved for lenient mode or when `ObservationScope.close()` runs without an explicit `success()` or `error()` so dashboards can distinguish missing outcomes.
-- `status` (typically the gRPC code name like `OK`, `INVALID_ARGUMENT`, `UNKNOWN`) maps to transport-layer status codes. Tags are case-sensitive (Micrometer doesn’t normalize them), so we standardize on uppercase gRPC names throughout the helpers.
-- `result` is meant for business outcomes, while `status` captures the transport-level code; both help you filter dashboards more precisely. The hub enforces these tag keys via required/allowed tag sets so reports stay consistent across modules.
+ - `result` (used in RPC scopes, store/GC helpers) conveys the logical outcome and expects values such as `success`, `error`, `retry`, `unknown`, etc. Keep the values lowercase and stable; `unknown` is reserved for lenient mode or when `ObservationScope.close()` runs without an explicit `success()` or `error()` so dashboards can distinguish missing outcomes.
+ - `status` (typically the gRPC code name like `OK`, `INVALID_ARGUMENT`, `UNKNOWN`) maps to transport-layer status codes. Tags are case-sensitive (Micrometer doesn’t normalize them), so we standardize on uppercase gRPC names throughout the helpers.
+ - `result` is meant for business outcomes, while `status` captures the transport-level code; both help you filter dashboards more precisely. The hub enforces these tag keys via required/allowed tag sets so reports stay consistent across modules.
 
 ## Breaking changes & Versioning
 
@@ -54,7 +54,7 @@ The hub ships several helper classes whose job is to translate your telemetry in
 - **`StoreMetrics`** wraps storage layer counters/timers (`bytes`, `requests`, `latency`) with the right tag set (`component`, `operation`, `result`, `status`). Callers record bytes or durations and the helper ensures every emission matches the `floecat.core.store.*` definitions.
 - **`GcMetrics`** handles scheduler health (enabled, running state, last tick timestamps) for pointer, CAS, and idempotency collectors. Each helper knows its `component`/`operation` pair and tags results/exceptions consistently.
 - **Scheduler-driven gauges** – the GC schedulers (`floecat.service.gc.*`) and storage refresher expose gauges that update when those schedulers run. The GC metrics (`enabled`, `running`, `last.tick.start.ms`, `last.tick.end.ms`) reflect the most recent tick and remain unchanged when the scheduler is disabled (`enabled=0`, `running=0`). The storage metrics update on the refresh schedule controlled by `floecat.metrics.storage.refresh` (default `30s`), so per-account gauges (`floecat.service.storage.account.*`) represent the last sampled snapshot rather than every write.
-- **`ObservationScope`** is the standard pattern for RPC/async spans: call `observability.observe(category, component, operation, tags...)`, use the returned scope to mark success/error/retry, then `close()`. Scopes emit latency, error, and retry metrics in addition to optional timers, so helpers prefer them to manual timer/counter manipulation. The Micrometer implementation now provides real scopes for `Category.RPC`, `Category.STORE`, `Category.CACHE`, and `Category.GC` (only `BACKGROUND` and `OTHER` still return a `NOOP_SCOPE`), so helpers in those areas can rely on the scope lifecycle to emit the canonical metric set.
+- **`ObservationScope`** is the standard pattern for RPC/async spans: call `observability.observe(category, component, operation, tags...)`, use the returned scope to mark success/error/retry, then `close()`. Scopes emit latency, error, and retry metrics in addition to optional timers, so helpers prefer them to manual timer/counter manipulation. The Micrometer implementation now provides real scopes for `Category.RPC`, `Category.STORE`, `Category.CACHE`, and `Category.GC`; only `BACKGROUND` and `OTHER` still return a `NOOP_SCOPE`. This lets the helpers listed above reuse the same lifecycle hooks rather than sprinkling ad-hoc counters/timers around the code.
 
 Gauges emitted through these helpers can represent different sampling types:
 
