@@ -26,6 +26,10 @@ This lists all metrics available in the repository right now:
 | floecat.core.store.latency | TIMER | seconds | v1 | Store operation latency distribution. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.requests | COUNTER |  | v1 | Number of store requests emitted per component/operation. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.retries | COUNTER |  | v1 | Store retries per component/operation. | component, operation | component, operation |
+| floecat.core.task.enabled | GAUGE |  | v1 | Indicator that a scheduled task is enabled (1=enabled, 0=disabled). | component, operation, task | account, component, operation, task |
+| floecat.core.task.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the scheduled task last finished a tick. | component, operation, task | account, component, operation, task |
+| floecat.core.task.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the scheduled task last started a tick. | component, operation, task | account, component, operation, task |
+| floecat.core.task.running | GAUGE |  | v1 | Number of active ticks for the scheduled task (usually 0 or 1). | component, operation, task | account, component, operation, task |
 
 **Service Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
@@ -33,10 +37,6 @@ This lists all metrics available in the repository right now:
 | floecat.service.cache.accounts | GAUGE |  | v1 | Number of accounts with active caches. |  |  |
 | floecat.service.cache.enabled | GAUGE |  | v1 | Indicator that the graph cache is enabled. |  |  |
 | floecat.service.cache.max.size | GAUGE |  | v1 | Configured max entries for the graph cache. |  |  |
-| floecat.service.gc.scheduler.enabled | GAUGE |  | v1 | Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type. | gc | gc |
-| floecat.service.gc.scheduler.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type. | gc | gc |
-| floecat.service.gc.scheduler.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type. | gc | gc |
-| floecat.service.gc.scheduler.running | GAUGE |  | v1 | Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type. | gc | gc |
 | floecat.service.hint.cache.weight | GAUGE | bytes | v1 | Estimated weight of the hint cache. |  |  |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |

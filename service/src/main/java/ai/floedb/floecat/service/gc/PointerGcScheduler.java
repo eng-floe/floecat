@@ -18,11 +18,11 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.GcMetrics;
+import ai.floedb.floecat.telemetry.helpers.ScheduledTaskMetrics;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -50,12 +50,14 @@ public class PointerGcScheduler {
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
   private final AtomicLong lastTickEndMs = new AtomicLong(0);
+  private ScheduledTaskMetrics taskMetrics;
 
   private volatile boolean stopping;
 
   @PostConstruct
   void initMeters() {
     this.gcMetrics = new GcMetrics(observability, "service", "gc.pointer", "pointer");
+    this.taskMetrics = new ScheduledTaskMetrics(observability, "service", "gc.pointer", "pointer");
     registerGauges();
   }
 
@@ -138,27 +140,12 @@ public class PointerGcScheduler {
   }
 
   private void registerGauges() {
-    Tag gcTag = Tag.of(TagKey.GC_NAME, "pointer");
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_RUNNING,
-        () -> (double) running.get(),
-        "Pointer GC running flag",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_ENABLED,
-        () -> (double) enabledGauge.get(),
-        "Pointer GC enabled",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_LAST_TICK_START,
-        () -> (double) lastTickStartMs.get(),
-        "Pointer GC last tick start millis",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_LAST_TICK_END,
-        () -> (double) lastTickEndMs.get(),
-        "Pointer GC last tick end millis",
-        gcTag);
+    taskMetrics.gaugeRunning(() -> (double) running.get(), "Pointer GC running flag");
+    taskMetrics.gaugeEnabled(() -> (double) enabledGauge.get(), "Pointer GC enabled");
+    taskMetrics.gaugeLastTickStart(
+        () -> (double) lastTickStartMs.get(), "Pointer GC last tick start millis");
+    taskMetrics.gaugeLastTickEnd(
+        () -> (double) lastTickEndMs.get(), "Pointer GC last tick end millis");
   }
 
   private static List<Account> fetchAllAccounts(AccountRepository repo, int pageSize) {

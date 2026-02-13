@@ -18,11 +18,11 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.GcMetrics;
+import ai.floedb.floecat.telemetry.helpers.ScheduledTaskMetrics;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.scheduler.Scheduled;
 import io.quarkus.scheduler.ScheduledExecution;
@@ -53,35 +53,23 @@ public class IdempotencyGcScheduler {
   private final AtomicInteger enabledGauge = new AtomicInteger(0);
   private final AtomicLong lastTickStartMs = new AtomicLong(0);
   private final AtomicLong lastTickEndMs = new AtomicLong(0);
+  private ScheduledTaskMetrics taskMetrics;
 
   @PostConstruct
   void initMeters() {
     this.gcMetrics = new GcMetrics(observability, "service", "gc.idempotency", "idempotency");
+    this.taskMetrics =
+        new ScheduledTaskMetrics(observability, "service", "gc.idempotency", "idempotency");
     registerGauges();
   }
 
   private void registerGauges() {
-    Tag gcTag = Tag.of(TagKey.GC_NAME, "idempotency");
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_RUNNING,
-        () -> (double) running.get(),
-        "Idempotency GC running flag",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_ENABLED,
-        () -> (double) enabledGauge.get(),
-        "Idempotency GC enabled",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_LAST_TICK_START,
-        () -> (double) lastTickStartMs.get(),
-        "Idempotency GC last tick start millis",
-        gcTag);
-    observability.gauge(
-        ServiceMetrics.GC.SCHEDULER_LAST_TICK_END,
-        () -> (double) lastTickEndMs.get(),
-        "Idempotency GC last tick end millis",
-        gcTag);
+    taskMetrics.gaugeRunning(() -> (double) running.get(), "Idempotency GC running flag");
+    taskMetrics.gaugeEnabled(() -> (double) enabledGauge.get(), "Idempotency GC enabled");
+    taskMetrics.gaugeLastTickStart(
+        () -> (double) lastTickStartMs.get(), "Idempotency GC last tick start millis");
+    taskMetrics.gaugeLastTickEnd(
+        () -> (double) lastTickEndMs.get(), "Idempotency GC last tick end millis");
   }
 
   private final Map<String, String> tokenByAccount = new ConcurrentHashMap<>();

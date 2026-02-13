@@ -39,6 +39,10 @@ abstract class BaseMetrics {
     return metricTagList(extra).toArray(Tag[]::new);
   }
 
+  protected Tag[] metricTags() {
+    return metricTagList().toArray(Tag[]::new);
+  }
+
   protected Tag[] metricTags(List<Tag> extra) {
     return metricTagList(extra).toArray(Tag[]::new);
   }

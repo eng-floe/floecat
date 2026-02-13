@@ -18,29 +18,6 @@ public final class ServiceMetrics {
         new MetricId("floecat.service.cache.accounts", MetricType.GAUGE, "", CONTRACT, "service");
   }
 
-  public static final class GC {
-    public static final MetricId SCHEDULER_RUNNING =
-        new MetricId(
-            "floecat.service.gc.scheduler.running", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId SCHEDULER_ENABLED =
-        new MetricId(
-            "floecat.service.gc.scheduler.enabled", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId SCHEDULER_LAST_TICK_START =
-        new MetricId(
-            "floecat.service.gc.scheduler.last.tick.start.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-    public static final MetricId SCHEDULER_LAST_TICK_END =
-        new MetricId(
-            "floecat.service.gc.scheduler.last.tick.end.ms",
-            MetricType.GAUGE,
-            "milliseconds",
-            CONTRACT,
-            "service");
-  }
-
   public static final class Storage {
     public static final MetricId ACCOUNT_POINTERS =
         new MetricId(

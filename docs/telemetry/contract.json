@@ -200,6 +200,46 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.core.task.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that a scheduled task is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last finished a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last started a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.running",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of active ticks for the scheduled task (usually 0 or 1).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
     "name": "floecat.service.cache.accounts",
     "type": "GAUGE",
     "unit": "",
@@ -228,46 +268,6 @@
     "description": "Configured max entries for the graph cache.",
     "requiredTags": [],
     "allowedTags": []
-  },
-  {
-    "name": "floecat.service.gc.scheduler.enabled",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type.",
-    "requiredTags": ["gc"],
-    "allowedTags": ["gc"]
-  },
-  {
-    "name": "floecat.service.gc.scheduler.last.tick.end.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type.",
-    "requiredTags": ["gc"],
-    "allowedTags": ["gc"]
-  },
-  {
-    "name": "floecat.service.gc.scheduler.last.tick.start.ms",
-    "type": "GAUGE",
-    "unit": "milliseconds",
-    "since": "v1",
-    "origin": "service",
-    "description": "Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type.",
-    "requiredTags": ["gc"],
-    "allowedTags": ["gc"]
-  },
-  {
-    "name": "floecat.service.gc.scheduler.running",
-    "type": "GAUGE",
-    "unit": "",
-    "since": "v1",
-    "origin": "service",
-    "description": "Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type.",
-    "requiredTags": ["gc"],
-    "allowedTags": ["gc"]
   },
   {
     "name": "floecat.service.hint.cache.weight",

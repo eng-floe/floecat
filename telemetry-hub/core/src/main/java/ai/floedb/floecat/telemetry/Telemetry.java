@@ -65,6 +65,7 @@ public final class Telemetry {
     public static final String EXCEPTION = "exception";
     public static final String CACHE_NAME = "cache";
     public static final String GC_NAME = "gc";
+    public static final String TASK = "task";
 
     private TagKey() {}
   }
@@ -131,6 +132,23 @@ public final class Telemetry {
           new MetricId("floecat.core.gc.retries", MetricType.COUNTER, "", "v1", "core");
     }
 
+    public static final class Task {
+      public static final MetricId ENABLED =
+          new MetricId("floecat.core.task.enabled", MetricType.GAUGE, "", "v1", "core");
+      public static final MetricId RUNNING =
+          new MetricId("floecat.core.task.running", MetricType.GAUGE, "", "v1", "core");
+      public static final MetricId LAST_TICK_START =
+          new MetricId(
+              "floecat.core.task.last.tick.start.ms",
+              MetricType.GAUGE,
+              "milliseconds",
+              "v1",
+              "core");
+      public static final MetricId LAST_TICK_END =
+          new MetricId(
+              "floecat.core.task.last.tick.end.ms", MetricType.GAUGE, "milliseconds", "v1", "core");
+    }
+
     public static final MetricId DROPPED_TAGS = Observability.DROPPED_TAGS;
     public static final MetricId RPC_REQUESTS = Rpc.REQUESTS;
     public static final MetricId RPC_ACTIVE = Rpc.ACTIVE;
@@ -151,6 +169,10 @@ public final class Telemetry {
     public static final MetricId GC_PAUSE = Gc.PAUSE;
     public static final MetricId GC_ERRORS = Gc.ERRORS;
     public static final MetricId GC_RETRIES = Gc.RETRIES;
+    public static final MetricId TASK_ENABLED = Task.ENABLED;
+    public static final MetricId TASK_RUNNING = Task.RUNNING;
+    public static final MetricId TASK_LAST_TICK_START = Task.LAST_TICK_START;
+    public static final MetricId TASK_LAST_TICK_END = Task.LAST_TICK_END;
 
     private static final Map<MetricId, MetricDef> DEFINITIONS = buildDefinitions();
 
@@ -291,6 +313,33 @@ public final class Telemetry {
           gcAllowed,
           "Number of GC collections per GC type.");
       add(definitions, GC_PAUSE, gcRequired, gcAllowed, "GC pause time per GC type.");
+
+      Set<String> taskRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.TASK);
+      Set<String> taskAllowed = addTags(taskRequired, TagKey.ACCOUNT);
+      add(
+          definitions,
+          TASK_ENABLED,
+          taskRequired,
+          taskAllowed,
+          "Indicator that a scheduled task is enabled (1=enabled, 0=disabled).");
+      add(
+          definitions,
+          TASK_RUNNING,
+          taskRequired,
+          taskAllowed,
+          "Number of active ticks for the scheduled task (usually 0 or 1).");
+      add(
+          definitions,
+          TASK_LAST_TICK_START,
+          taskRequired,
+          taskAllowed,
+          "Timestamp (ms since epoch) when the scheduled task last started a tick.");
+      add(
+          definitions,
+          TASK_LAST_TICK_END,
+          taskRequired,
+          taskAllowed,
+          "Timestamp (ms since epoch) when the scheduled task last finished a tick.");
 
       return Collections.unmodifiableMap(definitions);
     }

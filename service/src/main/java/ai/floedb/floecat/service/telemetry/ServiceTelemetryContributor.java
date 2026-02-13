@@ -1,7 +1,6 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.service.telemetry.ServiceMetrics.Cache;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics.GC;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics.Hint;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics.Storage;
 import ai.floedb.floecat.telemetry.MetricDef;
@@ -25,32 +24,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     add(defs, Cache.ENABLED, empty, empty, "Indicator that the graph cache is enabled.");
     add(defs, Cache.MAX_SIZE, empty, empty, "Configured max entries for the graph cache.");
     add(defs, Cache.ACCOUNTS, empty, empty, "Number of accounts with active caches.");
-
-    Set<String> gcTag = Set.of(TagKey.GC_NAME);
-    add(
-        defs,
-        GC.SCHEDULER_RUNNING,
-        gcTag,
-        gcTag,
-        "Whether a GC scheduler tick is currently active (1=running, 0=idle), tagged by gc type.");
-    add(
-        defs,
-        GC.SCHEDULER_ENABLED,
-        gcTag,
-        gcTag,
-        "Whether a GC scheduler is enabled (1=enabled, 0=disabled), tagged by gc type.");
-    add(
-        defs,
-        GC.SCHEDULER_LAST_TICK_START,
-        gcTag,
-        gcTag,
-        "Timestamp (ms since epoch) when the GC scheduler last started a tick, tagged by gc type.");
-    add(
-        defs,
-        GC.SCHEDULER_LAST_TICK_END,
-        gcTag,
-        gcTag,
-        "Timestamp (ms since epoch) when the GC scheduler last finished a tick, tagged by gc type.");
     add(
         defs,
         Storage.ACCOUNT_POINTERS,
