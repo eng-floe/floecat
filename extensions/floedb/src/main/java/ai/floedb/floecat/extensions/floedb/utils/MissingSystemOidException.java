@@ -14,28 +14,15 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.metagraph.model;
+package ai.floedb.floecat.extensions.floedb.utils;
 
-import ai.floedb.floecat.catalog.rpc.Table;
-
-public interface TableNode extends RelationNode {
-
-  String displayName();
-
-  @Override
-  default GraphNodeKind kind() {
-    return GraphNodeKind.TABLE;
+/** Thrown when a SYSTEM object is missing a required OID hint and fallback is not allowed. */
+public final class MissingSystemOidException extends RuntimeException {
+  public MissingSystemOidException(String message) {
+    super(message);
   }
 
-  default Table.Builder toTableProtoBuilder() {
-    return Table.newBuilder()
-        .setResourceId(id())
-        .setDisplayName(displayName())
-        .setNamespaceId(namespaceId());
-    // TODO(mrouvroy): add more fields so we can have full content
-  }
-
-  default Table toTableProtoTable() {
-    return toTableProtoBuilder().build();
+  public MissingSystemOidException(String message, Throwable cause) {
+    super(message, cause);
   }
 }

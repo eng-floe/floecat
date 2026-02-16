@@ -18,8 +18,8 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
@@ -135,7 +135,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
             Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
           private final Iterator<NamespaceNode> nsIter = namespaceIterator;
-          private Iterator<GraphNode> relationIter = Collections.emptyIterator();
+          private Iterator<RelationNode> relationIter = Collections.emptyIterator();
           private Iterator<ColumnEntry> columnIter = Collections.emptyIterator();
           private NamespaceNode currentNamespace;
           private final Map<ResourceId, String> catalogNames = new HashMap<>();
@@ -156,7 +156,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                   }
                   continue;
                 }
-                GraphNode relation = nextRelation(ctx);
+                RelationNode relation = nextRelation(ctx);
                 if (relation == null) {
                   if (builder == null || builder.isEmpty()) {
                     return false;
@@ -174,7 +174,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
             }
           }
 
-          private GraphNode nextRelation(SystemObjectScanContext ctx) {
+          private RelationNode nextRelation(SystemObjectScanContext ctx) {
             while (!relationIter.hasNext()) {
               if (!nsIter.hasNext()) {
                 return null;
@@ -189,7 +189,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   private Stream<SystemObjectRow> scanRelation(
-      SystemObjectScanContext ctx, GraphNode node, Map<ResourceId, String> catalogNames) {
+      SystemObjectScanContext ctx, RelationNode node, Map<ResourceId, String> catalogNames) {
 
     if (node instanceof TableNode table) {
       return scanTable(ctx, table, catalogNames);
@@ -295,7 +295,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
   private List<ColumnEntry> columnsForRelation(
       SystemObjectScanContext ctx,
       NamespaceNode namespace,
-      GraphNode node,
+      RelationNode node,
       Map<ResourceId, String> catalogNames) {
     String catalogName =
         catalogNames.computeIfAbsent(

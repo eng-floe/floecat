@@ -23,6 +23,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -39,7 +40,7 @@ import java.util.Optional;
 public class TestCatalogOverlay implements CatalogOverlay {
 
   private final Map<ResourceId, GraphNode> nodes = new HashMap<>();
-  private final Map<ResourceId, List<GraphNode>> relationsByNamespace = new HashMap<>();
+  private final Map<ResourceId, List<RelationNode>> relationsByNamespace = new HashMap<>();
   private final Map<ResourceId, List<FunctionNode>> functionsByNamespace = new HashMap<>();
   private final Map<ResourceId, List<SchemaColumn>> tableSchemas = new HashMap<>();
   private final Map<String, TypeNode> typesByQName = new HashMap<>();
@@ -53,7 +54,7 @@ public class TestCatalogOverlay implements CatalogOverlay {
     return this;
   }
 
-  public TestCatalogOverlay addRelation(ResourceId namespaceId, GraphNode node) {
+  public TestCatalogOverlay addRelation(ResourceId namespaceId, RelationNode node) {
     relationsByNamespace.computeIfAbsent(namespaceId, k -> new ArrayList<>()).add(node);
     addNode(node);
     return this;
@@ -90,7 +91,7 @@ public class TestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
     return relationsByNamespace.getOrDefault(namespaceId, List.of());
   }
 
@@ -135,7 +136,7 @@ public class TestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public List<GraphNode> listRelations(ResourceId catalogId) {
+  public List<RelationNode> listRelations(ResourceId catalogId) {
     throw unsupported();
   }
 

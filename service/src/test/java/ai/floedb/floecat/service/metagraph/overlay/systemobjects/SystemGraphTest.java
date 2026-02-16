@@ -25,6 +25,7 @@ import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
@@ -121,20 +122,20 @@ class SystemGraphTest {
 
   @Test
   void listRelations_visibleFromAnyCatalog() {
-    List<GraphNode> nodes = systemGraph.listRelations(wrongCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, ENGINE, VERSION);
     assertThat(nodes).extracting(node -> node.displayName()).contains("pg_class");
   }
 
   @Test
   void listRelations_returnsRelationsForCorrectCatalog() {
-    List<GraphNode> nodes = systemGraph.listRelations(systemCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(systemCatalogId, ENGINE, VERSION);
     assertThat(nodes).extracting(GraphNode::id).contains(tableId);
     assertThat(nodes).hasSizeGreaterThanOrEqualTo(1);
   }
 
   @Test
   void listRelationsInNamespace_returnsRelations() {
-    List<GraphNode> nodes =
+    List<RelationNode> nodes =
         systemGraph.listRelationsInNamespace(systemCatalogId, namespaceId, ENGINE, VERSION);
     assertThat(nodes).hasSize(1);
     assertThat(nodes.get(0).id()).isEqualTo(tableId);

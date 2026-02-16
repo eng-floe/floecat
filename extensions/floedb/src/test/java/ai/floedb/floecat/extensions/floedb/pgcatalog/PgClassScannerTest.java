@@ -16,24 +16,21 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogTestSupport.*;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -47,28 +44,30 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li>Engine-specific payload decoding
- *   <li>Fallback behavior when payload is missing
- *   <li>Stable deterministic OIDs
+ *   <li>SYSTEM objects require persisted hints (no fallback)
+ *   <li>USER tables may fall back when payload is missing
+ *   <li>Stable deterministic OIDs (for USER fallback)
  *   <li>relkind derivation (table vs view)
  * </ul>
  */
 final class PgClassScannerTest {
 
   private final PgClassScanner scanner = new PgClassScanner();
-  private static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   @Test
   void scan_usesEngineSpecificPayload_whenPresent() {
 
+    NamespaceNode ns = systemPgCatalogNamespace();
     TableNode table =
-        table(
+        systemTable(
+            ns.id(),
             "my_table",
             List.of(),
             Map.of(),
             Map.of(
                 new EngineHintKey("floedb", "1.0", RELATION.type()),
                 new EngineHint(
-                    "floe.relation+proto",
+                    RELATION.type(),
                     FloeRelationSpecific.newBuilder()
                         .setOid(1001)
                         .setRelname("my_table")
@@ -78,54 +77,75 @@ final class PgClassScannerTest {
                         .build()
                         .toByteArray())));
 
-    SystemObjectScanContext ctx = contextWith(table);
+    SystemObjectScanContext ctx = contextWithRelations(ns, table);
 
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
     Object[] v = row.values();
 
-    assertThat(v[0]).isEqualTo(1001); // oid
-    assertThat(v[1]).isEqualTo("my_table"); // relname
-    assertThat(v[2]).isEqualTo(11); // relnamespace
-    assertThat(v[3]).isEqualTo("r"); // relkind
-    assertThat(v[4]).isEqualTo(42.0f); // reltuples
+    assertThat(v[0]).isEqualTo(1001);
+    assertThat(v[1]).isEqualTo("my_table");
+    assertThat(v[2]).isEqualTo(11);
+    assertThat(v[3]).isEqualTo("r");
+    assertThat(v[4]).isEqualTo(42.0f);
   }
 
   @Test
-  void scan_fallsBack_whenPayloadMissing() {
+  void scan_throws_whenSystemPayloadMissing() {
+    NamespaceNode ns = systemPgCatalogNamespace();
+    TableNode table = systemTable(ns.id(), "no_payload", List.of(), Map.of(), Map.of());
+    SystemObjectScanContext ctx = contextWithRelations(ns, table);
 
-    TableNode table = table("no_payload", List.of(), Map.of(), Map.of());
+    assertThatThrownBy(() -> scanner.scan(ctx).findFirst().orElseThrow())
+        .isInstanceOf(MissingSystemOidException.class);
+  }
 
-    SystemObjectScanContext ctx = contextWith(table);
+  @Test
+  void scan_fallsBack_whenUserPayloadMissing() {
+    NamespaceNode ns = userPgCatalogNamespace();
+    TableNode table = userTable(ns.id(), "no_payload", List.of(), Map.of(), Map.of());
+    SystemObjectScanContext ctx = contextWithRelations(ns, table);
 
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
     Object[] v = row.values();
 
-    assertThat(v[0]).isInstanceOf(Integer.class); // oid fallback
-    assertThat(v[1]).isEqualTo("no_payload"); // displayName
-    assertThat(v[2]).isEqualTo(11); // default pg_catalog namespace
-    assertThat(v[3]).isEqualTo("r"); // default table relkind
-    assertThat(v[4]).isEqualTo(0.0f); // reltuples fallback
+    assertThat(v[0]).isInstanceOf(Integer.class);
+    assertThat((int) v[0]).isNotZero();
+    assertThat(v[1]).isEqualTo("no_payload");
+    assertThat(v[2]).isEqualTo(135017987); // default OID geenrated for the namespace
+    assertThat(v[3]).isEqualTo("r");
+    assertThat(v[4]).isEqualTo(0.0f);
   }
 
   @Test
   void scan_viewHasRelkind_v() {
 
-    ViewNode view = view("my_view", Map.of());
+    NamespaceNode ns = systemPgCatalogNamespace();
+    ViewNode view =
+        systemView(
+            "my_view",
+            Map.of(
+                new EngineHintKey("floedb", "1.0", RELATION.type()),
+                new EngineHint(
+                    RELATION.type(),
+                    FloeRelationSpecific.newBuilder()
+                        .setOid(2001)
+                        .setRelkind("v")
+                        .build()
+                        .toByteArray())));
 
-    SystemObjectScanContext ctx = contextWith(view);
+    SystemObjectScanContext ctx = contextWithRelations(ns, view);
 
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
-    Object[] v = row.values();
-
-    assertThat(v[3]).isEqualTo("v"); // relkind
+    assertThat(row.values()[3]).isEqualTo("v");
   }
 
   @Test
   void scan_oidFallback_isStable() {
 
-    TableNode table = table("stable_oid", List.of(), Map.of(), Map.of());
+    NamespaceNode ns = userPgCatalogNamespace();
+    TableNode table = userTable(ns.id(), "stable_oid", List.of(), Map.of(), Map.of());
 
-    SystemObjectScanContext ctx = contextWith(table);
+    SystemObjectScanContext ctx = contextWithRelations(ns, table);
 
     int oid1 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
     int oid2 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
@@ -133,67 +153,14 @@ final class PgClassScannerTest {
     assertThat(oid1).isEqualTo(oid2);
   }
 
-  // ----------------------------------------------------------------------
-  // Test fixtures
-  // ----------------------------------------------------------------------
-
-  private static NamespaceNode pgCatalogNamespace() {
-    return new NamespaceNode(
-        PgCatalogTestIds.namespace("pg_catalog"),
-        1,
-        Instant.EPOCH,
-        catalogId(),
-        List.of(),
-        "pg_catalog",
-        GraphNodeOrigin.SYSTEM,
-        Map.of(),
-        Map.of());
-  }
-
-  private static SystemObjectScanContext contextWith(GraphNode... nodes) {
-    TestCatalogOverlay overlay = new TestCatalogOverlay();
-
-    NamespaceNode ns = pgCatalogNamespace();
-    overlay.addNode(ns);
-
-    for (GraphNode n : nodes) {
-      overlay.addRelation(ns.id(), n);
-    }
-
-    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
-  }
-
-  private static TableNode table(
-      String name,
-      List<SchemaColumn> columns,
-      Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
-      Map<EngineHintKey, EngineHint> hints) {
-
-    ResourceId id = PgCatalogTestIds.table(name);
-
-    return new SystemTableNode.FloeCatSystemTableNode(
-        id,
-        1,
-        Instant.EPOCH,
-        "15",
-        name,
-        pgCatalogNamespace().id(),
-        columns,
-        columnHints,
-        hints,
-        "scanner_id");
-  }
-
-  private static ViewNode view(String name, Map<EngineHintKey, EngineHint> hints) {
-
-    ResourceId id = PgCatalogTestIds.view(name);
-
+  private static ViewNode systemView(String name, Map<EngineHintKey, EngineHint> hints) {
+    NamespaceNode ns = systemPgCatalogNamespace();
     return new ViewNode(
-        id,
+        PgCatalogTestIds.view(name),
         1,
         Instant.EPOCH,
         catalogId(),
-        pgCatalogNamespace().id(),
+        ns.id(),
         name,
         "",
         "",
@@ -205,9 +172,5 @@ final class PgClassScannerTest {
         Optional.empty(),
         Map.of(),
         hints);
-  }
-
-  private static ResourceId catalogId() {
-    return PgCatalogTestIds.catalog();
   }
 }

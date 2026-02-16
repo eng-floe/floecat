@@ -452,8 +452,8 @@ public final class UserGraph {
    * @param catalogId the catalog to list relations from
    * @return list of all relations in the catalog
    */
-  public List<GraphNode> listRelations(ResourceId catalogId) {
-    List<GraphNode> out = new ArrayList<>(128);
+  public List<RelationNode> listRelations(ResourceId catalogId) {
+    List<RelationNode> out = new ArrayList<>(128);
 
     final String accountId = catalogId.getAccountId();
     final String cat = catalogId.getId();
@@ -480,8 +480,8 @@ public final class UserGraph {
    * @param namespaceId the namespace to list relations from
    * @return list of all relations in the namespace
    */
-  public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
-    List<GraphNode> out = new ArrayList<>(32);
+  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+    List<RelationNode> out = new ArrayList<>(32);
 
     final String accountId = catalogId.getAccountId();
     final String cat = catalogId.getId();

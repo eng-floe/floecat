@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.systemcatalog.graph;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
@@ -173,5 +174,16 @@ public final class SystemResourceIdGenerator {
     int version = (b[6] >> 4) & 0x0F;
     int variant = (b[8] & 0xC0) >> 6;
     return version == 4 && variant == 2;
+  }
+
+  public static boolean isSystemId(ResourceId id) {
+    if (id == null || id.getId() == null || id.getId().isBlank()) {
+      return false;
+    }
+    try {
+      return isSystemId(UUID.fromString(id.getId()));
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
   }
 }

@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import java.util.*;
 
 public final class FakeSystemGraph {
@@ -28,7 +29,7 @@ public final class FakeSystemGraph {
   public final Map<String, ResourceId> viewsByName = new HashMap<>();
   public final Map<String, ResourceId> namespacesByName = new HashMap<>();
 
-  public final List<GraphNode> relations = new ArrayList<>();
+  public final List<RelationNode> relations = new ArrayList<>();
   final List<GraphNode> namespaces = new ArrayList<>();
   final List<GraphNode> functions = new ArrayList<>();
   final List<GraphNode> types = new ArrayList<>();
@@ -55,11 +56,11 @@ public final class FakeSystemGraph {
     return Optional.ofNullable(nodesById.get(id));
   }
 
-  List<GraphNode> listRelations(ResourceId cat, String ek, String ev) {
+  List<RelationNode> listRelations(ResourceId cat, String ek, String ev) {
     return List.copyOf(relations);
   }
 
-  List<GraphNode> listRelationsInNamespace(ResourceId cat, ResourceId ns, String ek, String ev) {
+  List<RelationNode> listRelationsInNamespace(ResourceId cat, ResourceId ns, String ek, String ev) {
     return List.copyOf(relations);
   }
 

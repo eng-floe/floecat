@@ -17,7 +17,6 @@ package ai.floedb.floecat.extensions.floedb.hints;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogProvider;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
@@ -25,10 +24,14 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
+import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils.OidPolicy;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -47,23 +50,74 @@ public final class FloeHintResolver {
 
   private FloeHintResolver() {}
 
+  private static ScannerUtils.OidPolicy oidPolicy(GraphNode node) {
+    if (node == null) {
+      return ScannerUtils.OidPolicy.FALLBACK;
+    }
+    return node.origin() == GraphNodeOrigin.SYSTEM
+        ? ScannerUtils.OidPolicy.REQUIRE
+        : ScannerUtils.OidPolicy.FALLBACK;
+  }
+
+  private static <T extends Message> int resolveOid(
+      MetadataResolutionContext ctx,
+      ResourceId id,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass,
+      java.util.function.ToIntFunction<T> extractor,
+      ScannerUtils.OidPolicy policy,
+      String missingMsgPrefix) {
+    if (id == null) {
+      throw new IllegalArgumentException(
+          "Cannot resolve OID: id is null (" + missingMsgPrefix + ")");
+    }
+    if (ctx == null) {
+      if (policy == ScannerUtils.OidPolicy.REQUIRE) {
+        throw new MissingSystemOidException(
+            missingMsgPrefix + " id=" + id + " (no resolution context)");
+      }
+      return ScannerUtils.fallbackOid(id, descriptor.type());
+    }
+
+    return ScannerUtils.oid(
+        ctx.overlay(), id, descriptor, messageClass, extractor, ctx.engineContext(), policy);
+  }
+
+  private static <T extends Message> int resolveOid(
+      MetadataResolutionContext ctx,
+      GraphNode node,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass,
+      java.util.function.ToIntFunction<T> extractor,
+      String missingMsgPrefix) {
+
+    return resolveOid(
+        ctx,
+        node == null ? null : node.id(),
+        descriptor,
+        messageClass,
+        extractor,
+        oidPolicy(node),
+        missingMsgPrefix);
+  }
+
   public static FloeNamespaceSpecific namespaceSpecific(
       MetadataResolutionContext ctx, NamespaceNode namespace) {
     FloeNamespaceSpecific.Builder builder =
         payload(ctx, namespace.id(), NAMESPACE, FloeNamespaceSpecific.class)
             .map(FloeNamespaceSpecific::toBuilder)
             .orElse(FloeNamespaceSpecific.newBuilder());
-    applyNamespaceDefaults(builder, namespace);
+    applyNamespaceDefaults(builder, ctx, namespace);
     return builder.build();
   }
 
   public static FloeRelationSpecific relationSpecific(
-      MetadataResolutionContext ctx, GraphNode node) {
+      MetadataResolutionContext ctx, RelationNode node) {
     FloeRelationSpecific.Builder builder =
         payload(ctx, node.id(), RELATION, FloeRelationSpecific.class)
             .map(FloeRelationSpecific::toBuilder)
             .orElse(FloeRelationSpecific.newBuilder());
-    applyRelationDefaults(builder, node);
+    applyRelationDefaults(builder, ctx, node);
     return builder.build();
   }
 
@@ -82,10 +136,18 @@ public final class FloeHintResolver {
         payload(ctx, type.id(), TYPE, FloeTypeSpecific.class)
             .map(FloeTypeSpecific::toBuilder)
             .orElse(FloeTypeSpecific.newBuilder());
-    if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(type.id(), TYPE.type()));
-    }
     applyTypeDefaults(builder, type);
+
+    if (!builder.hasOid()) {
+      builder.setOid(
+          resolveOid(
+              ctx,
+              type,
+              TYPE,
+              FloeTypeSpecific.class,
+              FloeTypeSpecific::getOid,
+              "Missing OID for SYSTEM type"));
+    }
     return builder.build();
   }
 
@@ -97,6 +159,7 @@ public final class FloeHintResolver {
       int attnum,
       SchemaColumn column,
       LogicalType logicalType) {
+
     if (ctx != null && tableId != null) {
       Optional<FloeColumnSpecific> stored =
           ScannerUtils.columnPayload(
@@ -110,6 +173,7 @@ public final class FloeHintResolver {
         return stored.get();
       }
     }
+
     ColumnMetadata metadata = columnMetadata(ctx, resolver, column, logicalType);
     return buildColumnSpecific(column, attnum, metadata);
   }
@@ -119,30 +183,25 @@ public final class FloeHintResolver {
       TypeResolver resolver,
       SchemaColumn column,
       LogicalType logicalType) {
+
     LogicalType resolved = logicalType == null ? parseLogicalType(column) : logicalType;
 
-    // If we cannot parse/resolve a logical type, still return a stable, safe metadata bundle.
-    // This keeps pg_attribute rows well-formed even when upstream logical types are
-    // missing/invalid.
+    String columnName = column == null ? "<unknown>" : column.getName();
     if (resolved == null) {
-      int typeOid = ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
-      return new ColumnMetadata(typeOid, -1, -1, "i", false, "p", 0, 0);
+      throw new MissingSystemOidException("Missing/invalid logical type for column " + columnName);
     }
 
     ColumnMetadata metadata = resolveColumnMetadata(ctx, resolver, column, resolved);
-    if (metadata != null) {
-      return metadata;
+    if (metadata == null) {
+      throw new MissingSystemOidException(
+          "Failed to derive metadata for column " + columnName + " logicalType=" + resolved);
     }
-
-    int typeOid = fallbackTypeOid(ctx, resolver, column, resolved);
-    int typmod = deriveTypmod(resolved);
-    return new ColumnMetadata(typeOid, typmod, -1, "i", passByValue(resolved), "p", 0, 0);
+    return metadata;
   }
 
   public static FloeColumnSpecific buildColumnSpecific(
       SchemaColumn column, int attnum, ColumnMetadata metadata) {
-    FloeColumnSpecific.Builder builder = FloeColumnSpecific.newBuilder();
-    builder
+    return FloeColumnSpecific.newBuilder()
         .setAttname(column == null ? "" : column.getName())
         .setAttnum(attnum)
         .setAttnotnull(column != null && !column.getNullable())
@@ -150,32 +209,61 @@ public final class FloeHintResolver {
         .setAtttypid(metadata.typeOid())
         .setAtttypmod(metadata.typmod())
         .setAttcollation(metadata.attcollation())
-        .setAtthasdef(false);
-    return builder.build();
+        .setAtthasdef(false)
+        .build();
   }
 
   private static void applyNamespaceDefaults(
-      FloeNamespaceSpecific.Builder builder, NamespaceNode namespace) {
+      FloeNamespaceSpecific.Builder builder,
+      MetadataResolutionContext ctx,
+      NamespaceNode namespace) {
+
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(namespace.id(), NAMESPACE.type()));
+      builder.setOid(
+          resolveOid(
+              ctx,
+              namespace,
+              NAMESPACE,
+              FloeNamespaceSpecific.class,
+              FloeNamespaceSpecific::getOid,
+              "Missing OID for SYSTEM namespace"));
     }
     if (!builder.hasNspname()) {
       builder.setNspname(namespace.displayName());
     }
   }
 
-  private static void applyRelationDefaults(FloeRelationSpecific.Builder builder, GraphNode node) {
+  private static void applyRelationDefaults(
+      FloeRelationSpecific.Builder builder, MetadataResolutionContext ctx, RelationNode relnode) {
+
     if (!builder.hasOid()) {
-      builder.setOid(ScannerUtils.fallbackOid(node.id(), RELATION.type()));
+      builder.setOid(
+          resolveOid(
+              ctx,
+              relnode,
+              RELATION,
+              FloeRelationSpecific.class,
+              FloeRelationSpecific::getOid,
+              "Missing OID for SYSTEM relation"));
     }
     if (!builder.hasRelname()) {
-      builder.setRelname(node.displayName());
+      builder.setRelname(relnode.displayName());
     }
     if (!builder.hasRelnamespace()) {
-      builder.setRelnamespace(PgCatalogProvider.PG_CATALOG_OID);
+      ResourceId namespaceId = relnode.namespaceId();
+      assert namespaceId != null;
+      builder.setRelnamespace(
+          ScannerUtils.oid(
+              ctx.overlay(),
+              namespaceId,
+              NAMESPACE,
+              FloeNamespaceSpecific.class,
+              FloeNamespaceSpecific::getOid,
+              ctx.engineContext(),
+              ScannerUtils.oidPolicy(namespaceId)));
     }
     if (!builder.hasRelkind()) {
-      builder.setRelkind(node instanceof ViewNode ? "v" : "r");
+      builder.setRelkind(relnode instanceof ViewNode ? "v" : "r");
     }
   }
 
@@ -184,11 +272,23 @@ public final class FloeHintResolver {
       MetadataResolutionContext ctx,
       ResourceId namespaceId,
       FunctionNode function) {
+
+    // IMPORTANT: we only allow fallback for USER objects; SYSTEM must have persisted hints.
+    ScannerUtils.OidPolicy policy = oidPolicy(function);
+
     if (ctx == null) {
+      if (policy == ScannerUtils.OidPolicy.REQUIRE) {
+        throw new MissingSystemOidException(
+            "Missing required SYSTEM function hints for function id="
+                + function.id()
+                + " (no resolution context)");
+      }
       return;
     }
+
     CatalogOverlay overlay = ctx.overlay();
     EngineContext engineContext = ctx.engineContext();
+
     if (!builder.hasOid()) {
       builder.setOid(
           ScannerUtils.oid(
@@ -197,8 +297,10 @@ public final class FloeHintResolver {
               FUNCTION,
               FloeFunctionSpecific.class,
               FloeFunctionSpecific::getOid,
-              engineContext));
+              engineContext,
+              policy));
     }
+
     builder.setPronamespace(
         ScannerUtils.oid(
             overlay,
@@ -206,7 +308,9 @@ public final class FloeHintResolver {
             NAMESPACE,
             FloeNamespaceSpecific.class,
             FloeNamespaceSpecific::getOid,
-            engineContext));
+            engineContext,
+            ScannerUtils.oidPolicy(namespaceId)));
+
     if (!builder.hasProrettype()) {
       builder.setProrettype(
           ScannerUtils.oid(
@@ -215,8 +319,10 @@ public final class FloeHintResolver {
               FUNCTION,
               FloeFunctionSpecific.class,
               FloeFunctionSpecific::getProrettype,
-              engineContext));
+              engineContext,
+              OidPolicy.REQUIRE));
     }
+
     if (builder.getProargtypesCount() == 0) {
       int[] types =
           ScannerUtils.array(
@@ -225,7 +331,8 @@ public final class FloeHintResolver {
               FUNCTION,
               FloeFunctionSpecific.class,
               s -> s.getProargtypesList().stream().mapToInt(Integer::intValue).toArray(),
-              engineContext);
+              engineContext,
+              OidPolicy.REQUIRE);
       Arrays.stream(types).forEach(builder::addProargtypes);
     }
   }
@@ -234,7 +341,7 @@ public final class FloeHintResolver {
     if (!builder.hasTypname()) {
       builder.setTypname(type.displayName());
     }
-    if (!builder.hasTypnamespace()) {
+    if (!builder.hasTypnamespace() && type.origin() == GraphNodeOrigin.SYSTEM) {
       builder.setTypnamespace(PgCatalogProvider.PG_CATALOG_OID);
     }
     if (!builder.hasTyplen()) {
@@ -253,70 +360,55 @@ public final class FloeHintResolver {
       TypeResolver resolver,
       SchemaColumn column,
       LogicalType logical) {
+
     if (ctx == null || resolver == null || column == null) {
       return null;
     }
-    LogicalType logicalType = logical == null ? parseLogicalType(column) : logical;
-    if (logicalType == null) {
-      return null;
-    }
-    CatalogOverlay overlay = ctx.overlay();
-    EngineContext engineContext = ctx.engineContext();
-    try {
-      int typmod = deriveTypmod(logicalType);
-      TypeNode type = resolver.resolveOrThrow(logicalType);
-      int typeOid =
-          ScannerUtils.oid(
-              overlay,
-              type.id(),
-              TYPE,
-              FloeTypeSpecific.class,
-              FloeTypeSpecific::getOid,
-              engineContext);
-      Optional<FloeTypeSpecific> typeSpec =
-          ScannerUtils.payload(overlay, type.id(), TYPE, FloeTypeSpecific.class, engineContext);
-      FloeTypeSpecific specific =
-          typeSpec.isPresent()
-              ? typeSpec.get()
-              : FloeTypeSpecific.newBuilder().setOid(typeOid).build();
-      int attlen = typeSpec.map(FloeTypeSpecific::getTyplen).orElse(-1);
-      String attalign = specific.getTypalign().isBlank() ? "i" : specific.getTypalign();
-      boolean attbyval =
-          typeSpec
-              .filter(FloeTypeSpecific::hasTypbyval)
-              .map(FloeTypeSpecific::getTypbyval)
-              .orElse(passByValue(logicalType));
-      int attcollation = typeSpec.map(FloeTypeSpecific::getTypcollation).orElse(0);
-      return new ColumnMetadata(typeOid, typmod, attlen, attalign, attbyval, "p", 0, attcollation);
-    } catch (RuntimeException e) {
-      return null;
-    }
-  }
 
-  private static int fallbackTypeOid(
-      MetadataResolutionContext ctx,
-      TypeResolver resolver,
-      SchemaColumn column,
-      LogicalType logical) {
-    if (ctx == null || resolver == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
-    }
+    String columnName = column.getName() == null ? "<unknown>" : column.getName();
     LogicalType logicalType = logical == null ? parseLogicalType(column) : logical;
     if (logicalType == null) {
-      return ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type());
+      return null;
     }
-    Optional<TypeNode> resolved = resolver.resolve(logicalType);
-    return resolved
-        .map(
-            type ->
-                ScannerUtils.oid(
-                    ctx.overlay(),
-                    type.id(),
-                    TYPE,
-                    FloeTypeSpecific.class,
-                    FloeTypeSpecific::getOid,
-                    ctx.engineContext()))
-        .orElseGet(() -> ScannerUtils.fallbackOid(fallbackTypeId(column), TYPE.type()));
+
+    int typmod = deriveTypmod(logicalType);
+    TypeNode type;
+    try {
+      type = resolver.resolveOrThrow(logicalType);
+    } catch (IllegalStateException e) {
+      throw new MissingSystemOidException(
+          "Failed to resolve type for column " + columnName + " logicalType=" + logicalType, e);
+    }
+
+    Optional<FloeTypeSpecific> specificOpt = payload(ctx, type.id(), TYPE, FloeTypeSpecific.class);
+
+    int typeOid =
+        ScannerUtils.oid(
+            ctx.overlay(),
+            type.id(),
+            TYPE,
+            FloeTypeSpecific.class,
+            FloeTypeSpecific::getOid,
+            ctx.engineContext(),
+            oidPolicy(type));
+
+    int attlen = specificOpt.map(s -> s.hasTyplen() ? s.getTyplen() : -1).orElse(-1);
+    String attalign =
+        (specificOpt.isPresent()
+                && specificOpt.get().hasTypalign()
+                && !specificOpt.get().getTypalign().isBlank())
+            ? specificOpt.get().getTypalign()
+            : "i";
+    boolean attbyval =
+        (specificOpt.isPresent() && specificOpt.get().hasTypbyval())
+            ? specificOpt.get().getTypbyval()
+            : passByValue(logicalType);
+    int attcollation =
+        (specificOpt.isPresent() && specificOpt.get().hasTypcollation())
+            ? specificOpt.get().getTypcollation()
+            : 0;
+
+    return new ColumnMetadata(typeOid, typmod, attlen, attalign, attbyval, "p", 0, attcollation);
   }
 
   public static LogicalType parseLogicalType(SchemaColumn column) {
@@ -344,18 +436,6 @@ public final class FloeHintResolver {
     return -1;
   }
 
-  private static ResourceId fallbackTypeId(SchemaColumn column) {
-    String key = column == null ? "unknown" : column.getLogicalType();
-    if (key == null || key.isBlank()) {
-      key = column == null ? "column" : column.getName();
-    }
-    return ResourceId.newBuilder()
-        .setAccountId("floecat")
-        .setKind(ResourceKind.RK_TYPE)
-        .setId("fallback:" + key)
-        .build();
-  }
-
   private static <T extends Message> Optional<T> payload(
       MetadataResolutionContext ctx,
       ResourceId id,
@@ -371,12 +451,10 @@ public final class FloeHintResolver {
     if (logical == null) {
       return false;
     }
-    switch (logical.kind()) {
-      case BOOLEAN, INT16, INT32, INT64, FLOAT32, FLOAT64, DATE, TIME, TIMESTAMP, UUID:
-        return true;
-      default:
-        return false;
-    }
+    return switch (logical.kind()) {
+      case BOOLEAN, INT16, INT32, INT64, FLOAT32, FLOAT64, DATE, TIME, TIMESTAMP, UUID -> true;
+      default -> false;
+    };
   }
 
   public static record ColumnMetadata(

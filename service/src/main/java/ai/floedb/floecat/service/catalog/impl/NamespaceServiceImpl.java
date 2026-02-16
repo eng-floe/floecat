@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -92,13 +93,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       return;
     }
 
-    boolean isSystem =
-        overlay
-            .resolve(namespaceId)
-            .filter(NamespaceNode.class::isInstance)
-            .map(NamespaceNode.class::cast)
-            .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
-            .isPresent();
+    boolean isSystem = SystemResourceIdGenerator.isSystemId(namespaceId);
 
     if (isSystem) {
       throw GrpcErrors.permissionDenied(

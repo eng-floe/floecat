@@ -25,6 +25,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.Origin;
@@ -95,7 +96,7 @@ public class UserObjectBundleService {
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
-      @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "false")
+      @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
@@ -158,11 +159,18 @@ public class UserObjectBundleService {
       Optional<GraphNode> node = overlay.resolve(relationId);
       if (node.isEmpty()) {
         if (input.getTargetCase() == QueryInput.TargetCase.NAME) {
-          throw new GraphNodeMissingException(relationId);
+          throw new GraphNodeMissingException(
+              relationId, "Id " + relationId + " does not map to any known object");
         }
         continue;
       }
-      return Optional.of(new ResolvedRelation(candidate, relationId, node.get(), input));
+      GraphNode gn = node.get();
+      if (!(gn instanceof RelationNode rel)) {
+        throw new GraphNodeMissingException(
+            relationId,
+            "Resolved id " + relationId + " maps to non-relation node kind=" + gn.kind());
+      }
+      return Optional.of(new ResolvedRelation(candidate, relationId, rel, input));
     }
     return Optional.empty();
   }
@@ -505,13 +513,14 @@ public class UserObjectBundleService {
   private record ResolvedRelation(
       TableReferenceCandidate candidate,
       ResourceId relationId,
-      GraphNode node,
+      RelationNode node,
       QueryInput selectedInput) {}
 
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
 
-    private GraphNodeMissingException(ResourceId relationId) {
+    private GraphNodeMissingException(ResourceId relationId, String msg) {
+      super(msg);
       this.relationId = relationId;
     }
 

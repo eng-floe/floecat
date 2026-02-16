@@ -22,6 +22,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
@@ -101,7 +102,7 @@ public final class SystemGraph {
    * <p>The snapshot already groups namespace→relations so we can return the bucket without
    * recalculating it on every invocation.
    */
-  public List<GraphNode> listRelations(ResourceId catalogId, EngineContext ctx) {
+  public List<RelationNode> listRelations(ResourceId catalogId, EngineContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return snapshot.namespaces().stream()
@@ -110,11 +111,11 @@ public final class SystemGraph {
                 Stream.concat(
                     snapshot.tablesInNamespace(ns.id()).stream(),
                     snapshot.viewsInNamespace(ns.id()).stream()))
-        .map(GraphNode.class::cast)
+        .map(RelationNode.class::cast)
         .toList();
   }
 
-  public List<GraphNode> listRelations(
+  public List<RelationNode> listRelations(
       ResourceId catalogId, String engineKind, String engineVersion) {
     return listRelations(catalogId, EngineContext.of(engineKind, engineVersion));
   }
@@ -125,18 +126,18 @@ public final class SystemGraph {
    *
    * @param catalogId is ignored as system objects have their own semantics for catalog
    */
-  public List<GraphNode> listRelationsInNamespace(
+  public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, EngineContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return Stream.concat(
             snapshot.tablesInNamespace(namespaceId).stream(),
             snapshot.viewsInNamespace(namespaceId).stream())
-        .map(GraphNode.class::cast)
+        .map(RelationNode.class::cast)
         .toList();
   }
 
-  public List<GraphNode> listRelationsInNamespace(
+  public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
     return listRelationsInNamespace(
         catalogId, namespaceId, EngineContext.of(engineKind, engineVersion));

@@ -16,23 +16,20 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogTestSupport.*;
+import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.spi.scanner.*;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
-import java.time.Instant;
+import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
+import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -40,19 +37,23 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for pg_catalog.pg_proc scanner.
  *
- * <p>This test validates: - FunctionNode → pg_proc mapping - EngineHint decoding - Default behavior
- * when hints are missing
+ * <p>This test validates:
  *
- * <p>It does NOT test SystemGraph or pbtxt loading.
+ * <ul>
+ *   <li>FunctionNode → pg_proc mapping
+ *   <li>EngineHint decoding
+ *   <li>SYSTEM objects require persisted hints (no fallback)
+ * </ul>
+ *
+ * <p>NOTE: There are currently no USER functions; tests must not create user FunctionNodes.
  */
 final class PgProcScannerTest {
 
   private final SystemObjectScanner scanner = new PgProcScanner();
-  private static final EngineContext ENGINE_CTX = EngineContext.of("floe-demo", "1.0");
 
   @Test
   void scan_emitsRowsForAllFunctions() {
-    SystemObjectScanContext ctx = contextWithFunctions();
+    SystemObjectScanContext ctx = contextWithSystemFunctions();
 
     List<SystemObjectRow> rows = scanner.scan(ctx).toList();
 
@@ -65,7 +66,7 @@ final class PgProcScannerTest {
   void scan_usesEnginePayloadWhenPresent() {
     SystemObjectRow row =
         scanner
-            .scan(contextWithFunctions())
+            .scan(contextWithSystemFunctions())
             .filter(r -> "int4_abs".equals(r.values()[1]))
             .findFirst()
             .orElseThrow();
@@ -77,26 +78,10 @@ final class PgProcScannerTest {
   }
 
   @Test
-  void scan_defaultsWhenPayloadMissing() {
-    SystemObjectRow row =
-        scanner
-            .scan(contextWithFunctions())
-            .filter(r -> "text_length".equals(r.values()[1]))
-            .findFirst()
-            .orElseThrow();
-
-    Object[] v = row.values();
-
-    assertThat(v[0]).isInstanceOf(Integer.class);
-    assertThat((int) v[0]).isNotZero();
-    assertThat(v[5]).isEqualTo(false);
-  }
-
-  @Test
   void scan_marksAggregatesCorrectly() {
     List<SystemObjectRow> rows =
         scanner
-            .scan(contextWithFunctions())
+            .scan(contextWithSystemFunctions())
             .filter(r -> (boolean) r.values()[5]) // proisagg
             .toList();
 
@@ -105,226 +90,92 @@ final class PgProcScannerTest {
 
   @Test
   void scan_marksWindowFunctionsCorrectly() {
-    SystemObjectScanContext ctx = contextWithWindowFunction();
-
-    List<SystemObjectRow> rows = scanner.scan(ctx).toList();
+    SystemObjectScanContext ctx = contextWithSystemWindowFunction();
 
     SystemObjectRow windowRow =
-        rows.stream().filter(r -> "my_window_fn".equals(r.values()[1])).findFirst().orElseThrow();
+        scanner
+            .scan(ctx)
+            .filter(r -> "my_window_fn".equals(r.values()[1]))
+            .findFirst()
+            .orElseThrow();
 
     Object[] vals = windowRow.values();
-
     assertThat(vals[6]).isEqualTo(true); // proiswindow
     assertThat(vals[5]).isEqualTo(false); // proisagg
   }
 
   @Test
-  void scan_getNodeOidIsStable() {
-    SystemObjectScanContext ctx = contextWithFunctions();
-
-    List<SystemObjectRow> rows1 = scanner.scan(ctx).toList();
-    List<SystemObjectRow> rows2 = scanner.scan(ctx).toList();
-
-    int oid1 =
-        rows1.stream()
-            .filter(r -> "text_length".equals(r.values()[1]))
-            .findFirst()
-            .map(r -> (int) r.values()[0])
-            .orElseThrow();
-
-    int oid2 =
-        rows2.stream()
-            .filter(r -> "text_length".equals(r.values()[1]))
-            .findFirst()
-            .map(r -> (int) r.values()[0])
-            .orElseThrow();
-
-    assertThat(oid1).isEqualTo(oid2);
+  void scan_throws_whenSystemPayloadMissing() {
+    assertThatThrownBy(() -> scanner.scan(contextWithSystemFunctionMissingPayload()).toList())
+        .isInstanceOf(MissingSystemOidException.class);
   }
 
   // ----------------------------------------------------------------------
   // Test fixtures
   // ----------------------------------------------------------------------
 
-  private static SystemObjectScanContext contextWithFunctions() {
-    ResourceId namespaceId =
-        SystemNodeRegistry.resourceId(
-            "floe-demo", ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
-
-    NamespaceNode pgCatalog =
-        new NamespaceNode(
-            namespaceId,
-            1,
-            Instant.EPOCH,
-            ridCatalog(),
-            List.of("pg_catalog"),
-            "pg_catalog",
-            GraphNodeOrigin.SYSTEM,
-            Map.of(),
-            Map.of());
-
+  private static SystemObjectScanContext contextWithSystemFunctions() {
+    NamespaceNode ns = systemPgCatalogNamespace();
     FunctionNode int4Abs =
-        new FunctionNode(
-            rid("int4_abs"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
+        systemFunction(
+            ns.id(),
             "int4_abs",
-            List.of(),
-            null,
             false,
             false,
-            Map.of(
-                new EngineHintKey("floe-demo", "1.0", "floe.function+proto"),
-                new EngineHint(
-                    "floe.function+proto",
-                    FloeFunctionSpecific.newBuilder()
-                        .setOid(1250)
-                        .setProname("int4_abs")
-                        .setProisagg(false)
-                        .build()
-                        .toByteArray())));
-
+            functionHint(1250, "int4_abs", 23, false, false, 23));
     FunctionNode textLength =
-        new FunctionNode(
-            rid("text_length"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
+        systemFunction(
+            ns.id(),
             "text_length",
-            List.of(),
-            null,
             false,
             false,
-            Map.of());
-
+            functionHint(1300, "text_length", 23, false, false, 25));
     FunctionNode sumState =
-        new FunctionNode(
-            rid("sum_int4_state"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
+        systemFunction(
+            ns.id(),
             "sum_int4_state",
-            List.of(),
-            null,
             true,
             false,
-            Map.of());
+            functionHint(1400, "sum_int4_state", 23, true, false, 23));
 
-    TestCatalogOverlay graph =
-        new TestCatalogOverlay()
-            .addNode(pgCatalog)
-            .addFunction(namespaceId, int4Abs)
-            .addFunction(namespaceId, textLength)
-            .addFunction(namespaceId, sumState);
-
-    return new SystemObjectScanContext(
-        graph, NameRef.getDefaultInstance(), ridCatalog(), ENGINE_CTX);
+    return contextWithFunctions(ns, int4Abs, textLength, sumState);
   }
 
-  private static SystemObjectScanContext contextWithWindowFunction() {
-    ResourceId namespaceId =
-        SystemNodeRegistry.resourceId(
-            "floe-demo", ResourceKind.RK_NAMESPACE, NameRefUtil.name("pg_catalog"));
-
-    NamespaceNode pgCatalog =
-        new NamespaceNode(
-            namespaceId,
-            1,
-            Instant.EPOCH,
-            ridCatalog(),
-            List.of("pg_catalog"),
-            "pg_catalog",
-            GraphNodeOrigin.SYSTEM,
-            Map.of(),
-            Map.of());
-
-    FunctionNode int4Abs =
-        new FunctionNode(
-            rid("int4_abs"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
-            "int4_abs",
-            List.of(),
-            null,
-            false,
-            false,
-            Map.of(
-                new EngineHintKey("floe-demo", "1.0", "floe.function+proto"),
-                new EngineHint(
-                    "floe.function+proto",
-                    FloeFunctionSpecific.newBuilder()
-                        .setOid(1250)
-                        .setProname("int4_abs")
-                        .setProisagg(false)
-                        .build()
-                        .toByteArray())));
-
-    FunctionNode textLength =
-        new FunctionNode(
-            rid("text_length"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
-            "text_length",
-            List.of(),
-            null,
-            false,
-            false,
-            Map.of());
-
-    FunctionNode sumState =
-        new FunctionNode(
-            rid("sum_int4_state"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
-            "sum_int4_state",
-            List.of(),
-            null,
-            true,
-            false,
-            Map.of());
-
-    FunctionNode myWindowFn =
-        new FunctionNode(
-            rid("my_window_fn"),
-            1,
-            Instant.EPOCH,
-            "15",
-            namespaceId,
+  private static SystemObjectScanContext contextWithSystemWindowFunction() {
+    NamespaceNode ns = systemPgCatalogNamespace();
+    FunctionNode windowFn =
+        systemFunction(
+            ns.id(),
             "my_window_fn",
-            List.of(),
-            null,
             false,
             true,
-            Map.of());
+            functionHint(1500, "my_window_fn", 23, false, true, 23));
 
-    TestCatalogOverlay graph =
-        new TestCatalogOverlay()
-            .addNode(pgCatalog)
-            .addFunction(namespaceId, int4Abs)
-            .addFunction(namespaceId, textLength)
-            .addFunction(namespaceId, sumState)
-            .addFunction(namespaceId, myWindowFn);
-
-    return new SystemObjectScanContext(
-        graph, NameRef.getDefaultInstance(), ridCatalog(), ENGINE_CTX);
+    return contextWithFunctions(ns, windowFn);
   }
 
-  private static ResourceId rid(String name) {
-    return SystemNodeRegistry.resourceId(
-        "postgres", ResourceKind.RK_FUNCTION, NameRefUtil.name("pg_catalog", name));
+  private static SystemObjectScanContext contextWithSystemFunctionMissingPayload() {
+    NamespaceNode ns = systemPgCatalogNamespace();
+    FunctionNode missingPayload = systemFunction(ns.id(), "text_length", false, false, Map.of());
+
+    return contextWithFunctions(ns, missingPayload);
   }
 
-  private static ResourceId ridCatalog() {
-    return SystemNodeRegistry.systemCatalogContainerId("postgres");
+  private static Map<EngineHintKey, EngineHint> functionHint(
+      int oid, String name, int prorettype, boolean isAgg, boolean isWindow, int... argtypes) {
+    FloeFunctionSpecific.Builder builder =
+        FloeFunctionSpecific.newBuilder()
+            .setOid(oid)
+            .setProname(name)
+            .setProisagg(isAgg)
+            .setProiswindow(isWindow)
+            .setProrettype(prorettype);
+    for (int arg : argtypes) {
+      builder.addProargtypes(arg);
+    }
+    return Map.of(
+        new EngineHintKey(
+            ENGINE_CTX.normalizedKind(), ENGINE_CTX.normalizedVersion(), FUNCTION.type()),
+        new EngineHint(FUNCTION.type(), builder.build().toByteArray()));
   }
 }

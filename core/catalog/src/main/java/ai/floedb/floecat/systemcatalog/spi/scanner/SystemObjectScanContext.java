@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
@@ -77,7 +78,7 @@ public record SystemObjectScanContext(
   }
 
   /** Tables + views */
-  public List<GraphNode> listRelations(ResourceId namespaceId) {
+  public List<RelationNode> listRelations(ResourceId namespaceId) {
     return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId);
   }
 
