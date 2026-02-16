@@ -61,6 +61,17 @@ class MetricValidatorTest {
   }
 
   @Test
+  void lenientTypeMismatch() {
+    MetricValidator validator = new MetricValidator(registry, TelemetryPolicy.LENIENT);
+    MetricValidator.ValidationResult result =
+        validator.validate(
+            Telemetry.Metrics.RPC_LATENCY, MetricType.COUNTER, Tag.of("component", "svc"));
+    assertThat(result.emit()).isFalse();
+    assertThat(result.reason()).isEqualTo(DropMetricReason.TYPE_MISMATCH);
+    assertThat(result.detail()).contains("metric type mismatch");
+  }
+
+  @Test
   void lenientDropsMetricWhenRequiredTagsMissing() {
     MetricValidator validator = new MetricValidator(registry, TelemetryPolicy.LENIENT);
     MetricValidator.ValidationResult result =

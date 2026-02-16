@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.telemetry.micrometer;
 
+import ai.floedb.floecat.telemetry.DropMetricReason;
 import ai.floedb.floecat.telemetry.MetricDef;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.MetricType;
@@ -34,6 +35,7 @@ import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
+import io.opentelemetry.api.trace.SpanContext;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.Tracer;
@@ -46,6 +48,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
@@ -59,6 +62,9 @@ public final class MicrometerObservability implements Observability {
   private final TelemetryRegistry telemetryRegistry;
   private final MetricValidator validator;
   private final Counter droppedTagsCounter;
+  private final Counter invalidMetricCounter;
+  private final Counter duplicateGaugeCounter;
+  private final ConcurrentMap<String, Counter> droppedMetricCounters = new ConcurrentHashMap<>();
   private final ConcurrentMap<MeterKey, Counter> counters = new ConcurrentHashMap<>();
   private final ConcurrentMap<MeterKey, Timer> timers = new ConcurrentHashMap<>();
   private final ConcurrentMap<MeterKey, DistributionSummary> summaries = new ConcurrentHashMap<>();
@@ -66,6 +72,60 @@ public final class MicrometerObservability implements Observability {
 
   private final TelemetryPolicy policy;
   private final Tracer tracer;
+
+  private static final Set<String> HISTOGRAM_TIMERS =
+      Set.of(
+          Telemetry.Metrics.RPC_LATENCY.name(),
+          Telemetry.Metrics.STORE_LATENCY.name(),
+          Telemetry.Metrics.CACHE_LATENCY.name(),
+          Telemetry.Metrics.EXEC_TASK_WAIT.name(),
+          Telemetry.Metrics.EXEC_TASK_RUN.name());
+  private static final Duration HISTOGRAM_EXPIRY = Duration.ofMinutes(5);
+  private static final Duration HISTOGRAM_MIN = Duration.ofNanos(100_000);
+  private static final Duration[] RPC_SLOS =
+      new Duration[] {
+        Duration.ofMillis(5),
+        Duration.ofMillis(10),
+        Duration.ofMillis(25),
+        Duration.ofMillis(50),
+        Duration.ofMillis(100),
+        Duration.ofMillis(250),
+        Duration.ofMillis(500),
+        Duration.ofMillis(1000)
+      };
+  private static final Duration[] STORE_SLOS =
+      new Duration[] {
+        Duration.ofMillis(10),
+        Duration.ofMillis(50),
+        Duration.ofMillis(100),
+        Duration.ofMillis(200),
+        Duration.ofMillis(500),
+        Duration.ofMillis(1000),
+        Duration.ofMillis(2000)
+      };
+  private static final Duration[] CACHE_SLOS =
+      new Duration[] {
+        Duration.ofNanos(500_000),
+        Duration.ofMillis(1),
+        Duration.ofMillis(2),
+        Duration.ofMillis(5),
+        Duration.ofMillis(10),
+        Duration.ofMillis(25),
+        Duration.ofMillis(50)
+      };
+  private static final Duration[] EXEC_SLOS =
+      new Duration[] {
+        Duration.ofMillis(1),
+        Duration.ofMillis(2),
+        Duration.ofMillis(5),
+        Duration.ofMillis(10),
+        Duration.ofMillis(25),
+        Duration.ofMillis(50),
+        Duration.ofMillis(100),
+        Duration.ofMillis(200)
+      };
+  private static final boolean PUBLISH_PERCENTILES =
+      Boolean.getBoolean("floecat.telemetry.publish-percentiles");
 
   private static final Logger LOG = LoggerFactory.getLogger(MicrometerObservability.class);
 
@@ -76,6 +136,20 @@ public final class MicrometerObservability implements Observability {
     this.validator =
         new MetricValidator(telemetryRegistry, Objects.requireNonNull(policy, "policy"));
     this.droppedTagsCounter = registry.counter(Telemetry.Metrics.DROPPED_TAGS.name());
+    this.invalidMetricCounter =
+        Counter.builder(Telemetry.Metrics.OBSERVABILITY_INVALID_METRIC.name())
+            .description(descriptionFor(Telemetry.Metrics.OBSERVABILITY_INVALID_METRIC))
+            .tags(Telemetry.TagKey.REASON, "unknown_metric")
+            .register(registry);
+    this.duplicateGaugeCounter =
+        Counter.builder(Telemetry.Metrics.OBSERVABILITY_DUPLICATE_GAUGE.name())
+            .description(descriptionFor(Telemetry.Metrics.OBSERVABILITY_DUPLICATE_GAUGE))
+            .tags(Telemetry.TagKey.REASON, "duplicate_gauge")
+            .register(registry);
+    gauge(
+        Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE,
+        () -> (double) telemetryRegistry.metrics().size(),
+        descriptionFor(Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE));
     this.policy = policy;
     this.tracer = GlobalOpenTelemetry.getTracer("ai.floedb.floecat.telemetry");
   }
@@ -119,6 +193,7 @@ public final class MicrometerObservability implements Observability {
         key,
         (ignored, existing) -> {
           if (existing != null) {
+            duplicateGaugeCounter.increment();
             if (policy.isStrict()) {
               throw new IllegalArgumentException(
                   "Gauge already registered for metric "
@@ -188,6 +263,12 @@ public final class MicrometerObservability implements Observability {
       droppedTagsCounter.increment(result.droppedTags());
     }
     if (!result.emit()) {
+      DropMetricReason reason = result.reason();
+      if (reason == DropMetricReason.UNKNOWN_METRIC) {
+        invalidMetricCounter.increment();
+      } else {
+        droppedMetricCounter(reason);
+      }
       return null;
     }
     return new MeterKey(id, sort(result.tags()));
@@ -208,15 +289,102 @@ public final class MicrometerObservability implements Observability {
   }
 
   private Timer registerTimer(MeterKey key) {
-    return Timer.builder(key.metric().name())
-        .description(descriptionFor(key.metric()))
-        .tags(micrometerTags(key.tags()))
-        .register(registry);
+    Timer.Builder builder =
+        Timer.builder(key.metric().name())
+            .description(descriptionFor(key.metric()))
+            .tags(micrometerTags(key.tags()));
+    return applyHistogramConfig(builder, key.metric().name()).register(registry);
   }
 
   private String descriptionFor(MetricId metric) {
     MetricDef def = telemetryRegistry.metric(metric.name());
     return def != null ? def.description() : "";
+  }
+
+  private Timer.Builder applyHistogramConfig(Timer.Builder builder, String metricName) {
+    if (HISTOGRAM_TIMERS.contains(metricName)) {
+      builder.publishPercentileHistogram(true);
+      if (PUBLISH_PERCENTILES) {
+        builder.publishPercentiles(0.5, 0.95, 0.99);
+      }
+      Duration[] slos = sloFor(metricName);
+      if (slos != null) {
+        builder.serviceLevelObjectives(slos);
+      }
+      builder.distributionStatisticExpiry(HISTOGRAM_EXPIRY).minimumExpectedValue(HISTOGRAM_MIN);
+    }
+    return builder;
+  }
+
+  private Duration[] sloFor(String metricName) {
+    if (Telemetry.Metrics.RPC_LATENCY.name().equals(metricName)) {
+      return RPC_SLOS;
+    }
+    if (Telemetry.Metrics.STORE_LATENCY.name().equals(metricName)) {
+      return STORE_SLOS;
+    }
+    if (Telemetry.Metrics.CACHE_LATENCY.name().equals(metricName)) {
+      return CACHE_SLOS;
+    }
+    if (Telemetry.Metrics.EXEC_TASK_WAIT.name().equals(metricName)
+        || Telemetry.Metrics.EXEC_TASK_RUN.name().equals(metricName)) {
+      return EXEC_SLOS;
+    }
+    return null;
+  }
+
+  private void logTraceCorrelation(
+      String component,
+      String operation,
+      String status,
+      String result,
+      Duration elapsed,
+      Throwable error) {
+    if (!LOG.isTraceEnabled()) {
+      return;
+    }
+    Span span = Span.current();
+    SpanContext context = span.getSpanContext();
+    if (!context.isValid()) {
+      return;
+    }
+    LOG.trace(
+        "Telemetry observation {}.{} result={} status={} duration={}ms traceId={} spanId={} error={}",
+        component,
+        operation,
+        result,
+        status == null ? "UNKNOWN" : status,
+        elapsed.toMillis(),
+        context.getTraceId(),
+        context.getSpanId(),
+        error == null ? "none" : error.getClass().getSimpleName());
+  }
+
+  private void droppedMetricCounter(DropMetricReason reason) {
+    String normalized = normalizeReason(reason);
+    droppedMetricCounters
+        .computeIfAbsent(
+            normalized,
+            key ->
+                Counter.builder(Telemetry.Metrics.OBSERVABILITY_DROPPED_METRIC.name())
+                    .description(descriptionFor(Telemetry.Metrics.OBSERVABILITY_DROPPED_METRIC))
+                    .tags(Telemetry.TagKey.REASON, key)
+                    .register(registry))
+        .increment();
+  }
+
+  private static String normalizeReason(DropMetricReason reason) {
+    if (reason == null) {
+      return "unknown_reason";
+    }
+    return switch (reason) {
+      case UNKNOWN_METRIC -> "unknown_metric";
+      case MISSING_REQUIRED_TAG -> "required_missing";
+      case UNKNOWN_TAG -> "tag_not_allowed";
+      case INVALID_VALUE -> "tag_value_invalid";
+      case TYPE_MISMATCH -> "type_mismatch";
+      default -> "unknown_reason";
+    };
   }
 
   private static List<Tag> sort(List<Tag> tags) {
@@ -378,6 +546,7 @@ public final class MicrometerObservability implements Observability {
               Tag.of(Telemetry.TagKey.OPERATION, operation));
         }
       }
+      logTraceCorrelation(component, operation, grpcStatus, resultTag, elapsed, error);
     }
   }
 

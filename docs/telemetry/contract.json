@@ -100,6 +100,56 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
+    "name": "floecat.core.exec.active",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of threads actively executing tasks per pool.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.queue.depth",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of work items waiting in the executor queue per pool.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.rejected",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of task submissions rejected by the executor.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool"]
+  },
+  {
+    "name": "floecat.core.exec.task.run",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Duration spent running the task on a worker thread.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool", "result"]
+  },
+  {
+    "name": "floecat.core.exec.task.wait",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Duration spent waiting in the queue before execution starts.",
+    "requiredTags": ["component", "operation", "pool"],
+    "allowedTags": ["component", "operation", "pool", "result"]
+  },
+  {
     "name": "floecat.core.gc.collections",
     "type": "COUNTER",
     "unit": "",
@@ -140,12 +190,52 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.core.observability.dropped.metric.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of metric emissions rejected because validation failed.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
     "name": "floecat.core.observability.dropped.tags.total",
     "type": "COUNTER",
     "unit": "",
     "since": "v1",
     "origin": "core",
     "description": "Total number of tags dropped because they violated telemetry contracts.",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.core.observability.duplicate.gauge.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of duplicate gauges that strict mode detected.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
+    "name": "floecat.core.observability.invalid.metric.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of metrics rejected because they were not registered.",
+    "requiredTags": [],
+    "allowedTags": ["reason"]
+  },
+  {
+    "name": "floecat.core.observability.registry.size",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Current size of the telemetry registry.",
     "requiredTags": [],
     "allowedTags": []
   },

@@ -38,6 +38,19 @@ Metric stability is critical for dashboards. The `since` column on each `MetricI
 
 In addition to metrics, service spans now include `floecat.component` and `floecat.operation` attributes (matching the measurement dimensions). RPC spans also set `floecat.rpc.status` to the gRPC status name. Storage observations emit child spans with a `floecat.store.operation` attribute so latency/throughput links land on the correct store trace. Logs can expose those values as `floecat_component`/`floecat_operation` MDC keys, along with `traceId`/`spanId`, when JSON logging captures MDC—which lets Loki derive fields for Tempo’s **Logs for this trace** button and makes jump-to-trace or jump-to-log links reliable.
 
+Executor timers (`floecat.core.exec.task.wait`/`task.run`) currently come from the Mutiny default executor wrapper; the Vert.x pool instrumentation still only backs the queue-depth/active/rejected gauges until future work hooks task submissions running through those pools.
+
+## Correlation contract
+
+Every metric-emitting scope, span, and log entry participates in a small correlation contract:
+
+- **Span attributes** – `floecat.component`, `floecat.operation`, and (for RPCs) `floecat.rpc.status` appear on every span so a trace explorer can filter down to the exact RPC/store cache operation tied to a metric series.
+- **Log fields** – the service mirrors `floecat_component` and `floecat_operation` into MDC, and your JSON logging pipeline can emit `traceId`/`spanId` when OpenTelemetry context propagation is enabled. That keeps the Tempo **Logs for this trace** and Loki queries usable even when you jump directly from a metric graph, without overpromising that trace IDs appear unless the logging stack is configured to surface them.
+- **Metric tags** – component/operation tags on timers/counters link to their span equivalents, and the Micrometer backend also logs the current trace/span IDs at `TRACE` level so dashboards that surface the logs can still surface the identifiers.
+- **Telemetry contract version** – every meter carries `telemetry.contract.version` so you can distinguish `v1` data from future contract revisions; spans/logs should surface the same version via attributes or MDC if you rely on multiple catalog versions in the same cluster.
+
+Keeping these keys consistent lets Grafana/Tempo/Loki dashboards present a seamless “metric spike → trace → log” workflow without chasing per-module naming quirks.
+
 ## Strict vs Lenient mode
 
 The Micrometer backend supports two policies:

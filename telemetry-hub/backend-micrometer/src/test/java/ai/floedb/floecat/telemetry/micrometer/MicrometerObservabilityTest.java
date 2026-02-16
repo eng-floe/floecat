@@ -18,6 +18,8 @@ package ai.floedb.floecat.telemetry.micrometer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.Observability.Category;
 import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.StoreTraceScope;
@@ -29,6 +31,7 @@ import ai.floedb.floecat.telemetry.TelemetryRegistry;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.distribution.HistogramSnapshot;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
@@ -146,6 +149,71 @@ class MicrometerObservabilityTest {
 
     assertThat(meters.find(Telemetry.Metrics.RPC_ERRORS.name()).counter()).isNull();
     assertThat(meters.find(Telemetry.Metrics.DROPPED_TAGS.name()).counter().count()).isEqualTo(0d);
+  }
+
+  @Test
+  void lenientRecordsInvalidMetricCounter() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    MetricId unknownMetric =
+        new MetricId("floecat.core.invalid.metric", MetricType.COUNTER, "", "v1", "core");
+    observability.counter(
+        unknownMetric,
+        1,
+        Tag.of(TagKey.COMPONENT, "svc"),
+        Tag.of(TagKey.OPERATION, "op"),
+        Tag.of(TagKey.STATUS, "ok"));
+
+    Counter invalid =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_INVALID_METRIC.name())
+            .tags(TagKey.REASON, "unknown_metric")
+            .counter();
+    assertThat(invalid).isNotNull();
+    assertThat(invalid.count()).isEqualTo(1d);
+  }
+
+  @Test
+  void lenientRecordsDroppedMetricCounter() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    observability.counter(Telemetry.Metrics.RPC_ERRORS, 1, Tag.of(TagKey.COMPONENT, "svc"));
+
+    Counter dropped =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_DROPPED_METRIC.name())
+            .tags(TagKey.REASON, "required_missing")
+            .counter();
+    assertThat(dropped).isNotNull();
+    assertThat(dropped.count()).isEqualTo(1d);
+  }
+
+  @Test
+  void duplicateGaugeCounterIncrements_whenGaugeReregistered() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    Supplier<Number> supplier = () -> 1;
+    Tag[] tags = new Tag[] {Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op")};
+
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, supplier, "desc", tags);
+    observability.gauge(Telemetry.Metrics.RPC_ACTIVE, supplier, "desc2", tags);
+
+    Counter duplicates =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_DUPLICATE_GAUGE.name())
+            .tags(TagKey.REASON, "duplicate_gauge")
+            .counter();
+    assertThat(duplicates).isNotNull();
+    assertThat(duplicates.count()).isEqualTo(1d);
+  }
+
+  @Test
+  void registrySizeGaugeExposesContractSize() {
+    new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+
+    Gauge gauge = meters.find(Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE.name()).gauge();
+    assertThat(gauge).isNotNull();
+    assertThat(gauge.value()).isEqualTo(telemetryRegistry.metrics().size());
   }
 
   @Test
@@ -474,6 +542,66 @@ class MicrometerObservabilityTest {
                     .isEqualTo("boom");
               });
     }
+  }
+
+  @Test
+  void histogramTimerAlwaysExposesBuckets() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    observability.timer(
+        Telemetry.Metrics.RPC_LATENCY,
+        Duration.ofMillis(123),
+        Tag.of(TagKey.COMPONENT, "svc"),
+        Tag.of(TagKey.OPERATION, "op"),
+        Tag.of(TagKey.RESULT, "ok"));
+
+    Timer timer =
+        meters
+            .find(Telemetry.Metrics.RPC_LATENCY.name())
+            .tags("component", "svc", "operation", "op", TagKey.RESULT, "ok")
+            .timer();
+    assertThat(timer).isNotNull();
+    HistogramSnapshot snapshot = timer.takeSnapshot();
+    assertThat(snapshot.histogramCounts()).isNotEmpty();
+  }
+
+  @Test
+  void dropMetricReasonNormalization() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    observability.counter(Telemetry.Metrics.RPC_ERRORS, 1, Tag.of(TagKey.COMPONENT, "svc"));
+    Counter missing =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_DROPPED_METRIC.name())
+            .tags(TagKey.REASON, "required_missing")
+            .counter();
+    assertThat(missing).isNotNull();
+
+    observability.counter(
+        Telemetry.Metrics.RPC_ERRORS,
+        1,
+        Tag.of(TagKey.COMPONENT, "svc"),
+        Tag.of(TagKey.OPERATION, "op"),
+        Tag.of(TagKey.RESULT, "error"),
+        Tag.of("foo", "bar"));
+    Counter required =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_DROPPED_METRIC.name())
+            .tags(TagKey.REASON, "required_missing")
+            .counter();
+    assertThat(required).isNotNull();
+    assertThat(required.count()).isEqualTo(1d);
+
+    MetricId unknownMetric =
+        new MetricId("floecat.core.invalid.metric", MetricType.COUNTER, "", "v1", "core");
+    observability.counter(
+        unknownMetric, 1, Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"));
+    Counter unknown =
+        meters
+            .find(Telemetry.Metrics.OBSERVABILITY_INVALID_METRIC.name())
+            .tags(TagKey.REASON, "unknown_metric")
+            .counter();
+    assertThat(unknown).isNotNull();
   }
 
   private static final class GlobalTelemetry implements AutoCloseable {
