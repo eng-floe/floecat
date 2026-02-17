@@ -20,6 +20,7 @@ import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Observability.Category;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -50,7 +51,52 @@ public final class StoreMetrics extends BaseMetrics {
   }
 
   public ObservationScope observe(Tag... extraTags) {
-    return observability.observe(Category.STORE, component(), operation(), scopeTags(extraTags));
+    Tag[] tags = scopeTags(extraTags);
+    ObservationScope metricsScope =
+        observability.observe(Category.STORE, component(), operation(), tags);
+    StoreTraceScope traceScope = observability.storeTraceScope(component(), operation(), tags);
+    return new StoreObservationScope(metricsScope, traceScope);
+  }
+
+  private static final class StoreObservationScope implements ObservationScope {
+    private final ObservationScope metricsScope;
+    private final StoreTraceScope traceScope;
+
+    StoreObservationScope(ObservationScope metricsScope, StoreTraceScope traceScope) {
+      this.metricsScope = metricsScope;
+      this.traceScope = traceScope;
+    }
+
+    @Override
+    public void success() {
+      metricsScope.success();
+      traceScope.success();
+    }
+
+    @Override
+    public void error(Throwable throwable) {
+      metricsScope.error(throwable);
+      traceScope.error(throwable);
+    }
+
+    @Override
+    public void retry() {
+      metricsScope.retry();
+    }
+
+    @Override
+    public void status(String status) {
+      metricsScope.status(status);
+    }
+
+    @Override
+    public void close() {
+      try {
+        metricsScope.close();
+      } finally {
+        traceScope.close();
+      }
+    }
   }
 
   private void recording(MetricId metric, double amount, String result, Tag... extraTags) {

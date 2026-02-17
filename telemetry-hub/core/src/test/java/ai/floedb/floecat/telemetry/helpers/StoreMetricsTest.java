@@ -18,10 +18,13 @@ package ai.floedb.floecat.telemetry.helpers;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TestObservability;
+import ai.floedb.floecat.telemetry.TestObservability.TestStoreTraceScope;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -51,5 +54,40 @@ class StoreMetricsTest {
                 assertThat(tags)
                     .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
                     .contains(Tag.of(TagKey.RESULT, "success")));
+  }
+
+  @Test
+  void storeMetricsNotifiesTraceScopeSuccess() {
+    TestObservability observability = new TestObservability();
+    StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");
+    ObservationScope scope = metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"));
+    scope.success();
+    scope.close();
+
+    List<TestStoreTraceScope> traceScopes =
+        observability.storeTraceScopes().get(Observability.Category.STORE.name());
+    assertThat(traceScopes).hasSize(1);
+    TestStoreTraceScope traceScope = traceScopes.get(0);
+    assertThat(traceScope.succeeded()).isTrue();
+    assertThat(traceScope.error()).isNull();
+    assertThat(traceScope.closed()).isTrue();
+  }
+
+  @Test
+  void storeMetricsNotifiesTraceScopeError() {
+    TestObservability observability = new TestObservability();
+    StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");
+    ObservationScope scope = metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"));
+    IllegalStateException failure = new IllegalStateException("boom");
+    scope.error(failure);
+    scope.close();
+
+    List<TestStoreTraceScope> traceScopes =
+        observability.storeTraceScopes().get(Observability.Category.STORE.name());
+    assertThat(traceScopes).hasSize(1);
+    TestStoreTraceScope traceScope = traceScopes.get(0);
+    assertThat(traceScope.succeeded()).isFalse();
+    assertThat(traceScope.error()).isSameAs(failure);
+    assertThat(traceScope.closed()).isTrue();
   }
 }

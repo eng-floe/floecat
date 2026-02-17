@@ -36,6 +36,8 @@ This two-set approach keeps cardinality in check while giving you control over w
 
 Metric stability is critical for dashboards. The `since` column on each `MetricId` identifies when the metric entered the contract. When you change a metric’s name, type, units, or required tags, update the `since` value and regenerate the documentation so downstream consumers know a new version exists. The service exposes `telemetry.contract.version` (default `v1`) as a configuration property that the Quarkus Micrometer backend adds as a common tag on every meter, so Prometheus/OTLP collectors can filter or group by the catalog that produced the data. OTLP resource attributes are configured separately through the OpenTelemetry configuration if you want a dedicated resource field.
 
+In addition to metrics, service spans now include `floecat.component` and `floecat.operation` attributes (matching the measurement dimensions). RPC spans also set `floecat.rpc.status` to the gRPC status name. Storage observations emit child spans with a `floecat.store.operation` attribute so latency/throughput links land on the correct store trace. Logs can expose those values as `floecat_component`/`floecat_operation` MDC keys, along with `traceId`/`spanId`, when JSON logging captures MDC—which lets Loki derive fields for Tempo’s **Logs for this trace** button and makes jump-to-trace or jump-to-log links reliable.
+
 ## Strict vs Lenient mode
 
 The Micrometer backend supports two policies:

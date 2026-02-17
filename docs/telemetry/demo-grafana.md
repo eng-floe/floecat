@@ -1,20 +1,19 @@
 # Grafana demo dashboard
 
-This page describes the official Grafana dashboard that demos the Floecat telemetry hub. The dashboard is stored in `examples/telemetry/demo-grafana/demo-dashboard.json` and expects a Prometheus datasource that scrapes `http://host.docker.internal:9100/q/metrics`.
+This page describes the official Grafana dashboard that demos the Floecat telemetry hub. The dashboard is stored in `examples/telemetry/dashboards/demo-dashboard.json` and expects a Prometheus datasource that scrapes `http://host.docker.internal:9100/q/metrics`. For a full step-by-step demo that runs the complete telemetry + OTLP stack, see `examples/telemetry/telemetry-demo.md`.
 
 ## Quick start
 
 Use the **Component** and **Operation** dropdowns to scope every RPC/storage panel to the workload you are debugging.
 
-1. Start the Floecat service with telemetry enabled:
+1. Start the Floecat service with the `telemetry-otlp` profile so it exports spans:
    ```bash
-   mvn -pl service -am -DskipTests quarkus:dev
+   QUARKUS_PROFILE=telemetry-otlp mvn -pl service -am -DskipTests quarkus:dev
    ```
    Quarkus exposes Micrometer metrics on `http://localhost:9100/q/metrics`.
-2. Start Prometheus/Grafana (you can reuse `telemetry/demo.sh` if the folder exists or run Prometheus + Grafana locally) and point it at `http://host.docker.internal:9100/q/metrics`.
-3. Import `demo-dashboard.json` into Grafana.
-   - When Grafana asks for the Prometheus datasource, pick whichever name you created; the dashboard uses `${DS_PROMETHEUS}` so it works with any datasource name.
-4. Drive some traffic through the CLI (`floecat> account <id>`, `floecat> tables examples.iceberg`) to populate the panels.
+2. Start the telemetry stack via `./demo.sh` (from `examples/telemetry/`). It brings up Prometheus (9092), Grafana (3001), Tempo (3102), Loki (3101), and the OTLP collector (4317).
+3. The dashboard auto-loads via Grafana provisioning. It uses `${DS_PROMETHEUS}` so any Prometheus datasource name works. Tempo and Loki datasources are also provisioned with cross-linking enabled.
+4. Drive some traffic through the CLI (`make cli-run` → `account <id>` → `tables examples.iceberg`) to populate the panels.
 
 ## Dashboard layout
 
@@ -38,6 +37,18 @@ Seven stat panels for at-a-glance triage:
 - **Errors by status** — error rate grouped by gRPC status.
 - **Avg latency by operation** — per-operation average latency.
 - **Status distribution** — req/s grouped by status code.
+
+#### Trace links
+
+The operation-scoped panels (*Requests by operation*, *Avg latency by operation*) include a **View traces in Tempo** data link. Clicking a series opens Grafana Explore with a TraceQL query that matches the clicked operation:
+
+```traceql
+{ resource.service.name = "floecat-service" && span.floecat.operation = "<operation>" }
+```
+
+This works because `GrpcTelemetryServerInterceptor` sets the custom span attribute `floecat.operation` to the same simplified name used for the metric `operation` label (e.g. `CatalogService.ListCatalogs`). The *Errors by status* panel links to errored traces (`status = error`) instead.
+
+Standard OTel `rpc.*` attributes (`rpc.service`, `rpc.method`, `rpc.system`) are also present on every gRPC span and can be used for ad-hoc Tempo queries.
 
 ### Storage
 

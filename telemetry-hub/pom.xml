@@ -40,6 +40,7 @@
 
   <properties>
     <micrometer.version>1.11.0</micrometer.version>
+    <otel.version>1.50.0</otel.version>
   </properties>
 
 </project>

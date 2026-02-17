@@ -50,4 +50,9 @@ public final class NoopObservability implements Observability {
       Category category, String component, String operation, Tag... tags) {
     return NOOP_SCOPE;
   }
+
+  @Override
+  public StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
+    return StoreTraceScope.NOOP;
+  }
 }
