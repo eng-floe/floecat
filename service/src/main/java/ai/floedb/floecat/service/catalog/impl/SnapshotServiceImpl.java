@@ -529,7 +529,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, SNAPSHOT_ALREADY_EXISTS, conflictInfo);
+                    throw GrpcErrors.alreadyExists(corr, SNAPSHOT_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(

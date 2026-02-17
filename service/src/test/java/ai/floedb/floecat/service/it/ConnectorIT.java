@@ -943,7 +943,7 @@ public class ConnectorIT {
                         .build()));
 
     TestSupport.assertGrpcAndMc(
-        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Connector \"u-a1\" already exists");
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "Connector \"u-a1\" already exists");
   }
 
   @Test

@@ -207,7 +207,8 @@ class NamespacesPagingIT {
     StatusRuntimeException ex =
         assertThrows(StatusRuntimeException.class, () -> namespaces.createNamespace(req));
 
-    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   private List<Namespace> collectAllNamespacesAtRootChildrenOnly(int pageSize) {

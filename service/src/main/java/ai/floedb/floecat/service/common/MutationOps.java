@@ -173,8 +173,8 @@ public final class MutationOps {
                 "actual", Long.toString(nowMeta.getPointerVersion())));
       }
     } catch (BaseResourceRepository.NameConflictException nce) {
-      throw GrpcErrors.conflict(
-          correlationId, GeneratedErrorMessages.bySuffix(entity + ".already_exists"), conflictKVs);
+      throw GrpcErrors.alreadyExists(
+          correlationId, GeneratedErrorMessages.bySuffix(entity + ".already.exists"), conflictKVs);
     } catch (BaseResourceRepository.PreconditionFailedException pfe) {
       final var nowMeta = nowMetaSupplier.get();
       throw GrpcErrors.preconditionFailed(

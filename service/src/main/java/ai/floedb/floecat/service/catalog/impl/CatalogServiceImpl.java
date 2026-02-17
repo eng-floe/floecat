@@ -181,7 +181,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   if (idempotencyKey == null) {
                     var existing = catalogRepo.getByName(accountId, normName);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
                     }
 
@@ -217,7 +217,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           CATALOG_ALREADY_EXISTS,
                                           Map.of("display_name", normName));
@@ -310,7 +310,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         CATALOG_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));

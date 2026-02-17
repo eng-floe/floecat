@@ -379,7 +379,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                           Map.of("display_name", display));
@@ -396,7 +396,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       if (storedCredentials) {
                         credentialResolver.delete(accountId, secretId);
                       }
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                           Map.of("display_name", display));
@@ -455,7 +455,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           GeneratedErrorMessages.MessageKey
                                               .CONNECTOR_ALREADY_EXISTS,
@@ -581,7 +581,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     if (incomingHasCredentials) {
                       restoreCredentials(accountId, secretId, priorCredentials);
                     }
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));
