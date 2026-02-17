@@ -114,7 +114,7 @@ class UserGraphTest {
             .setSchemaJson("{\"fields\":[{\"name\":\"snap\"}]}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-01-01T00:00:00Z")))
             .build();
-    snapshotRepository.put(snapshot);
+    snapshotRepository.put(ids.tableId(), snapshot);
 
     String schema =
         graph.schemaJsonFor("corr", node, SnapshotRef.newBuilder().setSnapshotId(10L).build());
@@ -139,8 +139,8 @@ class UserGraphTest {
             .setSchemaJson("{\"new\":true}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-03-01T00:00:00Z")))
             .build();
-    snapshotRepository.put(oldSnapshot);
-    snapshotRepository.put(newSnapshot);
+    snapshotRepository.put(ids.tableId(), oldSnapshot);
+    snapshotRepository.put(ids.tableId(), newSnapshot);
 
     SnapshotRef ref =
         SnapshotRef.newBuilder().setAsOf(ts(Instant.parse("2024-02-15T00:00:00Z"))).build();

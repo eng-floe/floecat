@@ -44,6 +44,23 @@ public final class FakeTableRepository extends TableRepository {
     metas.put(table.getResourceId(), meta);
   }
 
+  @Override
+  public void create(Table table) {
+    super.create(table);
+    entries.put(table.getResourceId(), table);
+    metas.put(table.getResourceId(), super.metaForSafe(table.getResourceId()));
+  }
+
+  @Override
+  public boolean update(Table table, long expectedPointerVersion) {
+    boolean updated = super.update(table, expectedPointerVersion);
+    if (updated) {
+      entries.put(table.getResourceId(), table);
+      metas.put(table.getResourceId(), super.metaForSafe(table.getResourceId()));
+    }
+    return updated;
+  }
+
   public void putMeta(ResourceId id, MutationMeta meta) {
     metas.put(id, meta);
   }

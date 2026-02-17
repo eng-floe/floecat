@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
@@ -46,7 +47,6 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
-import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.runtime.StartupEvent;
@@ -82,7 +82,6 @@ public class SeedRunner {
   private static final int SEED_TOKEN_MAX_ATTEMPTS = 6;
   private static final long SEED_TOKEN_INITIAL_BACKOFF_MS = 250L;
   private static final long SEED_TOKEN_MAX_BACKOFF_MS = 5_000L;
-
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
@@ -712,23 +711,19 @@ public class SeedRunner {
   private ReconcilerService.Result reconcileWithSeedAuth(
       ResourceId connectorId, ReconcileScope scope) {
     var header = seedAuthorizationHeader();
-    if (header.isEmpty()) {
-      return reconciler.reconcile(
-          connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
-    }
-    var ctx =
-        Context.current()
-            .withValue(
-                ai.floedb.floecat.reconciler.impl.ReconcilerAuthContext
-                    .AUTHORIZATION_HEADER_VALUE_KEY,
-                header.get());
-    final ReconcilerService.Result[] result = new ReconcilerService.Result[1];
-    ctx.run(
-        () ->
-            result[0] =
-                reconciler.reconcile(
-                    connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS));
-    return result[0];
+    var principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setSubject("seed-runner")
+            .setCorrelationId("seed-sync-" + connectorId.getId())
+            .build();
+    return reconciler.reconcile(
+        principal,
+        connectorId,
+        true,
+        scope,
+        ReconcilerService.CaptureMode.METADATA_AND_STATS,
+        header.orElse(null));
   }
 
   private java.util.Optional<String> seedAuthorizationHeader() {
@@ -744,7 +739,6 @@ public class SeedRunner {
         seedAuthorizationHeader = built;
         return seedAuthorizationHeader;
       }
-      // Do not cache failures; allow retry on next fixture sync attempt.
       return built;
     }
   }

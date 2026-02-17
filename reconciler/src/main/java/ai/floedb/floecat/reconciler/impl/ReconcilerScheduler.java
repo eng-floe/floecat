@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -26,7 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @ApplicationScoped
 public class ReconcilerScheduler {
-  @Inject GrpcClients clients;
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
 
@@ -55,7 +55,14 @@ public class ReconcilerScheduler {
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();
 
-        var result = reconcilerService.reconcile(connectorId, lease.fullRescan, lease.scope);
+        var principal =
+            PrincipalContext.newBuilder()
+                .setAccountId(lease.accountId)
+                .setSubject("reconciler.scheduler")
+                .setCorrelationId("reconciler-job-" + lease.jobId)
+                .build();
+        var result =
+            reconcilerService.reconcile(principal, connectorId, lease.fullRescan, lease.scope);
 
         long finished = System.currentTimeMillis();
         if (result.ok()) {
