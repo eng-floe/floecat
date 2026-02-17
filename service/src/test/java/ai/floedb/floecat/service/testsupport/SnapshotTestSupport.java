@@ -16,11 +16,8 @@
 
 package ai.floedb.floecat.service.testsupport;
 
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -72,21 +69,6 @@ public final class SnapshotTestSupport {
     private long createdMillis(Snapshot snapshot) {
       Timestamp ts = snapshot.getUpstreamCreatedAt();
       return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
-    }
-  }
-
-  public static final class FakeSnapshotClient implements SnapshotHelper.SnapshotClient {
-
-    public GetSnapshotResponse nextResponse;
-    public GetSnapshotRequest lastRequest;
-
-    @Override
-    public GetSnapshotResponse getSnapshot(GetSnapshotRequest request) {
-      lastRequest = request;
-      if (nextResponse == null) {
-        throw new IllegalStateException("no snapshot response configured");
-      }
-      return nextResponse;
     }
   }
 }

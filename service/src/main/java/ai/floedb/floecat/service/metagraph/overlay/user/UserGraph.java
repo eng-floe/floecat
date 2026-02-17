@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.metagraph.overlay.user;
 
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlockingStub;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -42,7 +41,6 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import com.google.protobuf.Timestamp;
-import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
@@ -100,7 +98,6 @@ public final class UserGraph {
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
-      @GrpcClient("floecat") SnapshotServiceBlockingStub snapshotStub,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
@@ -111,7 +108,7 @@ public final class UserGraph {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.snapshots = new SnapshotHelper(snapshotRepo, snapshotStub);
+    this.snapshots = new SnapshotHelper(snapshotRepo);
     this.hints = engineHints;
     this.principal = principal;
   }
@@ -131,7 +128,7 @@ public final class UserGraph {
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
 
     // Snapshot helper without gRPC client
-    this.snapshots = new SnapshotHelper(snapshotRepo, null);
+    this.snapshots = new SnapshotHelper(snapshotRepo);
 
     this.principal =
         new PrincipalProvider() {
