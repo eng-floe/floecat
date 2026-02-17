@@ -344,12 +344,14 @@ class ConcurrencyOCCIdempotencyIT {
       case UPDATE_SCHEMA ->
           c == Status.Code.FAILED_PRECONDITION
               || c == Status.Code.NOT_FOUND
-              || c == Status.Code.ABORTED;
+              || c == Status.Code.ABORTED
+              || c == Status.Code.ALREADY_EXISTS;
 
       case RENAME, MOVE ->
           c == Status.Code.FAILED_PRECONDITION
               || c == Status.Code.ABORTED
-              || c == Status.Code.NOT_FOUND;
+              || c == Status.Code.NOT_FOUND
+              || c == Status.Code.ALREADY_EXISTS;
 
       case DELETE_SEED -> c == Status.Code.FAILED_PRECONDITION || c == Status.Code.NOT_FOUND;
     };
