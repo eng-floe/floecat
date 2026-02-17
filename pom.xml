@@ -44,7 +44,7 @@
     <version.bytebuddy.agent>1.15.4</version.bytebuddy.agent>
     <version.caffeine>3.2.3</version.caffeine>
     <version.commons.logging>1.3.5</version.commons.logging>
-    <version.datasketches>6.0.0</version.datasketches>
+    <version.datasketches>9.0.0</version.datasketches>
     <version.delta.kernel.api>4.0.0</version.delta.kernel.api>
     <version.google.java.format>1.32.0</version.google.java.format>
     <version.hadoop>3.4.2</version.hadoop>
