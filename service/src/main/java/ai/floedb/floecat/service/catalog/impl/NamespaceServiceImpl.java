@@ -659,7 +659,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       systemNamespacePathMatch(spec.getCatalogId(), fullPath, sysNamespaces);
                   if (sysMatch == SystemPathMatch.EXACT) {
                     // Exact collision with an existing SYSTEM namespace.
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                         Map.of(
@@ -683,7 +683,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     var existing =
                         namespaceRepo.getByPath(accountId, spec.getCatalogId().getId(), fullPath);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           correlationId,
                           GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                           Map.of("catalog", catalogName, "path", String.join(".", fullPath)));
@@ -753,7 +753,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                               existing, existing.getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           correlationId,
                                           GeneratedErrorMessages.MessageKey
                                               .NAMESPACE_ALREADY_EXISTS,
@@ -914,7 +914,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                         conflictInfo);

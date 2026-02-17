@@ -215,6 +215,11 @@ public final class GrpcErrors {
     return conflict(corrId, key, params, null);
   }
 
+  public static StatusRuntimeException alreadyExists(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return alreadyExists(corrId, key, params, null);
+  }
+
   public static StatusRuntimeException preconditionFailed(
       String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
     return preconditionFailed(corrId, key, params, null);

@@ -72,7 +72,7 @@ class ResourceMutationIT {
             StatusRuntimeException.class,
             () -> TestSupport.createCatalog(catalog, "cat1", "cat1 catalog"));
     TestSupport.assertGrpcAndMc(
-        exCat, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+        exCat, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
 
     var ns =
         TestSupport.createNamespace(
@@ -83,7 +83,8 @@ class ResourceMutationIT {
             () ->
                 TestSupport.createNamespace(
                     namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
-    TestSupport.assertGrpcAndMc(exNs, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        exNs, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
 
     TestSupport.createTable(
         table, cat.getResourceId(), ns.getResourceId(), "events", "s3://events", "{}", "none");
@@ -101,7 +102,7 @@ class ResourceMutationIT {
                     "{}",
                     "A description"));
     TestSupport.assertGrpcAndMc(
-        exTable, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+        exTable, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

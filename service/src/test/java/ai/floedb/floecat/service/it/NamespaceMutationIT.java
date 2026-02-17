@@ -84,7 +84,8 @@ class NamespaceMutationIT {
             () ->
                 TestSupport.createNamespace(
                     namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 namespace"));
-    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

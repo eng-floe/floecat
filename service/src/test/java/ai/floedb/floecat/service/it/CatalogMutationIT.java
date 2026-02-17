@@ -94,7 +94,8 @@ class CatalogMutationIT {
                                 .setDescription("d1")
                                 .build())
                         .build()));
-    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test
@@ -226,7 +227,8 @@ class CatalogMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () -> TestSupport.createCatalog(catalog, catalogPrefix + "cat1", "cat1 catalog"));
-    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

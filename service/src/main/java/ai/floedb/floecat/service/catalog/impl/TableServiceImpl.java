@@ -458,7 +458,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             spec.getNamespaceId().getId(),
                             normName);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           TABLE_ALREADY_EXISTS,
                           Map.of(
@@ -469,7 +469,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     try {
                       tableRepo.create(table);
                     } catch (BaseResourceRepository.NameConflictException nce) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           TABLE_ALREADY_EXISTS,
                           Map.of(
@@ -513,7 +513,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           TABLE_ALREADY_EXISTS,
                                           Map.of(
@@ -628,7 +628,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, TABLE_ALREADY_EXISTS, conflictInfo);
+                    throw GrpcErrors.alreadyExists(corr, TABLE_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = tableRepo.metaForSafe(tableId);
                     throw GrpcErrors.preconditionFailed(

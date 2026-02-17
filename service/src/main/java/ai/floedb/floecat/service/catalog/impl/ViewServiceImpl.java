@@ -310,7 +310,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             spec.getNamespaceId().getId(),
                             normName);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           VIEW_ALREADY_EXISTS,
                           Map.of(
@@ -352,7 +352,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           VIEW_ALREADY_EXISTS,
                                           Map.of(
@@ -459,7 +459,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(corr, VIEW_ALREADY_EXISTS, conflictInfo);
+                    throw GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, conflictInfo);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = viewRepo.metaForSafe(viewId);
                     throw GrpcErrors.preconditionFailed(
