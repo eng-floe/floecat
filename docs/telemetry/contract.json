@@ -1,0 +1,312 @@
+[
+  {
+    "name": "floecat.core.cache.accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of accounts with an active cache entry, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that the cache is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Approximate number of entries in the cache, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache operation failures (load errors), tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.hits",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache lookup hits, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Cache latency distribution for operations.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.max.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured max entries for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.max.weight.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Configured maximum weight (bytes) for the cache.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.misses",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of cache lookup misses, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.weighted.size.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total weight (bytes) of cache entries, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.gc.collections",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of GC collections per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC failures per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.pause",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC pause time per GC type.",
+    "requiredTags": ["component", "gc", "operation", "result"],
+    "allowedTags": ["component", "exception", "gc", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.gc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "GC retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.observability.dropped.tags.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total number of tags dropped because they violated telemetry contracts.",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.core.rpc.active",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of in-flight RPCs per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.rpc.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of RPC failures per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Latency distribution for RPC operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Total RPC requests processed, tagged by account and status.",
+    "requiredTags": ["account", "component", "operation", "status"],
+    "allowedTags": ["account", "component", "operation", "status"]
+  },
+  {
+    "name": "floecat.core.rpc.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of RPC retries invoked.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.store.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Count of bytes processed by store operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.errors",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store failure count per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.latency",
+    "type": "TIMER",
+    "unit": "seconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store operation latency distribution.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.requests",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of store requests emitted per component/operation.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.store.retries",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Store retries per component/operation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.core.task.enabled",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Indicator that a scheduled task is enabled (1=enabled, 0=disabled).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.end.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last finished a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.last.tick.start.ms",
+    "type": "GAUGE",
+    "unit": "milliseconds",
+    "since": "v1",
+    "origin": "core",
+    "description": "Timestamp (ms since epoch) when the scheduled task last started a tick.",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.core.task.running",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of active ticks for the scheduled task (usually 0 or 1).",
+    "requiredTags": ["component", "operation", "task"],
+    "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.service.storage.account.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "service",
+    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  },
+  {
+    "name": "floecat.service.storage.account.pointers",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Per-account pointer count stored in the service.",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
+  }
+]
