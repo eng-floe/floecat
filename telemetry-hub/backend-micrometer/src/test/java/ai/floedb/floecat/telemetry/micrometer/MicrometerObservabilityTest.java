@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.telemetry.Observability.Category;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -29,7 +30,19 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -386,5 +399,106 @@ class MicrometerObservabilityTest {
             .gauge();
     assertThat(gauge).isNotNull();
     assertThat(gauge.value()).isEqualTo(42.0);
+  }
+
+  @Test
+  void storeTraceScopeReturnsNoopWithoutParent() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+    StoreTraceScope scope = observability.storeTraceScope("svc", "op");
+    assertThat(scope).isSameAs(StoreTraceScope.NOOP);
+  }
+
+  @Test
+  void storeTraceScopeStartsChildSpan() {
+    String rawOperation = "Store/Write#1";
+    try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
+      MicrometerObservability observability =
+          new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+      Tracer tracer = GlobalOpenTelemetry.getTracer("test");
+      Span parent = tracer.spanBuilder("parent-span").startSpan();
+      try (Scope ignored = parent.makeCurrent()) {
+        StoreTraceScope scope =
+            observability.storeTraceScope(
+                "svc", rawOperation, Tag.of("telemetry.contract.version", "v1"));
+        scope.success();
+        scope.close();
+      } finally {
+        parent.end();
+      }
+      List<SpanData> spans = telemetry.exporter().getFinishedSpanItems();
+      SpanData child =
+          spans.stream()
+              .filter(span -> span.getName().startsWith("store."))
+              .findFirst()
+              .orElseThrow();
+      String sanitized = rawOperation.replaceAll("[^A-Za-z0-9_.-]", "_");
+      assertThat(child.getName()).isEqualTo("store." + sanitized);
+      assertThat(child.getAttributes().get(AttributeKey.stringKey("floecat.store.operation")))
+          .isEqualTo(rawOperation);
+      assertThat(child.getAttributes().get(AttributeKey.stringKey("floecat.component")))
+          .isEqualTo("svc");
+      assertThat(child.getAttributes().get(AttributeKey.stringKey("telemetry.contract.version")))
+          .isEqualTo("v1");
+      assertThat(child.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
+    }
+  }
+
+  @Test
+  void storeTraceScopeRecordsException() {
+    try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
+      MicrometerObservability observability =
+          new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+      Tracer tracer = GlobalOpenTelemetry.getTracer("test");
+      Span parent = tracer.spanBuilder("parent-span").startSpan();
+      IllegalStateException failure = new IllegalStateException("boom");
+      try (Scope ignored = parent.makeCurrent()) {
+        StoreTraceScope scope = observability.storeTraceScope("svc", "store-op");
+        scope.error(failure);
+        scope.close();
+      } finally {
+        parent.end();
+      }
+      SpanData child =
+          telemetry.exporter().getFinishedSpanItems().stream()
+              .filter(span -> span.getName().startsWith("store."))
+              .findFirst()
+              .orElseThrow();
+      assertThat(child.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+      assertThat(child.getEvents())
+          .anySatisfy(
+              event -> {
+                assertThat(event.getAttributes().get(AttributeKey.stringKey("exception.type")))
+                    .endsWith("IllegalStateException");
+                assertThat(event.getAttributes().get(AttributeKey.stringKey("exception.message")))
+                    .isEqualTo("boom");
+              });
+    }
+  }
+
+  private static final class GlobalTelemetry implements AutoCloseable {
+    private final InMemorySpanExporter exporter;
+    private final OpenTelemetrySdk openTelemetry;
+
+    private GlobalTelemetry() {
+      GlobalOpenTelemetry.resetForTest();
+      exporter = InMemorySpanExporter.create();
+      SdkTracerProvider tracerProvider =
+          SdkTracerProvider.builder()
+              .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+              .build();
+      openTelemetry =
+          OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).buildAndRegisterGlobal();
+    }
+
+    InMemorySpanExporter exporter() {
+      return exporter;
+    }
+
+    @Override
+    public void close() {
+      openTelemetry.close();
+      GlobalOpenTelemetry.resetForTest();
+    }
   }
 }

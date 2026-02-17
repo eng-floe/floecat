@@ -37,6 +37,7 @@ public final class TestObservability implements Observability {
   private final Map<MetricId, Supplier<? extends Number>> gauges = new LinkedHashMap<>();
   private final Map<MetricId, List<Tag>> gaugeTags = new LinkedHashMap<>();
   private final Map<String, List<TestObservationScope>> scopes = new LinkedHashMap<>();
+  private final Map<String, List<TestStoreTraceScope>> storeTraceScopes = new LinkedHashMap<>();
 
   @Override
   public void counter(MetricId metric, double amount, Tag... tags) {
@@ -73,6 +74,18 @@ public final class TestObservability implements Observability {
     TestObservationScope scope =
         new TestObservationScope(this, category, component, operation, List.copyOf(baseTags));
     scopes.computeIfAbsent(category.name(), key -> new ArrayList<>()).add(scope);
+    return scope;
+  }
+
+  @Override
+  public StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
+    List<Tag> baseTags = new ArrayList<>();
+    baseTags.add(Tag.of(TagKey.COMPONENT, component));
+    baseTags.add(Tag.of(TagKey.OPERATION, operation));
+    baseTags.addAll(copyTags(tags));
+    TestStoreTraceScope scope =
+        new TestStoreTraceScope(component, operation, List.copyOf(baseTags));
+    storeTraceScopes.computeIfAbsent(Category.STORE.name(), key -> new ArrayList<>()).add(scope);
     return scope;
   }
 
@@ -124,6 +137,12 @@ public final class TestObservability implements Observability {
   public Map<String, List<TestObservationScope>> scopes() {
     Map<String, List<TestObservationScope>> copy = new LinkedHashMap<>();
     scopes.forEach((k, v) -> copy.put(k, List.copyOf(v)));
+    return Collections.unmodifiableMap(copy);
+  }
+
+  public Map<String, List<TestStoreTraceScope>> storeTraceScopes() {
+    Map<String, List<TestStoreTraceScope>> copy = new LinkedHashMap<>();
+    storeTraceScopes.forEach((k, v) -> copy.put(k, List.copyOf(v)));
     return Collections.unmodifiableMap(copy);
   }
 
@@ -292,4 +311,61 @@ public final class TestObservability implements Observability {
           Telemetry.Metrics.GC_PAUSE, Telemetry.Metrics.GC_ERRORS, Telemetry.Metrics.GC_RETRIES);
 
   private record ScopeMetrics(MetricId latency, MetricId errors, MetricId retries) {}
+
+  public static final class TestStoreTraceScope implements StoreTraceScope {
+    private final String component;
+    private final String operation;
+    private final List<Tag> tags;
+    private boolean success;
+    private Throwable error;
+    private boolean closed;
+
+    private TestStoreTraceScope(String component, String operation, List<Tag> tags) {
+      this.component = Objects.requireNonNull(component, "component");
+      this.operation = Objects.requireNonNull(operation, "operation");
+      this.tags = List.copyOf(tags);
+    }
+
+    @Override
+    public void success() {
+      if (error == null) {
+        success = true;
+      }
+    }
+
+    @Override
+    public void error(Throwable throwable) {
+      error = throwable;
+      success = false;
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+    }
+
+    public boolean succeeded() {
+      return success;
+    }
+
+    public Throwable error() {
+      return error;
+    }
+
+    public boolean closed() {
+      return closed;
+    }
+
+    public String component() {
+      return component;
+    }
+
+    public String operation() {
+      return operation;
+    }
+
+    public List<Tag> tags() {
+      return tags;
+    }
+  }
 }
