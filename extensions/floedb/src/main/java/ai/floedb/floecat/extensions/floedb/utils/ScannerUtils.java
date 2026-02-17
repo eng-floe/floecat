@@ -20,8 +20,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.engine.oid.EngineOidGeneratorProvider;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.util.EngineContext;
@@ -33,10 +35,22 @@ public final class ScannerUtils {
 
   private ScannerUtils() {}
 
-  /**
-   * Decode an engine-specific payload using a typed Floe payload descriptor. Any exception or
-   * missing payload results in Optional.empty().
-   */
+  /** Policy controlling how we resolve OIDs when hints are missing. */
+  public enum OidPolicy {
+    /** SYSTEM semantics: OID must exist in persisted engine hints; otherwise fail. */
+    REQUIRE,
+    /** USER semantics: allow deterministic fallback OID if missing. */
+    FALLBACK
+  }
+
+  public static OidPolicy oidPolicy(GraphNodeOrigin origin) {
+    return origin == GraphNodeOrigin.SYSTEM ? OidPolicy.REQUIRE : OidPolicy.FALLBACK;
+  }
+
+  public static OidPolicy oidPolicy(ResourceId id) {
+    return SystemResourceIdGenerator.isSystemId(id) ? OidPolicy.REQUIRE : OidPolicy.FALLBACK;
+  }
+
   private static <T extends Message> void checkDescriptorMessageClass(
       FloePayloads.Descriptor descriptor, Class<T> messageClass) {
     if (!descriptor.messageClass().equals(messageClass)) {
@@ -69,10 +83,20 @@ public final class ScannerUtils {
       FloePayloads.Descriptor descriptor,
       Class<T> messageClass,
       java.util.function.ToIntFunction<T> extractor) {
+
+    OidPolicy policy = oidPolicy(id);
     if (ctx == null) {
+      if (policy == OidPolicy.REQUIRE) {
+        throw new MissingSystemOidException(
+            "Missing OID for SYSTEM object id="
+                + id
+                + " payloadType="
+                + descriptor.type()
+                + " (no scan context)");
+      }
       return fallbackOid(id, descriptor.type());
     }
-    return oid(ctx.overlay(), id, descriptor, messageClass, extractor, ctx.engineContext());
+    return oid(ctx.overlay(), id, descriptor, messageClass, extractor, ctx.engineContext(), policy);
   }
 
   /** Resolve an int[] field using a typed payload descriptor. */
@@ -82,10 +106,21 @@ public final class ScannerUtils {
       FloePayloads.Descriptor descriptor,
       Class<T> messageClass,
       java.util.function.Function<T, int[]> extractor) {
+
+    OidPolicy policy = oidPolicy(id);
     if (ctx == null) {
+      if (policy == OidPolicy.REQUIRE) {
+        throw new MissingSystemOidException(
+            "Missing array field for SYSTEM object id="
+                + id
+                + " payloadType="
+                + descriptor.type()
+                + " (no scan context)");
+      }
       return new int[0];
     }
-    return array(ctx.overlay(), id, descriptor, messageClass, extractor, ctx.engineContext());
+    return array(
+        ctx.overlay(), id, descriptor, messageClass, extractor, ctx.engineContext(), policy);
   }
 
   /** Decode an engine-specific payload using a typed Floe payload descriptor via overlay. */
@@ -119,11 +154,7 @@ public final class ScannerUtils {
             });
   }
 
-  /**
-   * Decode a per-column engine hint payload stored on a {@link RelationNode}.
-   *
-   * <p>The overlay must resolve the owning table so the column-specific hint map can be accessed.
-   */
+  /** Decode a per-column engine hint payload stored on a {@link RelationNode}. */
   public static <T extends Message> Optional<T> columnPayload(
       CatalogOverlay overlay,
       ResourceId relationId,
@@ -191,11 +222,32 @@ public final class ScannerUtils {
       Class<T> messageClass,
       java.util.function.ToIntFunction<T> extractor,
       EngineContext engineContext) {
+    return oid(overlay, id, descriptor, messageClass, extractor, engineContext, OidPolicy.FALLBACK);
+  }
+
+  public static <T extends Message> int oid(
+      CatalogOverlay overlay,
+      ResourceId id,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass,
+      java.util.function.ToIntFunction<T> extractor,
+      EngineContext engineContext,
+      OidPolicy policy) {
     checkDescriptorMessageClass(descriptor, messageClass);
-    return payload(overlay, id, descriptor, messageClass, engineContext)
-        .map(extractor::applyAsInt)
-        .filter(v -> v > 0)
-        .orElseGet(() -> fallbackOid(id, descriptor.type()));
+    Optional<Integer> resolved =
+        payload(overlay, id, descriptor, messageClass, engineContext)
+            .map(extractor::applyAsInt)
+            .filter(v -> v > 0);
+
+    if (resolved.isPresent()) {
+      return resolved.get();
+    }
+
+    if (policy == OidPolicy.REQUIRE) {
+      throw new MissingSystemOidException(
+          "Missing OID for SYSTEM object id=" + id + " payloadType=" + descriptor.type());
+    }
+    return fallbackOid(id, descriptor.type());
   }
 
   /** Resolve an int[] field using a typed payload descriptor via overlay. */
@@ -206,20 +258,35 @@ public final class ScannerUtils {
       Class<T> messageClass,
       java.util.function.Function<T, int[]> extractor,
       EngineContext engineContext) {
-    checkDescriptorMessageClass(descriptor, messageClass);
-    return payload(overlay, id, descriptor, messageClass, engineContext)
-        .map(extractor)
-        .filter(arr -> arr != null && arr.length > 0)
-        .orElseGet(() -> new int[0]);
+    return array(
+        overlay, id, descriptor, messageClass, extractor, engineContext, OidPolicy.FALLBACK);
   }
 
-  /**
-   * Stable, deterministic fallback OID with payload hint.
-   *
-   * <p>The generator hashes the canonical {@link ResourceId} together with a normalized payload
-   * type so callers should pass the exact descriptor string they plan to persist; otherwise
-   * unrelated hints may collide.
-   */
+  public static <T extends Message> int[] array(
+      CatalogOverlay overlay,
+      ResourceId id,
+      FloePayloads.Descriptor descriptor,
+      Class<T> messageClass,
+      java.util.function.Function<T, int[]> extractor,
+      EngineContext engineContext,
+      OidPolicy policy) {
+    checkDescriptorMessageClass(descriptor, messageClass);
+    Optional<int[]> resolved =
+        payload(overlay, id, descriptor, messageClass, engineContext)
+            .map(extractor)
+            .filter(arr -> arr != null && arr.length > 0);
+
+    if (resolved.isPresent()) {
+      return resolved.get();
+    }
+    if (policy == OidPolicy.REQUIRE) {
+      throw new MissingSystemOidException(
+          "Missing array field for SYSTEM object id=" + id + " payloadType=" + descriptor.type());
+    }
+    return new int[0];
+  }
+
+  /** Stable, deterministic fallback OID (USER objects only; callers must enforce policy). */
   public static int fallbackOid(ResourceId id, String payloadType) {
     return EngineOidGeneratorProvider.instance().generate(id, payloadType);
   }

@@ -24,6 +24,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -113,7 +114,7 @@ public final class MetaGraph implements CatalogOverlay {
    * @return list of all relations in the catalog
    */
   @Override
-  public List<GraphNode> listRelations(ResourceId catalogId) {
+  public List<RelationNode> listRelations(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelations(catalogId, ctx), () -> userGraph.listRelations(catalogId));
@@ -130,7 +131,7 @@ public final class MetaGraph implements CatalogOverlay {
    * @return list of all relations in the namespace
    */
   @Override
-  public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
@@ -677,11 +678,11 @@ public final class MetaGraph implements CatalogOverlay {
       return List.of();
     }
 
-    List<GraphNode> nodes =
+    List<RelationNode> nodes =
         systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx);
     List<CatalogOverlay.QualifiedRelation> out = new ArrayList<>(Math.min(nodes.size(), max));
 
-    for (GraphNode n : nodes) {
+    for (RelationNode n : nodes) {
       if (out.size() >= max) {
         break;
       }

@@ -18,10 +18,11 @@ package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.TypeNode;
@@ -41,10 +42,11 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li>Engine-specific payload decoding
- *   <li>Fallback behavior when payload is missing
- *   <li>Stable deterministic OIDs
+ *   <li>SYSTEM objects require persisted hints (no fallback)
  *   <li>Default pg_catalog namespace semantics
  * </ul>
+ *
+ * <p>NOTE: There are currently no USER types; tests must not create user TypeNodes.
  */
 final class PgTypeScannerTest {
 
@@ -55,12 +57,12 @@ final class PgTypeScannerTest {
   @Test
   void scan_usesEngineSpecificPayload_whenPresent() {
     TypeNode type =
-        type(
+        systemType(
             "int4",
             Map.of(
                 new EngineHintKey("floedb", "1.0", TYPE.type()),
                 new EngineHint(
-                    "floe.type+proto",
+                    TYPE.type(),
                     FloeTypeSpecific.newBuilder()
                         .setOid(23)
                         .setTypname("int4")
@@ -79,63 +81,29 @@ final class PgTypeScannerTest {
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
     Object[] v = row.values();
 
-    assertThat(v[0]).isEqualTo(23); // oid
-    assertThat(v[1]).isEqualTo("int4"); // typname
-    assertThat(v[2]).isEqualTo(11); // typnamespace
-    assertThat(v[3]).isEqualTo(4); // typlen
-    assertThat(v[4]).isEqualTo(true); // typbyval
-    assertThat(v[5]).isEqualTo(","); // typdelim
-    assertThat(v[6]).isEqualTo(0); // typelem
-    assertThat(v[7]).isEqualTo(0); // typarray
-    assertThat(v[8]).isEqualTo("i"); // typalign
+    assertThat(v[0]).isEqualTo(23);
+    assertThat(v[1]).isEqualTo("int4");
+    assertThat(v[2]).isEqualTo(11);
+    assertThat(v[3]).isEqualTo(4);
+    assertThat(v[4]).isEqualTo(true);
+    assertThat(v[5]).isEqualTo(",");
+    assertThat(v[6]).isEqualTo(0);
+    assertThat(v[7]).isEqualTo(0);
+    assertThat(v[8]).isEqualTo("i");
   }
 
   @Test
-  void scan_fallsBack_whenPayloadMissing() {
-    TypeNode type = type("custom_type", Map.of());
+  void scan_throws_whenSystemPayloadMissing() {
+    TypeNode type = systemType("custom_type", Map.of());
 
     SystemObjectScanContext ctx = contextWith(type);
 
-    SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
-    Object[] v = row.values();
-
-    assertThat(v[0]).isInstanceOf(Integer.class); // oid fallback
-    assertThat(v[1]).isEqualTo("custom_type"); // displayName
-    assertThat(v[2]).isEqualTo(11); // default pg_catalog namespace
-    assertThat(v[3]).isEqualTo(-1); // typlen fallback
-    assertThat(v[4]).isEqualTo(false); // typbyval fallback
-    assertThat(v[5]).isEqualTo(","); // typdelim fallback
-    assertThat(v[6]).isEqualTo(0); // typelem fallback
-    assertThat(v[7]).isEqualTo(0); // typarray fallback
-    assertThat(v[8]).isEqualTo("i"); // typalign default
-  }
-
-  @Test
-  void scan_oidFallback_isStable() {
-    TypeNode type = type("uuid", Map.of());
-
-    SystemObjectScanContext ctx = contextWith(type);
-
-    int oid1 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
-    int oid2 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
-
-    assertThat(oid1).isEqualTo(oid2);
-  }
-
-  @Test
-  void scan_nameDoesNotAffectNamespace() {
-    TypeNode type = type("pg_catalog.int4", Map.of());
-
-    SystemObjectScanContext ctx = contextWith(type);
-
-    SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
-    Object[] v = row.values();
-
-    assertThat(v[2]).isEqualTo(11); // still pg_catalog
+    assertThatThrownBy(() -> scanner.scan(ctx).findFirst().orElseThrow())
+        .isInstanceOf(MissingSystemOidException.class);
   }
 
   // ----------------------------------------------------------------------
-  // Test fixtures
+  // Fixtures
   // ----------------------------------------------------------------------
 
   private static SystemObjectScanContext contextWith(TypeNode... types) {
@@ -143,27 +111,20 @@ final class PgTypeScannerTest {
     for (TypeNode t : types) {
       overlay.addNode(t);
     }
-    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
+    return new SystemObjectScanContext(overlay, null, PgCatalogTestIds.catalog(), ENGINE_CTX);
   }
 
-  private static TypeNode type(String name, Map<EngineHintKey, EngineHint> engineHints) {
-
-    ResourceId typeId = PgCatalogTestIds.type(asNameRef(name));
-
+  private static TypeNode systemType(String name, Map<EngineHintKey, EngineHint> engineHints) {
     return new TypeNode(
-        typeId,
+        PgCatalogTestIds.type(asNameRef(name)),
         1,
         Instant.EPOCH,
         "15",
         name,
         "U",
         false,
-        ResourceId.getDefaultInstance(),
+        null,
         engineHints);
-  }
-
-  private static ResourceId catalogId() {
-    return PgCatalogTestIds.catalog();
   }
 
   private static NameRef asNameRef(String qualified) {

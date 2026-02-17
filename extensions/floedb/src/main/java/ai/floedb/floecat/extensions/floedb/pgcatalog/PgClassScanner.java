@@ -21,8 +21,7 @@ import static ai.floedb.floecat.extensions.floedb.utils.ScannerUtils.col;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
@@ -54,10 +53,10 @@ public final class PgClassScanner implements SystemObjectScanner {
   }
 
   private boolean supportedRelation(GraphNode node) {
-    return node instanceof TableNode || node instanceof ViewNode;
+    return node instanceof RelationNode;
   }
 
-  private SystemObjectRow row(SystemObjectScanContext ctx, GraphNode node) {
+  private SystemObjectRow row(SystemObjectScanContext ctx, RelationNode node) {
     FloeRelationSpecific spec = FloeHintResolver.relationSpecific(ctx, node);
     return new SystemObjectRow(
         new Object[] {

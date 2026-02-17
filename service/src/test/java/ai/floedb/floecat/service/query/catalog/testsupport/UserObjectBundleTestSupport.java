@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
@@ -124,7 +125,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<GraphNode> listRelations(ResourceId catalogId) {
+    public List<RelationNode> listRelations(ResourceId catalogId) {
       throw unsupported();
     }
 
@@ -134,7 +135,8 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+    public List<RelationNode> listRelationsInNamespace(
+        ResourceId catalogId, ResourceId namespaceId) {
       throw unsupported();
     }
 
@@ -243,7 +245,7 @@ public final class UserObjectBundleTestSupport {
     }
   }
 
-  private static final class SimpleGraphNode implements GraphNode {
+  private static final class SimpleGraphNode implements RelationNode {
     private final ResourceId id;
     private final GraphNodeOrigin origin;
 
@@ -260,6 +262,11 @@ public final class UserObjectBundleTestSupport {
     @Override
     public long version() {
       return 1;
+    }
+
+    @Override
+    public ResourceId namespaceId() {
+      return ResourceId.getDefaultInstance();
     }
 
     @Override

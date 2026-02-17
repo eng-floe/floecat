@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,10 +32,16 @@ final class SystemResourceIdGeneratorTest {
     ResourceId id =
         SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, "pg_catalog.pg_class");
     UUID uuid = UUID.fromString(id.getId());
+
     assertThat(SystemResourceIdGenerator.isSystemId(uuid)).isTrue();
+
     byte[] bytes = SystemResourceIdGenerator.bytesFromUuid(uuid);
     assertThat(bytes[0]).isEqualTo((byte) 0xAB);
     assertThat(bytes[1]).isEqualTo((byte) 0xCD);
+    assertThat(bytes[2]).isEqualTo((byte) 0xEF);
+    assertThat(bytes[3]).isEqualTo((byte) 0x01);
+    assertThat(bytes[4]).isEqualTo((byte) 0x23);
+    assertThat(bytes[5]).isEqualTo((byte) 0x45);
   }
 
   @Test
@@ -56,10 +63,20 @@ final class SystemResourceIdGeneratorTest {
   void maskedUuidRetainsMarkerAndRfcBits() {
     ResourceId id =
         SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, "pg_catalog.pg_class");
-    byte[] masked = SystemResourceIdGenerator.bytesFromResourceId(id.getId());
-    assertThat(SystemResourceIdGenerator.isSystemId(UUID.fromString(id.getId()))).isTrue();
-    int version = (masked[6] >> 4) & 0x0F;
-    int variant = (masked[8] & 0xC0) >> 6;
+    UUID uuid = UUID.fromString(id.getId());
+
+    assertThat(SystemResourceIdGenerator.isSystemId(uuid)).isTrue();
+
+    byte[] bytes = SystemResourceIdGenerator.bytesFromUuid(uuid);
+    assertThat(bytes[0]).isEqualTo((byte) 0xAB);
+    assertThat(bytes[1]).isEqualTo((byte) 0xCD);
+    assertThat(bytes[2]).isEqualTo((byte) 0xEF);
+    assertThat(bytes[3]).isEqualTo((byte) 0x01);
+    assertThat(bytes[4]).isEqualTo((byte) 0x23);
+    assertThat(bytes[5]).isEqualTo((byte) 0x45);
+
+    int version = (bytes[6] >> 4) & 0x0F;
+    int variant = (bytes[8] & 0xC0) >> 6;
     assertThat(version).isEqualTo(4);
     assertThat(variant).isEqualTo(2);
   }
@@ -69,6 +86,7 @@ final class SystemResourceIdGeneratorTest {
     String canonical = "pg_catalog.pg_class";
     ResourceId engineId = SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, canonical);
     UUID translated = translateToDefault(engineId, "floedb");
+
     ResourceId expectedDefault =
         SystemNodeRegistry.resourceId("", ResourceKind.RK_TABLE, canonical);
     assertThat(translated).isEqualTo(UUID.fromString(expectedDefault.getId()));
@@ -87,6 +105,7 @@ final class SystemResourceIdGeneratorTest {
         SystemResourceIdGenerator.xor(
             base, SystemResourceIdGenerator.mask(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG));
     UUID translated = SystemResourceIdGenerator.uuidFromBytes(defaultBytes);
+
     ResourceId fallback =
         ResourceId.newBuilder()
             .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
@@ -114,6 +133,7 @@ final class SystemResourceIdGeneratorTest {
   void maskUniquenessGuard() {
     List<String> engines =
         List.of("floedb", "floe-demo", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+
     long uniqueCount =
         engines.stream()
             .map(SystemResourceIdGenerator::mask)

@@ -16,11 +16,14 @@
 
 package ai.floedb.floecat.metagraph.model;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** Common behavior for every relation-like node (tables, views) that can carry column hints. */
 public interface RelationNode extends GraphNode {
+
+  ResourceId namespaceId();
 
   /** Column-level engine hints keyed by stable `columnId`. */
   default Map<Long, Map<EngineHintKey, EngineHint>> columnHints() {

@@ -23,6 +23,7 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -49,7 +50,7 @@ public interface CatalogOverlay {
    * Lists every relation under the requested catalog (namespaces, tables, views, plus system
    * objects). Engine context is resolved implicitly.
    */
-  List<GraphNode> listRelations(ResourceId catalogId);
+  List<RelationNode> listRelations(ResourceId catalogId);
 
   /** Lists namespaces owned by the requested catalog. Engine context is resolved implicitly. */
   List<NamespaceNode> listNamespaces(ResourceId catalogId);
@@ -57,7 +58,7 @@ public interface CatalogOverlay {
   /**
    * Lists relations that live inside the given namespace. Engine context is resolved implicitly.
    */
-  List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
+  List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
 
   List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId);
 

@@ -18,6 +18,10 @@ package ai.floedb.floecat.service.metagraph.overlay;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.common.rpc.Error;
@@ -27,9 +31,9 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
@@ -134,11 +138,16 @@ class MetaGraphTest {
 
   @Test
   void listRelations_mergesSystemAndUser() {
-    GraphNode s =
-        new GraphNode() {
+    RelationNode s =
+        new RelationNode() {
           @Override
           public ResourceId id() {
             return sysTable;
+          }
+
+          @Override
+          public ResourceId namespaceId() {
+            return ResourceId.getDefaultInstance();
           }
 
           @Override
@@ -171,11 +180,16 @@ class MetaGraphTest {
             return Map.of();
           }
         };
-    GraphNode u =
-        new GraphNode() {
+    RelationNode u =
+        new RelationNode() {
           @Override
           public ResourceId id() {
             return usrTable;
+          }
+
+          @Override
+          public ResourceId namespaceId() {
+            return ResourceId.getDefaultInstance();
           }
 
           @Override
@@ -212,7 +226,7 @@ class MetaGraphTest {
     when(system.listRelations(any(), same(context))).thenReturn(List.of(s));
     when(user.listRelations(any())).thenReturn(List.of(u));
 
-    List<GraphNode> out = meta.listRelations(ResourceId.newBuilder().setId("cat").build());
+    List<RelationNode> out = meta.listRelations(ResourceId.newBuilder().setId("cat").build());
 
     assertThat(out).containsExactly(s, u);
   }

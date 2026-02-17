@@ -47,6 +47,7 @@ public enum LogicalKind {
           Map.entry("INT", INT32),
           Map.entry("SMALLINT", INT16),
           Map.entry("BIGINT", INT64),
+          Map.entry("LONG", INT64),
           Map.entry("FLOAT", FLOAT32),
           Map.entry("REAL", FLOAT32),
           Map.entry("DOUBLE", FLOAT64),
