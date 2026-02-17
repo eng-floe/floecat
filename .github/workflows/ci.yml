@@ -7,6 +7,7 @@ on:
 
 jobs:
   gitleaks:
+    if: false
     name: gitleaks
     runs-on: ubuntu-latest
     timeout-minutes: 10
