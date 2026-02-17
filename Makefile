@@ -106,7 +106,7 @@ endif
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
 QUARKUS_DEV_ARGS ?=
-QUARKUS_DEV_GOAL := io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev
+QUARKUS_DEV_GOAL := quarkus:dev
 
 # ---------- Dev dirs ----------
 PID_DIR := .devpids

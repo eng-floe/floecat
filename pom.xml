@@ -28,22 +28,69 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <quarkus.platform.version>3.29.4</quarkus.platform.version>
+    <version.quarkus>3.29.4</version.quarkus>
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
     <proto.compiler.release>25</proto.compiler.release>
     <skipUTs>false</skipUTs>
     <skipITs>false</skipITs>
     <jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED</jvm.args>
-    <mockito.version>5.14.2</mockito.version>
-    <bytebuddy.agent.version>1.15.4</bytebuddy.agent.version>
-    <bytebuddy.agent.path>${project.build.directory}/bytebuddy-agent/byte-buddy-agent-${bytebuddy.agent.version}.jar</bytebuddy.agent.path>
+    <version.analyticsaccelerator>1.3.1</version.analyticsaccelerator>
+    <version.antlr4>4.13.2</version.antlr4>
+    <version.archunit>1.1.0</version.archunit>
+    <version.arrow>18.3.0</version.arrow>
+    <version.assertj>3.27.7</version.assertj>
+    <version.aws.sdk>2.39.5</version.aws.sdk>
+    <version.bytebuddy.agent>1.15.4</version.bytebuddy.agent>
+    <version.caffeine>3.2.3</version.caffeine>
+    <version.commons.logging>1.3.5</version.commons.logging>
+    <version.datasketches>6.0.0</version.datasketches>
+    <version.delta.kernel.api>4.0.0</version.delta.kernel.api>
+    <version.google.java.format>1.32.0</version.google.java.format>
+    <version.hadoop>3.4.2</version.hadoop>
+    <version.iceberg>1.10.0</version.iceberg>
+    <version.jakarta.inject>2.0.1</version.jakarta.inject>
+    <version.jakarta.validation>3.0.2</version.jakarta.validation>
+    <version.java.string.similarity>2.0.0</version.java.string.similarity>
+    <version.jackson>2.18.2</version.jackson>
+    <version.javax.annotation>1.3.2</version.javax.annotation>
+    <version.jboss.logmanager>3.1.2.Final</version.jboss.logmanager>
+    <version.jline>3.30.6</version.jline>
+    <version.junit.jupiter>5.13.4</version.junit.jupiter>
+    <version.maven>3.9.0</version.maven>
+    <version.maven.plugin.tools>3.15.2</version.maven.plugin.tools>
+    <version.mockito>5.20.0</version.mockito>
+    <version.opentelemetry>1.40.0</version.opentelemetry>
+    <version.parquet>1.16.0</version.parquet>
+    <version.picocli>4.7.7</version.picocli>
+    <version.protobuf>4.32.1</version.protobuf>
+    <version.slf4j>2.0.17</version.slf4j>
+    <version.slf4j.jboss.logmanager>2.0.2.Final</version.slf4j.jboss.logmanager>
+    <version.trino>476</version.trino>
+    <version.trino.grpc>1.78.0</version.trino.grpc>
+    <version.plugin.antlr4>4.13.2</version.plugin.antlr4>
+    <version.plugin.build.helper>3.6.1</version.plugin.build.helper>
+    <version.plugin.clean>3.4.0</version.plugin.clean>
+    <version.plugin.compiler>3.14.1</version.plugin.compiler>
+    <version.plugin.dependency>3.9.0</version.plugin.dependency>
+    <version.plugin.exec>3.5.0</version.plugin.exec>
+    <version.plugin.failsafe>3.5.4</version.plugin.failsafe>
+    <version.plugin.fmt>2.29</version.plugin.fmt>
+    <version.plugin.jandex>3.5.2</version.plugin.jandex>
+    <version.plugin.jar>3.3.0</version.plugin.jar>
+    <version.plugin.maven.plugin>3.15.2</version.plugin.maven.plugin>
+    <version.plugin.os>1.7.1</version.plugin.os>
+    <version.plugin.protobuf>0.6.1</version.plugin.protobuf>
+    <version.plugin.rat>0.17</version.plugin.rat>
+    <version.plugin.resources>3.3.1</version.plugin.resources>
+    <version.plugin.shade>3.6.1</version.plugin.shade>
+    <version.plugin.source>3.4.0</version.plugin.source>
+    <version.plugin.surefire>3.5.4</version.plugin.surefire>
+    <version.plugin.versions>2.21.0</version.plugin.versions>
+    <bytebuddy.agent.path>${project.build.directory}/bytebuddy-agent/byte-buddy-agent-${version.bytebuddy.agent}.jar</bytebuddy.agent.path>
     <test.jvm.args>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dcom.google.protobuf.useUnsafe=false -Dio.netty.noUnsafe=true -javaagent:${bytebuddy.agent.path}</test.jvm.args>
     <test.jvm.args.extra></test.jvm.args.extra>
-    <analyticsaccelerator.version>1.3.1</analyticsaccelerator.version>
     <argLine></argLine>
-    <junit.jupiter.version>5.13.4</junit.jupiter.version>
-    <assertj.version>3.27.7</assertj.version>
   </properties>
 
   <modules>
@@ -89,34 +136,83 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
+        <groupId>io.quarkus.platform</groupId>
+        <artifactId>quarkus-bom</artifactId>
+        <version>${version.quarkus}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${version.aws.sdk}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
         <groupId>software.amazon.s3.analyticsaccelerator</groupId>
         <artifactId>analyticsaccelerator-s3</artifactId>
-        <version>${analyticsaccelerator.version}</version>
+        <version>${version.analyticsaccelerator}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java</artifactId>
+        <version>${version.protobuf}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-core</artifactId>
+        <version>${version.iceberg}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-aws</artifactId>
+        <version>${version.iceberg}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-common</artifactId>
+        <version>${version.hadoop}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.parquet</groupId>
+        <artifactId>parquet-hadoop</artifactId>
+        <version>${version.parquet}</version>
       </dependency>
       <dependency>
         <groupId>org.jboss.logmanager</groupId>
         <artifactId>jboss-logmanager</artifactId>
-        <version>3.1.2.Final</version>
+        <version>${version.jboss.logmanager}</version>
       </dependency>
       <dependency>
         <groupId>org.jboss.slf4j</groupId>
         <artifactId>slf4j-jboss-logmanager</artifactId>
-        <version>2.0.2.Final</version>
+        <version>${version.slf4j.jboss.logmanager}</version>
       </dependency>
       <dependency>
         <groupId>org.junit.jupiter</groupId>
         <artifactId>junit-jupiter-api</artifactId>
-        <version>${junit.jupiter.version}</version>
+        <version>${version.junit.jupiter}</version>
       </dependency>
       <dependency>
         <groupId>org.junit.jupiter</groupId>
         <artifactId>junit-jupiter-engine</artifactId>
-        <version>${junit.jupiter.version}</version>
+        <version>${version.junit.jupiter}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>${version.junit.jupiter}</version>
       </dependency>
       <dependency>
         <groupId>org.assertj</groupId>
         <artifactId>assertj-core</artifactId>
-        <version>${assertj.version}</version>
+        <version>${version.assertj}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mockito</groupId>
+        <artifactId>mockito-core</artifactId>
+        <version>${version.mockito}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -125,7 +221,7 @@
     <dependency>
       <groupId>net.bytebuddy</groupId>
       <artifactId>byte-buddy-agent</artifactId>
-      <version>${bytebuddy.agent.version}</version>
+      <version>${version.bytebuddy.agent}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -158,19 +254,64 @@
         <plugin>
           <groupId>com.spotify.fmt</groupId>
           <artifactId>fmt-maven-plugin</artifactId>
-          <version>2.29</version>
+          <version>${version.plugin.fmt}</version>
           <dependencies>
             <dependency>
               <groupId>com.google.googlejavaformat</groupId>
               <artifactId>google-java-format</artifactId>
-              <version>1.32.0</version>
+              <version>${version.google.java.format}</version>
             </dependency>
           </dependencies>
         </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>versions-maven-plugin</artifactId>
-          <version>2.21.0</version>
+          <version>${version.plugin.versions}</version>
+        </plugin>
+        <plugin>
+          <groupId>io.quarkus</groupId>
+          <artifactId>quarkus-maven-plugin</artifactId>
+          <version>${version.quarkus}</version>
+        </plugin>
+        <plugin>
+          <groupId>io.smallrye</groupId>
+          <artifactId>jandex-maven-plugin</artifactId>
+          <version>${version.plugin.jandex}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${version.plugin.compiler}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>${version.plugin.dependency}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>${version.plugin.jar}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${version.plugin.surefire}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <version>${version.plugin.failsafe}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>build-helper-maven-plugin</artifactId>
+          <version>${version.plugin.build.helper}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.xolstice.maven.plugins</groupId>
+          <artifactId>protobuf-maven-plugin</artifactId>
+          <version>${version.plugin.protobuf}</version>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -179,7 +320,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-dependency-plugin</artifactId>
-        <version>3.9.0</version>
+        <version>${version.plugin.dependency}</version>
         <executions>
           <execution>
             <id>copy-bytebuddy-agent</id>
@@ -192,9 +333,9 @@
                 <artifactItem>
                   <groupId>net.bytebuddy</groupId>
                   <artifactId>byte-buddy-agent</artifactId>
-                  <version>${bytebuddy.agent.version}</version>
+                  <version>${version.bytebuddy.agent}</version>
                   <outputDirectory>${project.build.directory}/bytebuddy-agent</outputDirectory>
-                  <destFileName>byte-buddy-agent-${bytebuddy.agent.version}.jar</destFileName>
+                  <destFileName>byte-buddy-agent-${version.bytebuddy.agent}.jar</destFileName>
                 </artifactItem>
               </artifactItems>
             </configuration>
@@ -204,7 +345,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.4</version>
+        <version>${version.plugin.surefire}</version>
         <configuration>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
@@ -213,7 +354,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>3.5.4</version>
+        <version>${version.plugin.failsafe}</version>
         <configuration>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
@@ -221,7 +362,7 @@
       <plugin>
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
-        <version>0.17</version>
+        <version>${version.plugin.rat}</version>
         <configuration>
           <inputExcludes>
             <inputExclude>**/*.csv</inputExclude>

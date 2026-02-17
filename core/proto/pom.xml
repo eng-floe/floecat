@@ -29,7 +29,6 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <protobuf.version>4.32.1</protobuf.version>
     <maven.compiler.source>${proto.compiler.release}</maven.compiler.source>
     <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
   </properties>
@@ -39,7 +38,7 @@
       <dependency>
         <groupId>io.quarkus.platform</groupId>
         <artifactId>quarkus-bom</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -55,7 +54,6 @@
     <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
-      <version>${protobuf.version}</version>
     </dependency>
   </dependencies>
 
@@ -76,7 +74,6 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${quarkus.platform.version}</version>
         <executions>
           <execution>
             <goals>
@@ -89,7 +86,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
         <configuration>
           <release>${maven.compiler.target}</release>
         </configuration>
@@ -98,7 +94,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
-        <version>3.4.0</version>
+        <version>${version.plugin.source}</version>
         <executions>
           <execution>
             <id>attach-sources</id>
@@ -112,7 +108,6 @@
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>3.5.2</version>
         <executions>
           <execution>
             <id>make-index</id>
@@ -122,11 +117,11 @@
           </execution>
         </executions>
       </plugin>
-      
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-resources-plugin</artifactId>
-        <version>3.3.1</version>
+        <version>${version.plugin.resources}</version>
         <executions>
           <execution>
             <id>copy-proto-resources</id>
