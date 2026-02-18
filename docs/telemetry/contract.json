@@ -430,6 +430,16 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.profiling.captures.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "profiling",
+    "description": "Profiling capture lifecycle counts (started/completed/failed/dropped).",
+    "requiredTags": ["component", "operation", "trigger"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result", "scope", "trigger"]
+  },
+  {
     "name": "floecat.service.storage.account.bytes",
     "type": "GAUGE",
     "unit": "bytes",

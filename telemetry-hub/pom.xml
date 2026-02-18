@@ -36,6 +36,7 @@
     <module>integration-grpc</module>
     <module>integration-quarkus</module>
     <module>integration-jvm</module>
+    <module>integration-profiling</module>
     <module>tool-docgen</module>
   </modules>
 

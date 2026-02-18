@@ -56,6 +56,12 @@ This lists all metrics available in the repository right now:
 | floecat.jvm.threads.count | GAUGE | count | v1 | Current live thread count. | component, operation | component, operation |
 
 
+**Profiling Metrics**
+| Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
+| --- | --- | --- | --- | --- | --- | --- |
+| floecat.profiling.captures.total | COUNTER |  | v1 | Profiling capture lifecycle counts (started/completed/failed/dropped). | component, operation, trigger | component, mode, operation, reason, result, scope, trigger |
+
+
 **Service Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
