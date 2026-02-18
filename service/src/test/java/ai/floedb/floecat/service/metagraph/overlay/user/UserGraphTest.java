@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -33,7 +32,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -66,7 +64,6 @@ class UserGraphTest {
   SnapshotTestSupport.FakeSnapshotRepository snapshotRepository;
   FakeTableRepository tableRepository;
   FakeViewRepository viewRepository;
-  SnapshotTestSupport.FakeSnapshotClient snapshotClient;
   FakePrincipalProvider principalProvider;
   UserGraph graph;
   TestObservability observability;
@@ -90,11 +87,7 @@ class UserGraphTest {
             viewRepository,
             observability);
 
-    // Configure fakes that tests rely on
-    snapshotClient = new SnapshotTestSupport.FakeSnapshotClient();
-    SnapshotHelper helper = new SnapshotHelper(snapshotRepository, null);
-    helper.setSnapshotClient(snapshotClient);
-    graph.setSnapshotHelper(helper);
+    graph.setSnapshotHelper(new SnapshotHelper(snapshotRepository));
 
     principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
@@ -251,14 +244,10 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null, // snapshotStub
             observability,
             principalProvider,
             42L, // cache size
             null); // engineHintManager
-    SnapshotHelper helperEnabled = new SnapshotHelper(snapshotRepository, null);
-    helperEnabled.setSnapshotClient(snapshotClient);
-    instrumentedGraph.setSnapshotHelper(helperEnabled);
 
     var ids = seedTable("enabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
@@ -282,14 +271,10 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null, // snapshotStub
             observability,
             principalProvider,
             0L, // cache size (disabled)
             null); // engineHintManager
-    SnapshotHelper helperDisabled = new SnapshotHelper(snapshotRepository, null);
-    helperDisabled.setSnapshotClient(snapshotClient);
-    instrumentedGraph.setSnapshotHelper(helperDisabled);
 
     var ids = seedTable("disabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
@@ -521,15 +506,16 @@ class UserGraphTest {
     assertThat(defaultPin.hasAsOf()).isTrue();
     assertThat(defaultPin.getAsOf()).isEqualTo(defaultTs);
 
-    snapshotClient.nextResponse =
-        GetSnapshotResponse.newBuilder()
-            .setSnapshot(Snapshot.newBuilder().setSnapshotId(9999))
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(9999)
+            .setSchemaJson("{}")
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123))
             .build();
+    snapshotRepository.put(tableId, snapshot);
 
     SnapshotPin current = graph.snapshotPinFor("corr", tableId, null, Optional.empty());
     assertThat(current.getSnapshotId()).isEqualTo(9999);
-    assertThat(snapshotClient.lastRequest.getSnapshot().getSpecial())
-        .isEqualTo(SpecialSnapshot.SS_CURRENT);
   }
 
   @Test
