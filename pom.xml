@@ -43,6 +43,7 @@
     <version.aws.sdk>2.39.5</version.aws.sdk>
     <version.bytebuddy.agent>1.15.4</version.bytebuddy.agent>
     <version.caffeine>3.2.3</version.caffeine>
+    <version.common.smallrye>2.15.0</version.common.smallrye>
     <version.commons.logging>1.3.5</version.commons.logging>
     <version.datasketches>6.0.0</version.datasketches>
     <version.delta.kernel.api>4.0.0</version.delta.kernel.api>
@@ -102,6 +103,7 @@
       <module>core/connectors/spi</module>
       <module>core/connectors/common</module>
       <module>core/storage-spi</module>
+      <module>core/reconciler-spi</module>
 
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
@@ -213,6 +215,11 @@
         <groupId>org.mockito</groupId>
         <artifactId>mockito-core</artifactId>
         <version>${version.mockito}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.smallrye.common</groupId>
+        <artifactId>smallrye-common-constraint</artifactId>
+        <version>${version.common.smallrye}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

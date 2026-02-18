@@ -13,14 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.reconciler.spi;
 
-package ai.floedb.floecat.reconciler.impl;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 
-import io.grpc.Context;
+public final class SnapshotHelpers {
+  private SnapshotHelpers() {}
 
-public final class ReconcilerAuthContext {
-  private ReconcilerAuthContext() {}
-
-  public static final Context.Key<String> AUTHORIZATION_HEADER_VALUE_KEY =
-      Context.key("reconciler_authorization_header_value");
+  public static boolean equalsIgnoringIngested(Snapshot a, Snapshot b) {
+    if (a == null || b == null) {
+      return a == b;
+    }
+    Snapshot normalizedA = a.toBuilder().clearIngestedAt().build();
+    Snapshot normalizedB = b.toBuilder().clearIngestedAt().build();
+    return normalizedA.equals(normalizedB);
+  }
 }

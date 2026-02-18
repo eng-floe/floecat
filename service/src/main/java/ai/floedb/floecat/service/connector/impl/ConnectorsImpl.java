@@ -777,7 +777,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           ? CaptureMode.METADATA_AND_STATS
                           : CaptureMode.METADATA_ONLY;
 
-                  var result = reconcilerService.reconcile(connectorId, false, scope, mode);
+                  var result = reconcilerService.reconcile(pc, connectorId, false, scope, mode);
                   if (!result.ok()) {
                     if (result.error != null) {
                       throw new RuntimeException("sync capture failed", result.error);

@@ -42,6 +42,14 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   }
 
   @Override
+  public void create(Namespace namespace) {
+    super.create(namespace);
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(1).setEtag("v1").build();
+    entries.put(namespace.getResourceId(), namespace);
+    metas.put(namespace.getResourceId(), meta);
+  }
+
+  @Override
   public Optional<Namespace> getById(ResourceId id) {
     return Optional.ofNullable(entries.get(id));
   }

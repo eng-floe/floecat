@@ -34,34 +34,38 @@ public final class SnapshotTestSupport {
 
   public static final class FakeSnapshotRepository extends SnapshotRepository {
 
-    private final Map<Long, Snapshot> snapshots = new HashMap<>();
+    private final Map<ResourceId, Map<Long, Snapshot>> snapshots = new HashMap<>();
 
     public FakeSnapshotRepository() {
       super(new InMemoryPointerStore(), new InMemoryBlobStore());
     }
 
-    public void put(ResourceId tableId, Snapshot snapshot) {
-      put(snapshot);
+    @Override
+    public void create(Snapshot snapshot) {
+      put(snapshot.getTableId(), snapshot);
     }
 
-    public void put(Snapshot snapshot) {
-      snapshots.put(snapshot.getSnapshotId(), snapshot);
+    public void put(ResourceId tableId, Snapshot snapshot) {
+      snapshots
+          .computeIfAbsent(tableId, ignored -> new HashMap<>())
+          .put(snapshot.getSnapshotId(), snapshot);
     }
 
     @Override
     public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
-      return Optional.ofNullable(snapshots.get(snapshotId));
+      return Optional.ofNullable(snapshots.getOrDefault(tableId, Map.of()).get(snapshotId));
     }
 
     @Override
     public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-      return snapshots.values().stream().max(Comparator.comparingLong(this::createdMillis));
+      return snapshots.getOrDefault(tableId, Map.of()).values().stream()
+          .max(Comparator.comparingLong(this::createdMillis));
     }
 
     @Override
     public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
       long target = asOf.getSeconds();
-      return snapshots.values().stream()
+      return snapshots.getOrDefault(tableId, Map.of()).values().stream()
           .filter(s -> s.getUpstreamCreatedAt().getSeconds() <= target)
           .max(Comparator.comparingLong(this::createdMillis));
     }

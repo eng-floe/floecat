@@ -47,6 +47,13 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Job leasing** – `InMemoryReconcileJobStore` tracks leased IDs to avoid double processing and only
   transitions jobs to `JS_SUCCEEDED`/`JS_FAILED` after `ReconcilerScheduler` finishes the run.
 
+### Backend selection
+- `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
+  uses. Set it to `remote` when the reconciler runs as a separate process and must talk to the service
+  over gRPC. In remote mode the reconciler uses `floecat.reconciler.authorization.header`/`token` to send
+  an authorization header on every call. Per-request tokens supplied via `ReconcileContext` override the
+  static token, so the precedence is: request-scoped token → configured token → no header.
+
 ## Data Flow & Lifecycle
 ```
 Connector TriggerReconcile → ReconcileJobStore.enqueue

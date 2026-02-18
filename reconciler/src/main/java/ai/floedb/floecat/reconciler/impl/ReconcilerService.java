@@ -19,40 +19,18 @@ package ai.floedb.floecat.reconciler.impl;
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.Namespace;
-import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
-import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
-import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
@@ -62,64 +40,90 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
+import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
+import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.LongConsumer;
+import java.util.function.LongPredicate;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcilerService {
   private static final Logger LOG = Logger.getLogger(ReconcilerService.class);
+  private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
 
   public enum CaptureMode {
     METADATA_ONLY,
     METADATA_AND_STATS
   }
 
-  @Inject GrpcClients clients;
+  @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
 
-  public Result reconcile(ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn) {
-    return reconcile(connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS);
+  public Result reconcile(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn) {
+    return reconcile(
+        principal, connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS, null);
   }
 
   public Result reconcile(
-      ResourceId connectorId, boolean fullRescan, ReconcileScope scopeIn, CaptureMode captureMode) {
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode) {
+    return reconcile(principal, connectorId, fullRescan, scopeIn, captureMode, null);
+  }
+
+  public Result reconcile(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode,
+      String bearerToken) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
     long errors = 0;
+    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+    String corr = ctx.correlationId();
 
     final ArrayList<String> errSummaries = new ArrayList<>();
 
     final Connector stored;
     try {
-      stored =
-          clients
-              .connector()
-              .getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
-              .getConnector();
-    } catch (StatusRuntimeException e) {
+      stored = backend.lookupConnector(ctx, connectorId);
+    } catch (RuntimeException e) {
       return new Result(
-          0,
-          0,
-          1,
-          new IllegalArgumentException(
-              "getConnector failed (" + e.getStatus().getCode() + "): " + connectorId.getId(), e));
+          0, 0, 1, new IllegalArgumentException("getConnector failed: " + connectorId.getId(), e));
     }
 
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
@@ -158,14 +162,14 @@ public class ReconcilerService {
 
       if (dest.hasNamespaceId()) {
         destNamespaceId = dest.getNamespaceId();
-        destNsFq = resolveNamespaceFq(destNamespaceId);
+        destNsFq = resolveNamespaceFq(ctx, destNamespaceId);
       } else {
         destNsFq =
             (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
                 ? fq(dest.getNamespace().getSegmentsList())
                 : sourceNsFq;
 
-        destNamespaceId = ensureNamespace(destCatalogId, destNsFq);
+        destNamespaceId = ensureNamespace(ctx, destCatalogId, destNsFq);
       }
 
       String scopeNamespaceFq = destNsFq != null ? destNsFq : sourceNsFq;
@@ -226,6 +230,7 @@ public class ReconcilerService {
 
           var destTableId =
               ensureTable(
+                  ctx,
                   destCatalogId,
                   destNamespaceId,
                   effective,
@@ -247,7 +252,7 @@ public class ReconcilerService {
                   sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
           ingestAllSnapshotsAndStatsFiltered(
-              destTableId, connector, effective, bundles, includeSelectors, includeStats);
+              ctx, destTableId, connector, effective, bundles, includeSelectors, includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -277,15 +282,8 @@ public class ReconcilerService {
       FieldMask dMask = dmaskB.build();
       if (!updated.equals(stored.getDestination()) && dMask.getPathsCount() > 0) {
         try {
-          clients
-              .connector()
-              .updateConnector(
-                  UpdateConnectorRequest.newBuilder()
-                      .setConnectorId(stored.getResourceId())
-                      .setSpec(ConnectorSpec.newBuilder().setDestination(updated).build())
-                      .setUpdateMask(dMask)
-                      .build());
-        } catch (StatusRuntimeException e) {
+          backend.updateConnectorDestination(ctx, stored.getResourceId(), updated);
+        } catch (RuntimeException e) {
           errors++;
           errSummaries.add("updateConnector(destination): " + rootCauseMessage(e));
         }
@@ -307,38 +305,22 @@ public class ReconcilerService {
     }
   }
 
-  private ResourceId ensureNamespace(ResourceId catalogId, String namespaceFq) {
+  private ResourceId ensureNamespace(
+      ReconcileContext ctx, ResourceId catalogId, String namespaceFq) {
     var parts = split(namespaceFq);
-    try {
-      var nameRef =
-          NameRef.newBuilder()
-              .setCatalog(lookupCatalogName(catalogId))
-              .addAllPath(parts.parents)
-              .setName(parts.leaf)
-              .build();
-      return clients
-          .directory()
-          .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(nameRef).build())
-          .getResourceId();
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
-    var spec =
-        NamespaceSpec.newBuilder()
-            .setCatalogId(catalogId)
-            .setDisplayName(parts.leaf)
+    String catalogName = backend.lookupCatalogName(ctx, catalogId);
+    NameRef nameRef =
+        NameRef.newBuilder()
+            .setCatalog(catalogName)
             .addAllPath(parts.parents)
+            .setName(parts.leaf)
             .build();
-    return clients
-        .namespace()
-        .createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build())
-        .getNamespace()
-        .getResourceId();
+    NameRef normalized = NameRefNormalizer.normalize(nameRef);
+    return backend.ensureNamespace(ctx, catalogId, normalized);
   }
 
   private ResourceId ensureTable(
+      ReconcileContext ctx,
       ResourceId catalogId,
       ResourceId destNamespaceId,
       FloecatConnector.TableDescriptor landingView,
@@ -347,218 +329,160 @@ public class ReconcilerService {
       String connectorUri,
       String sourceNsFq,
       String sourceTable) {
-    try {
-      var nameRef =
-          NameRef.newBuilder()
-              .setCatalog(lookupCatalogName(catalogId))
-              .addAllPath(List.of(landingView.namespaceFq().split("\\.")))
-              .setName(landingView.tableName())
-              .build();
+    String catalogName = backend.lookupCatalogName(ctx, catalogId);
+    TableSpecDescriptor descriptor =
+        new TableSpecDescriptor(
+            landingView.namespaceFq(),
+            landingView.tableName(),
+            landingView.schemaJson(),
+            landingView.properties(),
+            landingView.partitionKeys(),
+            landingView.columnIdAlgorithm(),
+            format,
+            connectorRid,
+            connectorUri,
+            sourceNsFq,
+            sourceTable);
 
-      var tableId =
-          clients
-              .directory()
-              .resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build())
-              .getResourceId();
-
-      maybeUpdateTable(
-          tableId, landingView, format, connectorRid, connectorUri, sourceNsFq, sourceTable);
-      return tableId;
-
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-        throw e;
-      }
-    }
-
-    var upstream =
-        UpstreamRef.newBuilder()
-            .setConnectorId(connectorRid)
-            .setUri(connectorUri)
-            .addAllNamespacePath(List.of(sourceNsFq.split("\\.")))
-            .setTableDisplayName(sourceTable)
-            .setFormat(toTableFormat(format))
-            .addAllPartitionKeys(landingView.partitionKeys())
-            .setColumnIdAlgorithm(landingView.columnIdAlgorithm())
+    NameRef tableRef =
+        NameRef.newBuilder()
+            .setCatalog(catalogName)
+            .addAllPath(List.of(landingView.namespaceFq().split("\\.")))
+            .setName(landingView.tableName())
             .build();
-
-    var spec =
-        TableSpec.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(destNamespaceId)
-            .setDisplayName(landingView.tableName())
-            .setSchemaJson(landingView.schemaJson())
-            .setUpstream(upstream)
-            .putAllProperties(landingView.properties());
-
-    return clients
-        .table()
-        .createTable(CreateTableRequest.newBuilder().setSpec(spec.build()).build())
-        .getTable()
-        .getResourceId();
-  }
-
-  private void maybeUpdateTable(
-      ResourceId tableId,
-      FloecatConnector.TableDescriptor landingView,
-      ConnectorFormat format,
-      ResourceId connectorRid,
-      String connectorUri,
-      String sourceNsFq,
-      String sourceTable) {
-
-    var upstream =
-        UpstreamRef.newBuilder()
-            .setConnectorId(connectorRid)
-            .setUri(connectorUri)
-            .addAllNamespacePath(List.of(sourceNsFq.split("\\.")))
-            .setTableDisplayName(sourceTable)
-            .setFormat(toTableFormat(format))
-            .addAllPartitionKeys(landingView.partitionKeys())
-            .setColumnIdAlgorithm(landingView.columnIdAlgorithm())
-            .build();
-
-    var updated =
-        TableSpec.newBuilder()
-            .setSchemaJson(landingView.schemaJson())
-            .setUpstream(upstream)
-            .putAllProperties(landingView.properties());
-
-    FieldMask mask =
-        FieldMask.newBuilder()
-            .addPaths("schema_json")
-            .addPaths("upstream")
-            .addPaths("properties")
-            .build();
-    var req =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(updated.build())
-            .setUpdateMask(mask)
-            .build();
-    try {
-      clients.table().updateTable(req);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
-        throw e;
-      }
-    }
+    return backend.ensureTable(
+        ctx, destNamespaceId, NameRefNormalizer.normalize(tableRef), descriptor);
   }
 
   private void ensureSnapshot(
+      ReconcileContext ctx, ResourceId tableId, FloecatConnector.SnapshotBundle snapshotBundle) {
+    if (snapshotBundle == null || snapshotBundle.snapshotId() <= 0) {
+      return;
+    }
+    Snapshot existing =
+        backend.fetchSnapshot(ctx, tableId, snapshotBundle.snapshotId()).orElse(null);
+    buildSnapshot(ctx, tableId, snapshotBundle, existing)
+        .ifPresent(snapshot -> backend.ingestSnapshot(ctx, tableId, snapshot));
+  }
+
+  Optional<Snapshot> buildSnapshot(
+      ReconcileContext ctx,
       ResourceId tableId,
-      FloecatConnector connector,
-      FloecatConnector.SnapshotBundle snapshotBundle) {
-    if (snapshotBundle == null) {
-      return;
+      FloecatConnector.SnapshotBundle bundle,
+      Snapshot existing) {
+    long parentSnapshotId = bundle.parentId();
+    if (parentSnapshotId <= 0 && existing != null) {
+      parentSnapshotId = existing.getParentSnapshotId();
     }
-    long upstreamTsMs =
-        snapshotBundle.upstreamCreatedAtMs() > 0
-            ? snapshotBundle.upstreamCreatedAtMs()
-            : System.currentTimeMillis();
-    SnapshotSpec.Builder spec =
-        SnapshotSpec.newBuilder()
+
+    Timestamp upstreamTimestamp;
+    if (bundle.upstreamCreatedAtMs() > 0) {
+      upstreamTimestamp = Timestamps.fromMillis(bundle.upstreamCreatedAtMs());
+    } else if (existing != null && existing.hasUpstreamCreatedAt()) {
+      upstreamTimestamp = existing.getUpstreamCreatedAt();
+    } else {
+      upstreamTimestamp = Timestamps.fromMillis(ctx.now().toEpochMilli());
+    }
+
+    Snapshot.Builder builder =
+        Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(snapshotBundle.snapshotId())
-            .setParentSnapshotId(snapshotBundle.parentId())
-            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamTsMs))
-            .setIngestedAt(Timestamps.fromMillis(System.currentTimeMillis()));
-    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("upstream_created_at");
-    if (snapshotBundle.parentId() > 0) {
-      mask.addPaths("parent_snapshot_id");
+            .setSnapshotId(bundle.snapshotId())
+            .setUpstreamCreatedAt(upstreamTimestamp);
+    if (parentSnapshotId > 0) {
+      builder.setParentSnapshotId(parentSnapshotId);
     }
-    if (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank()) {
-      spec.setSchemaJson(snapshotBundle.schemaJson());
-      mask.addPaths("schema_json");
-    }
-    if (snapshotBundle.partitionSpec() != null) {
-      spec.setPartitionSpec(snapshotBundle.partitionSpec());
-      mask.addPaths("partition_spec");
-    }
-    if (snapshotBundle.sequenceNumber() > 0) {
-      spec.setSequenceNumber(snapshotBundle.sequenceNumber());
-      mask.addPaths("sequence_number");
-    }
-    if (snapshotBundle.manifestList() != null && !snapshotBundle.manifestList().isBlank()) {
-      spec.setManifestList(snapshotBundle.manifestList());
-      mask.addPaths("manifest_list");
-    }
-    Snapshot existingSnapshot = fetchSnapshot(tableId, snapshotBundle.snapshotId());
-    if (snapshotBundle.summary() != null && !snapshotBundle.summary().isEmpty()) {
-      LinkedHashMap<String, String> mergedSummary = new LinkedHashMap<>(snapshotBundle.summary());
-      if (existingSnapshot != null && !existingSnapshot.getSummaryMap().isEmpty()) {
-        existingSnapshot
-            .getSummaryMap()
-            .forEach((key, value) -> mergedSummary.putIfAbsent(key, value));
+    applyField(
+        () -> bundle.schemaJson(),
+        () -> existing != null ? existing.getSchemaJson() : null,
+        builder::setSchemaJson,
+        str -> str != null && !str.isBlank());
+    applyField(
+        () -> bundle.partitionSpec(),
+        () ->
+            (existing != null && existing.hasPartitionSpec()) ? existing.getPartitionSpec() : null,
+        builder::setPartitionSpec,
+        spec -> spec != null);
+    applyLongField(
+        () -> bundle.sequenceNumber(),
+        () -> existing != null ? existing.getSequenceNumber() : 0L,
+        builder::setSequenceNumber,
+        value -> value > 0);
+    applyField(
+        () -> bundle.manifestList(),
+        () -> existing != null ? existing.getManifestList() : null,
+        builder::setManifestList,
+        str -> str != null && !str.isBlank());
+    if (bundle.summary() != null && !bundle.summary().isEmpty()) {
+      var merged = new LinkedHashMap<>(bundle.summary());
+      if (existing != null && !existing.getSummaryMap().isEmpty()) {
+        existing.getSummaryMap().forEach(merged::putIfAbsent);
       }
-      spec.putAllSummary(mergedSummary);
-      mask.addPaths("summary");
+      builder.putAllSummary(merged);
     }
-    if (snapshotBundle.schemaId() > 0) {
-      spec.setSchemaId(snapshotBundle.schemaId());
-      mask.addPaths("schema_id");
+    applyLongField(
+        () -> (long) bundle.schemaId(),
+        () -> existing != null ? existing.getSchemaId() : 0L,
+        value -> builder.setSchemaId((int) value),
+        value -> value > 0);
+    Map<String, ByteString> mergedMetadata = new LinkedHashMap<>();
+    if (existing != null && !existing.getFormatMetadataMap().isEmpty()) {
+      mergedMetadata.putAll(existing.getFormatMetadataMap());
     }
-    if (snapshotBundle.metadata() != null && !snapshotBundle.metadata().isEmpty()) {
-      spec.putAllFormatMetadata(snapshotBundle.metadata());
-      mask.addPaths("format_metadata");
+    if (bundle.metadata() != null && !bundle.metadata().isEmpty()) {
+      bundle
+          .metadata()
+          .forEach(
+              (key, value) -> mergedMetadata.put(key, value != null ? value : ByteString.EMPTY));
     }
-    SnapshotSpec snapshotSpec = spec.build();
-    long snapshotId = snapshotBundle.snapshotId();
-    var updateMask = mask.build();
+    if (!mergedMetadata.isEmpty()) {
+      // Null metadata values from connectors are stored as empty bytes rather than removing keys.
+      builder.putAllFormatMetadata(mergedMetadata);
+    }
+    Snapshot candidate = builder.build();
+    if (existing != null && SnapshotHelpers.equalsIgnoringIngested(candidate, existing)) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        candidate.toBuilder()
+            .setIngestedAt(Timestamps.fromMillis(ctx.now().toEpochMilli()))
+            .build());
+  }
 
-    if (snapshotId <= 0) {
-      var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
-      try {
-        clients.snapshot().createSnapshot(request);
-      } catch (StatusRuntimeException e) {
-        var code = e.getStatus().getCode();
-        if (code != Status.Code.ABORTED && code != Status.Code.ALREADY_EXISTS) {
-          throw e;
-        }
-      }
+  private static <T> void applyField(
+      Supplier<T> bundleValue,
+      Supplier<T> existingValue,
+      Consumer<T> setter,
+      Predicate<T> hasValue) {
+    T value = bundleValue.get();
+    if (hasValue.test(value)) {
+      setter.accept(value);
       return;
     }
+    T existing = existingValue.get();
+    if (hasValue.test(existing)) {
+      setter.accept(existing);
+    }
+  }
 
-    if (existingSnapshot != null) {
-      if (updateMask.getPathsCount() > 0) {
-        var updateReq =
-            UpdateSnapshotRequest.newBuilder()
-                .setSpec(snapshotSpec)
-                .setUpdateMask(updateMask)
-                .build();
-        clients.snapshot().updateSnapshot(updateReq);
-      }
+  private static void applyLongField(
+      Supplier<Long> bundleValue,
+      Supplier<Long> existingValue,
+      LongConsumer setter,
+      LongPredicate hasValue) {
+    long value = bundleValue.get();
+    if (hasValue.test(value)) {
+      setter.accept(value);
       return;
     }
-
-    if (updateMask.getPathsCount() > 0) {
-      try {
-        var updateReq =
-            UpdateSnapshotRequest.newBuilder()
-                .setSpec(snapshotSpec)
-                .setUpdateMask(updateMask)
-                .build();
-        clients.snapshot().updateSnapshot(updateReq);
-        return;
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
-          throw e;
-        }
-      }
-    }
-
-    var request = CreateSnapshotRequest.newBuilder().setSpec(snapshotSpec).build();
-    try {
-      clients.snapshot().createSnapshot(request);
-    } catch (StatusRuntimeException e) {
-      var code = e.getStatus().getCode();
-      if (code != Status.Code.ABORTED && code != Status.Code.ALREADY_EXISTS) {
-        throw e;
-      }
+    long existing = existingValue.get();
+    if (hasValue.test(existing)) {
+      setter.accept(existing);
     }
   }
 
   private void ingestAllSnapshotsAndStatsFiltered(
+      ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
       FloecatConnector.TableDescriptor tableDesc,
@@ -567,8 +491,15 @@ public class ReconcilerService {
       boolean includeStats) {
 
     var seen = new HashSet<Long>();
-    // Cache schema mapping to avoid re-parsing for each snapshot with identical schema
-    var schemaCache = new LinkedHashMap<String, SchemaDescriptor>();
+    var schemaCache =
+        new LinkedHashMap<String, SchemaDescriptor>(16, 0.75f, true) {
+          private static final long serialVersionUID = 1L;
+
+          @Override
+          protected boolean removeEldestEntry(Map.Entry<String, SchemaDescriptor> eldest) {
+            return size() > SCHEMA_CACHE_MAX_ENTRIES;
+          }
+        };
 
     for (var snapshotBundle : bundles) {
       if (snapshotBundle == null) {
@@ -580,171 +511,82 @@ public class ReconcilerService {
         continue;
       }
 
-      ensureSnapshot(tableId, connector, snapshotBundle);
+      ensureSnapshot(ctx, tableId, snapshotBundle);
 
-      if (includeStats) {
-        if (statsAlreadyCaptured(tableId, snapshotId)) {
-          continue;
+      if (!includeStats) {
+        continue;
+      }
+
+      if (backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
+        continue;
+      }
+
+      var tsIn = snapshotBundle.tableStats();
+      if (tsIn != null) {
+        var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+        backend.putTableStats(ctx, tableId, tStats);
+      }
+
+      var colsIn = snapshotBundle.columnStats();
+      var fileStatsIn = snapshotBundle.fileStats();
+
+      SchemaDescriptor schema = null;
+      if ((colsIn != null && !colsIn.isEmpty())
+          || (fileStatsIn != null && !fileStatsIn.isEmpty())) {
+        String schemaJson =
+            (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank())
+                ? snapshotBundle.schemaJson()
+                : tableDesc.schemaJson();
+        if (schemaJson == null) {
+          schemaJson = "";
         }
 
-        var tsIn = snapshotBundle.tableStats();
-        if (tsIn != null) {
-          var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-          clients
-              .statistics()
-              .putTableStats(
-                  PutTableStatsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshotId(snapshotId)
-                      .setStats(tStats)
-                      .build());
-        }
+        final String schemaJsonForMapping = schemaJson;
+        schema =
+            schemaCache.computeIfAbsent(
+                schemaJson,
+                key ->
+                    schemaMapper.mapRaw(
+                        tableDesc.columnIdAlgorithm(),
+                        toTableFormat(connector.format()),
+                        schemaJsonForMapping,
+                        new HashSet<>(tableDesc.partitionKeys())));
+      }
 
-        var colsIn = snapshotBundle.columnStats();
-        var fileStatsIn = snapshotBundle.fileStats();
+      if (colsIn != null && !colsIn.isEmpty()) {
+        List<ColumnStats> colsOut =
+            StatsProtoEmitter.toColumnStats(
+                tableId,
+                snapshotId,
+                snapshotBundle.upstreamCreatedAtMs(),
+                connector.format(),
+                tableDesc.columnIdAlgorithm(),
+                (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
+                colsIn);
 
-        // Compute schema once per snapshot if we might ingest stats (cached by schemaJson)
-        SchemaDescriptor schema = null;
-        if ((colsIn != null && !colsIn.isEmpty())
-            || (fileStatsIn != null && !fileStatsIn.isEmpty())) {
-          String schemaJson =
-              (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank())
-                  ? snapshotBundle.schemaJson()
-                  : tableDesc.schemaJson();
+        List<ColumnStats> filtered =
+            (includeSelectors == null || includeSelectors.isEmpty())
+                ? colsOut
+                : colsOut.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
 
-          schema =
-              schemaCache.computeIfAbsent(
-                  schemaJson,
-                  key ->
-                      schemaMapper.mapRaw(
-                          tableDesc.columnIdAlgorithm(),
-                          toTableFormat(connector.format()),
-                          key,
-                          new HashSet<>(tableDesc.partitionKeys())));
-        }
-
-        // Column stats
-        if (colsIn != null && !colsIn.isEmpty()) {
-          List<ColumnStats> colsOut =
-              StatsProtoEmitter.toColumnStats(
-                  tableId,
-                  snapshotId,
-                  snapshotBundle.upstreamCreatedAtMs(),
-                  connector.format(),
-                  tableDesc.columnIdAlgorithm(),
-                  (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
-                  colsIn);
-
-          // Now filter by selector (supports both name and #id)
-          List<ColumnStats> filtered =
-              (includeSelectors == null || includeSelectors.isEmpty())
-                  ? colsOut
-                  : colsOut.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
-
-          if (!filtered.isEmpty()) {
-            List<PutColumnStatsRequest> columnRequests = new ArrayList<>(filtered.size());
-            for (var c : filtered) {
-              columnRequests.add(
-                  PutColumnStatsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshotId(snapshotId)
-                      .addColumns(
-                          c.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
-                      .build());
-            }
-            clients
-                .statisticsMutiny()
-                .putColumnStats(Multi.createFrom().iterable(columnRequests))
-                .await()
-                .atMost(Duration.ofMinutes(1));
-          }
-        }
-
-        // File stats
-        if (fileStatsIn != null && !fileStatsIn.isEmpty()) {
-          var fileStatsOut =
-              StatsProtoEmitter.toFileColumnStats(
-                  tableId,
-                  snapshotId,
-                  snapshotBundle.upstreamCreatedAtMs(),
-                  connector.format(),
-                  tableDesc.columnIdAlgorithm(),
-                  (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
-                  fileStatsIn);
-
-          List<PutFileColumnStatsRequest> fileRequests = new ArrayList<>(fileStatsOut.size());
-          for (var f : fileStatsOut) {
-            fileRequests.add(
-                PutFileColumnStatsRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .addFiles(f.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build())
-                    .build());
-          }
-          clients
-              .statisticsMutiny()
-              .putFileColumnStats(Multi.createFrom().iterable(fileRequests))
-              .await()
-              .atMost(Duration.ofMinutes(1));
+        if (!filtered.isEmpty()) {
+          backend.putColumnStats(ctx, filtered);
         }
       }
-    }
-  }
 
-  private boolean statsAlreadyCaptured(ResourceId tableId, long snapshotId) {
-    if (snapshotId < 0) {
-      return false;
-    }
-
-    try {
-      var response =
-          clients
-              .statistics()
-              .getTableStats(
-                  GetTableStatsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                      .build());
-      var stats = response.getStats();
-      return stats.hasTableId() && stats.getSnapshotId() == snapshotId;
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return false;
+      if (fileStatsIn != null && !fileStatsIn.isEmpty()) {
+        var fileStatsOut =
+            StatsProtoEmitter.toFileColumnStats(
+                tableId,
+                snapshotId,
+                snapshotBundle.upstreamCreatedAtMs(),
+                connector.format(),
+                tableDesc.columnIdAlgorithm(),
+                (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
+                fileStatsIn);
+        backend.putFileColumnStats(ctx, fileStatsOut);
       }
-      throw e;
     }
-  }
-
-  private Snapshot fetchSnapshot(ResourceId tableId, long snapshotId) {
-    if (snapshotId <= 0) {
-      return null;
-    }
-    try {
-      var response =
-          clients
-              .snapshot()
-              .getSnapshot(
-                  GetSnapshotRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                      .build());
-      if (response == null || !response.hasSnapshot()) {
-        return null;
-      }
-      return response.getSnapshot();
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return null;
-      }
-      throw e;
-    }
-  }
-
-  private String lookupCatalogName(ResourceId catalogId) {
-    return clients
-        .directory()
-        .lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(catalogId).build())
-        .getDisplayName();
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
@@ -810,26 +652,8 @@ public class ReconcilerService {
     return String.join(" | caused by: ", parts);
   }
 
-  private String resolveNamespaceFq(ResourceId namespaceId) {
-    try {
-      Namespace ns =
-          clients
-              .namespace()
-              .getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build())
-              .getNamespace();
-      var segs = new ArrayList<String>(ns.getParentsCount() + 1);
-      segs.addAll(ns.getParentsList());
-      if (ns.getDisplayName() != null && !ns.getDisplayName().isBlank()) {
-        segs.add(ns.getDisplayName());
-      }
-      return fq(segs);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        throw new IllegalArgumentException(
-            "Destination namespace not found: " + namespaceId.getId(), e);
-      }
-      throw e;
-    }
+  private String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+    return backend.resolveNamespaceFq(ctx, namespaceId);
   }
 
   private static String renderThrowable(Throwable t) {
@@ -854,6 +678,18 @@ public class ReconcilerService {
 
   private static String fq(List<String> segments) {
     return String.join(".", segments);
+  }
+
+  private ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
+    String correlationId = principal.getCorrelationId();
+    if (correlationId == null || correlationId.isBlank()) {
+      correlationId = UUID.randomUUID().toString();
+    }
+    String source = principal.getSubject();
+    if (source == null || source.isBlank()) {
+      source = "reconciler-service";
+    }
+    return new ReconcileContext(correlationId, principal, source, Instant.now(), bearerToken);
   }
 
   private static Set<String> normalizeSelectors(List<String> in) {
