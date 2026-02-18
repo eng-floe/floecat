@@ -26,6 +26,7 @@ import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 
 @ApplicationScoped
@@ -101,15 +102,23 @@ public class MutinyExecutorTelemetry {
       try {
         delegate.execute(wrapped);
       } catch (RejectedExecutionException e) {
-        // This can happen during Quarkus dev-mode reload / shutdown. Record it, but avoid
-        // surfacing it as an application failure when the executor is stopping.
         metrics.counterRejected(1);
-        return;
+        if (shouldSwallowRejected(delegate)) {
+          return;
+        }
+        throw e;
       }
     }
 
     private static Duration nanosToDuration(long nanos) {
       return Duration.ofNanos(Math.max(0, nanos));
+    }
+
+    private static boolean shouldSwallowRejected(Executor delegate) {
+      if (delegate instanceof ExecutorService service) {
+        return service.isShutdown();
+      }
+      return false;
     }
   }
 }

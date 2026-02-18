@@ -208,6 +208,11 @@
       <artifactId>telemetry-hub-integration-grpc</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-jvm</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>

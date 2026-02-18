@@ -97,7 +97,7 @@ public final class MetricCatalogDocgen {
     StringBuilder section = new StringBuilder();
     for (String origin : origins) {
       if (section.length() > 0) {
-        section.append("\n");
+        section.append("\n\n");
       }
       if ("core".equals(origin)) {
         section.append("**Core Metrics**\n");

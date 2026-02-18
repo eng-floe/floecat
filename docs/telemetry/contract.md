@@ -27,7 +27,7 @@ This lists all metrics available in the repository right now:
 | floecat.core.gc.retries | COUNTER |  | v1 | GC retries per component/operation. | component, operation | component, operation |
 | floecat.core.observability.dropped.metric.total | COUNTER |  | v1 | Total number of metric emissions rejected because validation failed. |  | reason |
 | floecat.core.observability.dropped.tags.total | COUNTER |  | v1 | Total number of tags dropped because they violated telemetry contracts. |  |  |
-| floecat.core.observability.duplicate.gauge.total | COUNTER |  | v1 | Count of duplicate gauges that strict mode detected. |  | reason |
+| floecat.core.observability.duplicate.gauge.total | COUNTER |  | v1 | Count of duplicate gauge registration attempts. |  | reason |
 | floecat.core.observability.invalid.metric.total | COUNTER |  | v1 | Total number of metrics rejected because they were not registered. |  | reason |
 | floecat.core.observability.registry.size | GAUGE | count | v1 | Current size of the telemetry registry. |  |  |
 | floecat.core.rpc.active | GAUGE |  | v1 | Number of in-flight RPCs per component/operation. | component, operation | component, operation |
@@ -44,6 +44,17 @@ This lists all metrics available in the repository right now:
 | floecat.core.task.last.tick.end.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the scheduled task last finished a tick. | component, operation, task | account, component, operation, task |
 | floecat.core.task.last.tick.start.ms | GAUGE | milliseconds | v1 | Timestamp (ms since epoch) when the scheduled task last started a tick. | component, operation, task | account, component, operation, task |
 | floecat.core.task.running | GAUGE |  | v1 | Number of active ticks for the scheduled task (usually 0 or 1). | component, operation, task | account, component, operation, task |
+
+
+**Jvm Metrics**
+| Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
+| --- | --- | --- | --- | --- | --- | --- |
+| floecat.jvm.gc.live.data.bytes | GAUGE | bytes | v1 | Estimated live data (bytes) held by each garbage collector. | component, gc, operation | component, gc, operation |
+| floecat.jvm.gc.live.data.growth.rate | GAUGE | bytes_per_second | v1 | Live data growth rate (bytes/second) for GC-managed pools. | component, gc, operation | component, gc, operation |
+| floecat.jvm.memory.used.bytes | GAUGE | bytes | v1 | Used bytes for heap/metaspace/direct buffers. | component, operation, resource | component, operation, resource |
+| floecat.jvm.process.cpu.usage | GAUGE | ratio | v1 | Process CPU usage (0-1 fraction). | component, operation | component, operation |
+| floecat.jvm.threads.count | GAUGE | count | v1 | Current live thread count. | component, operation | component, operation |
+
 
 **Service Metrics**
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |

@@ -81,7 +81,7 @@ public final class MicrometerObservability implements Observability {
           Telemetry.Metrics.EXEC_TASK_WAIT.name(),
           Telemetry.Metrics.EXEC_TASK_RUN.name());
   private static final Duration HISTOGRAM_EXPIRY = Duration.ofMinutes(5);
-  private static final Duration HISTOGRAM_MIN = Duration.ofNanos(100_000);
+  private static final Duration HISTOGRAM_MIN = Duration.ofNanos(10_000);
   private static final Duration[] RPC_SLOS =
       new Duration[] {
         Duration.ofMillis(5),
@@ -189,11 +189,24 @@ public final class MicrometerObservability implements Observability {
     if (key == null) {
       return;
     }
+    Iterable<io.micrometer.core.instrument.Tag> meterTags = micrometerTags(key.tags());
+    Gauge existingGauge = registry.find(metric.name()).tags(meterTags).gauge();
+    boolean registryGaugePresent = existingGauge != null;
+    if (registryGaugePresent) {
+      duplicateGaugeCounter.increment();
+      if (policy.isStrict()) {
+        throw new IllegalArgumentException("Gauge already registered for metric " + metric.name());
+      }
+      gauges.putIfAbsent(key, existingGauge);
+      return;
+    }
     gauges.compute(
         key,
         (ignored, existing) -> {
           if (existing != null) {
-            duplicateGaugeCounter.increment();
+            if (!registryGaugePresent) {
+              duplicateGaugeCounter.increment();
+            }
             if (policy.isStrict()) {
               throw new IllegalArgumentException(
                   "Gauge already registered for metric "
@@ -210,7 +223,7 @@ public final class MicrometerObservability implements Observability {
               };
           return Gauge.builder(metric.name(), safeSupplier)
               .description(description)
-              .tags(micrometerTags(key.tags()))
+              .tags(meterTags)
               .register(registry);
         });
   }

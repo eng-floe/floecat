@@ -83,6 +83,7 @@ public final class Telemetry {
     public static final String TASK = "task";
     public static final String REASON = "reason";
     public static final String POOL = "pool";
+    public static final String RESOURCE = "resource";
 
     private TagKey() {}
   }
@@ -257,13 +258,12 @@ public final class Telemetry {
         ObservabilityHealth.DUPLICATE_GAUGE;
     public static final MetricId OBSERVABILITY_DROPPED_METRIC = ObservabilityHealth.DROPPED_METRIC;
     public static final MetricId OBSERVABILITY_REGISTRY_SIZE = ObservabilityHealth.REGISTRY_SIZE;
-
     private static final Set<String> EXECUTOR_COMMON_TAGS =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.POOL);
     private static final Set<String> EXECUTOR_TIMER_ALLOWED =
         addTags(EXECUTOR_COMMON_TAGS, TagKey.RESULT);
     private static final Set<String> EXECUTOR_TIMER_REQUIRED = EXECUTOR_COMMON_TAGS;
-    private static final Set<String> EXECUTOR_COUNTER_ALLOWED = EXECUTOR_COMMON_TAGS;
+    private static final Set<String> EXECUTOR_ALLOWED_TAGS = EXECUTOR_COMMON_TAGS;
     private static final Map<MetricId, MetricDef> DEFINITIONS = buildDefinitions();
 
     private Metrics() {}
@@ -321,19 +321,19 @@ public final class Telemetry {
           definitions,
           EXEC_QUEUE_DEPTH,
           EXECUTOR_COMMON_TAGS,
-          EXECUTOR_COUNTER_ALLOWED,
+          EXECUTOR_ALLOWED_TAGS,
           "Number of work items waiting in the executor queue per pool.");
       add(
           definitions,
           EXEC_ACTIVE,
           EXECUTOR_COMMON_TAGS,
-          EXECUTOR_COUNTER_ALLOWED,
+          EXECUTOR_ALLOWED_TAGS,
           "Number of threads actively executing tasks per pool.");
       add(
           definitions,
           EXEC_REJECTED,
           EXECUTOR_COMMON_TAGS,
-          EXECUTOR_COUNTER_ALLOWED,
+          EXECUTOR_ALLOWED_TAGS,
           "Number of task submissions rejected by the executor.");
       add(
           definitions,
@@ -508,7 +508,7 @@ public final class Telemetry {
           OBSERVABILITY_DUPLICATE_GAUGE,
           Set.of(),
           observabilityAllowed,
-          "Count of duplicate gauges that strict mode detected.");
+          "Count of duplicate gauge registration attempts.");
       add(
           definitions,
           OBSERVABILITY_REGISTRY_SIZE,

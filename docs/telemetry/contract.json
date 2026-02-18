@@ -215,7 +215,7 @@
     "unit": "",
     "since": "v1",
     "origin": "core",
-    "description": "Count of duplicate gauges that strict mode detected.",
+    "description": "Count of duplicate gauge registration attempts.",
     "requiredTags": [],
     "allowedTags": ["reason"]
   },
@@ -378,6 +378,56 @@
     "description": "Number of active ticks for the scheduled task (usually 0 or 1).",
     "requiredTags": ["component", "operation", "task"],
     "allowedTags": ["account", "component", "operation", "task"]
+  },
+  {
+    "name": "floecat.jvm.gc.live.data.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "jvm",
+    "description": "Estimated live data (bytes) held by each garbage collector.",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "gc", "operation"]
+  },
+  {
+    "name": "floecat.jvm.gc.live.data.growth.rate",
+    "type": "GAUGE",
+    "unit": "bytes_per_second",
+    "since": "v1",
+    "origin": "jvm",
+    "description": "Live data growth rate (bytes/second) for GC-managed pools.",
+    "requiredTags": ["component", "gc", "operation"],
+    "allowedTags": ["component", "gc", "operation"]
+  },
+  {
+    "name": "floecat.jvm.memory.used.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "jvm",
+    "description": "Used bytes for heap/metaspace/direct buffers.",
+    "requiredTags": ["component", "operation", "resource"],
+    "allowedTags": ["component", "operation", "resource"]
+  },
+  {
+    "name": "floecat.jvm.process.cpu.usage",
+    "type": "GAUGE",
+    "unit": "ratio",
+    "since": "v1",
+    "origin": "jvm",
+    "description": "Process CPU usage (0-1 fraction).",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.jvm.threads.count",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "jvm",
+    "description": "Current live thread count.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.service.storage.account.bytes",
