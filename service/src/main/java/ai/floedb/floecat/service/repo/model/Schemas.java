@@ -29,6 +29,8 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
+import ai.floedb.floecat.transaction.rpc.Transaction;
+import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.List;
@@ -224,6 +226,35 @@ public final class Schemas {
                 var sha = ResourceHash.sha256Hex(v.toByteArray());
                 return new ConnectorKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
+              })
+          .withCasBlobs();
+
+  public static final ResourceSchema<Transaction, TransactionKey> TRANSACTION =
+      ResourceSchema.<Transaction, TransactionKey>of(
+              "transaction",
+              key -> Keys.transactionPointerById(key.accountId(), key.txId()),
+              key -> Keys.transactionBlobUri(key.accountId(), key.txId(), key.sha256()),
+              v -> Map.of(),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new TransactionKey(v.getAccountId(), v.getTxId(), sha);
+              })
+          .withCasBlobs();
+
+  public static final ResourceSchema<TransactionIntent, TransactionIntentKey> TRANSACTION_INTENT =
+      ResourceSchema.<TransactionIntent, TransactionIntentKey>of(
+              "transaction-intent",
+              key -> Keys.transactionIntentPointerByTarget(key.accountId(), key.targetPointerKey()),
+              key -> Keys.transactionIntentBlobUri(key.accountId(), key.txId(), key.sha256()),
+              v ->
+                  Map.of(
+                      "byTx",
+                      Keys.transactionIntentPointerByTx(
+                          v.getAccountId(), v.getTxId(), v.getTargetPointerKey())),
+              v -> {
+                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                return new TransactionIntentKey(
+                    v.getAccountId(), v.getTxId(), v.getTargetPointerKey(), sha);
               })
           .withCasBlobs();
 }

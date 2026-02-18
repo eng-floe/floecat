@@ -367,8 +367,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   GraphNode node = requireVisibleTableNode(request.getTableId(), correlationId());
                   Table table =
                       tableFromOverlayNodeOrRepo(node, request.getTableId(), correlationId());
+                  MutationMeta meta =
+                      node.origin() == GraphNodeOrigin.SYSTEM
+                          ? MutationMeta.getDefaultInstance()
+                          : tableRepo.metaForSafe(request.getTableId());
 
-                  return GetTableResponse.newBuilder().setTable(table).build();
+                  return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                 }),
             correlationId())
         .onFailure()

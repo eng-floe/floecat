@@ -46,13 +46,13 @@ public class InMemoryPointerStore implements PointerStore {
           if (cur == null) {
             if (expectedVersion == 0L) {
               updated[0] = true;
-              return next;
+              return next.toBuilder().setKey(key).setVersion(1L).build();
             }
             return null;
           }
           if (cur.getVersion() == expectedVersion) {
             updated[0] = true;
-            return next;
+            return next.toBuilder().setKey(key).setVersion(expectedVersion + 1L).build();
           }
           return cur;
         });
@@ -170,6 +170,46 @@ public class InMemoryPointerStore implements PointerStore {
         });
 
     return deleted[0];
+  }
+
+  @Override
+  public boolean compareAndSetBatch(List<CasOp> ops) {
+    if (ops == null || ops.isEmpty()) {
+      return true;
+    }
+    synchronized (this) {
+      for (CasOp op : ops) {
+        if (op instanceof CasUpsert upsert) {
+          Pointer cur = map.get(upsert.key());
+          if (cur == null) {
+            if (upsert.expectedVersion() != 0L) {
+              return false;
+            }
+          } else if (cur.getVersion() != upsert.expectedVersion()) {
+            return false;
+          }
+        } else if (op instanceof CasDelete delete) {
+          Pointer cur = map.get(delete.key());
+          if (cur == null || cur.getVersion() != delete.expectedVersion()) {
+            return false;
+          }
+        }
+      }
+
+      for (CasOp op : ops) {
+        if (op instanceof CasUpsert upsert) {
+          map.put(
+              upsert.key(),
+              upsert.next().toBuilder()
+                  .setKey(upsert.key())
+                  .setVersion(upsert.expectedVersion() + 1L)
+                  .build());
+        } else if (op instanceof CasDelete delete) {
+          map.remove(delete.key());
+        }
+      }
+      return true;
+    }
   }
 
   @Override

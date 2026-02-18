@@ -272,7 +272,7 @@ public final class MutationOps {
         return;
       }
 
-      boolean emptyVersion = precondition.getExpectedVersion() == 0L;
+      boolean emptyVersion = !precondition.hasExpectedVersion();
       boolean emptyEtag =
           precondition.getExpectedEtag() == null || precondition.getExpectedEtag().isBlank();
       if (emptyVersion && emptyEtag) {

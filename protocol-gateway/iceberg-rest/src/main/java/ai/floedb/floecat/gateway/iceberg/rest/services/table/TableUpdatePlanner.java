@@ -49,7 +49,10 @@ public class TableUpdatePlanner {
   @Inject SnapshotMetadataService snapshotMetadataService;
 
   public UpdatePlan planUpdates(
-      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -66,7 +69,7 @@ public class TableUpdatePlanner {
         commitRequirementService.validateRequirements(
             command.tableSupport(),
             req.requirements(),
-            tableSupplier,
+            requirementTableSupplier,
             this::validationError,
             this::conflictError);
     if (requirementError != null) {
@@ -114,6 +117,77 @@ public class TableUpdatePlanner {
     return UpdatePlan.success(spec, mask);
   }
 
+  public UpdatePlan planUpdates(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planUpdates(command, tableSupplier, tableSupplier, tableId);
+  }
+
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
+    TableRequests.Commit req = command.request();
+    TableSpec.Builder spec = TableSpec.newBuilder();
+    FieldMask.Builder mask = FieldMask.newBuilder();
+    if (req == null) {
+      return UpdatePlan.failure(spec, mask, validationError("Request body is required"));
+    }
+    if (req.requirements() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("requirements are required"));
+    }
+    if (req.updates() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("updates are required"));
+    }
+    Response requirementError =
+        commitRequirementService.validateRequirements(
+            command.tableSupport(),
+            req.requirements(),
+            requirementTableSupplier,
+            this::validationError,
+            this::conflictError);
+    if (requirementError != null) {
+      return UpdatePlan.failure(spec, mask, requirementError);
+    }
+    Map<String, String> mergedProps = null;
+    if (tablePropertyService.hasPropertyUpdates(req)) {
+      if (mergedProps == null) {
+        mergedProps = tablePropertyService.ensurePropertyMap(tableSupplier, null);
+      }
+      Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
+      if (updateError != null) {
+        return UpdatePlan.failure(spec, mask, updateError);
+      }
+    }
+    Response locationError =
+        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
+    if (locationError != null) {
+      return UpdatePlan.failure(spec, mask, locationError);
+    }
+    String unsupported = unsupportedUpdateAction(req);
+    if (unsupported != null) {
+      return UpdatePlan.failure(
+          spec, mask, validationError("unsupported commit update action: " + unsupported));
+    }
+    Response snapshotValidation = snapshotMetadataService.validateSnapshotUpdates(req.updates());
+    if (snapshotValidation != null) {
+      return UpdatePlan.failure(spec, mask, snapshotValidation);
+    }
+    mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = stripFileIoProperties(mergedProps);
+    if (mergedProps != null) {
+      spec.clearProperties().putAllProperties(mergedProps);
+      mask.addPaths("properties");
+    }
+    return UpdatePlan.success(spec, mask);
+  }
+
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planTransactionUpdates(command, tableSupplier, tableSupplier, tableId);
+  }
+
   public record UpdatePlan(TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
     static UpdatePlan success(TableSpec.Builder spec, FieldMask.Builder mask) {
       return new UpdatePlan(spec, mask, null);
@@ -145,9 +219,12 @@ public class TableUpdatePlanner {
       return null;
     }
     for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        return "<missing>";
+      }
       String action = asString(update == null ? null : update.get("action"));
-      if (action == null) {
-        continue;
+      if (action == null || action.isBlank()) {
+        return "<missing>";
       }
       if (!"set-properties".equals(action)
           && !"remove-properties".equals(action)

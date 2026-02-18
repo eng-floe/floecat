@@ -471,6 +471,30 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void txnWriteCas_rethrows_when_cancellation_reasons_empty() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setCancellationReasonCodes(List.of());
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertThrows(RuntimeException.class, () -> store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
+  void txnWriteCas_rethrows_when_cancellation_reasons_are_null() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.failTxnWithNullReasons = true;
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertThrows(RuntimeException.class, () -> store.txnWriteCas(ops).await().indefinitely());
+  }
+
+  @Test
   void reset_creates_table_and_store_is_empty_after() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
@@ -530,6 +554,7 @@ public class DynamoDbKvStoreTest {
     private boolean tableActive = true;
     private boolean failScan;
     private boolean failTxnWithNonConditional;
+    private boolean failTxnWithNullReasons;
     private List<String> cancellationReasonCodes;
     private int createTableCalls;
     private int deleteTableCalls;
@@ -746,6 +771,9 @@ public class DynamoDbKvStoreTest {
       if (cancellationReasonCodes != null) {
         return failedTransaction(cancellationReasonCodes);
       }
+      if (failTxnWithNullReasons) {
+        return failedTransactionWithNullReasons();
+      }
       if (failTxnWithNonConditional) {
         return failedTransaction("Other");
       }
@@ -871,6 +899,13 @@ public class DynamoDbKvStoreTest {
               .message("tx failed")
               .cancellationReasons(reasons)
               .build());
+      return failed;
+    }
+
+    private static <T> CompletableFuture<T> failedTransactionWithNullReasons() {
+      CompletableFuture<T> failed = new CompletableFuture<>();
+      failed.completeExceptionally(
+          TransactionCanceledException.builder().message("tx failed").build());
       return failed;
     }
   }

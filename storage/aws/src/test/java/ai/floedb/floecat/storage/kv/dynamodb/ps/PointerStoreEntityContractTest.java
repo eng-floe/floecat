@@ -91,17 +91,17 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   // ---- Prefix parsing
 
   @Test
-  void prefixKey_adds_trailing_slash_when_missing() {
+  void prefixKey_keeps_literal_prefix_when_missing_trailing_slash() {
     KvStore.Key key = PointerStoreEntity.prefixKey("accounts/by-id/5");
     assertEquals(PointerStoreEntity.GLOBAL_PK, key.partitionKey());
-    assertEquals("accounts/by-id/5/", key.sortKey());
+    assertEquals("accounts/by-id/5", key.sortKey());
   }
 
   @Test
-  void prefixKey_accounts_root_maps_to_pk_accounts_sk_slash() {
-    KvStore.Key key = PointerStoreEntity.prefixKey("accounts");
-    assertEquals("accounts", key.partitionKey());
-    assertEquals("/", key.sortKey());
+  void prefixKey_account_root_maps_to_partition_with_empty_remainder() {
+    KvStore.Key key = PointerStoreEntity.prefixKey("accounts/123");
+    assertEquals("accounts/123", key.partitionKey());
+    assertEquals("", key.sortKey());
   }
 
   @Test
@@ -115,7 +115,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   void prefixKey_account_prefix_maps_to_partition_accounts_accountId() {
     KvStore.Key key = PointerStoreEntity.prefixKey("accounts/123/catalog");
     assertEquals("accounts/123", key.partitionKey());
-    assertEquals("catalog/", key.sortKey());
+    assertEquals("catalog", key.sortKey());
   }
 
   @Test
@@ -132,7 +132,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void compareAndSet_expectedVersion_0_creates() {
-    String key = "accounts/by-id/1/catalog/alpha";
+    String key = "/accounts/by-id/1/catalog/alpha";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/1").build();
 
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
@@ -145,7 +145,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void compareAndSet_expectedVersion_mismatch_fails() {
-    String key = "accounts/by-id/2/catalog/beta";
+    String key = "/accounts/by-id/2/catalog/beta";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/v1").build();
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
 
@@ -159,12 +159,12 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void delete_best_effort_absent_returns_false() {
-    assertFalse(pointers.delete("accounts/by-id/3/catalog/missing").await().indefinitely());
+    assertFalse(pointers.delete("/accounts/by-id/3/catalog/missing").await().indefinitely());
   }
 
   @Test
   void delete_best_effort_concurrent_update_can_return_false() {
-    String key = "accounts/by-id/4/catalog/race";
+    String key = "/accounts/by-id/4/catalog/race";
     PointerStoreEntity local =
         new PointerStoreEntity(
             new ConcurrentUpdateKvStore(pointers.getKvStore(), PointerStoreEntity._testKey(key)));
@@ -178,7 +178,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void compareAndDelete_expectedVersion_0_returns_false() {
-    String key = "accounts/by-id/5/catalog/gamma";
+    String key = "/accounts/by-id/5/catalog/gamma";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/v1").build();
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
 
@@ -188,7 +188,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void compareAndDelete_expectedVersion_match_deletes() {
-    String key = "accounts/by-id/5/catalog/gamma2";
+    String key = "/accounts/by-id/5/catalog/gamma2";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/v1").build();
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
 
@@ -200,7 +200,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void expiresAt_stored_in_ATTR_EXPIRES_AT_seconds() {
-    String key = "accounts/by-id/6/catalog/ttl";
+    String key = "/accounts/by-id/6/catalog/ttl";
     Pointer p =
         Pointer.newBuilder()
             .setKey(key)
@@ -235,7 +235,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void getExpiresAt_returns_0_when_absent() {
-    Pointer p = Pointer.newBuilder().setKey("accounts/by-id/8/catalog/ttl").build();
+    Pointer p = Pointer.newBuilder().setKey("/accounts/by-id/8/catalog/ttl").build();
     assertEquals(0L, pointers.getExpiresAt(p));
   }
 
@@ -243,7 +243,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void listByPrefix_returns_items_and_nextToken() {
-    String prefix = "accounts/by-id/9/p/";
+    String prefix = "/accounts/by-id/9/p/";
     for (int i = 0; i < 3; i++) {
       String key = prefix + i;
       Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/" + i).build();
@@ -257,7 +257,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void listByPrefix_maps_record_to_pointer_correctly() {
-    String key = "accounts/by-id/10/catalog/ok";
+    String key = "/accounts/by-id/10/catalog/ok";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/ok").build();
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
 
@@ -272,7 +272,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void listKeysByPrefix_multi_page_returns_all_keys() {
-    String prefix = "accounts/by-name/11/p/";
+    String prefix = "/accounts/by-name/11/p/";
     List<String> expected = new ArrayList<>();
     for (int i = 0; i < 5; i++) {
       String key = prefix + i;
@@ -294,7 +294,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void listKeysByPrefix_global_partition_returns_keys() {
-    String key = "accounts/by-id/99/catalog/x";
+    String key = "/accounts/by-id/99/catalog/x";
     Pointer p = Pointer.newBuilder().setKey(key).setBlobUri("s3://b/x").build();
     assertTrue(pointers.compareAndSet(key, 0L, p).await().indefinitely());
 
@@ -303,7 +303,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
             .listKeysByPrefix("accounts/by-id/99/", 10, Optional.empty())
             .await()
             .indefinitely();
-    assertEquals(List.of("accounts/by-id/99/catalog/x"), page.items());
+    assertEquals(List.of("/accounts/by-id/99/catalog/x"), page.items());
   }
 
   @Test
@@ -319,8 +319,8 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
 
   @Test
   void deleteByPrefix_global_and_account_mix() {
-    String globalKey = "accounts/by-id/77/catalog/x";
-    String accountKey = "accounts/77/catalog/y";
+    String globalKey = "/accounts/by-id/77/catalog/x";
+    String accountKey = "/accounts/77/catalog/y";
     Pointer gp = Pointer.newBuilder().setKey(globalKey).setBlobUri("s3://b/x").build();
     Pointer ap = Pointer.newBuilder().setKey(accountKey).setBlobUri("s3://b/y").build();
     assertTrue(pointers.compareAndSet(globalKey, 0L, gp).await().indefinitely());

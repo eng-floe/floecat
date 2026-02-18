@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,6 +26,8 @@ import java.util.Optional;
  * storage to the Mutiny-based {@link PointerStoreEntity}.
  */
 public abstract class KvPointerStore implements PointerStore {
+
+  private static final int BACKEND_PAGE_LIMIT = 1000;
 
   private final PointerStoreEntity pointers;
 
@@ -53,18 +56,63 @@ public abstract class KvPointerStore implements PointerStore {
   }
 
   @Override
+  public boolean compareAndSetBatch(List<CasOp> ops) {
+    return pointers.compareAndSetBatch(ops).await().indefinitely();
+  }
+
+  @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+    final int requestedLimit = Math.max(1, limit);
+    final String startAfter = (pageToken == null || pageToken.isBlank()) ? null : pageToken;
+    final int backendLimit = Math.min(BACKEND_PAGE_LIMIT, requestedLimit);
 
-    Optional<String> token =
-        (pageToken == null || pageToken.isBlank()) ? Optional.empty() : Optional.of(pageToken);
+    Optional<String> backendToken = Optional.empty();
+    List<Pointer> out = new ArrayList<>(Math.min(requestedLimit, BACKEND_PAGE_LIMIT));
+    boolean hasMore = false;
+    boolean tokenSeen = (startAfter == null);
 
-    var page = pointers.listByPrefix(prefix, limit, token).await().indefinitely();
+    while (true) {
+      var page = pointers.listByPrefix(prefix, backendLimit, backendToken).await().indefinitely();
+      for (Pointer pointer : page.items()) {
+        if (!tokenSeen) {
+          int cmp = pointer.getKey().compareTo(startAfter);
+          if (cmp < 0) {
+            continue;
+          }
+          if (cmp == 0) {
+            tokenSeen = true;
+            continue;
+          }
+          throw new IllegalArgumentException("bad page token");
+        }
+        if (startAfter != null && pointer.getKey().compareTo(startAfter) <= 0) {
+          continue;
+        }
+        if (out.size() < requestedLimit) {
+          out.add(pointer);
+        } else {
+          hasMore = true;
+          break;
+        }
+      }
+      if (hasMore || page.nextToken().isEmpty()) {
+        break;
+      }
+      backendToken = page.nextToken();
+    }
 
-    nextTokenOut.setLength(0);
-    page.nextToken().ifPresent(nextTokenOut::append);
+    if (!tokenSeen) {
+      throw new IllegalArgumentException("bad page token");
+    }
 
-    return List.copyOf(page.items());
+    if (nextTokenOut != null) {
+      nextTokenOut.setLength(0);
+      if (hasMore && !out.isEmpty()) {
+        nextTokenOut.append(out.get(out.size() - 1).getKey());
+      }
+    }
+    return List.copyOf(out);
   }
 
   @Override
