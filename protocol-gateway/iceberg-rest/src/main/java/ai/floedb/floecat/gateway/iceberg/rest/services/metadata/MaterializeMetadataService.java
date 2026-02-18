@@ -247,7 +247,14 @@ public class MaterializeMetadataService {
 
   private String resolveVersionedLocation(
       FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
-    String directory = metadataLocation != null ? directoryOf(metadataLocation) : null;
+    String directory = null;
+    if (metadataLocation != null) {
+      if (metadataLocation.endsWith("/")) {
+        directory = metadataLocation;
+      } else {
+        directory = directoryOf(metadataLocation);
+      }
+    }
     if (directory == null) {
       directory = metadataDirectory(metadata);
     }

@@ -1057,6 +1057,19 @@ public class SnapshotUpdateService {
     }
     IcebergMetadata.Builder builder = currentMetadata.toBuilder();
     String metadataLocation = metadataLocationFrom(table);
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      /*
+       * Fall back to a location already carried in the snapshot metadata, so we
+       * preserve whatever file path was discovered even if the table property
+       * has not yet been populated. The “true” first commit with nothing yet is
+       * handled by the derivation/materialization path in
+       * TableCommitSideEffectService.
+       */
+      String incoming = currentMetadata.getMetadataLocation();
+      if (incoming != null && !incoming.isBlank()) {
+        metadataLocation = incoming;
+      }
+    }
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
     }
