@@ -41,4 +41,9 @@ public interface Observability {
       MetricId metric, Supplier<T> supplier, String description, Tag... tags);
 
   ObservationScope observe(Category category, String component, String operation, Tag... tags);
+
+  /** Starts a store child span that parallels the store metrics scopes. */
+  default StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
+    return StoreTraceScope.NOOP;
+  }
 }

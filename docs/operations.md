@@ -47,19 +47,22 @@ Flags:
   summaries to `log/audit.json`; see [`docs/log.md`](log.md).
 - **Metrics** – Micrometer/Prometheus exporters expose gRPC, storage, and GC metrics at the
   `/q/metrics` endpoint (see the telemetry hub contract in `docs/telemetry/contract.md`).
-- **Tracing** – OpenTelemetry (TraceContext propagator) is enabled; export pipelines can be wired by
-  overriding `quarkus.otel.traces.exporter`.
+- **Tracing** – OpenTelemetry (TraceContext propagator) is always enabled for MDC correlation
+  (`traceId`/`spanId`). The OTLP exporter is built-in; activate the `telemetry-otlp` profile to
+  ship spans to a collector. See [`examples/telemetry/telemetry-demo.md`](../examples/telemetry/telemetry-demo.md)
+  for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
 ### Telemetry hub configuration
 The service now uses the telemetry hub core + Micrometer backend. The following flags are available in
-`service/src/main/resources/application.properties`:
+`service/src/main/resources/application.properties` (the `telemetry-otlp` profile toggles OTLP tracing/log exports):
 
 ```
 telemetry.strict=false
-telemetry.exporters=prometheus,otlp
+telemetry.exporters=prometheus
 telemetry.contract.version=v1
 %dev.telemetry.strict=true
 %test.telemetry.strict=true
+%telemetry-otlp.telemetry.exporters=prometheus,otlp
 ```
 
 These settings keep production lenient (dropped-tag counters are exposed) while blowing up early in dev/test
@@ -81,9 +84,11 @@ The `telemetry.exporters` flag (defined in `service/src/main/resources/applicati
 | Exporter | Description | Activation | Notes |
 | --- | --- | --- | --- |
 | `prometheus` | Micrometer Prometheus registry that exposes `floecat.core.*` and `floecat.service.*` metrics via `/q/metrics`. | Enabled by default and controlled on the Micrometer side via `quarkus.micrometer.export.prometheus.enabled=true`. | This exporter simply scrapes the Micrometer registry that Observability feeds. Keep `telemetry.exporters` set to include `prometheus` in dev/test to keep dashboards working. |
-| `otlp` | OpenTelemetry exporter that forwards the hub’s metrics (and any traces/span data if you instrument other flows) to an OTLP collector via gRPC or HTTP. | Requires you to set `quarkus.otel.metrics.exporter=otlp` (and `quarkus.otel.traces.exporter=otlp` if you want traces). | Configure the OTLP endpoint with `quarkus.otel.exporter-otlp.endpoint`; switch protocols via `quarkus.otel.exporter-otlp.protocol=http/protobuf`. The hub doesn’t itself emit OTEL spans—`ObservationScope` currently powers Micrometer metrics, while Quarkus OpenTelemetry (plus your own instrumentation) controls tracing. |
+| `otlp` | OpenTelemetry exporter that forwards traces (and hub metrics if wired) to an OTLP collector via gRPC. | Enabled only with the `telemetry-otlp` profile (e.g., `QUARKUS_PROFILE=telemetry-otlp mvn -pl service -am quarkus:dev`). | Configure the OTLP endpoint with `quarkus.otel.exporter.otlp.endpoint` (runtime property). The exporter itself is `cdi` (Quarkus built-in, build-time); do **not** set `quarkus.otel.traces.exporter=otlp`. Run the full telemetry demo stack (`examples/telemetry/docker-compose.yml`) to bring up the collector, Tempo, Loki, and Grafana. |
 
 Drop an exporter by removing it from `telemetry.exporters` (or setting the property to the empty string), e.g., `%dev.telemetry.exporters=prometheus` keeps strict mode local without OTLP traffic. The hub simply skips wiring backends it isn’t asked for, so only the listed exporters get the meters/traces.
+
+Spans emitted by the service carry custom attributes `floecat.component` and `floecat.operation` (set by `GrpcTelemetryServerInterceptor`), matching the `component`/`operation` labels on Prometheus metrics. The Grafana dashboard uses this bridge to build TraceQL links: clicking a series on an RPC panel opens Tempo Explore with `span.floecat.operation = "<operation>"`. Standard OTel `rpc.*` attributes are also present on every gRPC span for ad-hoc queries. Logs expose the same values through `floecat_component` and `floecat_operation` MDC keys, plus `traceId` and `spanId` for trace ↔ log correlation. The Tempo datasource is provisioned with `tracesToLogsV2` so you can click through from a trace span to the correlated Loki logs.
 
 ### Metrics
 Micrometer + Prometheus export is enabled by default. The scrape endpoint is:

@@ -27,6 +27,9 @@ import ai.floedb.floecat.telemetry.ObservationScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -47,6 +50,7 @@ public class StorageUsageMetrics {
   private final Map<String, AtomicLong> accountBytes = new ConcurrentHashMap<>();
   private final Map<String, AtomicLong> accountPointers = new ConcurrentHashMap<>();
   private StoreMetrics storeMetrics;
+  @Inject Tracer tracer;
 
   @ConfigProperty(name = "floecat.metrics.storage.refresh", defaultValue = "30s")
   String refreshEvery;
@@ -67,44 +71,56 @@ public class StorageUsageMetrics {
 
   @Scheduled(every = "${floecat.metrics.storage.refresh:30s}")
   void refresh() {
-    ObservationScope refreshScope = storeMetrics.observe();
-    boolean error = false;
-    try {
-      String token = "";
-      StringBuilder next = new StringBuilder();
-      do {
-        var page = accounts.list(200, token, next);
-        token = next.toString();
-        next.setLength(0);
+    Span refreshSpan =
+        tracer
+            .spanBuilder("service.storage.refresh")
+            .setAttribute("floecat.component", "service")
+            .setAttribute("floecat.operation", "storage.refresh")
+            .startSpan();
+    try (Scope ignored = refreshSpan.makeCurrent()) {
+      ObservationScope refreshScope = storeMetrics.observe();
+      boolean error = false;
+      try {
+        String token = "";
+        StringBuilder next = new StringBuilder();
+        do {
+          var page = accounts.list(200, token, next);
+          token = next.toString();
+          next.setLength(0);
 
-        for (var t : page) {
-          final String accountId = t.getResourceId().getId();
-          ObservationScope accountScope = storeMetrics.observe(Tag.of(TagKey.ACCOUNT, accountId));
-          try {
-            int ptrCount = pointerStore.countByPrefix(Keys.accountRootPointer(accountId));
-            updateGauge(
-                accountPointers, ServiceMetrics.Storage.ACCOUNT_POINTERS, accountId, ptrCount);
+          for (var t : page) {
+            final String accountId = t.getResourceId().getId();
+            ObservationScope accountScope = storeMetrics.observe(Tag.of(TagKey.ACCOUNT, accountId));
+            try {
+              int ptrCount = pointerStore.countByPrefix(Keys.accountRootPointer(accountId));
+              updateGauge(
+                  accountPointers, ServiceMetrics.Storage.ACCOUNT_POINTERS, accountId, ptrCount);
 
-            long bytes = estimateBytesForAccount(accountId, ptrCount);
-            updateGauge(accountBytes, ServiceMetrics.Storage.ACCOUNT_BYTES, accountId, bytes);
+              long bytes = estimateBytesForAccount(accountId, ptrCount);
+              updateGauge(accountBytes, ServiceMetrics.Storage.ACCOUNT_BYTES, accountId, bytes);
 
-            storeMetrics.recordBytes(bytes, "success", Tag.of(TagKey.ACCOUNT, accountId));
-            accountScope.success();
-          } catch (Throwable e) {
-            error = true;
-            accountScope.error(e);
-          } finally {
-            accountScope.close();
+              storeMetrics.recordBytes(bytes, "success", Tag.of(TagKey.ACCOUNT, accountId));
+              storeMetrics.recordRequest("success", Tag.of(TagKey.ACCOUNT, accountId));
+              accountScope.success();
+            } catch (Throwable e) {
+              error = true;
+              storeMetrics.recordRequest("error", Tag.of(TagKey.ACCOUNT, accountId));
+              accountScope.error(e);
+            } finally {
+              accountScope.close();
+            }
           }
+        } while (!token.isBlank());
+      } finally {
+        if (error) {
+          refreshScope.error(new IllegalStateException("storage refresh encountered errors"));
+        } else {
+          refreshScope.success();
         }
-      } while (!token.isBlank());
-    } finally {
-      if (error) {
-        refreshScope.error(new IllegalStateException("storage refresh encountered errors"));
-      } else {
-        refreshScope.success();
+        refreshScope.close();
       }
-      refreshScope.close();
+    } finally {
+      refreshSpan.end();
     }
   }
 

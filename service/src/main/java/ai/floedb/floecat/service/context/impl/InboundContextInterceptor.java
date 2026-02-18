@@ -31,7 +31,6 @@ import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.Status;
-import io.opentelemetry.api.trace.Span;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.quarkus.security.identity.SecurityIdentity;
@@ -154,22 +153,10 @@ public class InboundContextInterceptor {
 
     MDC.put("query_id", queryId);
     MDC.put("correlation_id", correlationId);
-    MDC.put("account_id", principalContext.getAccountId());
-    MDC.put("subject", principalContext.getSubject());
-
-    var span = Span.current();
-    if (span.getSpanContext().isValid()) {
-      span.setAttribute("query_id", queryId);
-      span.setAttribute("correlation_id", correlationId);
-      span.setAttribute("account_id", principalContext.getAccountId());
-      span.setAttribute("subject", principalContext.getSubject());
-      if (!engineVersion.isBlank()) {
-        span.setAttribute("engine_version", engineVersion);
-      }
-      if (!engineKind.isBlank()) {
-        span.setAttribute("engine_kind", engineKind);
-      }
-    }
+    MDC.put("floecat_account_id", principalContext.getAccountId());
+    MDC.put("floecat_subject", principalContext.getSubject());
+    MDC.put("floecat_engine_kind", engineKind);
+    MDC.put("floecat_engine_version", engineVersion);
 
     var forwarding =
         new SimpleForwardingServerCall<ReqT, RespT>(call) {
@@ -186,8 +173,10 @@ public class InboundContextInterceptor {
             } finally {
               MDC.remove("query_id");
               MDC.remove("correlation_id");
-              MDC.remove("account_id");
-              MDC.remove("subject");
+              MDC.remove("floecat_account_id");
+              MDC.remove("floecat_subject");
+              MDC.remove("floecat_engine_kind");
+              MDC.remove("floecat_engine_version");
             }
             super.close(status, metadata);
           }

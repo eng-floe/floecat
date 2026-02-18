@@ -1,0 +1,64 @@
+# Copyright 2026 Yellowbrick Data, Inc.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./dashboards:/var/lib/grafana/dashboards
+    environment:
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_LOG_LEVEL=debug
+      - GF_LOG_FILTERS=datasource.tempo:debug plugin.grafana-tempo-datasource:debug
+      
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "${PROMETHEUS_PORT:-9092}:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  tempo:
+    image: grafana/tempo:2.7.0
+    user: "0"
+    ports:
+      - "${TEMPO_HTTP_PORT:-3102}:3100"   # HTTP
+      - "${TEMPO_GRPC_PORT:-9095}:9095"   # gRPC 
+    volumes:
+      - ./config/tempo-config.yaml:/etc/tempo/local-config.yaml:ro
+      - tempo-data:/tmp/tempo
+    command: ["-config.file=/etc/tempo/local-config.yaml"]
+  loki:
+    image: grafana/loki:3.4.2
+    ports:
+      - "${LOKI_PORT:-3101}:3100"
+    volumes:
+      - ./config/loki-config.yaml:/etc/loki/local-config.yaml:ro
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.81.0
+    ports:
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - "${SERVICE_LOG_DIR:-../../service/log}:/var/log/floecat"
+    command: ["--config", "/etc/otel-collector-config.yaml"]
+
+volumes:
+  tempo-data:
+  
