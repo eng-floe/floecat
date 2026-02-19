@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.util;
 
 import java.util.Objects;
+import java.util.function.Function;
 
 /** Shared representation of the engine context (kind + version + normalized helpers). */
 public final class EngineContext {
@@ -63,6 +64,34 @@ public final class EngineContext {
 
   public static EngineContext empty() {
     return EMPTY;
+  }
+
+  /**
+   * Builds an {@link EngineContext} from an arbitrary header source.
+   *
+   * <p>The {@code headerReader} is called with the plain header name (e.g. {@code "x-engine-kind"})
+   * and must return the raw header value, or {@code null} when the header is absent. Trimming and
+   * blank-handling are applied internally by {@link #of}.
+   *
+   * <p>This is the single point of truth for header-name constants and the construction logic,
+   * shared by both the gRPC path ({@code InboundContextInterceptor}) and the Arrow Flight path
+   * ({@code InboundContextFlightMiddleware}).
+   *
+   * <p>Usage:
+   *
+   * <pre>
+   *   // gRPC (Metadata)
+   *   EngineContext.fromHeaders(name ->
+   *       headers.get(Metadata.Key.of(name, Metadata.ASCII_STRING_MARSHALLER)));
+   *
+   *   // Arrow Flight (CallHeaders)
+   *   EngineContext.fromHeaders(flightHeaders::get);
+   * </pre>
+   */
+  public static EngineContext fromHeaders(Function<String, String> headerReader) {
+    String kind = headerReader.apply("x-engine-kind");
+    String version = headerReader.apply("x-engine-version");
+    return of(kind, version);
   }
 
   public String engineKind() {

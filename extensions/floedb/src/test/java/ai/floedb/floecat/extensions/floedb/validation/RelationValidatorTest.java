@@ -106,7 +106,9 @@ class RelationValidatorTest {
               List.of(),
               TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
               "scanner",
-              List.of(rule));
+              "",
+              List.of(rule),
+              null);
       return new SystemCatalogData(
           List.of(),
           List.of(),

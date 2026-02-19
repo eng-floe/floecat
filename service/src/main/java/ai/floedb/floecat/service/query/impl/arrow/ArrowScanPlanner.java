@@ -22,7 +22,6 @@ import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowFilterOperator;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowProjectOperator;
-import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
 import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.columnar.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
@@ -54,7 +53,8 @@ public final class ArrowScanPlanner {
       List<String> requiredColumns,
       Expr arrowExpr,
       BufferAllocator allocator) {
-    Schema schema = ArrowSchemaUtil.toArrowSchema(schemaColumns);
+    // Use the projected schema so plan.schema() matches the projected batch stream.
+    Schema schema = ArrowBatchSerializer.schemaForColumns(schemaColumns, requiredColumns);
     Stream<ColumnarBatch> batches;
     if (scanner.supportedFormats().contains(ScanOutputFormat.ARROW_IPC)) {
       batches =

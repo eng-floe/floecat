@@ -209,7 +209,9 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
     SystemTableDef unqualified =
         new SystemTableDef(
             NameRefUtil.name("orphan"),
@@ -217,7 +219,9 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -249,7 +253,9 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -794,7 +800,9 @@ class SystemNodeRegistryTest {
             List.of(column("value")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "legacy_scanner",
-            List.of(tableRule));
+            "",
+            List.of(tableRule),
+            null);
     SystemViewDef view =
         new SystemViewDef(
             NameRefUtil.name("custom", "preview_view"),
@@ -941,7 +949,9 @@ class SystemNodeRegistryTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(),
@@ -970,7 +980,9 @@ class SystemNodeRegistryTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(),

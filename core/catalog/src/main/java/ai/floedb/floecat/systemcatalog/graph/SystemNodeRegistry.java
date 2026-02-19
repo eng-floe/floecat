@@ -298,7 +298,8 @@ public class SystemNodeRegistry {
                     tableColumns,
                     normalizedColumnHints,
                     tableHints,
-                    table.storagePath());
+                    table.storagePath(),
+                    table.flightEndpoint());
         case TABLE_BACKEND_KIND_ENGINE ->
             node =
                 new SystemTableNode.EngineSystemTableNode(
@@ -606,7 +607,8 @@ public class SystemNodeRegistry {
         def.backendKind(),
         def.scannerId(),
         def.storagePath(),
-        matched);
+        matched,
+        def.flightEndpoint());
   }
 
   private SystemViewDef withViewRules(SystemViewDef def, String engineKind, String engineVersion) {
