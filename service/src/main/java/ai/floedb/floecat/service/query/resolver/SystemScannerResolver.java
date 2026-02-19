@@ -43,8 +43,24 @@ public final class SystemScannerResolver {
   @Inject EngineContextProvider engine;
   @Inject List<SystemObjectScannerProvider> providers;
 
+  /**
+   * Resolves the scanner for the given table ID, reading the engine context from the current gRPC
+   * call's thread-local context via {@link EngineContextProvider}.
+   *
+   * <p>Use this overload from gRPC service implementations where the engine context is already
+   * propagated by {@code InboundContextInterceptor}.
+   */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
-    EngineContext ctx = engine.engineContext();
+    return resolve(correlationId, tableId, engine.engineContext());
+  }
+
+  /**
+   * Resolves the scanner for the given table ID using an explicitly supplied engine context.
+   *
+   * <p>Use this overload from transports that carry their own context (e.g. Arrow Flight), where
+   * the gRPC thread-local context is not available.
+   */
+  public SystemObjectScanner resolve(String correlationId, ResourceId tableId, EngineContext ctx) {
     String engineKind = ctx.effectiveEngineKind();
     String engineVersion = ctx.normalizedVersion();
 

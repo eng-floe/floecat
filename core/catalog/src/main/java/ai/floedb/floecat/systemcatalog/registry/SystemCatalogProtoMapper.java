@@ -313,8 +313,15 @@ public final class SystemCatalogProtoMapper {
     switch (def.backendKind()) {
       case TABLE_BACKEND_KIND_FLOECAT ->
           builder.setFloecat(FloeCatTableDetails.newBuilder().setScannerId(def.scannerId()));
-      case TABLE_BACKEND_KIND_STORAGE ->
-          builder.setStorage(StorageTableDetails.newBuilder().setPath(def.storagePath()));
+      case TABLE_BACKEND_KIND_STORAGE -> {
+        var storageBuilder = StorageTableDetails.newBuilder();
+        if (def.flightEndpoint() != null) {
+          storageBuilder.setFlightEndpoint(def.flightEndpoint());
+        } else if (!def.storagePath().isBlank()) {
+          storageBuilder.setPath(def.storagePath());
+        }
+        builder.setStorage(storageBuilder);
+      }
       default -> {}
     }
     def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
@@ -323,6 +330,10 @@ public final class SystemCatalogProtoMapper {
   }
 
   private static SystemTableDef fromProtoTable(SystemTable proto, String defaultEngineKind) {
+    ai.floedb.floecat.query.rpc.FlightEndpointRef flightEndpoint = null;
+    if (proto.hasStorage() && proto.getStorage().hasFlightEndpoint()) {
+      flightEndpoint = proto.getStorage().getFlightEndpoint();
+    }
     return new SystemTableDef(
         proto.getName(),
         proto.getDisplayName(),
@@ -334,7 +345,8 @@ public final class SystemCatalogProtoMapper {
         proto.hasStorage() ? proto.getStorage().getPath() : "",
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
-            .toList());
+            .toList(),
+        flightEndpoint);
   }
 
   private static SystemView toProtoView(SystemViewDef def) {
