@@ -54,15 +54,11 @@ public final class MetricCatalogDocgen {
     if (override != null && !override.isBlank()) {
       return Path.of(override);
     }
-    Path candidate = Path.of("docs", "telemetry");
-    if (Files.exists(candidate)) {
-      return candidate;
+    String cwd = System.getProperty("user.dir");
+    if (cwd != null && !cwd.isBlank()) {
+      return Path.of(cwd, "docs", "telemetry");
     }
-    Path fallback = Path.of("..", "..", "docs", "telemetry");
-    if (Files.exists(fallback)) {
-      return fallback;
-    }
-    return candidate;
+    return Path.of("docs", "telemetry");
   }
 
   public static void main(String[] args) throws IOException {
