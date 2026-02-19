@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.secrets;
+package ai.floedb.floecat.storage.common.secrets;
 
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.quarkus.arc.profile.UnlessBuildProfile;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;

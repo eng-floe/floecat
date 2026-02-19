@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.secrets;
+package ai.floedb.floecat.storage.aws.secrets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import java.net.URI;
 import java.util.Optional;
 import java.util.UUID;

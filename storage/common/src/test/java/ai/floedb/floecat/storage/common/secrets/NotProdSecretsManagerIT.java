@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.secrets;
+package ai.floedb.floecat.storage.common.secrets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.smallrye.mutiny.Uni;
 import java.util.List;
 import java.util.Map;
