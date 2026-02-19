@@ -7,7 +7,7 @@ DynamoDB tables exist before the service starts, plus a Secrets Manager-backed s
 
 ## Architecture & Responsibilities
 - **`AwsClients`** – Centralises AWS SDK v2 clients (DynamoDB, S3) configured via Quarkus properties
-  (`floecat.fileio.override.*`, credentials providers). Injected into both stores.
+  (`floecat.storage.aws.*`, credentials providers). Injected into both stores.
 - **`DynamoPointerStore`** – Stores pointer entries in DynamoDB tables (partition key = pointer key).
   Implements compare-and-set using conditional expressions, handles pagination via DynamoDB queries,
   and supports TTL fields using native DynamoDB TTL attributes.
@@ -49,7 +49,7 @@ Key properties (see `service/application.properties` for defaults):
 - `floecat.kv=dynamodb`, `floecat.kv.table=<tableName>`, `floecat.kv.auto-create=true|false`,
   `floecat.kv.ttl-enabled=true|false`.
 - `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`,
-  `floecat.fileio.override.s3.region=<region>`.
+  `floecat.storage.aws.region=<region>`.
 - Provide AWS credentials via the default SDK provider chain (env vars, profiles, IAM roles) or
   override the client builders inside `AwsClients`.
 
@@ -69,10 +69,12 @@ Extensibility:
 
 ## Local Testing with LocalStack
 - `make localstack-up` – Starts a LocalStack container (DynamoDB + S3) and provisions buckets/tables.
-- `make run-localstack-localstack` – Runs `quarkus:dev` with both upstream and catalog pointing at
-  LocalStack. Uses `floecat.kv=dynamodb` / `floecat.blob=s3` and path-style S3 access.
-- `make run-localstack-aws` – Upstream LocalStack, catalog real AWS.
-- `make run-aws-localstack` – Upstream real AWS, catalog LocalStack.
+- `make run-localstack` – Runs `quarkus:dev` with catalog storage on LocalStack.
+- `make run-aws` – Runs `quarkus:dev` with catalog storage on real AWS.
+- Seeding is disabled by default. Enable it only when needed:
+  `make run-localstack SEED_ENABLED=true SEED_SOURCE=localstack`
+  or
+  `make run-aws REAL_AWS_BUCKET=<bucket> REAL_AWS_TABLE=<table> SEED_ENABLED=true SEED_SOURCE=aws`
 - `make test-localstack` – Runs unit + IT suites against LocalStack backends.
 - `make localstack-down` – Stops the LocalStack container started by the Make targets.
 

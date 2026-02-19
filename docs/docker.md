@@ -8,30 +8,38 @@ make docker
 
 ## Compose Modes
 
-The stack runs in three modes by selecting an env file and, for LocalStack, a compose profile.
+The stack runs in three modes by selecting an env file and compose profiles as needed.
 
 In-memory (default storage, no AWS dependencies):
 
 ```bash
-docker compose -f docker/docker-compose.yml --env-file docker/env.inmem up -d
+FLOECAT_ENV_FILE=./env.inmem docker compose -f docker/docker-compose.yml up -d
 ```
+
+This mode runs with DEV auth (OIDC disabled), so it does not require Keycloak.
 
 LocalStack (DynamoDB + S3):
 
 ```bash
-docker compose -f docker/docker-compose.yml --env-file docker/env.localstack --profile localstack up -d
+FLOECAT_ENV_FILE=./env.localstack docker compose -f docker/docker-compose.yml --profile localstack --profile keycloak up -d
 ```
 
 Real AWS (DynamoDB + S3):
 
 ```bash
-docker compose -f docker/docker-compose.yml --env-file docker/env.aws up -d
+FLOECAT_ENV_FILE=./env.aws docker compose -f docker/docker-compose.yml up -d
 ```
 
 Interactive CLI in a container:
 
 ```bash
 make compose-shell
+```
+
+OIDC-enabled CLI (for `docker/env.localstack`) with token auto-injected:
+
+```bash
+make cli-docker
 ```
 
 ## Configuration and Overrides
@@ -46,9 +54,13 @@ Common configuration knobs:
 - **Ports**: `FLOECAT_HTTP_PORT` (service), `FLOECAT_REST_PORT` (Iceberg REST),
   `FLOECAT_GRPC_PORT` (gateway → service target).
 - **Storage backends**: `FLOECAT_KV`, `FLOECAT_BLOB`, `FLOECAT_KV_TABLE`, `FLOECAT_BLOB_S3_BUCKET`.
-- **AWS wiring**: `FLOECAT_S3_REGION`, `FLOECAT_S3_ENDPOINT`, `FLOECAT_DYNAMODB_ENDPOINT`.
-- **File IO overrides**: `FLOECAT_FILEIO_IMPL`, `FLOECAT_S3_ACCESS_KEY_ID`,
-  `FLOECAT_S3_SECRET_ACCESS_KEY`, `FLOECAT_S3_PATH_STYLE`.
+- **AWS wiring**: `FLOECAT_STORAGE_AWS_REGION`, `FLOECAT_STORAGE_AWS_S3_ENDPOINT`,
+  `FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT`, `FLOECAT_STORAGE_AWS_ACCESS_KEY_ID`,
+  `FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY`, `FLOECAT_STORAGE_AWS_S3_PATH_STYLE`.
+- **Gateway storage credentials**: `ICEBERG_STORAGE_SCOPE`, `ICEBERG_STORAGE_TYPE`,
+  `ICEBERG_STORAGE_KEY_ID`, `ICEBERG_STORAGE_SECRET`, `ICEBERG_STORAGE_REGION`,
+  plus `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
+  `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
 
 Where variables are consumed (all `FLOECAT_*`):
@@ -81,6 +93,8 @@ If your images run as a non-root user, mount `~/.aws` into that user’s home in
 
 ## OIDC Notes
 
+- `docker/env.inmem` explicitly uses DEV auth (`FLOECAT_AUTH_MODE=dev`,
+  `FLOECAT_GATEWAY_AUTH_MODE=dev`) and disables OIDC.
 - Only `docker/env.localstack` enables OIDC by default.
 - Services running **inside** the Docker network must use the Keycloak service name:
   `http://keycloak:8080/realms/floecat`.
@@ -88,3 +102,18 @@ If your images run as a non-root user, mount `~/.aws` into that user’s home in
   must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
 - If you use Trino with the REST catalog, ensure the gateway audience list includes both
   `floecat-client` and `trino-client` (see `docker/env.localstack`).
+
+### OIDC Token for Shell
+
+When the stack is running with `docker/env.localstack`, the CLI must send a bearer token.
+`make compose-shell` does not fetch/inject a token. Use one of:
+
+```bash
+# Recommended: fetch token and run CLI in one step
+make cli-docker
+```
+
+```bash
+# Token only (if you want to run compose manually)
+make cli-docker-token
+```

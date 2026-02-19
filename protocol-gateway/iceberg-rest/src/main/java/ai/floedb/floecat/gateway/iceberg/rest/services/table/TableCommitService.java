@@ -39,6 +39,7 @@ import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -238,10 +239,7 @@ public class TableCommitService {
       return;
     }
     try {
-      Map<String, String> ioProps =
-          committedTable == null
-              ? Map.of()
-              : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+      Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
       var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
       snapshotMetadataService.syncSnapshotsFromImportedMetadata(
           tableSupport,
@@ -277,10 +275,7 @@ public class TableCommitService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
-    Map<String, String> ioProps =
-        committedTable == null
-            ? Map.of()
-            : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+    Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
     try {
       var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
       snapshotMetadataService.syncSnapshotsFromImportedMetadata(
@@ -311,6 +306,18 @@ public class TableCommitService {
     }
     String uri = table.getUpstream().getUri();
     return uri != null && !uri.isBlank();
+  }
+
+  private Map<String, String> resolveCommitIoProperties(
+      TableGatewaySupport tableSupport, Table committedTable) {
+    Map<String, String> merged = new LinkedHashMap<>();
+    if (tableSupport != null) {
+      merged.putAll(tableSupport.defaultFileIoProperties());
+    }
+    if (committedTable != null) {
+      merged.putAll(FileIoFactory.filterIoProperties(committedTable.getPropertiesMap()));
+    }
+    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
   }
 
   public MaterializeMetadataResult materializeMetadata(

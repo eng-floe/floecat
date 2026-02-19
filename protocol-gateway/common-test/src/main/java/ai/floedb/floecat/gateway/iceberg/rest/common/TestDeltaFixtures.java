@@ -70,20 +70,20 @@ public final class TestDeltaFixtures {
 
   public static Map<String, String> s3Options() {
     Map<String, String> props = new LinkedHashMap<>();
-    addIfPresent(props, "s3.endpoint", System.getProperty("floecat.fileio.override.s3.endpoint"));
-    addIfPresent(props, "s3.region", System.getProperty("floecat.fileio.override.s3.region"));
+    addIfPresent(props, "s3.endpoint", System.getProperty("floecat.fixture.aws.s3.endpoint"));
+    addIfPresent(props, "s3.region", System.getProperty("floecat.fixture.aws.s3.region"));
     addIfPresent(
-        props, "s3.access-key-id", System.getProperty("floecat.fileio.override.s3.access-key-id"));
+        props, "s3.access-key-id", System.getProperty("floecat.fixture.aws.s3.access-key-id"));
     addIfPresent(
         props,
         "s3.secret-access-key",
-        System.getProperty("floecat.fileio.override.s3.secret-access-key"));
+        System.getProperty("floecat.fixture.aws.s3.secret-access-key"));
     addIfPresent(
-        props, "s3.session-token", System.getProperty("floecat.fileio.override.s3.session-token"));
+        props, "s3.session-token", System.getProperty("floecat.fixture.aws.s3.session-token"));
     addIfPresent(
         props,
         "s3.path-style-access",
-        System.getProperty("floecat.fileio.override.s3.path-style-access"));
+        System.getProperty("floecat.fixture.aws.s3.path-style-access"));
     return props;
   }
 
@@ -222,7 +222,7 @@ public final class TestDeltaFixtures {
   }
 
   private static String resolveProperty(String overrideKey, String defaultValue) {
-    String override = System.getProperty("floecat.fileio.override." + overrideKey);
+    String override = System.getProperty("floecat.fixture.aws." + overrideKey);
     if (override != null && !override.isBlank()) {
       return override;
     }

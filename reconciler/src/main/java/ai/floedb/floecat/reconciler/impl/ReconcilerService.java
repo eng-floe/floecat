@@ -45,7 +45,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
-import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
@@ -741,7 +740,6 @@ public class ReconcilerService {
       return base;
     }
     options.putIfAbsent("iceberg.source", "filesystem");
-    RuntimeFileIoOverrides.mergeInto(options);
     return options.equals(base.options())
         ? base
         : new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, base.auth());

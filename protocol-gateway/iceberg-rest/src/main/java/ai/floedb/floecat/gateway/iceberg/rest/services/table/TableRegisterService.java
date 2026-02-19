@@ -70,7 +70,8 @@ public class TableRegisterService {
     String metadataLocation = req.metadataLocation().trim();
     String tableName = req.name().trim();
 
-    Map<String, String> ioProperties = new LinkedHashMap<>();
+    Map<String, String> ioProperties =
+        tableSupport.resolveRegisterFileIoProperties(req.properties());
     ImportedMetadata importedMetadata;
     try {
       importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
@@ -102,6 +103,7 @@ public class TableRegisterService {
               tableName,
               metadataLocation,
               idempotencyKey,
+              req.properties(),
               importedMetadata,
               tableSupport);
         }
@@ -144,6 +146,7 @@ public class TableRegisterService {
             created.getResourceId(),
             metadataLocation,
             resolvedLocation,
+            ioProperties,
             null,
             idempotencyKey,
             tableSupport);
@@ -172,8 +175,11 @@ public class TableRegisterService {
       String tableName,
       String metadataLocation,
       String idempotencyKey,
+      Map<String, String> registerProperties,
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
+    Map<String, String> ioProperties =
+        tableSupport.resolveRegisterFileIoProperties(registerProperties);
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
@@ -263,6 +269,7 @@ public class TableRegisterService {
               tableId,
               metadataLocation,
               resolvedLocation,
+              ioProperties,
               null,
               idempotencyKey,
               tableSupport);
@@ -306,6 +313,7 @@ public class TableRegisterService {
       ResourceId tableId,
       String metadataLocation,
       String resolvedTableLocation,
+      Map<String, String> ioProperties,
       String existingUpstreamUri,
       String idempotencyKey,
       TableGatewaySupport tableSupport) {
@@ -339,6 +347,7 @@ public class TableRegisterService {
               tableId,
               metadata,
               resolvedTableLocation,
+              ioProperties,
               idempotencyKey);
       upstreamUri = resolvedTableLocation;
     }

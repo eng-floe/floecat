@@ -185,9 +185,15 @@ public class TableCommitSideEffectService {
         String baseLocation = tableLocation(tableRecord);
         String resolvedLocation =
             tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
+        Map<String, String> connectorIoProps = tableSupport.defaultFileIoProperties();
         LOG.infof(
-            "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s",
-            namespacePath, table, effectiveMetadata, resolvedLocation);
+            "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s"
+                + " ioProps=%s",
+            namespacePath,
+            table,
+            effectiveMetadata,
+            resolvedLocation,
+            connectorIoProps.isEmpty() ? "<none>" : connectorIoProps.keySet());
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -198,6 +204,7 @@ public class TableCommitSideEffectService {
                 tableRecord.getResourceId(),
                 effectiveMetadata,
                 resolvedLocation,
+                connectorIoProps,
                 idempotencyKey);
         if (connectorId != null) {
           tableSupport.updateTableUpstream(
