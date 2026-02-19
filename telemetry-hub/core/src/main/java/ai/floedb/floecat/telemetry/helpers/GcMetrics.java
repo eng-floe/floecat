@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.telemetry.helpers;
 
-import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
@@ -35,7 +34,10 @@ public final class GcMetrics extends BaseMetrics {
   }
 
   public void recordCollection(double count, Tag... extraTags) {
-    record(Telemetry.Metrics.GC_COLLECTIONS, count, extraTags);
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, "success"));
+    addExtra(dynamic, extraTags);
+    observability.counter(Telemetry.Metrics.GC_COLLECTIONS, count, metricTags(dynamic));
   }
 
   public void recordPause(Duration duration, Tag... extraTags) {
@@ -43,16 +45,5 @@ public final class GcMetrics extends BaseMetrics {
     dynamic.add(Tag.of(TagKey.RESULT, "success"));
     addExtra(dynamic, extraTags);
     observability.timer(Telemetry.Metrics.GC_PAUSE, duration, metricTags(dynamic));
-  }
-
-  private void record(MetricId metric, double amount, Tag... extraTags) {
-    List<Tag> dynamic = buildDynamicTags(extraTags);
-    observability.counter(metric, amount, metricTags(dynamic));
-  }
-
-  private List<Tag> buildDynamicTags(Tag... extraTags) {
-    List<Tag> dynamic = new ArrayList<>();
-    addExtra(dynamic, extraTags);
-    return dynamic;
   }
 }

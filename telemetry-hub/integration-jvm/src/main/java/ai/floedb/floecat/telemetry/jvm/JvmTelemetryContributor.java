@@ -31,23 +31,8 @@ public final class JvmTelemetryContributor implements TelemetryContributor {
 
   private static Map<MetricId, MetricDef> buildDefinitions() {
     Map<MetricId, MetricDef> defs = new LinkedHashMap<>();
-    Set<String> runtimeCommon = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
-    Set<String> runtimeMemoryRequired = addTags(runtimeCommon, TagKey.RESOURCE);
-    Set<String> runtimeGcRequired = addTags(runtimeCommon, TagKey.GC_NAME);
+    Set<String> runtimeGcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.GC_NAME);
 
-    add(
-        defs,
-        JvmMetrics.PROCESS_CPU_USAGE,
-        runtimeCommon,
-        runtimeCommon,
-        "Process CPU usage (0-1 fraction).");
-    add(
-        defs,
-        JvmMetrics.MEMORY_USED,
-        runtimeMemoryRequired,
-        runtimeMemoryRequired,
-        "Used bytes for heap/metaspace/direct buffers.");
-    add(defs, JvmMetrics.THREAD_COUNT, runtimeCommon, runtimeCommon, "Current live thread count.");
     add(
         defs,
         JvmMetrics.GC_LIVE_DATA_BYTES,
@@ -74,14 +59,6 @@ public final class JvmTelemetryContributor implements TelemetryContributor {
       throw new IllegalArgumentException(
           "Duplicate metric def in JvmTelemetryContributor: " + metric.name());
     }
-  }
-
-  private static Set<String> addTags(Set<String> base, String... extras) {
-    Set<String> copy = new java.util.LinkedHashSet<>(base);
-    for (String extra : extras) {
-      copy.add(extra);
-    }
-    return Collections.unmodifiableSet(copy);
   }
 
   @Override

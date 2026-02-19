@@ -21,16 +21,10 @@ import ai.floedb.floecat.telemetry.MetricType;
 
 public final class JvmMetrics {
   private static final String CONTRACT = "v1";
-  private static final String ORIGIN = "jvm";
+  private static final String ORIGIN = "Extra JVM";
 
   private JvmMetrics() {}
 
-  public static final MetricId PROCESS_CPU_USAGE =
-      new MetricId("floecat.jvm.process.cpu.usage", MetricType.GAUGE, "ratio", CONTRACT, ORIGIN);
-  public static final MetricId MEMORY_USED =
-      new MetricId("floecat.jvm.memory.used.bytes", MetricType.GAUGE, "bytes", CONTRACT, ORIGIN);
-  public static final MetricId THREAD_COUNT =
-      new MetricId("floecat.jvm.threads.count", MetricType.GAUGE, "count", CONTRACT, ORIGIN);
   public static final MetricId GC_LIVE_DATA_BYTES =
       new MetricId("floecat.jvm.gc.live.data.bytes", MetricType.GAUGE, "bytes", CONTRACT, ORIGIN);
   public static final MetricId GC_LIVE_DATA_GROWTH_RATE =

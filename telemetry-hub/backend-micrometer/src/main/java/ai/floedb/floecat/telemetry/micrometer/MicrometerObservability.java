@@ -190,23 +190,11 @@ public final class MicrometerObservability implements Observability {
       return;
     }
     Iterable<io.micrometer.core.instrument.Tag> meterTags = micrometerTags(key.tags());
-    Gauge existingGauge = registry.find(metric.name()).tags(meterTags).gauge();
-    boolean registryGaugePresent = existingGauge != null;
-    if (registryGaugePresent) {
-      duplicateGaugeCounter.increment();
-      if (policy.isStrict()) {
-        throw new IllegalArgumentException("Gauge already registered for metric " + metric.name());
-      }
-      gauges.putIfAbsent(key, existingGauge);
-      return;
-    }
     gauges.compute(
         key,
         (ignored, existing) -> {
           if (existing != null) {
-            if (!registryGaugePresent) {
-              duplicateGaugeCounter.increment();
-            }
+            duplicateGaugeCounter.increment();
             if (policy.isStrict()) {
               throw new IllegalArgumentException(
                   "Gauge already registered for metric "
@@ -215,6 +203,16 @@ public final class MicrometerObservability implements Observability {
                       + key.tags());
             }
             registry.remove(existing);
+          } else {
+            Gauge registryGauge = registry.find(metric.name()).tags(meterTags).gauge();
+            if (registryGauge != null) {
+              duplicateGaugeCounter.increment();
+              if (policy.isStrict()) {
+                throw new IllegalArgumentException(
+                    "Gauge already registered for metric " + metric.name());
+              }
+              return registryGauge;
+            }
           }
           Supplier<Number> safeSupplier =
               () -> {

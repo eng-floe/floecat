@@ -384,7 +384,7 @@
     "type": "GAUGE",
     "unit": "bytes",
     "since": "v1",
-    "origin": "jvm",
+    "origin": "Extra JVM",
     "description": "Estimated live data (bytes) held by each garbage collector.",
     "requiredTags": ["component", "gc", "operation"],
     "allowedTags": ["component", "gc", "operation"]
@@ -394,40 +394,10 @@
     "type": "GAUGE",
     "unit": "bytes_per_second",
     "since": "v1",
-    "origin": "jvm",
+    "origin": "Extra JVM",
     "description": "Live data growth rate (bytes/second) for GC-managed pools.",
     "requiredTags": ["component", "gc", "operation"],
     "allowedTags": ["component", "gc", "operation"]
-  },
-  {
-    "name": "floecat.jvm.memory.used.bytes",
-    "type": "GAUGE",
-    "unit": "bytes",
-    "since": "v1",
-    "origin": "jvm",
-    "description": "Used bytes for heap/metaspace/direct buffers.",
-    "requiredTags": ["component", "operation", "resource"],
-    "allowedTags": ["component", "operation", "resource"]
-  },
-  {
-    "name": "floecat.jvm.process.cpu.usage",
-    "type": "GAUGE",
-    "unit": "ratio",
-    "since": "v1",
-    "origin": "jvm",
-    "description": "Process CPU usage (0-1 fraction).",
-    "requiredTags": ["component", "operation"],
-    "allowedTags": ["component", "operation"]
-  },
-  {
-    "name": "floecat.jvm.threads.count",
-    "type": "GAUGE",
-    "unit": "count",
-    "since": "v1",
-    "origin": "jvm",
-    "description": "Current live thread count.",
-    "requiredTags": ["component", "operation"],
-    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.profiling.captures.total",
@@ -436,7 +406,7 @@
     "since": "v1",
     "origin": "profiling",
     "description": "Profiling capture lifecycle counts (started/completed/failed/dropped).",
-    "requiredTags": ["component", "operation", "trigger"],
+    "requiredTags": ["component", "mode", "operation", "result", "scope", "trigger"],
     "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
   },
   {

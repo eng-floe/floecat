@@ -84,7 +84,7 @@ public interface ProfilingConfig {
   }
 
   interface GcPolicy extends PolicySpec {
-    @WithDefault("67108864")
+    @WithDefault("268435456")
     long thresholdBytes();
 
     @WithDefault("G1 Old Generation")

@@ -280,11 +280,19 @@ public class ProfilingCaptureService implements ProfilingCaptureStarter {
     MDC.put("captureTrigger", meta.getTrigger());
     MDC.put("captureMode", meta.getMode());
     MDC.put("captureScope", meta.getScope());
+    if (meta.getPolicyName() != null) {
+      MDC.put("capturePolicy", meta.getPolicyName());
+      if (meta.getPolicySignal() != null) {
+        MDC.put("capturePolicySignal", meta.getPolicySignal());
+      }
+    }
     return () -> {
       MDC.remove("captureId");
       MDC.remove("captureTrigger");
       MDC.remove("captureMode");
       MDC.remove("captureScope");
+      MDC.remove("capturePolicy");
+      MDC.remove("capturePolicySignal");
     };
   }
 

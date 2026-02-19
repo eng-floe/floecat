@@ -97,12 +97,12 @@ public final class MetricCatalogDocgen {
     StringBuilder section = new StringBuilder();
     for (String origin : origins) {
       if (section.length() > 0) {
-        section.append("\n\n");
+        section.append("\n");
       }
       if ("core".equals(origin)) {
-        section.append("**Core Metrics**\n");
+        section.append("## Core Metrics\n\n");
       } else {
-        section.append("**").append(capitalize(origin)).append(" Metrics**\n");
+        section.append("## ").append(capitalize(origin)).append(" Metrics\n\n");
       }
       section.append(TABLE_HEADER).append("\n");
       section.append(buildTableRows(grouped.get(origin))).append("\n");
