@@ -64,15 +64,14 @@ class ProfilingPolicyIT {
 
   private Map<String, Object> waitForPolicyCapture() throws InterruptedException {
     for (int i = 0; i < 30; i++) {
-      Map<String, Object> meta =
-          given()
-              .baseUri(baseUrl.toString())
-              .when()
-              .get("/profiling/captures/latest")
-              .then()
-              .statusCode(200)
-              .extract()
-              .as(Map.class);
+      io.restassured.response.Response response =
+          given().baseUri(baseUrl.toString()).when().get("/profiling/captures/latest");
+      if (response.statusCode() == 404) {
+        Thread.sleep(1000);
+        continue;
+      }
+      response.then().statusCode(200);
+      Map<String, Object> meta = response.as(Map.class);
       if ("policy".equals(meta.get("trigger"))) {
         return meta;
       }
