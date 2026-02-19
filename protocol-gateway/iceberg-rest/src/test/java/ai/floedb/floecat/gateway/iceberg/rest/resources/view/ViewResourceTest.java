@@ -50,6 +50,7 @@ import io.quarkus.test.junit.TestProfile;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.io.FileIO;
@@ -334,10 +335,25 @@ class ViewResourceTest extends AbstractRestResourceTest {
 
   private FileIO createTestFileIo(Path root) {
     if (Boolean.parseBoolean(System.getProperty("floecat.fixtures.use-aws-s3", "false"))) {
-      return FileIoFactory.createFileIo(Map.of(), null, false);
+      Map<String, String> ioProps = new LinkedHashMap<>();
+      addIfPresent(ioProps, "io-impl", "floecat.fixture.aws.io-impl");
+      addIfPresent(ioProps, "s3.endpoint", "floecat.fixture.aws.s3.endpoint");
+      addIfPresent(ioProps, "s3.region", "floecat.fixture.aws.s3.region");
+      addIfPresent(ioProps, "s3.access-key-id", "floecat.fixture.aws.s3.access-key-id");
+      addIfPresent(ioProps, "s3.secret-access-key", "floecat.fixture.aws.s3.secret-access-key");
+      addIfPresent(ioProps, "s3.session-token", "floecat.fixture.aws.s3.session-token");
+      addIfPresent(ioProps, "s3.path-style-access", "floecat.fixture.aws.s3.path-style-access");
+      return FileIoFactory.createFileIo(ioProps, null, false);
     }
     FileIO fileIo = new InMemoryS3FileIO();
     fileIo.initialize(Map.of("fs.floecat.test-root", root.toString()));
     return fileIo;
+  }
+
+  private static void addIfPresent(Map<String, String> props, String key, String sysProp) {
+    String value = System.getProperty(sysProp);
+    if (value != null && !value.isBlank()) {
+      props.put(key, value);
+    }
   }
 }

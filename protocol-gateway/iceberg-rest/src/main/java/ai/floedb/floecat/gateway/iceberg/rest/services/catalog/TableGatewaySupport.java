@@ -53,17 +53,18 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import io.grpc.StatusRuntimeException;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
+@ApplicationScoped
 public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
   private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
@@ -238,8 +239,11 @@ public class TableGatewaySupport {
     if (cached != null) {
       return cached;
     }
-    Map<String, String> computed =
-        new LinkedHashMap<>(readPrefixedConfig("floecat.gateway.table-config."));
+    Map<String, String> computed = new LinkedHashMap<>();
+    config.metadataFileIo().ifPresent(ioImpl -> computed.putIfAbsent("io-impl", ioImpl));
+    config
+        .metadataFileIoRoot()
+        .ifPresent(root -> computed.putIfAbsent("fs.floecat.test-root", root));
     config
         .defaultRegion()
         .filter(region -> region != null && !region.isBlank())
@@ -252,6 +256,43 @@ public class TableGatewaySupport {
     Map<String, String> normalized = computed.isEmpty() ? Map.of() : Map.copyOf(computed);
     tableConfigCache = normalized;
     return normalized;
+  }
+
+  public Map<String, String> resolveRegisterFileIoProperties(
+      Map<String, String> requestProperties) {
+    Map<String, String> resolved = new LinkedHashMap<>(defaultFileIoProperties());
+    if (requestProperties != null && !requestProperties.isEmpty()) {
+      requestProperties.forEach(
+          (k, v) -> {
+            if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
+              resolved.put(k, v.trim());
+            }
+          });
+    }
+    return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
+  }
+
+  public Map<String, String> defaultFileIoProperties() {
+    Map<String, String> merged = new LinkedHashMap<>();
+    defaultCredentials().stream()
+        .findFirst()
+        .map(StorageCredentialDto::config)
+        .ifPresent(
+            credentialProps ->
+                credentialProps.forEach(
+                    (k, v) -> {
+                      if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
+                        merged.put(k, v.trim());
+                      }
+                    }));
+    defaultTableConfig()
+        .forEach(
+            (k, v) -> {
+              if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
+                merged.put(k, v.trim());
+              }
+            });
+    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
   }
 
   public List<StorageCredentialDto> defaultCredentials() {
@@ -470,6 +511,7 @@ public class TableGatewaySupport {
       ResourceId tableId,
       String metadataLocation,
       String tableLocation,
+      Map<String, String> ioProperties,
       String idempotencyKey) {
     NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
     SourceSelector source =
@@ -494,8 +536,13 @@ public class TableGatewaySupport {
     props.put("external.table-name", tableName);
     props.put("external.namespace", namespaceFq);
     props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
-      RuntimeFileIoOverrides.mergeInto(props);
+    if (ioProperties != null && !ioProperties.isEmpty()) {
+      ioProperties.forEach(
+          (k, v) -> {
+            if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
+              props.put(k, v.trim());
+            }
+          });
     }
     ConnectorSpec.Builder spec =
         ConnectorSpec.newBuilder()
@@ -648,6 +695,17 @@ public class TableGatewaySupport {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private static boolean isUsableIoValue(String value) {
+    if (value == null) {
+      return false;
+    }
+    String trimmed = value.trim();
+    if (trimmed.isEmpty()) {
+      return false;
+    }
+    return !(trimmed.startsWith("<") && trimmed.endsWith(">"));
   }
 
   // Snapshot metadata parsing lives in SnapshotMetadataUtil.

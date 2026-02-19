@@ -1151,6 +1151,14 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    String expectedAccessKey =
+        System.getProperty(
+            "floecat.gateway.storage-credential.properties.s3.access-key-id",
+            System.getProperty("floecat.fixture.aws.s3.access-key-id", "test-key"));
+    String expectedSecretKey =
+        System.getProperty(
+            "floecat.gateway.storage-credential.properties.s3.secret-access-key",
+            System.getProperty("floecat.fixture.aws.s3.secret-access-key", "test-secret"));
 
     given()
         .when()
@@ -1160,8 +1168,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'storage-credentials'.size()", equalTo(1))
         .body("'storage-credentials'[0].prefix", equalTo("*"))
         .body("'storage-credentials'[0].config.type", equalTo("s3"))
-        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
-        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"));
+        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo(expectedAccessKey))
+        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo(expectedSecretKey));
   }
 
   @Test

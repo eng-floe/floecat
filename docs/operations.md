@@ -10,7 +10,7 @@ Docker build, compose modes, and AWS credential options live in [`docs/docker.md
 # Unit + integration tests across modules (in-memory)
 make test
 
-# Run full test suite against LocalStack (upstream + catalog)
+# Run full test suite against LocalStack (fixtures + catalog storage)
 make test-localstack
 
 # Only run unit or integration suites

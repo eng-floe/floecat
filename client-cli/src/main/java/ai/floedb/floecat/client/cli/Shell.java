@@ -501,9 +501,9 @@ public class Shell implements Runnable {
          --session-header <name>  Session header name
 
          Commands:
-         account <id>
+         account <id|display_name>
          account list
-         account get <id>
+         account get <id|display_name>
          account create <display_name> [--desc <text>]
          account delete <id> (or omit id to use current account)
          catalogs
@@ -710,10 +710,10 @@ public class Shell implements Runnable {
       default -> {
         String t = sub.trim();
         if (t.isEmpty()) {
-          out.println("usage: account <accountId>");
+          out.println("usage: account <accountId|display_name>");
           return;
         }
-        currentAccountId = t;
+        currentAccountId = resolveAccountId(t);
         out.println("account set: " + currentAccountId);
       }
     }
@@ -731,10 +731,10 @@ public class Shell implements Runnable {
 
   private void cmdAccountGet(List<String> args) {
     if (args.size() < 1) {
-      out.println("usage: account get <id>");
+      out.println("usage: account get <id|display_name>");
       return;
     }
-    String id = Quotes.unquote(args.get(0));
+    String id = resolveAccountId(args.get(0));
     var resp =
         accounts.getAccount(
             GetAccountRequest.newBuilder()
@@ -757,13 +757,14 @@ public class Shell implements Runnable {
   }
 
   private void cmdAccountDelete(List<String> args) {
-    String id =
+    String token =
         args.isEmpty() ? (currentAccountId == null ? "" : currentAccountId.trim()) : args.get(0);
-    id = Quotes.unquote(id);
-    if (id.isBlank()) {
-      out.println("usage: account delete <id>");
+    token = Quotes.unquote(token);
+    if (token.isBlank()) {
+      out.println("usage: account delete <id|display_name>");
       return;
     }
+    String id = resolveAccountId(token);
     accounts.deleteAccount(
         DeleteAccountRequest.newBuilder()
             .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
@@ -772,6 +773,28 @@ public class Shell implements Runnable {
       currentAccountId = null;
     }
     out.println("account deleted: " + id);
+  }
+
+  private String resolveAccountId(String token) {
+    String value = Quotes.unquote(nvl(token, "")).trim();
+    if (value.isBlank()) {
+      throw new IllegalArgumentException("account id/display name cannot be empty");
+    }
+    if (looksLikeUuid(value)) {
+      return value;
+    }
+    List<Account> all =
+        collectPages(
+            DEFAULT_PAGE_SIZE,
+            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
+            r -> r.getAccountsList(),
+            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    return all.stream()
+        .filter(a -> value.equals(a.getDisplayName()))
+        .map(a -> a.getResourceId().getId())
+        .findFirst()
+        .orElseThrow(
+            () -> new IllegalArgumentException("account not found by id/display name: " + value));
   }
 
   private List<String> tail(List<String> list) {

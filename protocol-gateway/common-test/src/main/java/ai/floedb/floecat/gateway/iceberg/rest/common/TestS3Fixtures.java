@@ -423,7 +423,7 @@ public final class TestS3Fixtures {
   }
 
   private static String resolveFileIoProperty(String overrideKey, String defaultValue) {
-    String override = System.getProperty("floecat.fileio.override." + overrideKey);
+    String override = System.getProperty("floecat.fixture.aws." + overrideKey);
     if (override != null && !override.isBlank()) {
       return override;
     }

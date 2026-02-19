@@ -206,10 +206,11 @@ public final class MetaGraph implements CatalogOverlay {
   @Override
   public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
+    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx);
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveNamespace(ref, ctx),
+        () -> systemGraph.resolveNamespace(systemRef, ctx),
         () -> userGraph.resolveNamespace(correlationId, ref));
   }
 

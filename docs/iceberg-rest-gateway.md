@@ -142,6 +142,14 @@ Limits/Follow-ups:
 
 ## Operational Notes & Current Limitations
 
+- **Register IO scope:** `POST /v1/{prefix}/namespaces/{namespace}/register` now treats
+  FileIO properties as request-scoped connector config. Runtime/global storage wiring
+  (`floecat.storage.aws.*`)
+  is no longer required for register flows. Use the register payload `properties` for
+  `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
+  `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
+  Request-supplied FileIO properties are merged over gateway defaults from
+  `floecat.gateway.storage-credential.properties.*`.
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
   delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
   and `aws.profile_path` when clients expect AWS SDK profile-based access.

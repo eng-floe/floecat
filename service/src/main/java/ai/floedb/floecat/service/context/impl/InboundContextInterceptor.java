@@ -510,7 +510,7 @@ public class InboundContextInterceptor {
         accountRepository
             .getByName(displayName)
             .map(account -> account.getResourceId().getId())
-            .orElseGet(AccountIds::randomAccountId);
+            .orElseGet(this::firstAccountIdOrRandom);
     var rid =
         ResourceId.newBuilder().setAccountId(id).setId(id).setKind(ResourceKind.RK_ACCOUNT).build();
     PrincipalContext.Builder builder =
@@ -520,6 +520,15 @@ public class InboundContextInterceptor {
             .setLocale("en");
     RolePermissions.permissionsForRoles(List.of(), true).forEach(builder::addPermissions);
     return builder.build();
+  }
+
+  private String firstAccountIdOrRandom() {
+    StringBuilder next = new StringBuilder();
+    List<ai.floedb.floecat.account.rpc.Account> accounts = accountRepository.list(1, "", next);
+    if (!accounts.isEmpty()) {
+      return accounts.get(0).getResourceId().getId();
+    }
+    return AccountIds.randomAccountId();
   }
 
   private void validateAccount(String accountId) {

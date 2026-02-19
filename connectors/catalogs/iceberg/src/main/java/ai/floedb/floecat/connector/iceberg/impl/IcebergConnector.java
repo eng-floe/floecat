@@ -40,7 +40,6 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
-import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -391,9 +390,6 @@ public abstract class IcebergConnector implements FloecatConnector {
             ioProps.put(k, v);
           }
         });
-    if (Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"))) {
-      RuntimeFileIoOverrides.mergeInto(ioProps);
-    }
     Map<String, String> sanitized = new LinkedHashMap<>();
     ioProps.forEach(
         (k, v) -> {

@@ -23,9 +23,8 @@ services:
     environment:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
-      FLOECAT_CONNECTOR_FILEIO_OVERRIDES: ${FLOECAT_CONNECTOR_FILEIO_OVERRIDES:-true}
-      AWS_REGION: ${FLOECAT_S3_REGION:-us-east-1}
-      AWS_DEFAULT_REGION: ${FLOECAT_S3_REGION:-us-east-1}
+      AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
@@ -37,24 +36,22 @@ services:
       FLOECAT_KV_TTL_ENABLED: ${FLOECAT_KV_TTL_ENABLED:-true}
       FLOECAT_BLOB: ${FLOECAT_BLOB:-memory}
       FLOECAT_BLOB_S3_BUCKET: ${FLOECAT_BLOB_S3_BUCKET:-floecat-dev}
-      FLOECAT_FILEIO_IMPL: ${FLOECAT_FILEIO_IMPL:-}
-      FLOECAT_S3_ENDPOINT: ${FLOECAT_S3_ENDPOINT:-}
-      FLOECAT_S3_REGION: ${FLOECAT_S3_REGION:-us-east-1}
-      FLOECAT_S3_ACCESS_KEY_ID: ${FLOECAT_S3_ACCESS_KEY_ID:-}
-      FLOECAT_S3_SECRET_ACCESS_KEY: ${FLOECAT_S3_SECRET_ACCESS_KEY:-}
-      FLOECAT_S3_PATH_STYLE: ${FLOECAT_S3_PATH_STYLE:-true}
-      FLOECAT_DYNAMODB_ENDPOINT: ${FLOECAT_DYNAMODB_ENDPOINT:-}
+      FLOECAT_STORAGE_AWS_S3_ENDPOINT: ${FLOECAT_STORAGE_AWS_S3_ENDPOINT:-}
+      FLOECAT_STORAGE_AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      FLOECAT_STORAGE_AWS_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-}
+      FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-}
+      FLOECAT_STORAGE_AWS_SESSION_TOKEN: ${FLOECAT_STORAGE_AWS_SESSION_TOKEN:-}
+      FLOECAT_STORAGE_AWS_S3_PATH_STYLE: ${FLOECAT_STORAGE_AWS_S3_PATH_STYLE:-true}
+      FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT: ${FLOECAT_STORAGE_AWS_DYNAMODB_ENDPOINT:-}
       FLOECAT_FIXTURES_USE_AWS_S3: ${FLOECAT_FIXTURES_USE_AWS_S3:-false}
       JAVA_TOOL_OPTIONS: >-
-        -Dfloecat.connector.fileio.overrides=${FLOECAT_CONNECTOR_FILEIO_OVERRIDES:-true}
         -Dfloecat.fixtures.use-aws-s3=${FLOECAT_FIXTURES_USE_AWS_S3:-false}
-        -Dfloecat.fileio.override.io-impl=${FLOECAT_FILEIO_IMPL:-}
-        -Dfloecat.fileio.override.s3.endpoint=${FLOECAT_S3_ENDPOINT:-}
-        -Dfloecat.fileio.override.s3.region=${FLOECAT_S3_REGION:-us-east-1}
-        -Dfloecat.fileio.override.s3.access-key-id=${FLOECAT_S3_ACCESS_KEY_ID:-}
-        -Dfloecat.fileio.override.s3.secret-access-key=${FLOECAT_S3_SECRET_ACCESS_KEY:-}
-        -Dfloecat.fileio.override.s3.path-style-access=${FLOECAT_S3_PATH_STYLE:-true}
-        -Dfloecat.fileio.override.aws.dynamodb.endpoint-override=${FLOECAT_DYNAMODB_ENDPOINT:-}
+        -Dfloecat.fixture.aws.io-impl=${FLOECAT_FIXTURE_AWS_IO_IMPL:-org.apache.iceberg.aws.s3.S3FileIO}
+        -Dfloecat.fixture.aws.s3.endpoint=${FLOECAT_FIXTURE_AWS_S3_ENDPOINT:-}
+        -Dfloecat.fixture.aws.s3.region=${FLOECAT_FIXTURE_AWS_REGION:-}
+        -Dfloecat.fixture.aws.s3.access-key-id=${FLOECAT_FIXTURE_AWS_ACCESS_KEY_ID:-}
+        -Dfloecat.fixture.aws.s3.secret-access-key=${FLOECAT_FIXTURE_AWS_SECRET_ACCESS_KEY:-}
+        -Dfloecat.fixture.aws.s3.path-style-access=${FLOECAT_FIXTURE_AWS_S3_PATH_STYLE:-}
     networks:
       - floecat
     volumes:
@@ -73,20 +70,20 @@ services:
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_UPSTREAM_TARGET: "service:9100"
-      AWS_REGION: ${FLOECAT_REST_S3_REGION:-us-east-1}
-      AWS_DEFAULT_REGION: ${FLOECAT_REST_S3_REGION:-us-east-1}
+      ICEBERG_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      ICEBERG_STORAGE_SCOPE: ${ICEBERG_STORAGE_SCOPE:-*}
+      ICEBERG_STORAGE_TYPE: ${ICEBERG_STORAGE_TYPE:-s3}
+      ICEBERG_STORAGE_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-<access-id>}}
+      ICEBERG_STORAGE_SECRET: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-<secret-key>}}
+      ICEBERG_STORAGE_REGION: ${FLOECAT_STORAGE_AWS_REGION:-${AWS_REGION:-us-east-1}}
+      FLOECAT_GATEWAY_METADATA_FILE_IO: ${FLOECAT_GATEWAY_METADATA_FILE_IO:-org.apache.iceberg.aws.s3.S3FileIO}
+      AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       AWS_PROFILE: ${AWS_PROFILE:-}
       AWS_SDK_LOAD_CONFIG: "1"
-      JAVA_TOOL_OPTIONS: >-
-        -Dfloecat.fileio.override.io-impl=${FLOECAT_REST_FILEIO_IMPL:-}
-        -Dfloecat.fileio.override.s3.endpoint=${FLOECAT_REST_S3_ENDPOINT:-}
-        -Dfloecat.fileio.override.s3.region=${FLOECAT_REST_S3_REGION:-us-east-1}
-        -Dfloecat.fileio.override.s3.access-key-id=${FLOECAT_REST_S3_ACCESS_KEY_ID:-}
-        -Dfloecat.fileio.override.s3.secret-access-key=${FLOECAT_REST_S3_SECRET_ACCESS_KEY:-}
-        -Dfloecat.fileio.override.s3.path-style-access=${FLOECAT_REST_S3_PATH_STYLE:-true}
     depends_on:
       - service
     networks:
@@ -115,12 +112,12 @@ services:
       - "4566:4566"
     environment:
       SERVICES: "s3,dynamodb"
-      DEFAULT_REGION: ${FLOECAT_S3_REGION:-us-east-1}
-      AWS_REGION: ${FLOECAT_S3_REGION:-us-east-1}
-      AWS_DEFAULT_REGION: ${FLOECAT_S3_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${FLOECAT_S3_ACCESS_KEY_ID:-test}
-      AWS_SECRET_ACCESS_KEY: ${FLOECAT_S3_SECRET_ACCESS_KEY:-test}
-      FLOECAT_S3_REGION: ${FLOECAT_S3_REGION:-us-east-1}
+      DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-test}
+      FLOECAT_STORAGE_AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       FLOECAT_BLOB_S3_BUCKET: ${FLOECAT_BLOB_S3_BUCKET:-floecat-dev}
       FLOECAT_KV_TABLE: ${FLOECAT_KV_TABLE:-floecat_pointers}
     volumes:

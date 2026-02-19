@@ -20,6 +20,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.fir
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -50,6 +51,7 @@ public class MaterializeMetadataService {
 
   @Inject ObjectMapper mapper;
   @Inject IcebergGatewayConfig config;
+  @Inject TableGatewaySupport tableGatewaySupport;
 
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
@@ -78,7 +80,11 @@ public class MaterializeMetadataService {
     String resolvedLocation = null;
     FileIO fileIO = null;
     try {
-      Map<String, String> props = sanitizeProperties(metadata.properties());
+      Map<String, String> props = new LinkedHashMap<>();
+      if (tableGatewaySupport != null) {
+        props.putAll(tableGatewaySupport.defaultFileIoProperties());
+      }
+      props.putAll(sanitizeProperties(metadata.properties()));
       fileIO = newFileIo(props);
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {

@@ -18,7 +18,6 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import java.net.URI;
@@ -43,9 +42,6 @@ final class DeltaConnectorFactory {
 
   private DeltaConnectorFactory() {}
 
-  private static final boolean FILEIO_OVERRIDES_ENABLED =
-      Boolean.parseBoolean(System.getProperty("floecat.connector.fileio.overrides", "true"));
-
   enum DeltaSource {
     UNITY,
     FILESYSTEM
@@ -55,9 +51,6 @@ final class DeltaConnectorFactory {
       String uri, Map<String, String> options, AuthProvider authProvider) {
     Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
     Map<String, String> effectiveOptions = new LinkedHashMap<>(opts);
-    if (FILEIO_OVERRIDES_ENABLED) {
-      RuntimeFileIoOverrides.mergeInto(effectiveOptions);
-    }
 
     DeltaSource source = selectSource(effectiveOptions);
     String tableRoot = effectiveOptions.getOrDefault("delta.table-root", "");
@@ -161,22 +154,10 @@ final class DeltaConnectorFactory {
       return new EngineContext(engine, inputFn);
     }
 
-    var region =
-        Region.of(
-            resolveOption(
-                options,
-                "s3.region",
-                "aws.region",
-                "floecat.fileio.override.s3.region",
-                "us-east-1"));
+    var region = Region.of(resolveOption(options, "s3.region", "aws.region", "us-east-1"));
 
     boolean pathStyle =
-        Boolean.parseBoolean(
-            resolveOption(
-                options,
-                "s3.path-style-access",
-                "floecat.fileio.override.s3.path-style-access",
-                "false"));
+        Boolean.parseBoolean(resolveOption(options, "s3.path-style-access", "false"));
 
     var s3Builder =
         S3Client.builder()
@@ -185,8 +166,7 @@ final class DeltaConnectorFactory {
                 S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
             .credentialsProvider(resolveCredentials(options));
 
-    String endpoint =
-        resolveOption(options, "s3.endpoint", "floecat.fileio.override.s3.endpoint", null);
+    String endpoint = resolveOption(options, "s3.endpoint", null);
     if (endpoint != null && !endpoint.isBlank()) {
       s3Builder.endpointOverride(URI.create(endpoint));
     }
@@ -198,15 +178,9 @@ final class DeltaConnectorFactory {
   }
 
   private static AwsCredentialsProvider resolveCredentials(Map<String, String> options) {
-    String access =
-        resolveOption(
-            options, "s3.access-key-id", "floecat.fileio.override.s3.access-key-id", null);
-    String secret =
-        resolveOption(
-            options, "s3.secret-access-key", "floecat.fileio.override.s3.secret-access-key", null);
-    String token =
-        resolveOption(
-            options, "s3.session-token", "floecat.fileio.override.s3.session-token", null);
+    String access = resolveOption(options, "s3.access-key-id", null);
+    String secret = resolveOption(options, "s3.secret-access-key", null);
+    String token = resolveOption(options, "s3.session-token", null);
 
     if (access != null && !access.isBlank() && secret != null && !secret.isBlank()) {
       AwsCredentials creds =
@@ -219,28 +193,18 @@ final class DeltaConnectorFactory {
   }
 
   private static String resolveOption(
-      Map<String, String> options, String key, String sysProp, String defaultValue) {
+      Map<String, String> options, String key, String defaultValue) {
     if (options != null) {
       String opt = options.get(key);
       if (opt != null && !opt.isBlank()) {
         return opt;
       }
     }
-    if (FILEIO_OVERRIDES_ENABLED && sysProp != null && !sysProp.isBlank()) {
-      String prop = System.getProperty(sysProp);
-      if (prop != null && !prop.isBlank()) {
-        return prop;
-      }
-    }
     return defaultValue;
   }
 
   private static String resolveOption(
-      Map<String, String> options,
-      String key,
-      String fallbackKey,
-      String sysProp,
-      String defaultValue) {
+      Map<String, String> options, String key, String fallbackKey, String defaultValue) {
     if (options != null) {
       String opt = options.get(key);
       if (opt != null && !opt.isBlank()) {
@@ -249,12 +213,6 @@ final class DeltaConnectorFactory {
       String fallback = options.get(fallbackKey);
       if (fallback != null && !fallback.isBlank()) {
         return fallback;
-      }
-    }
-    if (FILEIO_OVERRIDES_ENABLED && sysProp != null && !sysProp.isBlank()) {
-      String prop = System.getProperty(sysProp);
-      if (prop != null && !prop.isBlank()) {
-        return prop;
       }
     }
     return defaultValue;
