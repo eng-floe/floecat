@@ -23,6 +23,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import java.time.Instant;
@@ -86,7 +87,8 @@ public sealed interface SystemTableNode extends TableNode
       List<SchemaColumn> columns,
       Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
-      String storagePath)
+      String storagePath,
+      FlightEndpointRef flightEndpoint)
       implements SystemTableNode {
 
     public StorageSystemTableNode {

@@ -138,6 +138,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add("-Dquarkus.profile=test");
       command.add("--add-opens");
       command.add("java.base/java.lang=ALL-UNNAMED");
+      command.add("--add-opens");
+      command.add("java.base/java.nio=ALL-UNNAMED");
       addForwardedProperties(command);
       addChecksumProperties(command);
       command.add("-cp");

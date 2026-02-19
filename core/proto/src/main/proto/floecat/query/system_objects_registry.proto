@@ -108,16 +108,48 @@ message SystemTable {
   repeated EngineSpecific engine_specific = 99;
 }
 
+/**
+ * Arrow Flight locator for system-table Flight endpoints.
+ *
+ * Workers MUST NOT use the registry ticket field; tickets for actual scans
+ * come from getFlightInfo. The ticket field is reserved for future use
+ * (e.g., optional routing hint from STORAGE services).
+ */
+message FlightEndpointRef {
+  /** Host reachable from workers. Must be externally routable (never localhost in prod). */
+  string host = 1;
+  /** Port of the Arrow Flight server. */
+  int32 port = 2;
+  /**
+   * Reserved for future use; workers MUST NOT inspect or pass this field.
+   * Tickets for actual scans come from getFlightInfo.
+   */
+  bytes ticket = 3;
+  /** Whether the Flight server requires TLS. */
+  bool tls = 4;
+  reserved 5, 6; // future: repeated locations (HA), authority (TLS SNI)
+}
+
 /** Details for the FloeCat backend. */
 message FloeCatTableDetails {
-  /** Scanner identifier used to look up the row producer. */
+  /** Scanner identifier used to look up the row producer. Diagnostic use only. */
   string scanner_id = 1;
 }
 
 /** Details for storage backends. */
 message StorageTableDetails {
-  /** Storage path or identifier. */
-  string path = 1;
+  oneof storage {
+    /** Storage path or identifier */
+    string path = 1;
+    
+    /**
+     * Arrow Flight endpoint for the external service that owns this table.
+     * Populated by STORAGE services when they register with Floecat.
+     * Present when the service exposes an Arrow Flight endpoint.
+     */
+    FlightEndpointRef flight_endpoint = 2;
+  }
+  
 }
 
 /** Details for engine backends. */
