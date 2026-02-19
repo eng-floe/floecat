@@ -37,7 +37,7 @@ import java.util.List;
 /**
  * gRPC endpoint exposed to planners so they can fetch builtin metadata once per engine version.
  * Reads engine builtin catalogs from {@link SystemDefinitionRegistry} (plugin-based or empty
- * fallback)
+ * fallback).
  */
 @GrpcService
 public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemObjectsService {

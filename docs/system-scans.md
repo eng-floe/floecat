@@ -48,6 +48,59 @@ When `output_format = ROWS`, the service now streams `SystemObjectRow`s directly
 
 `ArrowFilterOperator` sees the `Expr` tree produced by `SystemRowFilter.EXPRESSION_PROVIDER`, evaluates each leaf over typed vectors (integer, float, varchar, boolean, `IS NULL`), builds a boolean mask, and copies the matching vectors into a new root. Invalid boolean literals (anything other than `true`/`false`, case-insensitive) produce zero matches, and numeric comparisons are exact (floating-point predicates require exact equality). `ArrowProjectOperator` transfers only the requested columns via `TransferPair`, so projection is always zero-copy even when the order changes; unknown columns are ignored and simply dropped from the output batch.
 
+## Arrow Flight transport
+
+System tables are also accessible over a native Arrow Flight server that runs alongside the gRPC server. The Flight path uses the same scanners, filter/projection operators, and `ArrowBatchSerializer` loop as the gRPC path — only the transport layer differs.
+
+### Two-phase protocol
+
+**Phase 1 — `GetFlightInfo`**
+
+The client sends a `SystemTableFlightCommand` (proto in `system_scan_flight.proto`) as the `FlightDescriptor` command bytes. Fields mirror the gRPC request:
+
+| Field | Purpose |
+|---|---|
+| `table_id` | System table `ResourceId` |
+| `query_id` | Optional correlation ID for logging |
+| `required_columns` | Projection (empty = all columns) |
+| `predicates` | Same canonical predicates as the gRPC path |
+
+The server resolves the scanner, computes the projected schema, and returns a `FlightInfo` with the schema and a single opaque `SystemTableFlightTicket` (wrapping the command bytes plus a version tag). No scanning or I/O happens in this phase.
+
+**Phase 2 — `GetStream`**
+
+The client redeems the ticket. The server hands off to a worker executor thread (never blocks the event-loop), decodes the ticket, runs the full `ArrowScanPlan` pipeline, and streams Arrow IPC record batches via `FlightArrowBatchSink`.
+
+### Auth & context headers
+
+The Flight server registers `InboundContextFlightMiddleware`, which provides full parity with the gRPC `InboundContextInterceptor`. All inbound calls must carry the same headers:
+
+| Header | Purpose |
+|---|---|
+| `authorization` or session header | OIDC bearer token or session token |
+| `x-engine-kind` | Target engine kind (optional) |
+| `x-engine-version` | Target engine version (optional) |
+| `x-query-id` | Caller's query ID (optional, for logging) |
+| `x-correlation-id` | Correlation ID; generated if absent, echoed in response |
+
+`catalog.read` permission is enforced on both `GetFlightInfo` and `GetStream`. Auth failures map to `UNAUTHENTICATED` / `UNAUTHORIZED` Flight statuses (not `UNKNOWN`).
+
+### Configuration
+
+| Property | Default | Purpose |
+|---|---|---|
+| `floecat.flight.port` | `47470` | Port the Flight server listens on |
+| `floecat.flight.host` | `localhost` | Routable hostname returned in `FlightEndpoint`; set to an externally reachable address in production |
+| `floecat.flight.tls` | `false` | TLS (not yet supported; set to `false`) |
+| `floecat.flight.memory.max-bytes` | `0` | Global cap for Flight allocator (0 = unbounded) |
+| `ai.floedb.floecat.arrow.max-bytes` | `1073741824` | Per-stream allocator memory cap (1 GiB) |
+
+The `floecat.flight.host` value is stamped into every `FlightEndpointRef` returned by `GetUserObjects`, so clients can discover the Flight address from the catalog bundle. A warning is logged at startup if `localhost` / `127.0.0.1` is configured outside the `dev` or `test` Quarkus profile.
+
+### Scanner & engine context resolution
+
+`SystemScannerResolver.resolve(correlationId, tableId, engineContext)` is used for both transports. It includes the XOR-based cross-engine table-ID translation (`translateToDefault`), so engine-specific table IDs are automatically remapped to the FLOECAT default catalog when no engine-specific scanner exists.
+
 ## Streaming guarantees & testing
 
-`QuerySystemScanServiceIT` validates the new server-streaming contract (rows in `ROWS` mode, schema followed by batches in Arrow mode, and Arrow as the default when unspecified). Arrow-specific unit tests include `RowStreamToArrowBatchAdapterTest`, `ArrowFilterOperatorTest`, and `ArrowProjectOperatorTest`. This layered approach keeps the legacy predicate/projector logic as the truth while shipping a fully Arrow-native execution lane on the default path.
+`QuerySystemScanServiceIT` validates the gRPC server-streaming contract (rows in `ROWS` mode, schema followed by batches in Arrow mode, and Arrow as the default when unspecified). Arrow-specific unit tests include `RowStreamToArrowBatchAdapterTest`, `ArrowFilterOperatorTest`, and `ArrowProjectOperatorTest`. The Flight transport is validated end-to-end by `SystemTableFlightIT` (getFlightInfo schema, schema/stream consistency, data streaming, column projection). This layered approach keeps the legacy predicate/projector logic as the truth while shipping a fully Arrow-native execution lane on both transports.
