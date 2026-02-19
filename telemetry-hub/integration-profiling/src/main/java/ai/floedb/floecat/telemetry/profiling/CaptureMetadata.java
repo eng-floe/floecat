@@ -26,6 +26,7 @@ public final class CaptureMetadata {
   private String mode;
   private String scope;
   private String requestedBy;
+  private String requestedByType;
   private String traceId;
   private String spanId;
   private Instant startTime;
@@ -36,6 +37,11 @@ public final class CaptureMetadata {
   private String artifactPath;
   private Long artifactSizeBytes;
   private Long requestedDurationMs;
+  private String policyName;
+  private String policySignal;
+  private Double policyValue;
+  private Double policyThreshold;
+  private Long policyWindowMs;
 
   public CaptureMetadata() {}
 
@@ -86,6 +92,14 @@ public final class CaptureMetadata {
 
   public void setRequestedBy(String requestedBy) {
     this.requestedBy = requestedBy;
+  }
+
+  public String getRequestedByType() {
+    return requestedByType;
+  }
+
+  public void setRequestedByType(String requestedByType) {
+    this.requestedByType = requestedByType;
   }
 
   public String getTraceId() {
@@ -166,5 +180,45 @@ public final class CaptureMetadata {
 
   public void setRequestedDurationMs(Long requestedDurationMs) {
     this.requestedDurationMs = requestedDurationMs;
+  }
+
+  public String getPolicyName() {
+    return policyName;
+  }
+
+  public void setPolicyName(String policyName) {
+    this.policyName = policyName;
+  }
+
+  public String getPolicySignal() {
+    return policySignal;
+  }
+
+  public void setPolicySignal(String policySignal) {
+    this.policySignal = policySignal;
+  }
+
+  public Double getPolicyValue() {
+    return policyValue;
+  }
+
+  public void setPolicyValue(Double policyValue) {
+    this.policyValue = policyValue;
+  }
+
+  public Double getPolicyThreshold() {
+    return policyThreshold;
+  }
+
+  public void setPolicyThreshold(Double policyThreshold) {
+    this.policyThreshold = policyThreshold;
+  }
+
+  public Long getPolicyWindowMs() {
+    return policyWindowMs;
+  }
+
+  public void setPolicyWindowMs(Long policyWindowMs) {
+    this.policyWindowMs = policyWindowMs;
   }
 }

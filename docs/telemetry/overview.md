@@ -53,6 +53,16 @@ Every metric-emitting scope, span, and log entry participates in a small correla
 
 Keeping these keys consistent lets Grafana/Tempo/Loki dashboards present a seamless “metric spike → trace → log” workflow without chasing per-module naming quirks.
 
+## Profiling capture metadata
+
+Policy-driven captures now emit richer metadata so dashboards can explain why a recording exists:
+
+- `requestedBy` describes the actor (e.g., `cli`, `policy/latency_threshold`) that asked for the capture.
+- `requestedByType` distinguishes manual actors (`manual`) from automated policies (`policy`).
+- `policyName` and `policySignal` record the specific monitor that triggered the capture, and the metric `policy` tag mirrors that value so you can filter the `floecat.profiling.captures.total` counter right in Prometheus/Grafana.
+
+Keeping those fields synced with the REST API plus the `policy` tag lets dashboards surface a “jump to profile” link annotated with the exact latency/queue/GC signal that fired the capture.
+
 ## Strict vs Lenient mode
 
 The Micrometer backend supports two policies:

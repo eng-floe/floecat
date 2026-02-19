@@ -437,7 +437,7 @@
     "origin": "profiling",
     "description": "Profiling capture lifecycle counts (started/completed/failed/dropped).",
     "requiredTags": ["component", "operation", "trigger"],
-    "allowedTags": ["component", "mode", "operation", "reason", "result", "scope", "trigger"]
+    "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
   },
   {
     "name": "floecat.service.storage.account.bytes",

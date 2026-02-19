@@ -42,7 +42,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 @ApplicationScoped
-public class ProfilingCaptureService {
+public class ProfilingCaptureService implements ProfilingCaptureStarter {
   private static final Logger LOG = LoggerFactory.getLogger(ProfilingCaptureService.class);
 
   private final ProfilingConfig config;
@@ -66,9 +66,23 @@ public class ProfilingCaptureService {
   }
 
   public CaptureMetadata startCapture(
-      String trigger, Duration requestedDuration, String mode, String scope, String requestedBy) {
-    if (!config.enabled()) {
-      throw new ProfilingException("profiling disabled", ProfilingReason.DISABLED);
+      String trigger,
+      Duration requestedDuration,
+      String mode,
+      String scope,
+      String requestedBy,
+      ProfilingPolicyTrigger policyTrigger) {
+    ProfilingReason guardReason = checkGuards(trigger, scope);
+    if (guardReason != null) {
+      throw new ProfilingException("profiling guard prevented capture", guardReason);
+    }
+    String normalizedMode = ProfilingMode.normalize(mode);
+    ProfilingMode resolvedMode = ProfilingMode.from(normalizedMode);
+    if (resolvedMode == null) {
+      recordMetric(
+          trigger, normalizedMode, scope, "dropped", ProfilingReason.UNSUPPORTED_MODE, null);
+      throw new ProfilingException(
+          "unsupported profiling mode: " + mode, ProfilingReason.UNSUPPORTED_MODE);
     }
     Duration duration = requestedDuration == null ? config.captureDuration() : requestedDuration;
     try {
@@ -76,25 +90,29 @@ public class ProfilingCaptureService {
     } catch (IOException e) {
       LOG.warn("failed to prune profiling artifacts", e);
     }
-    if (!allowRate()) {
-      recordMetric(trigger, mode, scope, "dropped", ProfilingReason.RATE_LIMIT);
-      throw new ProfilingException("rate limit exceeded", ProfilingReason.RATE_LIMIT);
+    ProfilingReason rateReason = checkRate();
+    if (rateReason != null) {
+      recordMetric(trigger, normalizedMode, scope, "dropped", rateReason, null);
+      throw new ProfilingException("rate limit exceeded", rateReason);
     }
+
     if (!capturing.compareAndSet(false, true)) {
-      recordMetric(trigger, mode, scope, "dropped", ProfilingReason.ALREADY_RUNNING);
+      recordMetric(
+          trigger, normalizedMode, scope, "dropped", ProfilingReason.ALREADY_RUNNING, null);
       throw new ProfilingException("capture already running", ProfilingReason.ALREADY_RUNNING);
     }
 
     if (captureIndex.totalBytes() + config.maxCaptureBytes() > config.totalMaxBytes()) {
       capturing.set(false);
-      recordMetric(trigger, mode, scope, "dropped", ProfilingReason.DISK_CAP);
+      recordMetric(trigger, normalizedMode, scope, "dropped", ProfilingReason.DISK_CAP, null);
       throw new ProfilingException("disk cap exceeded", ProfilingReason.DISK_CAP);
     }
 
     String id = UUID.randomUUID().toString();
     Path artifact = captureIndex.artifactFor(id);
-    CaptureMetadata meta = new CaptureMetadata(id, trigger, mode, scope, "started");
+    CaptureMetadata meta = new CaptureMetadata(id, trigger, normalizedMode, scope, "started");
     meta.setRequestedBy(requestedBy);
+    meta.setRequestedByType(policyTrigger == null ? "manual" : "policy");
     meta.setRequestedDurationMs(duration.toMillis());
     var spanContext = Span.current().getSpanContext();
     if (spanContext.isValid()) {
@@ -102,8 +120,13 @@ public class ProfilingCaptureService {
       meta.setSpanId(spanContext.getSpanId());
     }
     meta.setArtifactPath(artifact.toString());
+    if (policyTrigger != null) {
+      applyPolicyMetadata(meta, policyTrigger);
+      recordMetric(trigger, normalizedMode, scope, "started", null, policyTrigger.name());
+    } else {
+      recordMetric(trigger, normalizedMode, scope, "started", null, null);
+    }
     captureIndex.persist(meta);
-    recordMetric(trigger, mode, scope, "started", null);
     logCaptureStart(meta, duration);
 
     try {
@@ -115,10 +138,18 @@ public class ProfilingCaptureService {
           () -> finishCapture(id, recording, artifact), duration.toMillis(), TimeUnit.MILLISECONDS);
     } catch (IOException e) {
       capturing.set(false);
-      recordMetric(trigger, mode, scope, "failed", ProfilingReason.IO_ERROR);
+      recordMetric(trigger, mode, scope, "failed", ProfilingReason.IO_ERROR, null);
       throw new RuntimeException("failed to start profiling capture", e);
     }
     return meta;
+  }
+
+  private void applyPolicyMetadata(CaptureMetadata meta, ProfilingPolicyTrigger policyTrigger) {
+    meta.setPolicyName(policyTrigger.name());
+    meta.setPolicySignal(policyTrigger.signal());
+    meta.setPolicyValue(policyTrigger.value());
+    meta.setPolicyThreshold(policyTrigger.threshold());
+    meta.setPolicyWindowMs(policyTrigger.window().toMillis());
   }
 
   private void finishCapture(String id, Recording recording, Path artifact) {
@@ -132,7 +163,7 @@ public class ProfilingCaptureService {
       meta.setArtifactSizeBytes(size);
       meta.setResult("completed");
       captureIndex.persist(meta);
-      recordMetric(meta.getTrigger(), meta.getMode(), meta.getScope(), "completed", null);
+      recordMetric(meta.getTrigger(), meta.getMode(), meta.getScope(), "completed", null, null);
       logCaptureComplete(meta, size);
     } catch (Exception e) {
       CaptureMetadata meta = captureIndex.find(id).orElse(null);
@@ -142,7 +173,12 @@ public class ProfilingCaptureService {
         meta.setEndTime(Instant.now());
         captureIndex.persist(meta);
         recordMetric(
-            meta.getTrigger(), meta.getMode(), meta.getScope(), "failed", ProfilingReason.IO_ERROR);
+            meta.getTrigger(),
+            meta.getMode(),
+            meta.getScope(),
+            "failed",
+            ProfilingReason.IO_ERROR,
+            null);
         logCaptureFailure(meta, e);
       }
     } finally {
@@ -164,7 +200,12 @@ public class ProfilingCaptureService {
   }
 
   private void recordMetric(
-      String trigger, String mode, String scope, String result, ProfilingReason reason) {
+      String trigger,
+      String mode,
+      String scope,
+      String result,
+      ProfilingReason reason,
+      String policy) {
     var tags = new ArrayDeque<Tag>();
     tags.add(Tag.of(TagKey.COMPONENT, "service"));
     tags.add(Tag.of(TagKey.OPERATION, "profiling"));
@@ -174,6 +215,9 @@ public class ProfilingCaptureService {
     tags.add(Tag.of(TagKey.RESULT, result));
     if (reason != null) {
       tags.add(Tag.of(TagKey.REASON, reason.tagValue()));
+    }
+    if (policy != null) {
+      tags.add(Tag.of(TagKey.POLICY, policy));
     }
     observability.counter(ProfilingMetrics.Captures.TOTAL, 1d, tags.toArray(new Tag[0]));
   }
@@ -242,6 +286,17 @@ public class ProfilingCaptureService {
       MDC.remove("captureMode");
       MDC.remove("captureScope");
     };
+  }
+
+  private ProfilingReason checkGuards(String trigger, String scope) {
+    if (!config.enabled()) {
+      return ProfilingReason.DISABLED;
+    }
+    return null;
+  }
+
+  private ProfilingReason checkRate() {
+    return allowRate() ? null : ProfilingReason.RATE_LIMIT;
   }
 
   @PreDestroy

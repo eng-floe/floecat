@@ -39,11 +39,18 @@ public final class ProfilingTelemetryContributor implements TelemetryContributor
             Telemetry.TagKey.SCOPE,
             Telemetry.TagKey.MODE,
             Telemetry.TagKey.RESULT,
-            Telemetry.TagKey.REASON);
+            Telemetry.TagKey.REASON,
+            Telemetry.TagKey.POLICY);
     add(
         defs,
         ProfilingMetrics.Captures.TOTAL,
-        Set.of(Telemetry.TagKey.COMPONENT, Telemetry.TagKey.OPERATION, Telemetry.TagKey.TRIGGER),
+        Set.of(
+            Telemetry.TagKey.COMPONENT,
+            Telemetry.TagKey.OPERATION,
+            Telemetry.TagKey.TRIGGER,
+            Telemetry.TagKey.SCOPE,
+            Telemetry.TagKey.MODE,
+            Telemetry.TagKey.RESULT),
         tags,
         "Profiling capture lifecycle counts (started/completed/failed/dropped).");
     return Collections.unmodifiableMap(defs);

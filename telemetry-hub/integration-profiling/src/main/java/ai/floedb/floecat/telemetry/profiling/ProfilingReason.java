@@ -5,6 +5,7 @@ public enum ProfilingReason {
   RATE_LIMIT,
   ALREADY_RUNNING,
   DISK_CAP,
+  UNSUPPORTED_MODE,
   IO_ERROR,
   UNKNOWN;
 

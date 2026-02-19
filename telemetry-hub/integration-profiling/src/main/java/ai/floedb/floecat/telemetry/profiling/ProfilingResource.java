@@ -52,7 +52,12 @@ public class ProfilingResource {
     try {
       CaptureMetadata meta =
           captureService.startCapture(
-              request.trigger, request.duration, request.mode, request.scope, request.requestedBy);
+              request.trigger,
+              request.duration,
+              request.mode,
+              request.scope,
+              request.requestedBy,
+              null);
       return Response.accepted(meta).build();
     } catch (ProfilingException e) {
       int statusCode;
@@ -68,6 +73,9 @@ public class ProfilingResource {
           break;
         case DISK_CAP:
           statusCode = 507;
+          break;
+        case UNSUPPORTED_MODE:
+          statusCode = Response.Status.BAD_REQUEST.getStatusCode();
           break;
         default:
           statusCode = Response.Status.BAD_REQUEST.getStatusCode();

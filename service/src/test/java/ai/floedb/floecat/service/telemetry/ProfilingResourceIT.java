@@ -10,6 +10,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import java.net.URL;
 import java.util.Map;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -65,6 +66,43 @@ class ProfilingResourceIT {
             || metrics.contains("result=\"dropped\""));
   }
 
+  @Test
+  void unsupportedModeReturnsBadRequestAndMetric() throws InterruptedException {
+    given()
+        .baseUri(baseUrl.toString())
+        .contentType(ContentType.JSON)
+        .body(
+            "{\"trigger\":\"cli\",\"mode\":\"async-profiler\",\"scope\":\"manual\",\"requestedBy\":\"test\"}")
+        .when()
+        .post("/profiling/captures")
+        .then()
+        .statusCode(400)
+        .body("error", equalTo("unsupported_mode"))
+        .body("message", Matchers.containsString("unsupported profiling mode"));
+
+    String metrics = null;
+    boolean foundReason = false;
+    for (int attempt = 0; attempt < 5; attempt++) {
+      metrics =
+          given()
+              .baseUri(metricsUrl.toString())
+              .when()
+              .get()
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+      if (metrics.contains("reason=\"unsupported_mode\"")) {
+        foundReason = true;
+        break;
+      }
+      Thread.sleep(200);
+    }
+    Assertions.assertTrue(metrics.contains("floecat_profiling_captures_total"));
+    Assertions.assertTrue(
+        foundReason, "unsupported_mode metric reason never appeared:\n" + metrics);
+  }
+
   private String createCapture() {
     Map<String, Object> meta =
         given()
@@ -79,6 +117,7 @@ class ProfilingResourceIT {
             .body("id", notNullValue())
             .extract()
             .as(Map.class);
+    Assertions.assertEquals("manual", meta.get("requestedByType"));
     return meta.get("id").toString();
   }
 

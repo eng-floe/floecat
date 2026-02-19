@@ -45,4 +45,52 @@ public interface ProfilingConfig {
 
   @WithDefault("false")
   boolean endpointsEnabled();
+
+  Policy policy();
+
+  interface Policy {
+    @WithDefault("false")
+    boolean enabled();
+
+    LatencyPolicy latency();
+
+    ExecutorQueuePolicy executorQueue();
+
+    GcPolicy gc();
+  }
+
+  interface PolicySpec {
+    @WithDefault("false")
+    boolean enabled();
+
+    @WithDefault("PT30S")
+    Duration window();
+
+    @WithDefault("PT1M")
+    Duration cooldown();
+  }
+
+  interface LatencyPolicy extends PolicySpec {
+    @WithDefault("PT0.5S")
+    Duration threshold();
+  }
+
+  interface ExecutorQueuePolicy extends PolicySpec {
+    @WithDefault("32")
+    int threshold();
+
+    @WithDefault("vert.x-worker-thread")
+    String poolName();
+  }
+
+  interface GcPolicy extends PolicySpec {
+    @WithDefault("67108864")
+    long thresholdBytes();
+
+    @WithDefault("G1 Old Generation")
+    String gcName();
+  }
+
+  @WithDefault("30S")
+  Duration policyPollInterval();
 }

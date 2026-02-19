@@ -87,6 +87,7 @@ public final class Telemetry {
     public static final String TRIGGER = "trigger";
     public static final String MODE = "mode";
     public static final String SCOPE = "scope";
+    public static final String POLICY = "policy";
 
     private TagKey() {}
   }

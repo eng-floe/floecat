@@ -28,6 +28,6 @@ class ProfilingDisabledIT {
         .then()
         .statusCode(503)
         .body("error", equalTo("disabled"))
-        .body("message", equalTo("profiling disabled"));
+        .body("message", equalTo("profiling guard prevented capture"));
   }
 }
