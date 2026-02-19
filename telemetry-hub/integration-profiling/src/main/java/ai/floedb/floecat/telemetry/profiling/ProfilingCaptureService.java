@@ -36,6 +36,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import jdk.jfr.Configuration;
 import jdk.jfr.Recording;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -131,6 +132,16 @@ public class ProfilingCaptureService implements ProfilingCaptureStarter {
 
     try {
       Recording recording = new Recording();
+      Configuration cfg = null;
+      try {
+        cfg = Configuration.getConfiguration("profile");
+      } catch (java.text.ParseException e) {
+        LOG.warn("failed to load JFR configuration profile", e);
+      }
+      if (cfg != null) {
+        recording.setSettings(cfg.getSettings());
+      }
+      recording.setToDisk(true);
       recording.setName("profiling-" + id);
       recording.setDestination(artifact);
       recording.start();
