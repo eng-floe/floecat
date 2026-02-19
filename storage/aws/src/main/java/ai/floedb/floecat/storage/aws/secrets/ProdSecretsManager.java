@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.secrets;
+package ai.floedb.floecat.storage.aws.secrets;
 
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
