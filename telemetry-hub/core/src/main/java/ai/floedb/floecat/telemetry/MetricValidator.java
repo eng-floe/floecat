@@ -50,8 +50,16 @@ public final class MetricValidator {
           "metric not registered: " + metric.name());
     }
     if (def.id().type() != expected) {
-      throw new IllegalArgumentException(
-          "Metric type mismatch: expected " + expected + " but got " + def.id().type());
+      if (policy.isStrict()) {
+        throw new IllegalArgumentException(
+            "Metric type mismatch: expected " + expected + " but got " + def.id().type());
+      }
+      return new ValidationResult(
+          Collections.emptyList(),
+          false,
+          0,
+          DropMetricReason.TYPE_MISMATCH,
+          "metric type mismatch: expected " + expected + " but got " + def.id().type());
     }
 
     List<Tag> sanitized = new ArrayList<>();

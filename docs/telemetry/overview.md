@@ -36,7 +36,35 @@ This two-set approach keeps cardinality in check while giving you control over w
 
 Metric stability is critical for dashboards. The `since` column on each `MetricId` identifies when the metric entered the contract. When you change a metric’s name, type, units, or required tags, update the `since` value and regenerate the documentation so downstream consumers know a new version exists. The service exposes `telemetry.contract.version` (default `v1`) as a configuration property that the Quarkus Micrometer backend adds as a common tag on every meter, so Prometheus/OTLP collectors can filter or group by the catalog that produced the data. OTLP resource attributes are configured separately through the OpenTelemetry configuration if you want a dedicated resource field.
 
-In addition to metrics, service spans now include `floecat.component` and `floecat.operation` attributes (matching the measurement dimensions). RPC spans also set `floecat.rpc.status` to the gRPC status name. Storage observations emit child spans with a `floecat.store.operation` attribute so latency/throughput links land on the correct store trace. Logs can expose those values as `floecat_component`/`floecat_operation` MDC keys, along with `traceId`/`spanId`, when JSON logging captures MDC—which lets Loki derive fields for Tempo’s **Logs for this trace** button and makes jump-to-trace or jump-to-log links reliable.
+In addition to metrics, service spans now include `floecat.component` and `floecat.operation` attributes (matching the measurement dimensions). RPC spans also set `floecat.rpc.status` to the gRPC status name. Storage observations emit child spans with a `floecat.store.operation` attribute so latency/throughput links land on the correct store trace. Logs can expose those values as `floecat_component`/`floecat_operation` MDC keys, along with `traceId`/`spanId`, whenever Quarkus JSON logging (default `log-format`) writes them under the `mdc` field—Loki can then derive fields for Tempo’s **Logs for this trace** button and jump-to-trace/log links stay reliable.
+
+Quarkus already exposes the standard `jvm.*`, `processor.*`, and `system.*` metrics via its built-in Micrometer binders (`JvmMemoryMetrics`, `JvmThreadMetrics`, `ProcessorMetrics`, etc.), so we dropped the duplicated `floecat.jvm.process.cpu.usage`, `floecat.jvm.memory.used.bytes`, and `floecat.jvm.threads.count` gauges. Those conventional metrics remain available on the contract-independent canonical names, and you can reference the OpenTelemetry JVM metric semantic conventions for the complete list: https://opentelemetry.io/docs/specs/semconv/runtime/jvm-metrics/. We continue to emit the custom `floecat.jvm.gc.live.data.*` series because the GC policy and dashboards still graph GC live data plus growth rate via the same component/operation tags.
+- **Latency policies rely on Micrometer histogram percentiles**. Enable distribution statistics/percentile publishing (for example `quarkus.micrometer.export.prometheus.distribution-statistics.enabled=true` or the equivalent `distributionStatisticConfig`) so the policy can read p95/p99 instead of falling back to `Timer.max()`. Without those histograms the policy still runs but reverts to the observable maximum, making it less predictive.
+
+Executor timers (`floecat.core.exec.task.wait`/`task.run`) currently come from the Mutiny default executor wrapper; the Vert.x pool instrumentation still only backs the queue-depth/active/rejected gauges until future work hooks task submissions running through those pools.
+
+## Correlation contract
+
+Every metric-emitting scope, span, and log entry participates in a small correlation contract:
+
+- **Span attributes** – `floecat.component`, `floecat.operation`, and (for RPCs) `floecat.rpc.status` appear on every span so a trace explorer can filter down to the exact RPC/store cache operation tied to a metric series.
+- **Log fields** – the service mirrors `floecat_component` and `floecat_operation` into MDC, and with Quarkus JSON logging (default `log-format`) those values show up under the `mdc` field along with any `traceId`/`spanId` that your OpenTelemetry pipeline emits. Keeping that field lets Tempo’s **Logs for this trace** and Loki queries stay usable even when you jump directly from a metric graph.
+- **Metric tags** – component/operation tags on timers/counters link to their span equivalents, and the Micrometer backend also logs the current trace/span IDs at `TRACE` level so dashboards that surface the logs can still surface the identifiers.
+- **Telemetry contract version** – every meter carries `telemetry.contract.version` so you can distinguish `v1` data from future contract revisions; spans/logs should surface the same version via attributes or MDC if you rely on multiple catalog versions in the same cluster.
+
+Keeping these keys consistent lets Grafana/Tempo/Loki dashboards present a seamless “metric spike → trace → log” workflow without chasing per-module naming quirks.
+
+## Profiling capture metadata
+
+Profiling captures are **on-demand and forensic-grade** — triggered by a policy breach or an explicit API call, not continuously. Overhead is zero during normal operation; each capture is causally linked to a visible observability signal.
+
+Policy-driven captures emit richer metadata so dashboards can explain why a recording exists:
+
+- `requestedBy` describes the actor (e.g., `cli`, `policy/latency_threshold`) that asked for the capture.
+- `requestedByType` distinguishes manual actors (`manual`) from automated policies (`policy`).
+- `policyName` and `policySignal` record the specific monitor that triggered the capture, and the metric `policy` tag mirrors that value so you can filter the `floecat.profiling.captures.total` counter right in Prometheus/Grafana.
+
+Keeping those fields synced with the REST API plus the `policy` tag lets dashboards surface a “jump to profile” link annotated with the exact latency/queue/GC signal that fired the capture.
 
 ## Strict vs Lenient mode
 

@@ -81,6 +81,13 @@ public final class Telemetry {
     public static final String CACHE_NAME = "cache";
     public static final String GC_NAME = "gc";
     public static final String TASK = "task";
+    public static final String REASON = "reason";
+    public static final String POOL = "pool";
+    public static final String RESOURCE = "resource";
+    public static final String TRIGGER = "trigger";
+    public static final String MODE = "mode";
+    public static final String SCOPE = "scope";
+    public static final String POLICY = "policy";
 
     private TagKey() {}
   }
@@ -95,6 +102,33 @@ public final class Telemetry {
               "",
               "v1",
               "core");
+    }
+
+    public static final class ObservabilityHealth {
+      public static final MetricId DROPPED_METRIC =
+          new MetricId(
+              "floecat.core.observability.dropped.metric.total",
+              MetricType.COUNTER,
+              "",
+              "v1",
+              "core");
+      public static final MetricId INVALID_METRIC =
+          new MetricId(
+              "floecat.core.observability.invalid.metric.total",
+              MetricType.COUNTER,
+              "",
+              "v1",
+              "core");
+      public static final MetricId DUPLICATE_GAUGE =
+          new MetricId(
+              "floecat.core.observability.duplicate.gauge.total",
+              MetricType.COUNTER,
+              "",
+              "v1",
+              "core");
+      public static final MetricId REGISTRY_SIZE =
+          new MetricId(
+              "floecat.core.observability.registry.size", MetricType.GAUGE, "count", "v1", "core");
     }
 
     public static final class Rpc {
@@ -176,6 +210,19 @@ public final class Telemetry {
               "floecat.core.task.last.tick.end.ms", MetricType.GAUGE, "milliseconds", "v1", "core");
     }
 
+    public static final class Executor {
+      public static final MetricId QUEUE_DEPTH =
+          new MetricId("floecat.core.exec.queue.depth", MetricType.GAUGE, "count", "v1", "core");
+      public static final MetricId ACTIVE =
+          new MetricId("floecat.core.exec.active", MetricType.GAUGE, "count", "v1", "core");
+      public static final MetricId REJECTED =
+          new MetricId("floecat.core.exec.rejected", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId TASK_WAIT =
+          new MetricId("floecat.core.exec.task.wait", MetricType.TIMER, "seconds", "v1", "core");
+      public static final MetricId TASK_RUN =
+          new MetricId("floecat.core.exec.task.run", MetricType.TIMER, "seconds", "v1", "core");
+    }
+
     public static final MetricId DROPPED_TAGS = Observability.DROPPED_TAGS;
     public static final MetricId RPC_REQUESTS = Rpc.REQUESTS;
     public static final MetricId RPC_ACTIVE = Rpc.ACTIVE;
@@ -205,7 +252,22 @@ public final class Telemetry {
     public static final MetricId TASK_RUNNING = Task.RUNNING;
     public static final MetricId TASK_LAST_TICK_START = Task.LAST_TICK_START;
     public static final MetricId TASK_LAST_TICK_END = Task.LAST_TICK_END;
-
+    public static final MetricId EXEC_QUEUE_DEPTH = Executor.QUEUE_DEPTH;
+    public static final MetricId EXEC_ACTIVE = Executor.ACTIVE;
+    public static final MetricId EXEC_REJECTED = Executor.REJECTED;
+    public static final MetricId EXEC_TASK_WAIT = Executor.TASK_WAIT;
+    public static final MetricId EXEC_TASK_RUN = Executor.TASK_RUN;
+    public static final MetricId OBSERVABILITY_INVALID_METRIC = ObservabilityHealth.INVALID_METRIC;
+    public static final MetricId OBSERVABILITY_DUPLICATE_GAUGE =
+        ObservabilityHealth.DUPLICATE_GAUGE;
+    public static final MetricId OBSERVABILITY_DROPPED_METRIC = ObservabilityHealth.DROPPED_METRIC;
+    public static final MetricId OBSERVABILITY_REGISTRY_SIZE = ObservabilityHealth.REGISTRY_SIZE;
+    private static final Set<String> EXECUTOR_COMMON_TAGS =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.POOL);
+    private static final Set<String> EXECUTOR_TIMER_ALLOWED =
+        addTags(EXECUTOR_COMMON_TAGS, TagKey.RESULT);
+    private static final Set<String> EXECUTOR_TIMER_REQUIRED = EXECUTOR_COMMON_TAGS;
+    private static final Set<String> EXECUTOR_ALLOWED_TAGS = EXECUTOR_COMMON_TAGS;
     private static final Map<MetricId, MetricDef> DEFINITIONS = buildDefinitions();
 
     private Metrics() {}
@@ -259,6 +321,36 @@ public final class Telemetry {
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
           Set.of(TagKey.COMPONENT, TagKey.OPERATION),
           "Number of RPC retries invoked.");
+      add(
+          definitions,
+          EXEC_QUEUE_DEPTH,
+          EXECUTOR_COMMON_TAGS,
+          EXECUTOR_ALLOWED_TAGS,
+          "Number of work items waiting in the executor queue per pool.");
+      add(
+          definitions,
+          EXEC_ACTIVE,
+          EXECUTOR_COMMON_TAGS,
+          EXECUTOR_ALLOWED_TAGS,
+          "Number of threads actively executing tasks per pool.");
+      add(
+          definitions,
+          EXEC_REJECTED,
+          EXECUTOR_COMMON_TAGS,
+          EXECUTOR_ALLOWED_TAGS,
+          "Number of task submissions rejected by the executor.");
+      add(
+          definitions,
+          EXEC_TASK_WAIT,
+          EXECUTOR_TIMER_REQUIRED,
+          EXECUTOR_TIMER_ALLOWED,
+          "Duration spent waiting in the queue before execution starts.");
+      add(
+          definitions,
+          EXEC_TASK_RUN,
+          EXECUTOR_TIMER_REQUIRED,
+          EXECUTOR_TIMER_ALLOWED,
+          "Duration spent running the task on a worker thread.");
 
       Set<String> storeRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
       Set<String> storeAllowed = addTags(storeRequired, TagKey.ACCOUNT, TagKey.EXCEPTION);
@@ -402,6 +494,31 @@ public final class Telemetry {
           taskRequired,
           taskAllowed,
           "Timestamp (ms since epoch) when the scheduled task last finished a tick.");
+      Set<String> observabilityAllowed = Set.of(TagKey.REASON);
+      add(
+          definitions,
+          OBSERVABILITY_DROPPED_METRIC,
+          Set.of(),
+          observabilityAllowed,
+          "Total number of metric emissions rejected because validation failed.");
+      add(
+          definitions,
+          OBSERVABILITY_INVALID_METRIC,
+          Set.of(),
+          observabilityAllowed,
+          "Total number of metrics rejected because they were not registered.");
+      add(
+          definitions,
+          OBSERVABILITY_DUPLICATE_GAUGE,
+          Set.of(),
+          observabilityAllowed,
+          "Count of duplicate gauge registration attempts.");
+      add(
+          definitions,
+          OBSERVABILITY_REGISTRY_SIZE,
+          Set.of(),
+          Set.of(),
+          "Current size of the telemetry registry.");
 
       return Collections.unmodifiableMap(definitions);
     }
