@@ -355,7 +355,7 @@ public class ReconcilerService {
 
   private void ensureSnapshot(
       ReconcileContext ctx, ResourceId tableId, FloecatConnector.SnapshotBundle snapshotBundle) {
-    if (snapshotBundle == null || snapshotBundle.snapshotId() <= 0) {
+    if (snapshotBundle == null || snapshotBundle.snapshotId() < 0) {
       return;
     }
     Snapshot existing =

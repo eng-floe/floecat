@@ -153,7 +153,7 @@ public class SnapshotHelper {
 
   private SnapshotPin pin(ResourceId tableId, long id, Timestamp ts) {
     SnapshotPin.Builder b = SnapshotPin.newBuilder().setTableId(tableId);
-    if (id > 0) b.setSnapshotId(id);
+    if (id >= 0 && ts == null) b.setSnapshotId(id);
     if (ts != null) b.setAsOf(ts);
     return b.build();
   }
