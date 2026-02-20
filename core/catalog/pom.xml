@@ -54,6 +54,13 @@
       <version>${project.version}</version>
     </dependency>
     
+    <!--- Arrow core -->
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-arrow</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    
     <!-- Apache Arrow for in-memory columnar data representation -->
     <dependency>
       <groupId>org.apache.arrow</groupId>

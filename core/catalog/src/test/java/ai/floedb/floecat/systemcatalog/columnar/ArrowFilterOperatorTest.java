@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.columnar;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;

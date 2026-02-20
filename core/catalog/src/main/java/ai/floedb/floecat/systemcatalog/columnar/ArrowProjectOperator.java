@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.systemcatalog.columnar;
 
+import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;

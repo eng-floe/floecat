@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.query.impl.arrow;
+package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;

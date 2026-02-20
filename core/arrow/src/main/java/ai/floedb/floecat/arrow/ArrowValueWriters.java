@@ -14,31 +14,24 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.systemcatalog.columnar;
+package ai.floedb.floecat.arrow;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
-import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.VarCharVector;
 
-/** Simple implementation of {@link ColumnarBatch} that owns a {@link VectorSchemaRoot}. */
-public final class SimpleColumnarBatch implements ColumnarBatch {
+/** Lightweight helpers for writing values into Arrow vectors. */
+public final class ArrowValueWriters {
 
-  private final VectorSchemaRoot root;
-  private boolean closed;
+  private ArrowValueWriters() {}
 
-  public SimpleColumnarBatch(VectorSchemaRoot root) {
-    this.root = Objects.requireNonNull(root, "root");
-  }
-
-  @Override
-  public VectorSchemaRoot root() {
-    return root;
-  }
-
-  @Override
-  public void close() {
-    if (!closed) {
-      closed = true;
-      root.close();
+  public static void writeVarChar(VarCharVector vector, int index, String value) {
+    Objects.requireNonNull(vector, "vector");
+    if (value == null) {
+      vector.setNull(index);
+      return;
     }
+    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    vector.setSafe(index, bytes);
   }
 }

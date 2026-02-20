@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.systemcatalog.columnar;
 
+import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;

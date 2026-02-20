@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.systemcatalog.columnar;
+package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.ArrayList;
