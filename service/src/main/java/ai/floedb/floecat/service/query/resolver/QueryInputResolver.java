@@ -238,7 +238,7 @@ public class QueryInputResolver {
     if (pin == null) {
       return -1;
     }
-    if (pin.hasSnapshotId() && pin.getSnapshotId() > 0) {
+    if (pin.hasSnapshotId() && pin.getSnapshotId() >= 0) {
       return 3;
     }
     if (pin.hasAsOf()) {

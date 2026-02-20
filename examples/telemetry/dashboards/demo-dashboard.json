@@ -58,38 +58,38 @@
           "value": ".*"
         }
       },
-    {
-      "name": "rpc_operation",
-      "type": "query",
-      "label": "RPC operation",
-      "datasource": "${DS_PROMETHEUS}",
-      "query": "label_values(floecat_core_rpc_requests_total{component=~\"$component\"}, operation)",
-      "refresh": 2,
-      "sort": 1,
-      "multi": true,
-      "includeAll": true,
-      "allValue": ".*",
-      "current": {
-        "text": "All",
-        "value": ".*"
+      {
+        "name": "rpc_operation",
+        "type": "query",
+        "label": "RPC operation",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(floecat_core_rpc_requests_total{component=~\"$component\"}, operation)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": ".*"
+        }
+      },
+      {
+        "name": "store_operation",
+        "type": "query",
+        "label": "Store operation",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(floecat_core_store_requests_total{component=~\"$component\"}, operation)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": ".*"
+        }
       }
-    },
-    {
-      "name": "store_operation",
-      "type": "query",
-      "label": "Store operation",
-      "datasource": "${DS_PROMETHEUS}",
-      "query": "label_values(floecat_core_store_requests_total{component=~\"$component\"}, operation)",
-      "refresh": 2,
-      "sort": 1,
-      "multi": true,
-      "includeAll": true,
-      "allValue": ".*",
-      "current": {
-        "text": "All",
-        "value": ".*"
-      }
-    }
     ]
   },
   "annotations": {
@@ -118,7 +118,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### Floecat Telemetry Hub\n**At-a-glance health for DBAs & devs**. Metrics via Prometheus at `/q/metrics`, Grafana at `http://localhost:3001`.\n\nGenerate load: `make cli-run` \u2192 `account <id>` + `tables examples.iceberg`. Use *Component* and *Operation* filters + *Rate window* to slice workloads.\n\n**Trace links**: RPC panels have *View traces in Tempo* links \u2014 click a series to jump to matching traces. From Tempo, use *Logs for this trace* to see correlated Loki logs. Start the service with `QUARKUS_PROFILE=telemetry-otlp` and run `examples/telemetry/demo.sh` for the full stack."
+        "content": "### Floecat Telemetry Hub\n**Signal \u2192 Trace \u2192 Log \u2192 Profile.** When something is slow, we know why \u2014 and we can prove it.\n\n1. Start service: `QUARKUS_PROFILE=telemetry-otlp,telemetry-prof` with `-Dfloecat.profiling.enabled=true`\n2. Start stack: `examples/telemetry/demo.sh` \u2022 Open this dashboard\n3. Generate load: `make cli-run` \u2192 `tables examples.iceberg`\n4. Watch **Service health** \u2192 drill into **RPC** \u2192 open **Profiling** to capture a JFR\n5. Profiling demo: `./demo.sh --profiling-demo` (triggers JFR \u2192 prints artifact download command)\n\n**Trace links**: Click any RPC series \u2192 *View traces in Tempo*. From Tempo \u2192 *Logs for this trace* in Loki. From capture metadata \u2192 download JFR \u2192 open in JMC."
       }
     },
     {
@@ -258,7 +258,7 @@
       "targets": [
         {
           "refId": "C",
-          "expr": "100 * (sum(rate(floecat_core_rpc_errors_total{component=~\"$component\"}[${__rate_interval}])) / clamp_min(sum(rate(floecat_core_rpc_requests_total{component=~\"$component\"}[${__rate_interval}])), 1))"
+          "expr": "100 * (sum(rate(floecat_core_rpc_errors_total{component=~\"$component\"}[${__rate_interval}]) or vector(0)) / clamp_min(sum(rate(floecat_core_rpc_requests_total{component=~\"$component\"}[${__rate_interval}])), 1))"
         }
       ],
       "options": {
@@ -527,13 +527,105 @@
     },
     {
       "type": "row",
+      "title": "Profiling (On-Demand & Policy)",
+      "id": 36,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "collapsed": true,
+      "panels": [
+        {
+          "type": "table",
+          "title": "Profiling captures (5m)",
+          "id": 1000,
+          "datasource": "${DS_PROMETHEUS}",
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 9
+          },
+          "targets": [
+            {
+              "refId": "P",
+              "expr": "sum by (result, trigger, policy) (increase(floecat_profiling_captures_total[5m]))",
+              "format": "table"
+            }
+          ],
+          "transformations": [],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Capture in flight",
+          "description": "Number of profiling captures currently running (started minus completed/failed). Should be 0 or 1 \u2014 more than 1 is unexpected given the single-flight guard.",
+          "id": 1001,
+          "datasource": "${DS_PROMETHEUS}",
+          "gridPos": {
+            "h": 3,
+            "w": 4,
+            "x": 8,
+            "y": 9
+          },
+          "targets": [
+            {
+              "refId": "Q",
+              "expr": "clamp_min(sum(floecat_profiling_captures_total{result=\"started\"}) - sum(floecat_profiling_captures_total{result=\"completed\"}) - sum(floecat_profiling_captures_total{result=\"failed\"} or vector(0)), 0)"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "values": false,
+              "fields": ""
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
       "title": "RPC",
       "id": 9,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 14
       },
       "collapsed": false,
       "panels": []
@@ -547,7 +639,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 9
+        "y": 15
       },
       "targets": [
         {
@@ -583,12 +675,12 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 9
+        "y": 15
       },
       "targets": [
         {
           "refId": "B",
-          "expr": "sum by (status) (rate(floecat_core_rpc_errors_total{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}]))"
+          "expr": "sum by (status) (rate(floecat_core_rpc_errors_total{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}]) or vector(0))"
         }
       ],
       "fieldConfig": {
@@ -619,12 +711,17 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 16
+        "y": 22
       },
       "targets": [
         {
           "refId": "C",
           "expr": "1000 * (sum by (operation) (rate(floecat_core_rpc_latency_seconds_sum{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}])) / clamp_min(sum by (operation) (rate(floecat_core_rpc_latency_seconds_count{component=~\"$component\",operation=~\"$rpc_operation\"}[${__rate_interval}])), 1))"
+        },
+        {
+          "refId": "E",
+          "expr": "increase(floecat_profiling_captures_total{trigger=\"policy\"}[1m])",
+          "tiny": true
         }
       ],
       "fieldConfig": {
@@ -655,7 +752,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 16
+        "y": 22
       },
       "targets": [
         {
@@ -690,7 +787,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 29
       },
       "collapsed": false,
       "panels": []
@@ -704,7 +801,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 30
       },
       "targets": [
         {
@@ -740,7 +837,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 30
       },
       "targets": [
         {
@@ -764,7 +861,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 37
       },
       "targets": [
         {
@@ -800,12 +897,12 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 31
+        "y": 37
       },
       "targets": [
         {
           "refId": "D",
-          "expr": "sum(rate(floecat_core_store_errors_total{component=~\"$component\",operation=~\"$store_operation\"}[${__rate_interval}]))"
+          "expr": "sum(rate(floecat_core_store_errors_total{component=~\"$component\",operation=~\"$store_operation\"}[${__rate_interval}]) or vector(0))"
         }
       ],
       "fieldConfig": {
@@ -836,7 +933,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 31
+        "y": 37
       },
       "targets": [
         {
@@ -892,7 +989,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 44
       },
       "collapsed": false,
       "panels": []
@@ -906,7 +1003,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 45
       },
       "targets": [
         {
@@ -930,7 +1027,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 45
       },
       "targets": [
         {
@@ -954,7 +1051,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 46
+        "y": 52
       },
       "targets": [
         {
@@ -998,7 +1095,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 46
+        "y": 52
       },
       "targets": [
         {
@@ -1062,84 +1159,35 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 59
       },
       "collapsed": false,
       "panels": []
     },
     {
-      "type": "stat",
-      "title": "Tasks running",
+      "type": "timeseries",
+      "title": "Background task health (last tick age per task)",
+      "description": "Seconds since each scheduled task last completed a tick. Each task has its own schedule \u2014 rising age beyond its expected interval indicates the task is stalling or not running.",
       "id": 25,
       "datasource": "${DS_PROMETHEUS}",
       "gridPos": {
         "h": 5,
-        "w": 6,
+        "w": 12,
         "x": 0,
-        "y": 54
+        "y": 60
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(floecat_core_task_running{component=~\"$component\"})"
+          "expr": "(time() * 1000 - floecat_core_task_last_tick_end_ms{component=~\"$component\"}) / 1000",
+          "legendFormat": "{{task}}"
         }
       ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Last task tick age (s)",
-      "id": 26,
-      "datasource": "${DS_PROMETHEUS}",
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 6,
-        "y": 54
-      },
-      "targets": [
-        {
-          "refId": "B",
-          "expr": "(time() * 1000 - max(floecat_core_task_last_tick_end_ms{component=~\"$component\"})) / 1000"
-        }
-      ],
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "decimals": 0,
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1149,16 +1197,21 @@
               },
               {
                 "color": "yellow",
-                "value": 60
+                "value": 120
               },
               {
                 "color": "red",
-                "value": 300
+                "value": 900
               }
             ]
           }
         },
         "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
       }
     },
     {
@@ -1170,7 +1223,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 60
       },
       "targets": [
         {
@@ -1187,6 +1240,39 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Executor queue depth (pending tasks)",
+      "id": 35,
+      "datasource": "${DS_PROMETHEUS}",
+      "description": "Tasks waiting in executor pool queues. Rising depth alongside rising RPC latency is a saturation signal \u2014 a good moment to trigger a profiling capture.",
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "${DS_PROMETHEUS}",
+          "expr": "sum by (pool) (floecat_core_exec_queue_depth{component=~\"$component\"})",
+          "legendFormat": "{{pool}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "System (JVM / host)",
       "id": 28,
@@ -1194,7 +1280,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 70
       },
       "collapsed": true,
       "panels": [

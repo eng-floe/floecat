@@ -25,7 +25,7 @@ package ai.floedb.floecat.telemetry;
 public enum DropMetricReason {
   MISSING_REQUIRED_TAG,
   UNKNOWN_TAG,
-  INVALID_KEY,
+  INVALID_VALUE,
   TYPE_MISMATCH,
   UNKNOWN_METRIC
 }
