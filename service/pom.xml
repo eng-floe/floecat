@@ -125,6 +125,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-flight</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -185,6 +191,12 @@
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-core-scanner</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-arrow</artifactId>
       <version>${project.version}</version>
     </dependency>
 

@@ -17,8 +17,6 @@
 package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.arrow.ArrowSchemaUtil;
-import ai.floedb.floecat.arrow.ColumnarBatch;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -61,26 +59,52 @@ public final class ArrowBatchSerializer {
    */
   public static void serialize(
       ArrowScanPlan plan, ArrowBatchSink sink, Supplier<Boolean> isCancelled, Runnable cleanup) {
+    Iterator<ColumnarBatch> iterator = null;
+    boolean completedNormally = false;
     try {
       sink.onSchema(plan.schema());
-      Iterator<ColumnarBatch> iterator = plan.iterator();
-      while (!isCancelled.get() && iterator.hasNext()) {
+      iterator = plan.iterator();
+      while (iterator.hasNext()) {
+        boolean cancelled = isCancelled.get();
+        System.err.println("serialize: before onBatch, isCancelled=" + cancelled);
         ColumnarBatch batch = iterator.next();
         try {
-          sink.onBatch(batch.root());
+          if (!cancelled) {
+            System.err.println("serialize: calling onBatch");
+            sink.onBatch(batch.root());
+            System.err.println("serialize: onBatch completed");
+          } else {
+            System.err.println("serialize: skipping onBatch due to cancellation");
+          }
         } finally {
           batch.close();
         }
       }
+      System.err.println(
+          "serialize: loop exited, checking if should call onComplete, isCancelled="
+              + isCancelled.get());
       if (!isCancelled.get()) {
         sink.onComplete();
+        completedNormally = true;
       }
     } finally {
+      drainRemaining(iterator);
       try {
         plan.close();
       } catch (Exception ignored) {
       }
       cleanup.run();
+    }
+  }
+
+  private static void drainRemaining(Iterator<ColumnarBatch> iterator) {
+    if (iterator == null) {
+      return;
+    }
+    while (iterator.hasNext()) {
+      try (ColumnarBatch batch = iterator.next()) {
+        // best-effort close
+      }
     }
   }
 

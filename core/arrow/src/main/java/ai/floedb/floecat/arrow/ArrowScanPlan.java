@@ -17,6 +17,7 @@
 package ai.floedb.floecat.arrow;
 
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.stream.Stream;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -29,7 +30,7 @@ public final class ArrowScanPlan implements AutoCloseable {
   private final Schema schema;
   private final Stream<ColumnarBatch> batches;
 
-  ArrowScanPlan(Schema schema, Stream<ColumnarBatch> batches) {
+  private ArrowScanPlan(Schema schema, Stream<ColumnarBatch> batches) {
     this.schema = schema;
     this.batches = batches;
   }
@@ -45,5 +46,17 @@ public final class ArrowScanPlan implements AutoCloseable {
   @Override
   public void close() {
     batches.close();
+  }
+
+  /**
+   * Creates a new {@link ArrowScanPlan} holding the provided schema/batches.
+   *
+   * <p>The plan owns the {@code batches} stream and closing the plan (the serializer does this for
+   * you) closes those batches. Callers remain responsible only for resources captured before the
+   * stream was instantiated.
+   */
+  public static ArrowScanPlan of(Schema schema, Stream<ColumnarBatch> batches) {
+    return new ArrowScanPlan(
+        Objects.requireNonNull(schema, "schema"), Objects.requireNonNull(batches, "batches"));
   }
 }

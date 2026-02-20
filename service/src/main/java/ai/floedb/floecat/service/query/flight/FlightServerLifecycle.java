@@ -16,6 +16,10 @@
 
 package ai.floedb.floecat.service.query.flight;
 
+import ai.floedb.floecat.flight.FlightAllocatorHolder;
+import ai.floedb.floecat.flight.RouterFlightProducer;
+import ai.floedb.floecat.service.context.flight.CallContextResolverAdapter;
+import ai.floedb.floecat.service.context.flight.InboundContextFlightMiddleware;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.quarkus.oidc.TenantIdentityProvider;
@@ -34,25 +38,15 @@ import org.apache.arrow.memory.RootAllocator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
-/**
- * Quarkus lifecycle bean that starts and stops the Arrow Flight server.
- *
- * <p>The server listens on {@code floecat.flight.port} (default {@code 47470}) and binds to {@code
- * 0.0.0.0}.
- *
- * <p>Auth is enforced via {@link InboundContextFlightMiddleware}, which shares the same {@link
- * InboundCallContextHelper} logic as the gRPC {@code InboundContextInterceptor}. Auth configuration
- * ({@code floecat.auth.mode}, session/authorization headers, OIDC) is read from the same properties
- * as the gRPC path.
- */
 @ApplicationScoped
 public class FlightServerLifecycle {
 
   private static final Logger LOG = Logger.getLogger(FlightServerLifecycle.class);
 
-  @Inject SystemTableFlightProducer producer;
+  @Inject RouterFlightProducer producer;
   @Inject AccountRepository accountRepository;
   @Inject TenantIdentityProvider identityProvider;
+  @Inject FlightAllocatorHolder allocatorHolder;
 
   @ConfigProperty(name = "floecat.flight.port", defaultValue = "47470")
   int flightPort;
@@ -63,7 +57,6 @@ public class FlightServerLifecycle {
   @ConfigProperty(name = "floecat.flight.memory.max-bytes", defaultValue = "0")
   long flightMemoryMaxBytes;
 
-  // Auth config — same properties as BlockingInboundContextInterceptor
   @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
   boolean validateAccount;
 
@@ -84,8 +77,6 @@ public class FlightServerLifecycle {
 
   private FlightServer server;
   private BufferAllocator allocator;
-
-  @Inject FlightAllocatorHolder allocatorHolder;
 
   void onStart(@Observes StartupEvent event) {
     InboundCallContextHelper contextHelper =
@@ -112,7 +103,8 @@ public class FlightServerLifecycle {
           FlightServer.builder(allocator, location, producer)
               .middleware(
                   InboundContextFlightMiddleware.KEY,
-                  new InboundContextFlightMiddleware.Factory(contextHelper))
+                  new InboundContextFlightMiddleware.Factory(
+                      new CallContextResolverAdapter(contextHelper)))
               .build();
       server.start();
       LOG.infof("Arrow Flight server started on port %d (authMode=%s)", flightPort, authMode);
@@ -144,7 +136,6 @@ public class FlightServerLifecycle {
     }
   }
 
-  /** Returns the port the Flight server is bound to (useful for tests). */
   public int port() {
     return server != null ? server.getPort() : -1;
   }

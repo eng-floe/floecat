@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
-import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;

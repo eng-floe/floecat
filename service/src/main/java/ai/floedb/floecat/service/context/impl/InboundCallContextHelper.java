@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.context.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.flight.ContextHeaders;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.Status;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;
@@ -61,8 +63,8 @@ public final class InboundCallContextHelper {
   //  Well-known header names (shared constants for both protocols)
   // -------------------------------------------------------------------------
 
-  public static final String HEADER_QUERY_ID = "x-query-id";
-  public static final String HEADER_CORRELATION_ID = "x-correlation-id";
+  public static final String HEADER_QUERY_ID = ContextHeaders.HEADER_QUERY_ID;
+  public static final String HEADER_CORRELATION_ID = ContextHeaders.HEADER_CORRELATION_ID;
   // x-engine-kind and x-engine-version are owned by EngineContext.fromHeaders()
 
   // -------------------------------------------------------------------------
@@ -501,22 +503,6 @@ public final class InboundCallContextHelper {
   // -------------------------------------------------------------------------
   //  Result types
   // -------------------------------------------------------------------------
-
-  /**
-   * The fully resolved per-call context, returned by {@link #resolve}.
-   *
-   * <p>Both gRPC and Arrow Flight paths populate this record; each transport then adapts it into
-   * its own context propagation mechanism (gRPC {@code Context} keys vs. Flight middleware).
-   */
-  public record ResolvedCallContext(
-      PrincipalContext principalContext,
-      String queryId,
-      String correlationId,
-      EngineContext engineContext,
-      /** Raw session token value; {@code null} if no session header is configured. */
-      String sessionHeaderValue,
-      /** Raw authorization token value; {@code null} if no authorization header is configured. */
-      String authorizationHeaderValue) {}
 
   private record ResolvedPrincipal(PrincipalContext pc, String queryId) {}
 }

@@ -35,10 +35,6 @@ import org.junit.jupiter.api.Test;
 
 class ArrowBatchSerializerTest {
 
-  // -------------------------------------------------------------------------
-  //  schemaForColumns tests
-  // -------------------------------------------------------------------------
-
   @Test
   void schemaForColumns_emptyRequired_returnsFullSchema() {
     List<SchemaColumn> scannerSchema = List.of(col("id", "INT"), col("name", "VARCHAR"));
@@ -94,10 +90,6 @@ class ArrowBatchSerializerTest {
     assertThat(result.getFields().get(0).getName()).isEqualTo("MyColumn");
   }
 
-  // -------------------------------------------------------------------------
-  //  serialize tests
-  // -------------------------------------------------------------------------
-
   @Test
   void serialize_callsSinkInOrder() {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
@@ -107,7 +99,7 @@ class ArrowBatchSerializerTest {
       root.setRowCount(1);
 
       SimpleColumnarBatch batch = new SimpleColumnarBatch(root);
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of(batch));
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of(batch));
 
       List<String> calls = new ArrayList<>();
       ArrowBatchSink sink =
@@ -140,7 +132,7 @@ class ArrowBatchSerializerTest {
   void serialize_cleanupCalledOnException() {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       Schema schema = singleIntSchema();
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of());
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of());
 
       ArrowBatchSink failingSink =
           new ArrowBatchSink() {
@@ -174,9 +166,6 @@ class ArrowBatchSerializerTest {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       Schema schema = singleIntSchema();
 
-      // Produce two batches; cancel after the first.
-      // Both roots are closed explicitly to avoid Arrow memory-leak errors when the
-      // second batch is never consumed by the serializer (it stops on cancellation).
       AtomicInteger batchCount = new AtomicInteger(0);
       VectorSchemaRoot root1 = VectorSchemaRoot.create(schema, allocator);
       root1.allocateNew();
@@ -185,12 +174,11 @@ class ArrowBatchSerializerTest {
       root2.allocateNew();
       root2.setRowCount(1);
 
-      // wrap in try-with-resources so both are closed even if root2 is never consumed
       try (root1;
           root2) {
         SimpleColumnarBatch batch1 = new SimpleColumnarBatch(root1);
         SimpleColumnarBatch batch2 = new SimpleColumnarBatch(root2);
-        ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of(batch1, batch2));
+        ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of(batch1, batch2));
 
         AtomicBoolean cancelled = new AtomicBoolean(false);
         List<String> calls = new ArrayList<>();
@@ -207,7 +195,7 @@ class ArrowBatchSerializerTest {
               public void onBatch(VectorSchemaRoot r) {
                 calls.add("batch");
                 batchCount.incrementAndGet();
-                cancelled.set(true); // Cancel after first batch
+                cancelled.set(true);
               }
 
               @Override
@@ -218,7 +206,6 @@ class ArrowBatchSerializerTest {
             cancelled::get,
             () -> {});
 
-        // onComplete must NOT be called when cancelled
         assertThat(calls).containsExactly("schema", "batch");
         assertThat(batchCount.get()).isEqualTo(1);
       }
@@ -229,7 +216,7 @@ class ArrowBatchSerializerTest {
   void serialize_emptyStream_callsSchemaAndComplete() {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       Schema schema = singleIntSchema();
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of());
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of());
 
       List<String> calls = new ArrayList<>();
       ArrowBatchSerializer.serialize(
@@ -256,10 +243,6 @@ class ArrowBatchSerializerTest {
       assertThat(calls).containsExactly("schema", "complete");
     }
   }
-
-  // -------------------------------------------------------------------------
-  //  Helpers
-  // -------------------------------------------------------------------------
 
   private static SchemaColumn col(String name, String type) {
     return SchemaColumn.newBuilder().setName(name).setLogicalType(type).setNullable(true).build();

@@ -17,9 +17,9 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import java.util.List;
 import java.util.Optional;
 
