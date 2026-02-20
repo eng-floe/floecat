@@ -39,7 +39,7 @@ import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.Metadata;
 import io.grpc.Status;

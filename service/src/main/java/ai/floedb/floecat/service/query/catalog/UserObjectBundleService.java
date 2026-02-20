@@ -44,6 +44,10 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleHeader;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -55,10 +59,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
-import ai.floedb.floecat.systemcatalog.spi.scanner.StatsProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -109,7 +109,8 @@ public class UserObjectBundleService {
             && (quarkusProfile.equalsIgnoreCase("dev") || quarkusProfile.equalsIgnoreCase("test"));
     if (isLocalHost && !isDevProfile) {
       LOG.warnf(
-          "floecat.flight.host=%s resolves to %s; configure FLOECAT_FLIGHT_HOST to a routable endpoint before running in prod so workers can connect.",
+          "floecat.flight.host=%s resolves to %s; configure FLOECAT_FLIGHT_HOST to a routable"
+              + " endpoint before running in prod so workers can connect.",
           flightHost, normalized);
     }
   }
