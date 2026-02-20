@@ -25,6 +25,8 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class RolePermissions {
   public static final String PLATFORM_ADMIN_ROLE = "platform-admin";
+  public static final String ROUTE_INIT_ACCOUNT_ROLE = "init-account";
+  public static final String ROUTE_INIT_PLANNER_ROLE = "init-planner";
   private static final List<String> READ_PERMS =
       List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
   private static final List<String> FULL_PERMS =
@@ -40,6 +42,11 @@ public final class RolePermissions {
           "view.write",
           "connector.manage");
   private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
+  private static final List<String> ROUTE_INIT_PLANNER_PERMS =
+      List.of("catalog.read", "namespace.read", "table.read", "view.read");
+  private static final List<String> ROUTE_INIT_ACCOUNT_PERMS =
+      List.of(
+          "account.write", "catalog.read", "catalog.write", "namespace.read", "namespace.write");
 
   private RolePermissions() {}
 
@@ -63,6 +70,12 @@ public final class RolePermissions {
           break;
         case "default":
           perms.addAll(READ_PERMS);
+          break;
+        case ROUTE_INIT_PLANNER_ROLE:
+          perms.addAll(ROUTE_INIT_PLANNER_PERMS);
+          break;
+        case ROUTE_INIT_ACCOUNT_ROLE:
+          perms.addAll(ROUTE_INIT_ACCOUNT_PERMS);
           break;
         default:
           break;
