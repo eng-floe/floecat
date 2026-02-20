@@ -667,29 +667,23 @@ cli-docker-token:
 
 .PHONY: cli-docker
 cli-docker:
-	@echo "==> [RUN] client CLI (docker)"
-	@TOKEN=$$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
-	  -d "client_id=floecat-client" \
-	  -d "client_secret=floecat-secret" \
-	  -d "grant_type=client_credentials" \
-	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token); \
-	FLOECAT_ENV_FILE=./env.localstack \
+	@echo "==> [RUN] client CLI (docker, OIDC auto-refresh)"
+	FLOECAT_ENV_FILE=./env.localstack-oidc \
 	$(DOCKER_COMPOSE_MAIN) run --rm \
-	  -e FLOECAT_TOKEN=$$TOKEN \
 	  -e FLOECAT_ACCOUNT=$$FLOECAT_ACCOUNT \
 	  cli
 
 .PHONY: oidc-up
 oidc-up:
 	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack up -d
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc up -d
 
 .PHONY: oidc-down
 oidc-down:
 	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack down --remove-orphans
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)
