@@ -24,12 +24,18 @@ import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class MetricCatalogDocgenTest {
   @Test
-  void generatedDocsMatchOnDisk() throws IOException {
+  void generatedDocsMatchOnDisk(@TempDir Path tempRepo) throws IOException {
+    System.setProperty(
+        "telemetry.doc.dir", tempRepo.resolve("docs").resolve("telemetry").toString());
+
     Path markdown = MetricCatalogDocgen.docDir().resolve("contract.md");
     Path json = MetricCatalogDocgen.docDir().resolve("contract.json");
+
+    MetricCatalogDocgen.main(new String[0]);
 
     TelemetryRegistry registry = Telemetry.newRegistryWithCore();
     Map<String, MetricDef> catalog = Telemetry.metricCatalog(registry);

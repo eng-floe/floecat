@@ -27,6 +27,7 @@
   <description>Floecat, Root</description>
 
   <properties>
+    <telemetry.docgen.skip>false</telemetry.docgen.skip>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <version.quarkus>3.29.4</version.quarkus>
     <maven.compiler.source>25</maven.compiler.source>

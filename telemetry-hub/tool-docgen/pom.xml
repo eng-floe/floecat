@@ -67,6 +67,7 @@
               <goal>java</goal>
             </goals>
             <configuration>
+              <skip>${telemetry.docgen.skip}</skip>
               <mainClass>ai.floedb.floecat.telemetry.docgen.MetricCatalogDocgen</mainClass>
             </configuration>
           </execution>
