@@ -46,6 +46,7 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
 #   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-smoke          # sequential docker smoke (inmem + localstack + localstack-oidc)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -699,7 +700,7 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache compose-up compose-down compose-shell
+.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache compose-up compose-down compose-shell compose-smoke
 
 docker-clean-cache:
 	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
@@ -752,6 +753,59 @@ compose-down:
 compose-shell:
 	@echo "==> [COMPOSE] shell"
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
+
+compose-smoke: docker
+	@echo "==> [COMPOSE] smoke (inmem + localstack + localstack-oidc)"
+	run_mode() { \
+	  env_file="$$1"; profile="$$2"; label="$$3"; pre_services="$$4"; kc_host="$$5"; kc_port="$$6"; \
+	  mode_env="FLOECAT_ENV_FILE=$$env_file COMPOSE_PROFILES=$$profile"; \
+	  if [ -n "$$kc_host" ]; then mode_env="$$mode_env KC_HOSTNAME=$$kc_host"; fi; \
+	  if [ -n "$$kc_port" ]; then mode_env="$$mode_env KC_HOSTNAME_PORT=$$kc_port"; fi; \
+	  compose_cmd="$$mode_env $(DOCKER_COMPOSE_MAIN)"; \
+	  echo "==> [SMOKE] mode=$$label"; \
+	  eval "$$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true; \
+	  if [ -n "$$pre_services" ]; then eval "$$compose_cmd up -d $$pre_services"; fi; \
+	  if [ "$$profile" = "localstack" ] || [ "$$profile" = "localstack-oidc" ]; then \
+	    for i in $$(seq 1 120); do \
+	      if curl -fsS http://localhost:4566/_localstack/health >/dev/null 2>&1; then break; fi; \
+	      if [ $$i -eq 120 ]; then echo "LocalStack health timed out" >&2; exit 1; fi; \
+	      sleep 1; \
+	    done; \
+	  fi; \
+	  if [ "$$profile" = "localstack-oidc" ]; then \
+	    for i in $$(seq 1 180); do \
+	      if curl -fsS http://localhost:8080/realms/floecat/.well-known/openid-configuration >/dev/null 2>&1; then break; fi; \
+	      if [ $$i -eq 180 ]; then echo "Keycloak health timed out" >&2; exit 1; fi; \
+	      sleep 1; \
+	    done; \
+	  fi; \
+	  eval "$$compose_cmd up -d"; \
+	  for i in $$(seq 1 180); do \
+	    if eval "$$compose_cmd logs service 2>&1" | grep -q "Startup seeding completed successfully"; then break; fi; \
+	    if eval "$$compose_cmd logs service 2>&1" | grep -q "Startup seeding failed"; then \
+	      eval "$$compose_cmd logs --no-color"; \
+	      exit 1; \
+	    fi; \
+	    if [ $$i -eq 180 ]; then \
+	      echo "Service seed completion timed out" >&2; \
+	      eval "$$compose_cmd logs --no-color"; \
+	      exit 1; \
+	    fi; \
+	    sleep 1; \
+	  done; \
+	  out_iceberg=$$(printf "account t-0001\nresolve table examples.iceberg.trino_types\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
+	  echo "$$out_iceberg"; \
+	  echo "$$out_iceberg" | grep -q "account set:"; \
+	  echo "$$out_iceberg" | grep -q "table id:"; \
+	  out_delta=$$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
+	  echo "$$out_delta"; \
+	  echo "$$out_delta" | grep -q "account set:"; \
+	  echo "$$out_delta" | grep -q "table id:"; \
+	  eval "$$compose_cmd down --remove-orphans -v"; \
+	}; \
+	run_mode ./env.inmem "" inmem "" "" ""; \
+	run_mode ./env.localstack localstack localstack "localstack" "" ""; \
+	run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"
 
 # ===================================================
 # Lint/format
