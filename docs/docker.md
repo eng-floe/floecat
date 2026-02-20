@@ -8,7 +8,7 @@ make docker
 
 ## Compose Modes
 
-The stack runs in three modes by selecting an env file and compose profiles as needed.
+The stack runs in four modes by selecting an env file and compose profiles as needed.
 
 In-memory (default storage, no AWS dependencies):
 
@@ -16,7 +16,8 @@ In-memory (default storage, no AWS dependencies):
 FLOECAT_ENV_FILE=./env.inmem docker compose -f docker/docker-compose.yml up -d
 ```
 
-This mode runs with DEV auth (OIDC disabled), so it does not require Keycloak.
+This mode runs with DEV auth (OIDC disabled), so it does not require Keycloak. The default
+`docker/env.inmem` also enables seeding in `iceberg` mode.
 
 LocalStack (DynamoDB + S3, DEV auth, no OIDC):
 
@@ -34,6 +35,22 @@ Real AWS (DynamoDB + S3):
 
 ```bash
 FLOECAT_ENV_FILE=./env.aws docker compose -f docker/docker-compose.yml up -d
+```
+
+Make equivalents:
+
+```bash
+# In-memory
+make compose-up
+make compose-down
+
+# LocalStack
+make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+
+# LocalStack + OIDC
+make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 ```
 
 Interactive CLI in a container:
@@ -71,7 +88,11 @@ make compose-shell
 If you switch between LocalStack modes, stop the previous stack first to avoid leftover services:
 
 ```bash
-docker compose -f docker/docker-compose.yml down --remove-orphans
+FLOECAT_ENV_FILE=./env.localstack docker compose -f docker/docker-compose.yml --profile localstack down --remove-orphans
+```
+
+```bash
+FLOECAT_ENV_FILE=./env.localstack-oidc docker compose -f docker/docker-compose.yml --profile localstack-oidc down --remove-orphans
 ```
 
 ## Configuration and Overrides

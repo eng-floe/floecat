@@ -40,6 +40,12 @@
 #   make localstack-down         # stop LocalStack container (if running)
 #   make keycloak-up            # start Keycloak container
 #   make keycloak-down          # stop Keycloak container (if running)
+#   make compose-up             # build images + start compose stack (default: COMPOSE_ENV_FILE=./env.inmem)
+#   make compose-down           # stop compose stack for COMPOSE_ENV_FILE/COMPOSE_PROFILES
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -85,6 +91,7 @@ DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
 DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
 DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --profile keycloak
 COMPOSE_ENV_FILE ?= ./env.inmem
+COMPOSE_PROFILES ?=
 KEYCLOAK_PORT ?= 12221
 KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
 KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
@@ -736,11 +743,11 @@ docker-cli:
 
 compose-up: docker
 	@echo "==> [COMPOSE] up"
-	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) $(DOCKER_COMPOSE_MAIN) up -d
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) up -d
 
 compose-down:
 	@echo "==> [COMPOSE] down"
-	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) $(DOCKER_COMPOSE_MAIN) down
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) down --remove-orphans
 
 compose-shell:
 	@echo "==> [COMPOSE] shell"
