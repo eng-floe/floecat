@@ -25,8 +25,8 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class RolePermissions {
   public static final String PLATFORM_ADMIN_ROLE = "platform-admin";
-  public static final String ROUTE_INIT_ACCOUNT_ROLE = "init-account";
-  public static final String ROUTE_INIT_PLANNER_ROLE = "init-planner";
+  public static final String INIT_ACCOUNT_ROLE = "init-account";
+  public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
   private static final List<String> READ_PERMS =
       List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
   private static final List<String> FULL_PERMS =
@@ -40,11 +40,11 @@ public final class RolePermissions {
           "table.write",
           "view.read",
           "view.write",
-          "connector.manage");
+          "connector.manage",
+          "system-objects.read");
   private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
-  private static final List<String> ROUTE_INIT_PLANNER_PERMS =
-      List.of("catalog.read", "namespace.read", "table.read", "view.read");
-  private static final List<String> ROUTE_INIT_ACCOUNT_PERMS =
+  private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
+  private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
           "account.write", "catalog.read", "catalog.write", "namespace.read", "namespace.write");
 
@@ -71,11 +71,11 @@ public final class RolePermissions {
         case "default":
           perms.addAll(READ_PERMS);
           break;
-        case ROUTE_INIT_PLANNER_ROLE:
-          perms.addAll(ROUTE_INIT_PLANNER_PERMS);
+        case SYSTEM_OBJECTS_ROLE:
+          perms.addAll(SYSTEM_OBJECTS_PERMS);
           break;
-        case ROUTE_INIT_ACCOUNT_ROLE:
-          perms.addAll(ROUTE_INIT_ACCOUNT_PERMS);
+        case INIT_ACCOUNT_ROLE:
+          perms.addAll(INIT_ACCOUNT_PERMS);
           break;
         default:
           break;

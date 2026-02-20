@@ -24,21 +24,26 @@ import org.junit.jupiter.api.Test;
 class RolePermissionsTest {
 
   @Test
-  void routeInitPlannerRoleGrantsReadOnlyPlannerBootstrapPermissions() {
+  void systemObjectsRoleGrantsReadOnlyPlannerBootstrapPermissions() {
     var permissions =
-        RolePermissions.permissionsForRoles(
-            List.of(RolePermissions.ROUTE_INIT_PLANNER_ROLE), false);
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.SYSTEM_OBJECTS_ROLE), false);
 
     assertThat(permissions)
-        .contains("catalog.read", "namespace.read", "table.read", "view.read")
-        .doesNotContain("catalog.write", "namespace.write", "account.write");
+        .contains("system-objects.read")
+        .doesNotContain(
+            "catalog.write",
+            "namespace.write",
+            "account.write",
+            "catalog.read",
+            "namespace.read",
+            "table.read",
+            "view.read");
   }
 
   @Test
   void routeInitAccountRoleGrantsBootstrapMutationPermissions() {
     var permissions =
-        RolePermissions.permissionsForRoles(
-            List.of(RolePermissions.ROUTE_INIT_ACCOUNT_ROLE), false);
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.INIT_ACCOUNT_ROLE), false);
 
     assertThat(permissions)
         .contains(

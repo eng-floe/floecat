@@ -468,8 +468,7 @@ public class InboundContextInterceptor {
     var roles = extractRoles(identity);
     String accountId = requireAccountIdClaim(identity, roles);
     boolean allowUnknownAccount =
-        roles.stream()
-            .anyMatch(role -> RolePermissions.ROUTE_INIT_ACCOUNT_ROLE.equalsIgnoreCase(role));
+        roles.stream().anyMatch(role -> RolePermissions.INIT_ACCOUNT_ROLE.equalsIgnoreCase(role));
     if (validateAccount && !accountId.isBlank() && !allowUnknownAccount) {
       validateAccount(accountId);
     }

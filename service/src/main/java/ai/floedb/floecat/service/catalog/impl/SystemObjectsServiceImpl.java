@@ -23,6 +23,8 @@ import ai.floedb.floecat.query.rpc.SystemObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.RequestValidation;
+import ai.floedb.floecat.service.security.impl.Authorizer;
+import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -42,6 +44,8 @@ import java.util.List;
 @GrpcService
 public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemObjectsService {
 
+  @Inject PrincipalProvider principal;
+  @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject EngineContextProvider engineContextProvider;
 
@@ -50,6 +54,8 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
     return mapFailures(
         run(
             () -> {
+              var principalContext = principal.get();
+              authz.require(principalContext, "system-objects.read");
               EngineContext ctx = engineContextProvider.engineContext();
               RequestValidation.requireNonBlank(
                   ctx.engineVersion(),
