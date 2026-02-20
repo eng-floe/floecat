@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi.scanner;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import java.util.EnumSet;
 import java.util.List;

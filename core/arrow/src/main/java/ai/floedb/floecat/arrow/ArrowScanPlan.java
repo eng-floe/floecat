@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.query.impl.arrow;
+package ai.floedb.floecat.arrow;
 
-import ai.floedb.floecat.arrow.ColumnarBatch;
 import java.util.Iterator;
 import java.util.stream.Stream;
 import org.apache.arrow.vector.types.pojo.Schema;

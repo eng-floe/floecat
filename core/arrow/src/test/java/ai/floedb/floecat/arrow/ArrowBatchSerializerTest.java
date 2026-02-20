@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.query.impl.arrow;
+package ai.floedb.floecat.arrow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
