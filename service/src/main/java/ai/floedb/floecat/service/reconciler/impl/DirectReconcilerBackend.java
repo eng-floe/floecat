@@ -302,8 +302,8 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
       return;
     }
     long snapshotId = snapshot.getSnapshotId();
-    if (snapshotId <= 0) {
-      throw new IllegalArgumentException("snapshotId must be positive");
+    if (snapshotId < 0) {
+      throw new IllegalArgumentException("snapshotId must be non-negative");
     }
     Optional<Snapshot> existing = snapshotRepo.getById(tableId, snapshotId);
     if (existing.isPresent()) {

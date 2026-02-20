@@ -53,6 +53,20 @@ class SnapshotHelperTest {
             Optional.empty());
 
     assertThat(pin.getSnapshotId()).isEqualTo(5);
+    assertThat(pin.hasSnapshotId()).isTrue();
+  }
+
+  @Test
+  void pinUsesExplicitSnapshotIdZero() {
+    SnapshotPin pin =
+        helper.snapshotPinFor(
+            "corr",
+            tableId("tbl"),
+            SnapshotRef.newBuilder().setSnapshotId(0).build(),
+            Optional.empty());
+
+    assertThat(pin.getSnapshotId()).isEqualTo(0);
+    assertThat(pin.hasSnapshotId()).isTrue();
   }
 
   @Test
@@ -63,7 +77,7 @@ class SnapshotHelperTest {
             "corr", tableId("tbl"), SnapshotRef.newBuilder().setAsOf(ts).build(), Optional.empty());
 
     assertThat(pin.getAsOf()).isEqualTo(ts);
-    assertThat(pin.getSnapshotId()).isZero();
+    assertThat(pin.hasSnapshotId()).isFalse();
   }
 
   @Test

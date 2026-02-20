@@ -446,6 +446,19 @@ public class ConnectorIT {
 
       assertEquals(1, outTables.size(), "expected exactly one table in destination namespace");
       assertEquals("call_center", outTables.get(0).getDisplayName());
+
+      var outTableId = outTables.get(0).getResourceId();
+      assertTrue(snaps.getById(outTableId, 0L).isPresent(), "expected Delta snapshot_id=0");
+
+      var fileStats =
+          statsService.listFileColumnStats(
+              ListFileColumnStatsRequest.newBuilder()
+                  .setTableId(outTableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                  .setPage(PageRequest.newBuilder().setPageSize(10))
+                  .build());
+      assertFalse(
+          fileStats.getFileColumnsList().isEmpty(), "expected file stats at current snapshot");
     }
   }
 

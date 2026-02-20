@@ -261,6 +261,21 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
+  void ingestSnapshotAcceptsZeroSnapshotId() {
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(0L)
+            .setSchemaJson("{}")
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()))
+            .build();
+
+    backend.ingestSnapshot(ctx, tableId, snapshot);
+
+    assertThat(snapshotRepo.getById(tableId, 0L)).isPresent();
+  }
+
+  @Test
   void lookupTableMatchesNormalizedNameRef() {
     ResourceId tableId = createReferenceTable();
     assertThat(backend.lookupTable(ctx, referenceNameRef())).contains(tableId);

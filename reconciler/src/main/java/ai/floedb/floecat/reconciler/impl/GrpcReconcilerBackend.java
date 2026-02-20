@@ -271,7 +271,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public Optional<Snapshot> fetchSnapshot(
       ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    if (snapshotId <= 0) {
+    if (snapshotId < 0) {
       return Optional.empty();
     }
     try {
@@ -293,7 +293,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot) {
-    if (snapshot == null || snapshot.getSnapshotId() <= 0) {
+    if (snapshot == null || snapshot.getSnapshotId() < 0) {
       return;
     }
     var spec = buildSnapshotSpec(snapshot);
@@ -543,7 +543,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private SnapshotPin pin(ResourceId tableId, long snapshotId, Timestamp asOf) {
     SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
-    if (snapshotId > 0) {
+    if (snapshotId >= 0 && asOf == null) {
       builder.setSnapshotId(snapshotId);
     }
     if (asOf != null) {
