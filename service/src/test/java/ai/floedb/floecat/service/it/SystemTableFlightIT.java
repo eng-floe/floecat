@@ -29,7 +29,7 @@ import ai.floedb.floecat.service.query.flight.FlightServerLifecycle;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import io.grpc.Metadata;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;

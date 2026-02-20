@@ -36,7 +36,7 @@ import org.jboss.logging.MDC;
  *   <li>Resolves auth / {@link ai.floedb.floecat.common.rpc.PrincipalContext} from OIDC tokens (or
  *       {@code devContext()} in dev mode) via the shared {@link InboundCallContextHelper}.
  *   <li>Captures {@code x-engine-kind} and {@code x-engine-version} into an {@link
- *       ai.floedb.floecat.systemcatalog.util.EngineContext}.
+ *       ai.floedb.floecat.scanner.utils.EngineContext}.
  *   <li>Reads {@code x-query-id} and {@code x-correlation-id} (generating a random correlation ID
  *       when absent).
  *   <li>Populates MDC logging entries for the duration of the call.

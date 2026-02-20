@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.spi.decorator;
 
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 
 /**
  * Engine metadata decoration hook exposed by {@link

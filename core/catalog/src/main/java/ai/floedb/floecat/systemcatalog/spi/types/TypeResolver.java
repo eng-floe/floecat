@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi.types;
 
 import ai.floedb.floecat.metagraph.model.TypeNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.HashMap;
 import java.util.Map;

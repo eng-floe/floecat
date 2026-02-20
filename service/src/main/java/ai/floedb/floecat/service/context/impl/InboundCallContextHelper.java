@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.Status;
 import io.quarkus.oidc.AccessTokenCredential;
 import io.quarkus.oidc.TenantIdentityProvider;

@@ -23,7 +23,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

@@ -49,7 +49,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;

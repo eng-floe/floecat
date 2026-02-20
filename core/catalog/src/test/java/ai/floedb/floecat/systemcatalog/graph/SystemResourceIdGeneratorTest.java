@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;

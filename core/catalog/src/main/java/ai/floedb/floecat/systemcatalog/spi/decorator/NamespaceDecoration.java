@@ -19,7 +19,7 @@ package ai.floedb.floecat.systemcatalog.spi.decorator;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import java.util.Objects;
 
 /** Mutable holder describing a namespace (catalog/schema) during bundle decoration. */

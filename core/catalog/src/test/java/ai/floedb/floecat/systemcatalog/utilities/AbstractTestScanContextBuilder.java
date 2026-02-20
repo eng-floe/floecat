@@ -18,8 +18,8 @@ package ai.floedb.floecat.systemcatalog.utilities;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 
 abstract class AbstractTestScanContextBuilder {

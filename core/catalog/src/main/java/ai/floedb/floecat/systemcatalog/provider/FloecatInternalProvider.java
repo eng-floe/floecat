@@ -23,8 +23,8 @@ import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvid
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
 import java.io.InputStream;

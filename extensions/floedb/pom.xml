@@ -55,6 +55,12 @@
             <version>${project.version}</version>
         </dependency>
 
+        <dependency>
+            <groupId>ai.floedb.floecat</groupId>
+            <artifactId>floecat-core-scanner</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Shared Floecat protobuf classes -->
         <dependency>
             <groupId>ai.floedb.floecat</groupId>

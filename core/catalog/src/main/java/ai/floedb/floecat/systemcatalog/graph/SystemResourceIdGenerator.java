@@ -17,8 +17,8 @@ package ai.floedb.floecat.systemcatalog.graph;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;

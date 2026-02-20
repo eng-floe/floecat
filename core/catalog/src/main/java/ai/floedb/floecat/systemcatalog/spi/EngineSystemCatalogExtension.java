@@ -16,12 +16,12 @@
 
 package ai.floedb.floecat.systemcatalog.spi;
 
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import java.util.List;
 import java.util.Optional;

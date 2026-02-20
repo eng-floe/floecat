@@ -184,6 +184,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-scanner</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-aws</artifactId>
       <version>${project.version}</version>
     </dependency>

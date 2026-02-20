@@ -23,7 +23,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Optional;

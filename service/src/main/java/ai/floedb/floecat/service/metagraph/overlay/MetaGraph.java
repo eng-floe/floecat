@@ -38,8 +38,8 @@ import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemCatalogTr
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;

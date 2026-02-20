@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper.ResolvedCallContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;

@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import java.util.Objects;
 
 /**
