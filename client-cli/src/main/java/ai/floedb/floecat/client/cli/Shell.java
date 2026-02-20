@@ -249,7 +249,8 @@ public class Shell implements Runnable {
 
   @CommandLine.Option(
       names = {"--oidc-refresh-skew-seconds"},
-      description = "Token refresh lead time in seconds (default: FLOECAT_OIDC_REFRESH_SKEW_SECONDS or 30)")
+      description =
+          "Token refresh lead time in seconds (default: FLOECAT_OIDC_REFRESH_SKEW_SECONDS or 30)")
   Integer oidcRefreshSkewSeconds;
 
   @Inject
@@ -3795,7 +3796,8 @@ public class Shell implements Runnable {
   private final class OidcClientCredentialsTokenProvider {
     private static final Pattern ACCESS_TOKEN_PATTERN =
         Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern EXPIRES_IN_PATTERN = Pattern.compile("\"expires_in\"\\s*:\\s*(\\d+)");
+    private static final Pattern EXPIRES_IN_PATTERN =
+        Pattern.compile("\"expires_in\"\\s*:\\s*(\\d+)");
 
     private final String tokenUrl;
     private final String clientId;
@@ -3851,7 +3853,8 @@ public class Shell implements Runnable {
               .build();
       HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() < 200 || response.statusCode() >= 300) {
-        throw new IllegalStateException("OIDC token endpoint returned status " + response.statusCode());
+        throw new IllegalStateException(
+            "OIDC token endpoint returned status " + response.statusCode());
       }
       String responseBody = response.body() == null ? "" : response.body();
       String accessToken = extractJsonString(ACCESS_TOKEN_PATTERN, responseBody);
