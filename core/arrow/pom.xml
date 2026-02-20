@@ -15,52 +15,24 @@
   limitations under the License.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
-
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../..</relativePath>
   </parent>
+  <artifactId>floecat-core-arrow</artifactId>
+  <description>Shared Arrow helpers for system scans</description>
   
-  <!-- Updated artifact name -->
-  <artifactId>floecat-catalog</artifactId>
-  <name>floecat-catalog</name>
-
   <dependencies>
-    
-    <!-- MetaGraph definition -->
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-metagraph</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <!-- Logical type definitions -->
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-types</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
-    <!-- Protobuf & RPC definitions -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-proto</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
-    <!--- Arrow core -->
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-arrow</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    
+
     <!-- Apache Arrow for in-memory columnar data representation -->
     <dependency>
       <groupId>org.apache.arrow</groupId>
@@ -73,19 +45,19 @@
       <artifactId>arrow-memory-unsafe</artifactId>
       <version>${version.arrow}</version>
     </dependency>
-
+    
     <!-- JUnit for tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
       <scope>test</scope>
     </dependency>
-
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
       <scope>test</scope>
     </dependency>
+    
     <!-- AssertJ for fluent assertions -->
     <dependency>
       <groupId>org.assertj</groupId>
@@ -93,22 +65,4 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
-
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>io.smallrye</groupId>
-        <artifactId>jandex-maven-plugin</artifactId>
-        <executions>
-          <execution>
-            <id>make-index</id>
-            <goals>
-              <goal>jandex</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-    </plugins>
-  </build>
-
 </project>

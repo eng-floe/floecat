@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.columnar;
 
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
 import java.nio.charset.StandardCharsets;

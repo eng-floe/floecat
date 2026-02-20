@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.systemcatalog.columnar;
+package ai.floedb.floecat.arrow;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
 
 /**
- * Represents a owned batch of columnar data produced by a system scanner. Must be closed exactly
- * once.
+ * Represents an owned batch of columnar data produced by a scan. Must be closed exactly once.
  */
 public interface ColumnarBatch extends AutoCloseable {
 

@@ -105,7 +105,8 @@
       <module>core/connectors/common</module>
       <module>core/storage-spi</module>
       <module>core/reconciler-spi</module>
-
+      <module>core/arrow</module>
+      
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
       <module>connectors/catalogs/delta</module>

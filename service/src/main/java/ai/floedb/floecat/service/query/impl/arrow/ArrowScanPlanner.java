@@ -22,7 +22,7 @@ import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowFilterOperator;
 import ai.floedb.floecat.systemcatalog.columnar.ArrowProjectOperator;
-import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.systemcatalog.columnar.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.systemcatalog.expr.Expr;
 import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
