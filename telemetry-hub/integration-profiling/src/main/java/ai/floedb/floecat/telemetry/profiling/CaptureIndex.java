@@ -33,6 +33,7 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,7 @@ import org.slf4j.LoggerFactory;
 public class CaptureIndex {
   private static final Duration ORPHAN_DELETE_DELAY = Duration.ofMinutes(5);
   private static final Logger LOG = LoggerFactory.getLogger(CaptureIndex.class);
+  private static final Pattern CAPTURE_ID_PATTERN = Pattern.compile("^[A-Za-z0-9-]{1,64}$");
   private final ProfilingConfig config;
   private final Path artifactDir;
   private final ObjectMapper mapper;
@@ -49,7 +51,7 @@ public class CaptureIndex {
   @Inject
   public CaptureIndex(ProfilingConfig config) {
     this.config = config;
-    this.artifactDir = Path.of(config.artifactDir()).toAbsolutePath();
+    this.artifactDir = Path.of(config.artifactDir()).toAbsolutePath().normalize();
     this.mapper = new ObjectMapper().registerModule(new JavaTimeModule());
     mapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
   }
@@ -124,13 +126,13 @@ public class CaptureIndex {
   }
 
   Path artifactFor(String id) {
-    return artifactDir.resolve(id + ".jfr");
+    return resolveCaptureFile(id, ".jfr");
   }
 
   void persist(CaptureMetadata meta) {
     captures.put(meta.getId(), meta);
-    Path metadataPath = artifactDir.resolve(meta.getId() + ".json");
     ensureArtifactSize(meta);
+    Path metadataPath = resolveCaptureFile(meta.getId(), ".json");
     try {
       mapper.writeValue(metadataPath.toFile(), meta);
     } catch (IOException e) {
@@ -181,8 +183,8 @@ public class CaptureIndex {
 
   private void removeOldest(CaptureMetadata meta) {
     captures.remove(meta.getId());
-    deleteFile(artifactDir.resolve(meta.getId() + ".jfr"));
-    deleteFile(artifactDir.resolve(meta.getId() + ".json"));
+    deleteFile(resolveCaptureFile(meta.getId(), ".jfr"));
+    deleteFile(resolveCaptureFile(meta.getId(), ".json"));
   }
 
   private static void deleteFile(Path path) {
@@ -199,12 +201,33 @@ public class CaptureIndex {
     if (meta.getArtifactSizeBytes() != null) {
       return;
     }
-    Path artifact = artifactDir.resolve(meta.getId() + ".jfr");
+    Path artifact;
+    try {
+      artifact = resolveCaptureFile(meta.getId(), ".jfr");
+    } catch (IllegalArgumentException e) {
+      LOG.warn("skipping artifact size for invalid capture id {}", meta.getId());
+      return;
+    }
     if (Files.exists(artifact)) {
       try {
         meta.setArtifactSizeBytes(Files.size(artifact));
       } catch (IOException ignored) {
       }
+    }
+  }
+
+  private Path resolveCaptureFile(String id, String extension) {
+    validateCaptureId(id);
+    Path candidate = artifactDir.resolve(id + extension).normalize();
+    if (!candidate.startsWith(artifactDir)) {
+      throw new IllegalArgumentException("capture path escapes artifact directory: " + id);
+    }
+    return candidate;
+  }
+
+  private void validateCaptureId(String id) {
+    if (id == null || !CAPTURE_ID_PATTERN.matcher(id).matches()) {
+      throw new IllegalArgumentException("invalid capture id: " + id);
     }
   }
 

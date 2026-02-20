@@ -17,6 +17,7 @@
 package ai.floedb.floecat.telemetry.profiling;
 
 import jakarta.inject.Inject;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.NotFoundException;
@@ -114,7 +115,12 @@ public class ProfilingResource {
         captureService
             .find(id)
             .orElseThrow(() -> new NotFoundException("capture not found: " + id));
-    java.nio.file.Path artifact = captureService.artifactPath(id);
+    java.nio.file.Path artifact;
+    try {
+      artifact = captureService.artifactPath(id);
+    } catch (IllegalArgumentException e) {
+      throw new BadRequestException("invalid capture id: " + id, e);
+    }
     if (Files.notExists(artifact)) {
       throw new NotFoundException("artifact not found: " + id);
     }
