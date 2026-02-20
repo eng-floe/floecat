@@ -29,12 +29,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
-  build-test:
-    name: ci-build
+  ci-core:
+    name: ci-core
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-core
       cancel-in-progress: true
     permissions:
       contents: read
@@ -57,12 +57,56 @@ jobs:
       - name: Test (In Memory)
         run: make test
 
+      - name: Trino connector tests
+        run: mvn -Pwith-trino -pl connectors/clients/trino -am test
+
+      - name: Check formatting
+        run: mvn -q fmt:check
+
+  ci-localstack:
+    name: ci-localstack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-localstack
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 25 (default)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
       - name: Test (LocalStack)
         run: make test-localstack
 
       - name: Stop LocalStack
         if: always()
         run: make localstack-down
+
+  docker-smoke:
+    name: docker-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
 
       - name: Docker compose smoke (inmem/localstack/localstack-oidc seeded tables)
         run: |
@@ -153,12 +197,6 @@ jobs:
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
           FLOECAT_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc \
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
-
-      - name: Trino connector tests
-        run: mvn -Pwith-trino -pl connectors/clients/trino -am test
-
-      - name: Check formatting
-        run: mvn -q fmt:check
 
   detect-floedb-changes:
     name: detect floedb changes
