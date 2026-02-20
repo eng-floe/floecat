@@ -713,7 +713,7 @@ docker: docker-service docker-iceberg-rest docker-cli
 
 docker-service:
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl service -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -723,7 +723,7 @@ docker-service:
 
 docker-iceberg-rest:
 	@echo "==> [DOCKER] iceberg-rest (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -733,7 +733,7 @@ docker-iceberg-rest:
 
 docker-cli:
 	@echo "==> [DOCKER] cli (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
