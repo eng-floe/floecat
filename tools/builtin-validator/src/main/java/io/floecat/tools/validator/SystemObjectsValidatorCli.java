@@ -17,11 +17,11 @@
 package io.floecat.tools.validator;
 
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.validation.Severity;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;

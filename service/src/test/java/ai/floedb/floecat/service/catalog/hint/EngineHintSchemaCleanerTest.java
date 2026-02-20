@@ -24,7 +24,7 @@ import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import com.google.protobuf.FieldMask;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;

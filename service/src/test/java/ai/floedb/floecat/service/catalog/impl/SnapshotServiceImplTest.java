@@ -38,7 +38,7 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
