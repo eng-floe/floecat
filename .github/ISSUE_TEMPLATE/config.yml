@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: mailto:floecat-maintainers@floedb.ai
+    about: Report security vulnerabilities privately. Do not open a public issue.
+  - name: Contribution guidelines
+    url: https://github.com/eng-floe/floecat/blob/main/CONTRIBUTING.md
+    about: Review contribution workflow, testing, and PR requirements.
+  - name: Code of Conduct
+    url: https://github.com/eng-floe/floecat/blob/main/CODE_OF_CONDUCT.md
+    about: Community standards and reporting process for conduct issues.

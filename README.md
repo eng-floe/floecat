@@ -36,19 +36,11 @@ All additional component docs live under [`docs/`](docs).
 
 ## Contributing
 
-Floecat enforces branch protections and CI. Preferred workflow:
+Contribution workflow, review policy, and contributor expectations are documented in:
 
-1. **Fork or branch** – Create a feature branch from `main` (internal) or fork the repo (external).
-2. **Develop** – Keep commits focused, add/extend tests, and run `make fmt` for Google Java Format.
-   Execute `make verify` (build + unit/integration tests) before pushing.
-3. **Open a PR** – Target `main`. CI enforces formatting and `make verify`. PRs require green checks
-   and at least one approval. Merge via squash.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-Follow conventional commits (`feat:`, `fix:`, etc.) and avoid embedding secrets. CI enforces Google
-Java Format via the Spotify `fmt` plugin. Use `.editorconfig` for whitespace settings.
+All participants are expected to follow:
 
-This project is licensed under the Apache License, Version 2.0.
-
-By submitting a pull request, you represent that you have the right to license your
-contribution to Yellowbrick Data, Inc. and the Apache Software Foundation, and you
-agree that your contribution will be licensed under the Apache License, Version 2.0.
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+- [`SECURITY.md`](SECURITY.md) for vulnerability reporting
