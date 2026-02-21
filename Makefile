@@ -758,6 +758,18 @@ compose-smoke: docker
 	@echo "==> [COMPOSE] smoke (inmem + localstack + localstack-oidc)"
 	run_mode() { \
 	  env_file="$$1"; profile="$$2"; label="$$3"; pre_services="$$4"; kc_host="$$5"; kc_port="$$6"; \
+	  assert_contains() { \
+	    check_name="$$1"; output="$$2"; pattern="$$3"; \
+	    if echo "$$output" | grep -q "$$pattern"; then \
+	      echo "[PASS] $$check_name"; \
+	    else \
+	      echo "[FAIL] $$check_name (missing: $$pattern)"; \
+	      echo "---- output begin ----"; \
+	      echo "$$output"; \
+	      echo "---- output end ----"; \
+	      return 1; \
+	    fi; \
+	  }; \
 	  compose_project="floecat-smoke-$$label"; \
 	  mode_env="FLOECAT_ENV_FILE=$$env_file COMPOSE_PROFILES=$$profile COMPOSE_PROJECT_NAME=$$compose_project"; \
 	  if [ -n "$$kc_host" ]; then mode_env="$$mode_env KC_HOSTNAME=$$kc_host"; fi; \
@@ -798,29 +810,29 @@ compose-smoke: docker
 	  done; \
 	  out_iceberg=$$(printf "account t-0001\nresolve table examples.iceberg.trino_types\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
 	  echo "$$out_iceberg"; \
-	  echo "$$out_iceberg" | grep -q "account set:"; \
-	  echo "$$out_iceberg" | grep -q "table id:"; \
+	  assert_contains "$$label cli resolve iceberg account" "$$out_iceberg" "account set:"; \
+	  assert_contains "$$label cli resolve iceberg table" "$$out_iceberg" "table id:"; \
 	  out_delta=$$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
 	  echo "$$out_delta"; \
-	  echo "$$out_delta" | grep -q "account set:"; \
-	  echo "$$out_delta" | grep -q "table id:"; \
+	  assert_contains "$$label cli resolve call_center account" "$$out_delta" "account set:"; \
+	  assert_contains "$$label cli resolve call_center table" "$$out_delta" "table id:"; \
 	  out_delta_local=$$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
 	  echo "$$out_delta_local"; \
-	  echo "$$out_delta_local" | grep -q "account set:"; \
-	  echo "$$out_delta_local" | grep -q "table id:"; \
+	  assert_contains "$$label cli resolve my_local_delta_table account" "$$out_delta_local" "account set:"; \
+	  assert_contains "$$label cli resolve my_local_delta_table table" "$$out_delta_local" "table id:"; \
 	  out_delta_dv=$$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
 	  echo "$$out_delta_dv"; \
-	  echo "$$out_delta_dv" | grep -q "account set:"; \
-	  echo "$$out_delta_dv" | grep -q "table id:"; \
+	  assert_contains "$$label cli resolve dv_demo_delta account" "$$out_delta_dv" "account set:"; \
+	  assert_contains "$$label cli resolve dv_demo_delta table" "$$out_delta_dv" "table id:"; \
 	  if [ "$$profile" = "localstack" ]; then \
 	    echo "==> [SMOKE] duckdb federation check (localstack)"; \
 	    duckdb_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
-	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
+	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
 	    echo "$$duckdb_out"; \
-	    echo "$$duckdb_out" | grep -q "duckdb_smoke_ok"; \
-	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*call_center[[:space:]]*│[[:space:]]*42[[:space:]]*│[[:space:]]*$$"; \
-	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*my_local_delta_table[[:space:]]*│[[:space:]]*1[[:space:]]*│[[:space:]]*$$"; \
-	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*dv_demo_delta[[:space:]]*│[[:space:]]*2[[:space:]]*│[[:space:]]*$$"; \
+	    assert_contains "$$label duckdb smoke marker" "$$duckdb_out" "duckdb_smoke_ok"; \
+	    assert_contains "$$label duckdb call_center count" "$$duckdb_out" "call_center=42"; \
+	    assert_contains "$$label duckdb my_local_delta_table count" "$$duckdb_out" "my_local_delta_table=1"; \
+	    assert_contains "$$label duckdb dv_demo_delta count" "$$duckdb_out" "dv_demo_delta=2"; \
 	  fi; \
 	}; \
 	run_mode ./env.inmem "" inmem "" "" ""; \
