@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.query.flight;
+package ai.floedb.floecat.flight;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import org.apache.arrow.memory.BufferAllocator;

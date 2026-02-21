@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.impl.arrow;
 
+import ai.floedb.floecat.arrow.ArrowBatchSink;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import com.google.protobuf.ByteString;
 import io.smallrye.mutiny.subscription.MultiEmitter;

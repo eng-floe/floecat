@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.query.flight;
+package ai.floedb.floecat.flight;
 
-import ai.floedb.floecat.service.query.impl.arrow.ArrowBatchSink;
+import ai.floedb.floecat.arrow.ArrowBatchSink;
 import java.util.Objects;
 import org.apache.arrow.flight.FlightProducer.ServerStreamListener;
 import org.apache.arrow.memory.BufferAllocator;
@@ -35,7 +35,7 @@ import org.apache.arrow.vector.types.pojo.Schema;
  * Flight contract and avoids sending stale/closed buffers when the underlying scanner emits a new
  * {@link VectorSchemaRoot} for each batch.
  */
-final class FlightArrowBatchSink implements ArrowBatchSink {
+public final class FlightArrowBatchSink implements ArrowBatchSink {
 
   private final ServerStreamListener listener;
   private final BufferAllocator allocator;
@@ -44,7 +44,7 @@ final class FlightArrowBatchSink implements ArrowBatchSink {
   private VectorLoader loader;
   private boolean started;
 
-  FlightArrowBatchSink(ServerStreamListener listener, BufferAllocator allocator) {
+  public FlightArrowBatchSink(ServerStreamListener listener, BufferAllocator allocator) {
     this.listener = Objects.requireNonNull(listener, "listener");
     this.allocator = Objects.requireNonNull(allocator, "allocator");
   }
@@ -102,7 +102,7 @@ final class FlightArrowBatchSink implements ArrowBatchSink {
     listener.completed();
   }
 
-  void close() {
+  public void close() {
     if (schemaRoot != null) {
       try {
         schemaRoot.close();
