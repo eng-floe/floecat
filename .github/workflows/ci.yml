@@ -109,9 +109,9 @@ jobs:
           cache: maven
 
       - name: Docker compose smoke (inmem/localstack/localstack-oidc seeded tables)
-          run: |
-            set -euo pipefail
-            make docker
+        run: |
+          set -euo pipefail
+          make docker
 
           run_mode() {
             local env_file="$1"
