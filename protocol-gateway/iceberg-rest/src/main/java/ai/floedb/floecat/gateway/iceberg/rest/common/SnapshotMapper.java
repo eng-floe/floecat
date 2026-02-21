@@ -143,8 +143,7 @@ final class SnapshotMapper {
               : 0L;
       entry.put("timestamp-ms", timestampMs);
       entry.put(
-          "manifest-list",
-          snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
+          "manifest-list", snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
       int schemaId = snapshot.getSchemaId();
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);

@@ -563,6 +563,13 @@ public class SeedRunner {
                 TestDeltaFixtures.tableUri("my_local_delta_table"),
                 "examples.delta",
                 "my_local_delta_table",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-dv-demo-delta",
+                "Delta dv_demo_delta fixture table",
+                TestDeltaFixtures.tableUri("dv_demo_delta"),
+                "examples.delta",
+                "dv_demo_delta",
                 DELTA_NAMESPACE));
 
     for (DeltaFixtureConfig fixture : fixtures) {

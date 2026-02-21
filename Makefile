@@ -808,14 +808,19 @@ compose-smoke: docker
 	  echo "$$out_delta_local"; \
 	  echo "$$out_delta_local" | grep -q "account set:"; \
 	  echo "$$out_delta_local" | grep -q "table id:"; \
+	  out_delta_dv=$$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
+	  echo "$$out_delta_dv"; \
+	  echo "$$out_delta_dv" | grep -q "account set:"; \
+	  echo "$$out_delta_dv" | grep -q "table id:"; \
 	  if [ "$$profile" = "localstack" ]; then \
 	    echo "==> [SMOKE] duckdb federation check (localstack)"; \
 	    duckdb_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
-	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'empty_join' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
+	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
 	    echo "$$duckdb_out"; \
 	    echo "$$duckdb_out" | grep -q "duckdb_smoke_ok"; \
 	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*call_center[[:space:]]*│[[:space:]]*42[[:space:]]*│[[:space:]]*$$"; \
 	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*my_local_delta_table[[:space:]]*│[[:space:]]*1[[:space:]]*│[[:space:]]*$$"; \
+	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*dv_demo_delta[[:space:]]*│[[:space:]]*2[[:space:]]*│[[:space:]]*$$"; \
 	  fi; \
 	}; \
 	run_mode ./env.inmem "" inmem "" "" ""; \

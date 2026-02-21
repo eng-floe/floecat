@@ -145,6 +145,8 @@ tables.
 2. For each returned Delta snapshot that lacks a manifest list, the gateway materializes Iceberg
    compat artifacts:
    - data manifest: `<table-root>/metadata/<snapshot-id>-compat-m0.avro`
+   - delete manifest (when Delta delete vectors exist): `<table-root>/metadata/<snapshot-id>-compat-d0.avro`
+   - position-delete files (generated from Delta DV bitmaps): `<table-root>/metadata/<snapshot-id>-compat-pd-*.avro`
    - manifest list: `<table-root>/metadata/snap-<snapshot-id>-compat.avro`
 3. On each Delta load/query, compat artifacts are resolved by deterministic snapshot path:
    - existing `snap-<snapshot-id>-compat.avro`: reuse
@@ -172,9 +174,13 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 ### Current limitations
 
-- Delete vectors/delete-file semantics are not yet projected into generated Iceberg delete manifests.
-  Compat materialization currently writes data-file manifests only, so Delta tables relying on delete
-  vectors are not fully represented through this path yet.
+- Supported delete behavior:
+  - Delta `remove` actions that fully remove parquet files are reflected correctly (removed files
+    are absent from generated Iceberg data manifests).
+  - Copy-on-write deletes (remove old parquet file, add rewritten parquet file) are reflected
+    correctly from the active Delta snapshot file set.
+- Only on-disk Delta deletion vectors are projected today; inline deletion vectors are currently skipped.
+- Equality-delete projection is not implemented; compatibility materialization emits Iceberg position deletes.
 
 ---
 
@@ -183,6 +189,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
+- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
+  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
 
 ---
 

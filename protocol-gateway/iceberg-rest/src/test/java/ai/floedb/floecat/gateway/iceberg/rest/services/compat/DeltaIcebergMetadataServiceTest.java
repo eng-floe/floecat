@@ -46,8 +46,7 @@ class DeltaIcebergMetadataServiceTest {
         .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
     when(service.translator.translate(table, List.of(snapshot)))
         .thenReturn(IcebergMetadata.newBuilder().setMetadataLocation("floe+delta://x").build());
-    when(service.manifestMaterializer.materialize(table, List.of()))
-        .thenReturn(List.of());
+    when(service.manifestMaterializer.materialize(table, List.of())).thenReturn(List.of());
 
     DeltaIcebergMetadataService.DeltaLoadResult result =
         service.load(tableId, table, SnapshotLister.Mode.REFS);

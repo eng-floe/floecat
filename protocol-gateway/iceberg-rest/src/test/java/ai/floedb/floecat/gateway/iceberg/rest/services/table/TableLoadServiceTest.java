@@ -146,8 +146,7 @@ class TableLoadServiceTest {
             tableId);
 
     Response allResponse = service.load(context, "delta_orders", null, null, null, tableSupport);
-    Response refsResponse =
-        service.load(context, "delta_orders", "refs", null, null, tableSupport);
+    Response refsResponse = service.load(context, "delta_orders", "refs", null, null, tableSupport);
 
     String allEtag = allResponse.getHeaderString(HttpHeaders.ETAG);
     String refsEtag = refsResponse.getHeaderString(HttpHeaders.ETAG);
