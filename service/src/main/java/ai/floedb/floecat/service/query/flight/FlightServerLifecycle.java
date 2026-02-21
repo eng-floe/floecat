@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.flight;
 
+import ai.floedb.floecat.flight.FlightAllocatorHolder;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.quarkus.oidc.TenantIdentityProvider;

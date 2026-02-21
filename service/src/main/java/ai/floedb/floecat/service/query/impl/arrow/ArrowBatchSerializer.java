@@ -16,9 +16,10 @@
 
 package ai.floedb.floecat.service.query.impl.arrow;
 
-import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.arrow.ArrowBatchSink;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;

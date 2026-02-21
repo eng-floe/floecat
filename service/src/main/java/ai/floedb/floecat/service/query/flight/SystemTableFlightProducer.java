@@ -20,6 +20,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.QUERY_NOT_FOUND;
 
 import ai.floedb.floecat.common.rpc.Predicate;
+import ai.floedb.floecat.flight.FlightAllocatorHolder;
+import ai.floedb.floecat.flight.FlightArrowBatchSink;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;

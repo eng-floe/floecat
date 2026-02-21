@@ -129,6 +129,7 @@
 
       <!-- Service -->
       <module>service</module>
+      <module>flight</module>
 
       <!-- CLI -->
       <module>client-cli</module>
