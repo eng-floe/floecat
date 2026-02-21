@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorRespo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -51,6 +53,7 @@ public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
   @Inject GrpcWithHeaders grpc;
+  @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject StageMaterializationService stageMaterializationService;
@@ -59,6 +62,7 @@ public class TableCommitService {
   @Inject TableUpdatePlanner tableUpdatePlanner;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject TableFormatSupport tableFormatSupport;
 
   public Response commit(CommitCommand command) {
     String prefix = command.prefix();
@@ -79,6 +83,11 @@ public class TableCommitService {
     }
     ResourceId tableId = stageResolution.tableId();
     Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
+    Table currentTable = tableSupplier.get();
+    if (isDeltaReadOnlyCommitBlocked(currentTable)) {
+      return IcebergErrorResponses.conflict(
+          "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
+    }
 
     TableUpdatePlanner.UpdatePlan updatePlan =
         tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
@@ -405,5 +414,18 @@ public class TableCommitService {
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  private boolean isDeltaReadOnlyCommitBlocked(Table table) {
+    if (table == null || tableFormatSupport == null || config == null) {
+      return false;
+    }
+    var deltaCompat = config.deltaCompat();
+    if (deltaCompat.isEmpty()) {
+      return false;
+    }
+    return deltaCompat.get().enabled()
+        && deltaCompat.get().readOnly()
+        && tableFormatSupport.isDelta(table);
   }
 }

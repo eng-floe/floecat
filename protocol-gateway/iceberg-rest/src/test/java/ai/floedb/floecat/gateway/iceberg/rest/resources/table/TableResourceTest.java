@@ -43,6 +43,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -82,6 +83,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import jakarta.ws.rs.core.MediaType;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -214,13 +216,17 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .header(
-            "ETag", equalTo(IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation())))
+            "ETag",
+            equalTo(
+                IcebergHttpUtil.etagForMetadataLocation(
+                    FIXTURE.metadataLocation() + "|snapshots=all")))
         .body("metadata.snapshots.size()", equalTo(2))
         .body("'storage-credentials'", nullValue());
 
     given()
         .header(
-            "If-None-Match", IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation()))
+            "If-None-Match",
+            IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation() + "|snapshots=all"))
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -234,6 +240,126 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
         .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
+  }
+
+  @Test
+  void getTableSnapshotsRefsReturnsEmptyWhenNoRefsPresent() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
+    Table table =
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("orders")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    IcebergMetadata metadataNoRefs = FIXTURE.metadata().toBuilder().clearRefs().build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(currentSnapshot.getSnapshotId())
+            .putFormatMetadata("iceberg", metadataNoRefs.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    Snapshot snapshot1 = currentSnapshot.toBuilder().setTableId(tableId).build();
+    Snapshot snapshot2 = fixtureSnapshots.get(0).toBuilder().setTableId(tableId).build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(snapshot1)
+                .addSnapshots(snapshot2)
+                .build());
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.snapshots.size()", equalTo(0));
+  }
+
+  @Test
+  void getDeltaTableUsesTranslatedMetadataAndRefsFiltering() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:delta_orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat").build())
+            .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("delta_orders")
+            .putProperties("storage_location", "s3://warehouse/delta_orders")
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).build())
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    Snapshot s1 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(101L)
+            .setSequenceNumber(1L)
+            .setSchemaId(3)
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstreamCreatedAt(
+                Timestamps.fromMillis(Instant.parse("2026-01-01T00:00:00Z").toEpochMilli()))
+            .build();
+    Snapshot s2 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(102L)
+            .setSequenceNumber(2L)
+            .setSchemaId(3)
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstreamCreatedAt(
+                Timestamps.fromMillis(Instant.parse("2026-01-02T00:00:00Z").toEpochMilli()))
+            .build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(s1).addSnapshots(s2).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("delta-load-q1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    ScanBundle bundle =
+        ScanBundle.newBuilder()
+            .addDataFiles(
+                ScanFile.newBuilder()
+                    .setFilePath("s3://warehouse/delta_orders/data/part-00000.parquet")
+                    .setFileFormat("PARQUET")
+                    .setFileSizeInBytes(128L)
+                    .setRecordCount(1L)
+                    .build())
+            .build();
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/delta_orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.'current-snapshot-id'", equalTo(102))
+        .body("metadata.'current-schema-id'", equalTo(3))
+        .body("metadata.schemas[0].fields[0].id", equalTo(1))
+        .body("metadata.'snapshot-log'.size()", equalTo(2))
+        .body("metadata.snapshots.size()", equalTo(1))
+        .body("metadata.snapshots[0].'snapshot-id'", equalTo(102))
+        .body("metadata.snapshots[0].'manifest-list'", notNullValue())
+        .body("'metadata-location'", notNullValue());
   }
 
   @Test

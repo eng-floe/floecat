@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -27,6 +28,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -36,8 +39,11 @@ import java.util.List;
 
 @ApplicationScoped
 public class TableLoadService {
+  @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject SnapshotClient snapshotClient;
+  @Inject TableFormatSupport tableFormatSupport;
+  @Inject DeltaIcebergMetadataService deltaMetadataService;
 
   public Response load(
       TableRequestContext tableContext,
@@ -53,11 +59,20 @@ public class TableLoadService {
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
-    List<Snapshot> snapshotList =
-        SnapshotLister.fetchSnapshots(
-            snapshotClient, tableContext.tableId(), snapshotMode, metadata);
-    String etagValue = metadataLocation(metadata);
+    IcebergMetadata metadata;
+    List<Snapshot> snapshotList;
+    if (deltaCompatEnabled(tableRecord)) {
+      DeltaIcebergMetadataService.DeltaLoadResult delta =
+          deltaMetadataService.load(tableContext.tableId(), tableRecord, snapshotMode);
+      metadata = delta.metadata();
+      snapshotList = delta.snapshots();
+    } else {
+      metadata = tableSupport.loadCurrentMetadata(tableRecord);
+      snapshotList =
+          SnapshotLister.fetchSnapshots(
+              snapshotClient, tableContext.tableId(), snapshotMode, metadata);
+    }
+    String etagValue = etagSource(metadata, snapshotMode);
     if (etagValue != null) {
       etagValue = IcebergHttpUtil.etagForMetadataLocation(etagValue);
     }
@@ -133,5 +148,29 @@ public class TableLoadService {
       return metadata.getMetadataLocation();
     }
     return null;
+  }
+
+  private String etagSource(IcebergMetadata metadata, SnapshotLister.Mode snapshotMode) {
+    String metadataLocation = metadataLocation(metadata);
+    if (metadataLocation == null) {
+      return null;
+    }
+    String mode;
+    if (snapshotMode == null) {
+      mode = SnapshotLister.Mode.ALL.name().toLowerCase();
+    } else {
+      mode = snapshotMode.name().toLowerCase();
+    }
+    return metadataLocation + "|snapshots=" + mode;
+  }
+
+  private boolean deltaCompatEnabled(Table table) {
+    if (config == null || tableFormatSupport == null || table == null) {
+      return false;
+    }
+    var deltaCompat = config.deltaCompat();
+    return deltaCompat.isPresent()
+        && deltaCompat.get().enabled()
+        && tableFormatSupport.isDelta(table);
   }
 }

@@ -102,7 +102,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
 4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
 5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream, run reconcile). Snapshot format metadata is synced from the committed `metadata.json` in the REST layer.
-6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags are set to the metadata location so clients can cache responses.
+6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags include the metadata location and representation selector (`snapshots=all|refs`) so clients can safely cache per response shape.
 
 ### `/transactions/commit`
 
@@ -132,11 +132,65 @@ Limits/Follow-ups:
 
 ---
 
+## Delta Compatibility Layer
+
+The gateway now supports loading Floecat Delta tables through the Iceberg REST surface so engines
+like DuckDB can query `examples.delta.<table>` via the same REST attach used for native Iceberg
+tables.
+
+### How it works
+
+1. On Delta table load, the gateway translates Delta table/snapshot/schema state into Iceberg
+   metadata JSON (including `snapshot-log`, `refs`, and Iceberg-compatible primitive type names).
+2. For each returned Delta snapshot that lacks a manifest list, the gateway materializes Iceberg
+   compat artifacts:
+   - data manifest: `<table-root>/metadata/<snapshot-id>-compat-m0.avro`
+   - delete manifest (when Delta delete vectors exist): `<table-root>/metadata/<snapshot-id>-compat-d0.avro`
+   - position-delete files (generated from Delta DV bitmaps): `<table-root>/metadata/<snapshot-id>-compat-pd-*.avro`
+   - manifest list: `<table-root>/metadata/snap-<snapshot-id>-compat.avro`
+3. On each Delta load/query, compat artifacts are resolved by deterministic snapshot path:
+   - existing `snap-<snapshot-id>-compat.avro`: reuse
+   - missing `snap-<snapshot-id>-compat.avro`: regenerate manifest + manifest-list from the
+     original Delta snapshot state at read time
+
+This gives "refresh-on-read" behavior without requiring clients to know anything about Delta,
+and no marker file/state is required.
+
+Load responses follow Iceberg REST `snapshots` semantics:
+- `snapshots=all` returns all valid snapshots
+- `snapshots=refs` returns only snapshots currently referenced by branches/tags (empty if no refs)
+
+ETags for load responses are representation-aware and vary by `snapshots` mode.
+
+### Configuration
+
+- `floecat.gateway.delta-compat.enabled=true` enables Delta compatibility translation/materialization.
+- `floecat.gateway.delta-compat.read-only=true` keeps behavior read-only from the compatibility path.
+
+### Storage behavior
+
+- Compat files are written to object storage under the Delta table’s own `metadata/` prefix
+  (same bucket/prefix family as the source Delta table), not served from in-memory-only state.
+
+### Current limitations
+
+- Supported delete behavior:
+  - Delta `remove` actions that fully remove parquet files are reflected correctly (removed files
+    are absent from generated Iceberg data manifests).
+  - Copy-on-write deletes (remove old parquet file, add rewritten parquet file) are reflected
+    correctly from the active Delta snapshot file set.
+- Only on-disk Delta deletion vectors are projected today; inline deletion vectors are currently skipped.
+- Equality-delete projection is not implemented; compatibility materialization emits Iceberg position deletes.
+
+---
+
 ## Testing
 
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
+- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
+  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
 
 ---
 

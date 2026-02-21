@@ -84,7 +84,7 @@ public final class TableMetadataBuilder {
             ? Long.valueOf(metadata.getLastUpdatedMs())
             : null;
     Long currentSnapshotId =
-        metadata != null && metadata.getCurrentSnapshotId() > 0
+        metadata != null && metadata.getCurrentSnapshotId() >= 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
             : null;
     Long lastSequenceNumber =

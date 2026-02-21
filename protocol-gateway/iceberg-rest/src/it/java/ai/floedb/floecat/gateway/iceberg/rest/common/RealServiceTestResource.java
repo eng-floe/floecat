@@ -170,6 +170,11 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     Map<String, String> testConfig = new LinkedHashMap<>();
     testConfig.put("floecat.gateway.upstream-target", LOOPBACK_HOST + ":" + httpPort);
     testConfig.put("floecat.gateway.upstream-plaintext", "true");
+    String configuredEndpoint = System.getProperty("floecat.fixture.aws.s3.endpoint");
+    if (configuredEndpoint == null || configuredEndpoint.isBlank()) {
+      configuredEndpoint = "http://localhost:4566";
+    }
+    testConfig.put("floecat.gateway.storage-credential.properties.s3.endpoint", configuredEndpoint);
     String connectorIntegration =
         System.getProperty("floecat.gateway.connector-integration-enabled");
     if (connectorIntegration != null && !connectorIntegration.isBlank()) {

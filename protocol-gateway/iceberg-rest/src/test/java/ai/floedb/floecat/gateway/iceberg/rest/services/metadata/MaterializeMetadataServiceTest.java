@@ -17,12 +17,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -172,6 +174,50 @@ class MaterializeMetadataServiceTest {
     assertTrue(
         parsed.lastSequenceNumber() >= maxSnapshotSeq,
         "Expected last-sequence-number to be >= snapshot sequence");
+  }
+
+  @Test
+  void materializeDropsMainRefWhenCurrentSnapshotIsMissing() throws Exception {
+    TestMaterializeMetadataService service = new TestMaterializeMetadataService();
+    service.setMapper(MAPPER);
+
+    TableMetadataView base = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.remove("current-snapshot-id");
+
+    TableMetadataView withoutCurrent =
+        new TableMetadataView(
+            base.formatVersion(),
+            base.tableUuid(),
+            base.location(),
+            base.metadataLocation(),
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            null,
+            base.lastSequenceNumber(),
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            base.refs(),
+            base.snapshotLog(),
+            base.metadataLog(),
+            base.statistics(),
+            base.partitionStatistics(),
+            base.snapshots());
+
+    MaterializeResult result =
+        service.materialize(
+            "sales.us", "orders", withoutCurrent, withoutCurrent.metadataLocation());
+    String payload = readFile(service.fileIo(), result.metadataLocation());
+    JsonNode root = MAPPER.readTree(payload);
+
+    assertFalse(
+        root.path("refs").has("main"), "main ref should be removed without current snapshot");
   }
 
   private TableMetadataView fixtureMetadata(String location) {

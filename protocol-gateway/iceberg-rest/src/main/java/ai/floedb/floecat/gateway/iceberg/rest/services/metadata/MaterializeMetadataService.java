@@ -151,6 +151,13 @@ public class MaterializeMetadataService {
         long snapshotId = objectNode.path("current-snapshot-id").asLong(-1L);
         if (snapshotId <= 0) {
           objectNode.remove("current-snapshot-id");
+          JsonNode refs = objectNode.get("refs");
+          if (refs instanceof ObjectNode refsNode) {
+            refsNode.remove("main");
+            if (refsNode.isEmpty()) {
+              objectNode.remove("refs");
+            }
+          }
         }
         long maxSequence = maxSnapshotSequence(objectNode);
         long metadataMaxSequence = maxSnapshotSequence(metadata);

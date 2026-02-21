@@ -98,6 +98,20 @@
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-aws</artifactId>
     </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-kernel-api</artifactId>
+      <version>${version.delta.kernel.api}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>delta-kernel-defaults</artifactId>
+      <version>${version.delta.kernel.api}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-common</artifactId>
+    </dependency>
 
     <dependency>
       <groupId>software.amazon.awssdk</groupId>

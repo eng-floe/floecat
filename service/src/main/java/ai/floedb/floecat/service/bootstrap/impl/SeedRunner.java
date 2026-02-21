@@ -548,17 +548,34 @@ public class SeedRunner {
   private void seedDeltaFixtureTables(ResourceId accountId, ResourceId catalogId, long now) {
     TestDeltaFixtures.seedFixturesOnce();
 
-    var fixture =
-        new DeltaFixtureConfig(
-            "fixture-delta-call-center",
-            "Delta call_center fixture table",
-            TestDeltaFixtures.tableUri(),
-            "examples.delta",
-            "call_center",
-            DELTA_NAMESPACE);
+    List<DeltaFixtureConfig> fixtures =
+        List.of(
+            new DeltaFixtureConfig(
+                "fixture-delta-call-center",
+                "Delta call_center fixture table",
+                TestDeltaFixtures.tableUri("call_center"),
+                "examples.delta",
+                "call_center",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-my-local-delta-table",
+                "Delta my_local_delta_table fixture table",
+                TestDeltaFixtures.tableUri("my_local_delta_table"),
+                "examples.delta",
+                "my_local_delta_table",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-dv-demo-delta",
+                "Delta dv_demo_delta fixture table",
+                TestDeltaFixtures.tableUri("dv_demo_delta"),
+                "examples.delta",
+                "dv_demo_delta",
+                DELTA_NAMESPACE));
 
-    ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
-    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    for (DeltaFixtureConfig fixture : fixtures) {
+      ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
+      syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    }
   }
 
   private ResourceId seedDeltaConnector(
@@ -613,7 +630,14 @@ public class SeedRunner {
     props.put("external.namespace", fixture.sourceNamespace());
     props.put("external.table-name", fixture.tableName());
     props.put("stats.ndv.enabled", "false");
-    props.putAll(TestDeltaFixtures.s3Options());
+    if (TestDeltaFixtures.useAwsFixtures()) {
+      props.putAll(TestDeltaFixtures.s3Options());
+    } else {
+      String fixtureRoot = System.getProperty("fs.floecat.test-root", "");
+      if (!fixtureRoot.isBlank()) {
+        props.put("fs.floecat.test-root", fixtureRoot);
+      }
+    }
     return props;
   }
 
