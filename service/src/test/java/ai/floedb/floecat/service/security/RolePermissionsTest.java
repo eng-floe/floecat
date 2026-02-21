@@ -23,8 +23,57 @@ import org.junit.jupiter.api.Test;
 
 class RolePermissionsTest {
 
+  private static final List<String> READ_PERMS =
+      List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
+  private static final List<String> FULL_PERMS =
+      List.of(
+          "account.read",
+          "catalog.read",
+          "catalog.write",
+          "namespace.read",
+          "namespace.write",
+          "table.read",
+          "table.write",
+          "view.read",
+          "view.write",
+          "connector.manage",
+          "system-objects.read");
+  private static final List<String> INIT_ACCOUNT_PERMS =
+      List.of(
+          "account.write", "catalog.read", "catalog.write", "namespace.read", "namespace.write");
+  private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
+
   @Test
-  void systemObjectsRoleGrantsReadOnlyPlannerBootstrapPermissions() {
+  void defaultRoleGrantsReadPermissions() {
+    var permissions = RolePermissions.permissionsForRoles(List.of("default"), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(READ_PERMS);
+  }
+
+  @Test
+  void administratorRoleGrantsFullTenantPermissions() {
+    var permissions = RolePermissions.permissionsForRoles(List.of("administrator"), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(FULL_PERMS);
+  }
+
+  @Test
+  void developerRoleGrantsFullTenantPermissions() {
+    var permissions = RolePermissions.permissionsForRoles(List.of("developer"), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(FULL_PERMS);
+  }
+
+  @Test
+  void platformAdminRoleGrantsAccountManagementPermissions() {
+    var permissions =
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.platformAdminRole()), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(PLATFORM_PERMS);
+  }
+
+  @Test
+  void systemObjectsRoleGrantsSystemObjectsReadPermission() {
     var permissions =
         RolePermissions.permissionsForRoles(List.of(RolePermissions.SYSTEM_OBJECTS_ROLE), false);
 
@@ -41,12 +90,10 @@ class RolePermissionsTest {
   }
 
   @Test
-  void routeInitAccountRoleGrantsBootstrapMutationPermissions() {
+  void initAccountRoleGrantsBootstrapMutationPermissions() {
     var permissions =
         RolePermissions.permissionsForRoles(List.of(RolePermissions.INIT_ACCOUNT_ROLE), false);
 
-    assertThat(permissions)
-        .contains(
-            "account.write", "catalog.read", "catalog.write", "namespace.read", "namespace.write");
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(INIT_ACCOUNT_PERMS);
   }
 }

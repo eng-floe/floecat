@@ -17,6 +17,9 @@ How to tell if you have permission:
 - If it fails with `PERMISSION_DENIED` and a message like `missing permission: <perm>`, you do not
   have that permission for the current identity.
 
+Fixed role names and their granted permissions are documented in
+[`docs/fixed-roles.md`](fixed-roles.md).
+
 ## gRPC
 
 Use any gRPC client (for example `grpcurl`) once the service listens on `localhost:9100`.

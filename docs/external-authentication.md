@@ -35,6 +35,8 @@ Role intent:
 - `administrator` grants full tenant‑scoped access (catalogs/namespaces/tables/connectors) but does
   not grant account management.
 
+See [`docs/fixed-roles.md`](fixed-roles.md).
+
 Note: the realm config uses a service-account client (`client_credentials` flow). Password grant is
 disabled.
 
