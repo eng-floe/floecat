@@ -146,7 +146,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
   }
 
   @Test
@@ -243,7 +247,11 @@ class UserObjectBundleServiceTest {
             localStatsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     long expectedSnapshotId = 99L;
     TableStats stats =
@@ -330,7 +338,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -560,7 +572,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -583,7 +605,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()

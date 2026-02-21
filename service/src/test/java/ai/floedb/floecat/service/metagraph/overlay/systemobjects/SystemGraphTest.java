@@ -87,7 +87,9 @@ class SystemGraphTest {
                     List.<SystemColumnDef>of(),
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "scanner",
-                    List.of())),
+                    "",
+                    List.of(),
+                    null)),
             List.of() // views
             ,
             List.of());
@@ -352,7 +354,9 @@ class SystemGraphTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     private final SystemTableDef pluginTable =
         new SystemTableDef(
@@ -361,7 +365,9 @@ class SystemGraphTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "plugin-scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     @Override
     public List<SystemObjectDef> definitions() {

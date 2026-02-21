@@ -29,6 +29,7 @@ package ai.floedb.floecat.query;
 import "floecat/common/common.proto";
 import "floecat/query/engine_specific.proto";
 import "floecat/query/sql_objects.proto";
+import "floecat/query/system_objects_registry.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
@@ -237,9 +238,25 @@ message RelationInfo {
   /** Optional table-level statistics from a cached catalog snapshot. */
   RelationStats stats = 6;
   
-  /** Origin indicates whether the relation is user-defined or builtin. */
+  /** Origin indicates whether the relation is user-defined or system. */
   ai.floedb.floecat.query.Origin origin = 7;
+
+  /** 
+   * Execution backend storage kind.
+   * Only set for system tables
+   */
+  optional TableBackendKind backend_kind = 8;
   
+  /**
+   * Execution endpoint metadata for builtin tables. FLOECAT tables always present a Flight
+   * endpoint, while STORAGE tables either expose their own Flight endpoint or surface a
+   * storage path (but never both). Workers use whichever field is set to reach the backend.
+   */
+  oneof endpoint {
+    FlightEndpointRef flight_endpoint = 9;
+    string storage_path = 10;
+  }
+
   /** Optional engine-specific metadata extensions. */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
 }

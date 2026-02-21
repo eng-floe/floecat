@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
@@ -48,6 +49,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
@@ -67,10 +69,12 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -79,6 +83,7 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
+  private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
@@ -87,6 +92,27 @@ public class UserObjectBundleService {
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
+  private final FlightEndpointRef floecatFlightEndpoint;
+
+  private static void warnFlightHost(String flightHost, String quarkusProfile) {
+    if (flightHost == null) {
+      return;
+    }
+    String normalized =
+        flightHost
+            .trim()
+            .toLowerCase(Locale.ROOT)
+            .replaceAll("^\\[(.*)]$", "$1"); // handle IPv6 braces
+    boolean isLocalHost = LOCAL_FLIGHT_HOSTS.contains(normalized);
+    boolean isDevProfile =
+        quarkusProfile != null
+            && (quarkusProfile.equalsIgnoreCase("dev") || quarkusProfile.equalsIgnoreCase("test"));
+    if (isLocalHost && !isDevProfile) {
+      LOG.warnf(
+          "floecat.flight.host=%s resolves to %s; configure FLOECAT_FLIGHT_HOST to a routable endpoint before running in prod so workers can connect.",
+          flightHost, normalized);
+    }
+  }
 
   @Inject
   public UserObjectBundleService(
@@ -97,7 +123,11 @@ public class UserObjectBundleService {
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
-          boolean engineSpecificEnabled) {
+          boolean engineSpecificEnabled,
+      @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost") String flightHost,
+      @ConfigProperty(name = "floecat.flight.port", defaultValue = "47470") int flightPort,
+      @ConfigProperty(name = "floecat.flight.tls", defaultValue = "false") boolean flightTls,
+      @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
@@ -105,6 +135,13 @@ public class UserObjectBundleService {
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
     this.engineSpecificEnabled = engineSpecificEnabled;
+    this.floecatFlightEndpoint =
+        FlightEndpointRef.newBuilder()
+            .setHost(flightHost)
+            .setPort(flightPort)
+            .setTls(flightTls)
+            .build();
+    warnFlightHost(flightHost, quarkusProfile);
   }
 
   public Multi<UserObjectsBundleChunk> stream(
@@ -257,6 +294,24 @@ public class UserObjectBundleService {
             .setName(name)
             .setKind(kind)
             .setOrigin(origin);
+
+    /*
+     * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
+     * tables always use our built-in Flight server, and STORAGE tables can either point at their
+     * own Flight endpoint or expose a storage path. ENGINE tables never set an endpoint.
+     */
+    if (relation.node() instanceof SystemTableNode systemTableNode) {
+      builder.setBackendKind(systemTableNode.backendKind());
+      if (systemTableNode instanceof SystemTableNode.FloeCatSystemTableNode) {
+        builder.setFlightEndpoint(floecatFlightEndpoint);
+      } else if (systemTableNode instanceof SystemTableNode.StorageSystemTableNode storage) {
+        if (storage.flightEndpoint() != null) {
+          builder.setFlightEndpoint(storage.flightEndpoint());
+        } else if (!storage.storagePath().isBlank()) {
+          builder.setStoragePath(storage.storagePath());
+        }
+      }
+    }
 
     statsProvider
         .tableStats(relation.relationId())

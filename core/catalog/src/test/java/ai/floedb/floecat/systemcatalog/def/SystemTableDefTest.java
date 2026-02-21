@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -38,9 +39,27 @@ class SystemTableDefTest {
                     TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
                     "scanner",
                     "",
-                    List.of()))
+                    List.of(),
+                    null))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("storagePath");
+        .hasMessageContaining("storagePath or flightEndpoint");
+  }
+
+  @Test
+  void storageWithBothPathAndFlightFails() {
+    assertThatThrownBy(
+            () ->
+                new SystemTableDef(
+                    NameRefUtil.name("namespace", "t"),
+                    "t",
+                    COLUMNS,
+                    TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
+                    "scanner",
+                    "path",
+                    List.of(),
+                    FlightEndpointRef.newBuilder().setHost("foo").setPort(1).build()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("storagePath or flightEndpoint");
   }
 
   @Test
@@ -54,7 +73,8 @@ class SystemTableDefTest {
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "",
                     "",
-                    List.of()))
+                    List.of(),
+                    null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("scannerId");
   }
