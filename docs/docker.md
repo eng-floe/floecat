@@ -8,7 +8,7 @@ make docker
 
 ## Compose Modes
 
-The stack runs in three modes by selecting an env file and compose profiles as needed.
+The stack runs in four modes by selecting an env file and compose profiles as needed.
 
 In-memory (default storage, no AWS dependencies):
 
@@ -16,12 +16,19 @@ In-memory (default storage, no AWS dependencies):
 FLOECAT_ENV_FILE=./env.inmem docker compose -f docker/docker-compose.yml up -d
 ```
 
-This mode runs with DEV auth (OIDC disabled), so it does not require Keycloak.
+This mode runs with DEV auth (OIDC disabled), so it does not require Keycloak. The default
+`docker/env.inmem` also enables seeding in `iceberg` mode.
 
-LocalStack (DynamoDB + S3):
+LocalStack (DynamoDB + S3, DEV auth, no OIDC):
 
 ```bash
-FLOECAT_ENV_FILE=./env.localstack docker compose -f docker/docker-compose.yml --profile localstack --profile keycloak up -d
+FLOECAT_ENV_FILE=./env.localstack docker compose -f docker/docker-compose.yml --profile localstack up -d
+```
+
+LocalStack + OIDC (DynamoDB + S3 + Keycloak):
+
+```bash
+FLOECAT_ENV_FILE=./env.localstack-oidc docker compose -f docker/docker-compose.yml --profile localstack-oidc up -d
 ```
 
 Real AWS (DynamoDB + S3):
@@ -30,16 +37,62 @@ Real AWS (DynamoDB + S3):
 FLOECAT_ENV_FILE=./env.aws docker compose -f docker/docker-compose.yml up -d
 ```
 
+Make equivalents:
+
+```bash
+# In-memory
+make compose-up
+make compose-down
+
+# LocalStack
+make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+
+# LocalStack + OIDC
+make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+```
+
 Interactive CLI in a container:
 
 ```bash
 make compose-shell
 ```
 
-OIDC-enabled CLI (for `docker/env.localstack`) with token auto-injected:
+OIDC-enabled CLI (for `docker/env.localstack-oidc`) with automatic token refresh:
 
 ```bash
 make cli-docker
+```
+
+### Attach/Detach CLI Container
+
+If the stack is already running (including `cli`), attach to the running CLI process:
+
+```bash
+docker compose -f docker/docker-compose.yml attach cli
+```
+
+Detach without stopping the container:
+
+```text
+Ctrl+P, Ctrl+Q
+```
+
+To open a new one-off interactive CLI session instead of attaching:
+
+```bash
+make compose-shell
+```
+
+If you switch between LocalStack modes, stop the previous stack first to avoid leftover services:
+
+```bash
+FLOECAT_ENV_FILE=./env.localstack docker compose -f docker/docker-compose.yml --profile localstack down --remove-orphans
+```
+
+```bash
+FLOECAT_ENV_FILE=./env.localstack-oidc docker compose -f docker/docker-compose.yml --profile localstack-oidc down --remove-orphans
 ```
 
 ## Configuration and Overrides
@@ -95,17 +148,18 @@ If your images run as a non-root user, mount `~/.aws` into that user’s home in
 
 - `docker/env.inmem` explicitly uses DEV auth (`FLOECAT_AUTH_MODE=dev`,
   `FLOECAT_GATEWAY_AUTH_MODE=dev`) and disables OIDC.
-- Only `docker/env.localstack` enables OIDC by default.
+- `docker/env.localstack` also uses DEV auth and keeps OIDC disabled for quick starts.
+- `docker/env.localstack-oidc` enables OIDC and expects the Keycloak service.
 - Services running **inside** the Docker network must use the Keycloak service name:
   `http://keycloak:8080/realms/floecat`.
 - Clients running on the **host** (or external containers not on the `docker_floecat` network)
   must use `http://host.docker.internal:8080/realms/floecat` (or `KEYCLOAK_PORT` if overridden).
 - If you use Trino with the REST catalog, ensure the gateway audience list includes both
-  `floecat-client` and `trino-client` (see `docker/env.localstack`).
+  `floecat-client` and `trino-client` (see `docker/env.localstack-oidc`).
 
 ### OIDC Token for Shell
 
-When the stack is running with `docker/env.localstack`, the CLI must send a bearer token.
+When the stack is running with `docker/env.localstack-oidc`, the CLI must send a bearer token.
 `make compose-shell` does not fetch/inject a token. Use one of:
 
 ```bash
