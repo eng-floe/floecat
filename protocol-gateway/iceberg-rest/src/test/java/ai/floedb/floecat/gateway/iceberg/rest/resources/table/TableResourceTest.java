@@ -26,7 +26,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -70,11 +69,20 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DataFile;
+import ai.floedb.floecat.query.rpc.DataFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteFile;
+import ai.floedb.floecat.query.rpc.DeleteFileBatch;
+import ai.floedb.floecat.query.rpc.DeleteIdList;
+import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
-import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.InitScanRequest;
+import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
+import com.google.protobuf.Empty;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -85,6 +93,8 @@ import jakarta.ws.rs.core.MediaType;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -935,8 +945,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
     when(queryStub.beginQuery(any()))
         .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    stubQueryScanForBundle(tableId, bundle);
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -962,7 +971,10 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(tableId, describe.getValue().getInputs(0).getTableId());
     assertEquals(7L, describe.getValue().getInputs(0).getSnapshot().getSnapshotId());
 
-    verify(queryScanStub, times(1)).fetchScanBundle(any());
+    ArgumentCaptor<InitScanRequest> fetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(queryScanStub).initScan(fetch.capture());
+    assertEquals("plan-1", fetch.getValue().getQueryId());
+    assertEquals(tableId, fetch.getValue().getTableId());
   }
 
   @Test
@@ -1003,8 +1015,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setRecordCount(10)
             .build();
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    stubQueryScanForBundle(tableId, bundle);
 
     given()
         .body("{\"snapshot-id\":7}")
@@ -1025,9 +1036,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/file.parquet"))
         .body("'delete-files'.size()", equalTo(0));
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(queryScanStub).fetchScanBundle(fetch.capture());
+    ArgumentCaptor<InitScanRequest> fetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(queryScanStub).initScan(fetch.capture());
     assertEquals("plan-1", fetch.getValue().getQueryId());
     assertEquals(tableId, fetch.getValue().getTableId());
   }
@@ -1044,8 +1054,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
 
     ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    ScanHandle handle = stubQueryScanForBundle(tableId, bundle);
 
     String body =
         """
@@ -1078,9 +1087,8 @@ class TableResourceTest extends AbstractRestResourceTest {
 
     given().when().get("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(200);
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(queryScanStub).fetchScanBundle(fetch.capture());
+    ArgumentCaptor<InitScanRequest> fetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(queryScanStub).initScan(fetch.capture());
     assertEquals(2, fetch.getValue().getPredicatesCount());
     var first = fetch.getValue().getPredicates(0);
     assertEquals("customerid", first.getColumn());
@@ -1108,8 +1116,7 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setRecordCount(10)
             .build();
     ScanBundle bundle = ScanBundle.newBuilder().addDataFiles(file).build();
-    when(queryScanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+    ScanHandle handle = stubQueryScanForBundle(tableId, bundle);
 
     given()
         .body("{}")
@@ -1127,9 +1134,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("'file-scan-tasks'[0].'data-file'.'file-path'", equalTo("s3://bucket/task.parquet"));
 
-    ArgumentCaptor<FetchScanBundleRequest> fetch =
-        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
-    verify(queryScanStub).fetchScanBundle(fetch.capture());
+    ArgumentCaptor<InitScanRequest> fetch = ArgumentCaptor.forClass(InitScanRequest.class);
+    verify(queryScanStub).initScan(fetch.capture());
     assertEquals("plan-1", fetch.getValue().getQueryId());
     assertEquals(tableId, fetch.getValue().getTableId());
   }
@@ -1213,5 +1219,46 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables/orders/metrics")
         .then()
         .statusCode(204);
+  }
+
+  private ScanHandle stubQueryScanForBundle(ResourceId tableId, ScanBundle bundle) {
+    ScanHandle handle = ScanHandle.newBuilder().setId(UUID.randomUUID().toString()).build();
+    when(queryScanStub.initScan(any()))
+        .thenReturn(
+            InitScanResponse.newBuilder()
+                .setHandle(handle)
+                .setTableInfo(TableInfo.newBuilder().setTableId(tableId).build())
+                .build());
+
+    List<DeleteFile> deleteFiles =
+        IntStream.range(0, bundle.getDeleteFilesCount())
+            .mapToObj(
+                idx ->
+                    DeleteFile.newBuilder()
+                        .setDeleteId(idx)
+                        .setFile(bundle.getDeleteFiles(idx))
+                        .build())
+            .toList();
+    when(queryScanStub.streamDeleteFiles(handle))
+        .thenReturn(
+            List.of(DeleteFileBatch.newBuilder().addAllItems(deleteFiles).build()).iterator());
+
+    List<Integer> deleteIds = deleteFiles.stream().map(DeleteFile::getDeleteId).toList();
+    List<DataFile> dataFiles =
+        bundle.getDataFilesList().stream()
+            .map(
+                file ->
+                    DataFile.newBuilder()
+                        .setFile(file)
+                        .setDeletes(
+                            DeleteRef.newBuilder()
+                                .setDeleteIds(DeleteIdList.newBuilder().addAllIds(deleteIds)))
+                        .build())
+            .toList();
+    when(queryScanStub.streamDataFiles(handle))
+        .thenReturn(List.of(DataFileBatch.newBuilder().addAllItems(dataFiles).build()).iterator());
+
+    when(queryScanStub.closeScan(handle)).thenReturn(Empty.newBuilder().build());
+    return handle;
   }
 }
