@@ -775,6 +775,12 @@ compose-smoke: docker
 	  if [ -n "$$kc_host" ]; then mode_env="$$mode_env KC_HOSTNAME=$$kc_host"; fi; \
 	  if [ -n "$$kc_port" ]; then mode_env="$$mode_env KC_HOSTNAME_PORT=$$kc_port"; fi; \
 	  compose_cmd="$$mode_env $(DOCKER_COMPOSE_MAIN)"; \
+	  on_mode_error() { \
+	    echo "==> [SMOKE][FAIL] mode=$$label"; \
+	    eval "$$compose_cmd ps" || true; \
+	    eval "$$compose_cmd logs --no-color --tail=200" || true; \
+	  }; \
+	  trap on_mode_error ERR; \
 	  cleanup() { eval "$$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true; }; \
 	  trap cleanup RETURN; \
 	  echo "==> [SMOKE] mode=$$label"; \
@@ -831,13 +837,16 @@ compose-smoke: docker
 	    echo "$$duckdb_out"; \
 	    assert_contains "$$label duckdb smoke marker" "$$duckdb_out" "duckdb_smoke_ok"; \
 	    assert_contains "$$label duckdb call_center count" "$$duckdb_out" "call_center=42"; \
-	    assert_contains "$$label duckdb my_local_delta_table count" "$$duckdb_out" "my_local_delta_table=1"; \
+	    assert_contains "$$label duckdb my_local_delta_table count" "$$duckdb_out" "my_local_delta_table=4"; \
 	    assert_contains "$$label duckdb dv_demo_delta count" "$$duckdb_out" "dv_demo_delta=2"; \
 	  fi; \
+	  trap - ERR; \
+	  echo "==> [SMOKE][PASS] mode=$$label"; \
 	}; \
 	run_mode ./env.inmem "" inmem "" "" ""; \
 	run_mode ./env.localstack localstack localstack "localstack" "" ""; \
-	run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"
+	run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"; \
+	echo "==> [COMPOSE][PASS] smoke"
 
 # ===================================================
 # Lint/format

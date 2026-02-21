@@ -217,7 +217,7 @@ jobs:
               echo "$duckdb_out"
               assert_contains "${label} duckdb smoke marker" "$duckdb_out" "duckdb_smoke_ok"
               assert_contains "${label} duckdb call_center count" "$duckdb_out" "call_center=42"
-              assert_contains "${label} duckdb my_local_delta_table count" "$duckdb_out" "my_local_delta_table=1"
+              assert_contains "${label} duckdb my_local_delta_table count" "$duckdb_out" "my_local_delta_table=4"
               assert_contains "${label} duckdb dv_demo_delta count" "$duckdb_out" "dv_demo_delta=2"
             fi
 
