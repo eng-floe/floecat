@@ -36,6 +36,10 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
     overrides.put(
         "floecat.gateway.storage-credential.properties.s3.secret-access-key", "test-secret");
     overrides.put("floecat.gateway.storage-credential.properties.s3.region", "us-east-1");
+    overrides.put(
+        "floecat.gateway.storage-credential.properties.s3.endpoint", "http://localhost:4566");
+    overrides.put("floecat.gateway.delta-compat.enabled", "true");
+    overrides.put("floecat.gateway.delta-compat.read-only", "true");
 
     if (useAwsFixtures()) {
       overrides.put("floecat.gateway.metadata-file-io", "org.apache.iceberg.aws.s3.S3FileIO");

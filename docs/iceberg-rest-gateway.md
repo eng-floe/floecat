@@ -132,6 +132,46 @@ Limits/Follow-ups:
 
 ---
 
+## Delta Compatibility Layer
+
+The gateway now supports loading Floecat Delta tables through the Iceberg REST surface so engines
+like DuckDB can query `examples.delta.<table>` via the same REST attach used for native Iceberg
+tables.
+
+### How it works
+
+1. On Delta table load, the gateway translates Delta table/snapshot/schema state into Iceberg
+   metadata JSON (including `snapshot-log`, `refs`, and Iceberg-compatible primitive type names).
+2. For the latest Delta snapshot, the gateway materializes Iceberg compat artifacts:
+   - data manifest: `<table-root>/metadata/<snapshot-id>-compat-m0.avro`
+   - manifest list: `<table-root>/metadata/snap-<snapshot-id>-compat.avro`
+3. A persisted marker file tracks the last generated compat snapshot:
+   - `<table-root>/metadata/.compat-latest`
+   - format: `<snapshot-id>\t<manifest-list-path>`
+4. On each Delta load/query, the gateway compares latest Delta snapshot to the marker:
+   - unchanged: reuse existing compat manifest list
+   - changed: regenerate manifest + manifest-list and update marker
+
+This gives "refresh-on-read" behavior without requiring clients to know anything about Delta.
+
+### Configuration
+
+- `floecat.gateway.delta-compat.enabled=true` enables Delta compatibility translation/materialization.
+- `floecat.gateway.delta-compat.read-only=true` keeps behavior read-only from the compatibility path.
+
+### Storage behavior
+
+- Compat files are written to object storage under the Delta table’s own `metadata/` prefix
+  (same bucket/prefix family as the source Delta table), not served from in-memory-only state.
+
+### Current limitations
+
+- Delete vectors/delete-file semantics are not yet projected into generated Iceberg delete manifests.
+  Compat materialization currently writes data-file manifests only, so Delta tables relying on delete
+  vectors are not fully represented through this path yet.
+
+---
+
 ## Testing
 
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.

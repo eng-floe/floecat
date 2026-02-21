@@ -548,17 +548,27 @@ public class SeedRunner {
   private void seedDeltaFixtureTables(ResourceId accountId, ResourceId catalogId, long now) {
     TestDeltaFixtures.seedFixturesOnce();
 
-    var fixture =
-        new DeltaFixtureConfig(
-            "fixture-delta-call-center",
-            "Delta call_center fixture table",
-            TestDeltaFixtures.tableUri(),
-            "examples.delta",
-            "call_center",
-            DELTA_NAMESPACE);
+    List<DeltaFixtureConfig> fixtures =
+        List.of(
+            new DeltaFixtureConfig(
+                "fixture-delta-call-center",
+                "Delta call_center fixture table",
+                TestDeltaFixtures.tableUri("call_center"),
+                "examples.delta",
+                "call_center",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-my-local-delta-table",
+                "Delta my_local_delta_table fixture table",
+                TestDeltaFixtures.tableUri("my_local_delta_table"),
+                "examples.delta",
+                "my_local_delta_table",
+                DELTA_NAMESPACE));
 
-    ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
-    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    for (DeltaFixtureConfig fixture : fixtures) {
+      ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
+      syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    }
   }
 
   private ResourceId seedDeltaConnector(

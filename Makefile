@@ -758,10 +758,13 @@ compose-smoke: docker
 	@echo "==> [COMPOSE] smoke (inmem + localstack + localstack-oidc)"
 	run_mode() { \
 	  env_file="$$1"; profile="$$2"; label="$$3"; pre_services="$$4"; kc_host="$$5"; kc_port="$$6"; \
-	  mode_env="FLOECAT_ENV_FILE=$$env_file COMPOSE_PROFILES=$$profile"; \
+	  compose_project="floecat-smoke-$$label"; \
+	  mode_env="FLOECAT_ENV_FILE=$$env_file COMPOSE_PROFILES=$$profile COMPOSE_PROJECT_NAME=$$compose_project"; \
 	  if [ -n "$$kc_host" ]; then mode_env="$$mode_env KC_HOSTNAME=$$kc_host"; fi; \
 	  if [ -n "$$kc_port" ]; then mode_env="$$mode_env KC_HOSTNAME_PORT=$$kc_port"; fi; \
 	  compose_cmd="$$mode_env $(DOCKER_COMPOSE_MAIN)"; \
+	  cleanup() { eval "$$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true; }; \
+	  trap cleanup RETURN; \
 	  echo "==> [SMOKE] mode=$$label"; \
 	  eval "$$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true; \
 	  if [ -n "$$pre_services" ]; then eval "$$compose_cmd up -d $$pre_services"; fi; \
@@ -801,7 +804,19 @@ compose-smoke: docker
 	  echo "$$out_delta"; \
 	  echo "$$out_delta" | grep -q "account set:"; \
 	  echo "$$out_delta" | grep -q "table id:"; \
-	  eval "$$compose_cmd down --remove-orphans -v"; \
+	  out_delta_local=$$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$$compose_cmd run --rm -T cli"); \
+	  echo "$$out_delta_local"; \
+	  echo "$$out_delta_local" | grep -q "account set:"; \
+	  echo "$$out_delta_local" | grep -q "table id:"; \
+	  if [ "$$profile" = "localstack" ]; then \
+	    echo "==> [SMOKE] duckdb federation check (localstack)"; \
+	    duckdb_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
+	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'empty_join' AS metric, COUNT(*) AS cnt FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
+	    echo "$$duckdb_out"; \
+	    echo "$$duckdb_out" | grep -q "duckdb_smoke_ok"; \
+	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*call_center[[:space:]]*│[[:space:]]*42[[:space:]]*│[[:space:]]*$$"; \
+	    echo "$$duckdb_out" | grep -Eq "^[[:space:]]*│[[:space:]]*my_local_delta_table[[:space:]]*│[[:space:]]*1[[:space:]]*│[[:space:]]*$$"; \
+	  fi; \
 	}; \
 	run_mode ./env.inmem "" inmem "" "" ""; \
 	run_mode ./env.localstack localstack localstack "localstack" "" ""; \

@@ -147,9 +147,8 @@ final class SnapshotMapper {
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
       }
-      if (!snapshot.getSummaryMap().isEmpty()) {
-        entry.put("summary", snapshot.getSummaryMap());
-      }
+      entry.put(
+          "summary", snapshot.getSummaryMap().isEmpty() ? Map.of() : snapshot.getSummaryMap());
       out.add(entry);
     }
     return out;

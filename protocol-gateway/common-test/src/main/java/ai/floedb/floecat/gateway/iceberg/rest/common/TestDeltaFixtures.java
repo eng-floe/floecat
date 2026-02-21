@@ -26,8 +26,10 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.jar.JarEntry;
@@ -50,13 +52,12 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 public final class TestDeltaFixtures {
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "common-test");
   private static final Path FIXTURE_ROOT = resolveFixtureRoot("delta-fixtures");
-  private static final Path CALL_CENTER_ROOT = FIXTURE_ROOT.resolve("call_center");
+  private static final String DEFAULT_TABLE = "call_center";
 
   private static final Path TARGET_ROOT = resolveTargetRoot();
   private static final String USE_AWS_FIXTURES_PROP = "floecat.fixtures.use-aws-s3";
 
   private static final String BUCKET = "floecat-delta";
-  private static final String PREFIX = "call_center";
 
   private TestDeltaFixtures() {}
 
@@ -65,7 +66,12 @@ public final class TestDeltaFixtures {
   }
 
   public static String tableUri() {
-    return "s3://" + BUCKET + "/" + PREFIX;
+    return tableUri(DEFAULT_TABLE);
+  }
+
+  public static String tableUri(String tableName) {
+    String normalized = normalizeTableName(tableName);
+    return "s3://" + BUCKET + "/" + normalized;
   }
 
   public static Map<String, String> s3Options() {
@@ -97,29 +103,27 @@ public final class TestDeltaFixtures {
 
   private static void seedFixturesLocal() {
     System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
-    Path targetRoot = TARGET_ROOT.resolve(Path.of(BUCKET, PREFIX));
     try {
-      if (Files.exists(targetRoot)) {
-        deleteRecursive(targetRoot);
+      Path bucketRoot = TARGET_ROOT.resolve(BUCKET);
+      if (Files.exists(bucketRoot)) {
+        deleteRecursive(bucketRoot);
       }
+      Files.createDirectories(bucketRoot);
 
-      Path parent = targetRoot.getParent();
-      if (parent == null) {
-        throw new IllegalStateException("Local fixture root has no parent: " + targetRoot);
-      }
-
-      Path tmp = parent.resolve(PREFIX + ".__tmp__");
-      if (Files.exists(tmp)) {
-        deleteRecursive(tmp);
-      }
-
-      Files.createDirectories(tmp);
-      copyRecursive(CALL_CENTER_ROOT, tmp);
-
-      try {
-        Files.move(tmp, targetRoot, StandardCopyOption.ATOMIC_MOVE);
-      } catch (AtomicMoveNotSupportedException e) {
-        Files.move(tmp, targetRoot);
+      for (Path sourceRoot : fixtureTableRoots()) {
+        String table = sourceRoot.getFileName().toString();
+        Path targetRoot = bucketRoot.resolve(table);
+        Path tmp = bucketRoot.resolve(table + ".__tmp__");
+        if (Files.exists(tmp)) {
+          deleteRecursive(tmp);
+        }
+        Files.createDirectories(tmp);
+        copyRecursive(sourceRoot, tmp);
+        try {
+          Files.move(tmp, targetRoot, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+          Files.move(tmp, targetRoot);
+        }
       }
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to seed local delta fixtures", e);
@@ -129,11 +133,33 @@ public final class TestDeltaFixtures {
   private static void seedFixturesToS3() {
     try (S3Client s3 = buildS3Client()) {
       ensureBucketExists(s3, BUCKET);
-      deletePrefix(s3, BUCKET, normalizeKey(PREFIX));
-      uploadDirectoryToS3(s3, CALL_CENTER_ROOT, BUCKET, normalizeKey(PREFIX));
+      for (Path sourceRoot : fixtureTableRoots()) {
+        String table = sourceRoot.getFileName().toString();
+        deletePrefix(s3, BUCKET, normalizeKey(table));
+        uploadDirectoryToS3(s3, sourceRoot, BUCKET, normalizeKey(table));
+      }
     } catch (IOException e) {
       throw new UncheckedIOException("Failed to upload delta fixtures to S3", e);
     }
+  }
+
+  private static List<Path> fixtureTableRoots() {
+    try (var stream = Files.list(FIXTURE_ROOT)) {
+      return stream
+          .filter(Files::isDirectory)
+          .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+          .toList();
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to enumerate delta fixtures", e);
+    }
+  }
+
+  private static String normalizeTableName(String tableName) {
+    if (tableName == null) {
+      return DEFAULT_TABLE;
+    }
+    String trimmed = tableName.trim();
+    return trimmed.isEmpty() ? DEFAULT_TABLE : trimmed;
   }
 
   private static void uploadDirectoryToS3(

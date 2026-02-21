@@ -109,9 +109,9 @@ jobs:
           cache: maven
 
       - name: Docker compose smoke (inmem/localstack/localstack-oidc seeded tables)
-        run: |
-          set -euo pipefail
-          make docker
+          run: |
+            set -euo pipefail
+            make docker
 
           run_mode() {
             local env_file="$1"
@@ -120,7 +120,8 @@ jobs:
             local pre_services="$4"
             local keycloak_host="${5:-}"
             local keycloak_port="${6:-}"
-            local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$profile"
+            local compose_project="floecat-smoke-${label}"
+            local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$profile COMPOSE_PROJECT_NAME=$compose_project"
             if [ -n "$keycloak_host" ]; then
               mode_env="$mode_env KC_HOSTNAME=$keycloak_host"
             fi
@@ -154,13 +155,13 @@ jobs:
             eval "$compose_cmd up -d"
 
             timeout 180 bash -c "
-              until FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' \
+              until FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' COMPOSE_PROJECT_NAME='$compose_project' \
                 docker compose -f docker/docker-compose.yml logs service 2>&1 \
                 | grep -q 'Startup seeding completed successfully'; do
-                if FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' \
+                if FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' COMPOSE_PROJECT_NAME='$compose_project' \
                   docker compose -f docker/docker-compose.yml logs service 2>&1 \
                   | grep -q 'Startup seeding failed'; then
-                  FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' \
+                  FLOECAT_ENV_FILE='$env_file' COMPOSE_PROFILES='$profile' COMPOSE_PROJECT_NAME='$compose_project' \
                     docker compose -f docker/docker-compose.yml logs --no-color
                   exit 1
                 fi
@@ -180,6 +181,16 @@ jobs:
             echo "$out_delta" | grep -q "account set:"
             echo "$out_delta" | grep -q "table id:"
 
+            if [ "$profile" = "localstack" ]; then
+              echo "==> [SMOKE] duckdb federation check (localstack)"
+              duckdb_out=$(
+                docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+                  duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT COUNT(*) FROM iceberg_floecat.iceberg.trino_types; SELECT COUNT(*) FROM iceberg_floecat.delta.call_center; SELECT COUNT(*) FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"
+              )
+              echo "$duckdb_out"
+              echo "$duckdb_out" | grep -q "duckdb_smoke_ok"
+            fi
+
             eval "$compose_cmd down --remove-orphans -v"
             trap - ERR
           }
@@ -191,11 +202,11 @@ jobs:
       - name: Docker compose smoke cleanup
         if: always()
         run: |
-          FLOECAT_ENV_FILE=./env.inmem COMPOSE_PROFILES= \
+          FLOECAT_ENV_FILE=./env.inmem COMPOSE_PROFILES= COMPOSE_PROJECT_NAME=floecat-smoke-inmem \
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
-          FLOECAT_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack \
+          FLOECAT_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack COMPOSE_PROJECT_NAME=floecat-smoke-localstack \
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
-          FLOECAT_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc \
+          FLOECAT_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc COMPOSE_PROJECT_NAME=floecat-smoke-localstack-oidc \
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
 
   detect-floedb-changes:
