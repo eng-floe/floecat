@@ -137,18 +137,24 @@ final class SnapshotMapper {
       if (sequenceNumber > 0) {
         entry.put("sequence-number", sequenceNumber);
       }
-      if (snapshot.hasUpstreamCreatedAt()) {
-        entry.put("timestamp-ms", snapshot.getUpstreamCreatedAt().getSeconds() * 1000L);
-      }
-      if (!snapshot.getManifestList().isBlank()) {
-        entry.put("manifest-list", snapshot.getManifestList());
-      }
+      long timestampMs =
+          snapshot.hasUpstreamCreatedAt()
+              ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
+              : 0L;
+      entry.put("timestamp-ms", timestampMs);
+      entry.put(
+          "manifest-list",
+          snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
       int schemaId = snapshot.getSchemaId();
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
       }
-      entry.put(
-          "summary", snapshot.getSummaryMap().isEmpty() ? Map.of() : snapshot.getSummaryMap());
+      Map<String, String> summary = new LinkedHashMap<>();
+      if (!snapshot.getSummaryMap().isEmpty()) {
+        summary.putAll(snapshot.getSummaryMap());
+      }
+      summary.putIfAbsent("operation", "append");
+      entry.put("summary", summary);
       out.add(entry);
     }
     return out;

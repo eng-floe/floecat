@@ -72,7 +72,7 @@ public class TableLoadService {
           SnapshotLister.fetchSnapshots(
               snapshotClient, tableContext.tableId(), snapshotMode, metadata);
     }
-    String etagValue = metadataLocation(metadata);
+    String etagValue = etagSource(metadata, snapshotMode);
     if (etagValue != null) {
       etagValue = IcebergHttpUtil.etagForMetadataLocation(etagValue);
     }
@@ -148,6 +148,20 @@ public class TableLoadService {
       return metadata.getMetadataLocation();
     }
     return null;
+  }
+
+  private String etagSource(IcebergMetadata metadata, SnapshotLister.Mode snapshotMode) {
+    String metadataLocation = metadataLocation(metadata);
+    if (metadataLocation == null) {
+      return null;
+    }
+    String mode;
+    if (snapshotMode == null) {
+      mode = SnapshotLister.Mode.ALL.name().toLowerCase();
+    } else {
+      mode = snapshotMode.name().toLowerCase();
+    }
+    return metadataLocation + "|snapshots=" + mode;
   }
 
   private boolean deltaCompatEnabled(Table table) {

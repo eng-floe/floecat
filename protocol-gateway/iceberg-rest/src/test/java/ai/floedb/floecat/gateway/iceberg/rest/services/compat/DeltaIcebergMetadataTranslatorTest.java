@@ -248,4 +248,57 @@ class DeltaIcebergMetadataTranslatorTest {
       assertEquals("id", translatedFields.get(0).get("name").asText());
     }
   }
+
+  @Test
+  void translateKeepsNestedTypeObjectsInSchema() throws Exception {
+    String nestedSchema =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"payload\",\"nullable\":true,"
+            + "\"type\":{\"type\":\"struct\",\"fields\":[{\"name\":\"k\",\"type\":\"string\","
+            + "\"nullable\":true}]}}]}";
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:delta_nested").build())
+            .setSchemaJson(nestedSchema)
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(2L)
+            .setSequenceNumber(2L)
+            .setSchemaId(1)
+            .setSchemaJson(nestedSchema)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build();
+
+    var metadata = translator.translate(table, List.of(snapshot));
+    JsonNode schema = JSON.readTree(metadata.getSchemas(0).getSchemaJson());
+    JsonNode typeNode = schema.get("fields").get(0).get("type");
+
+    assertTrue(typeNode.isObject());
+    assertEquals("struct", typeNode.get("type").asText());
+  }
+
+  @Test
+  void translateSetsMainRefForSnapshotZero() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:delta_zero").build())
+            .setSchemaJson(
+                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}")
+            .build();
+    Snapshot snapshot0 =
+        Snapshot.newBuilder()
+            .setSnapshotId(0L)
+            .setSequenceNumber(0L)
+            .setSchemaId(0)
+            .setSchemaJson(
+                "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}")
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build();
+
+    var metadata = translator.translate(table, List.of(snapshot0));
+
+    assertEquals(0L, metadata.getCurrentSnapshotId());
+    assertTrue(metadata.containsRefs("main"));
+    assertEquals(0L, metadata.getRefsOrThrow("main").getSnapshotId());
+  }
 }

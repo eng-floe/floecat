@@ -216,13 +216,17 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .header(
-            "ETag", equalTo(IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation())))
+            "ETag",
+            equalTo(
+                IcebergHttpUtil.etagForMetadataLocation(
+                    FIXTURE.metadataLocation() + "|snapshots=all")))
         .body("metadata.snapshots.size()", equalTo(2))
         .body("'storage-credentials'", nullValue());
 
     given()
         .header(
-            "If-None-Match", IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation()))
+            "If-None-Match",
+            IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation() + "|snapshots=all"))
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -236,6 +240,51 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
         .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
+  }
+
+  @Test
+  void getTableSnapshotsRefsReturnsEmptyWhenNoRefsPresent() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
+    Table table =
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("orders")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    IcebergMetadata metadataNoRefs = FIXTURE.metadata().toBuilder().clearRefs().build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(currentSnapshot.getSnapshotId())
+            .putFormatMetadata("iceberg", metadataNoRefs.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    Snapshot snapshot1 = currentSnapshot.toBuilder().setTableId(tableId).build();
+    Snapshot snapshot2 = fixtureSnapshots.get(0).toBuilder().setTableId(tableId).build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(snapshot1)
+                .addSnapshots(snapshot2)
+                .build());
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.snapshots.size()", equalTo(0));
   }
 
   @Test

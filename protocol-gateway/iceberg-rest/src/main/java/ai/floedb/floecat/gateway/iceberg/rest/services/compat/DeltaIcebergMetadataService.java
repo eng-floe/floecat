@@ -45,8 +45,11 @@ public class DeltaIcebergMetadataService {
 
   private List<Snapshot> snapshotsForMode(
       SnapshotLister.Mode mode, List<Snapshot> snapshots, IcebergMetadata metadata) {
-    if (mode != SnapshotLister.Mode.REFS || metadata == null || metadata.getRefsCount() == 0) {
+    if (mode != SnapshotLister.Mode.REFS) {
       return snapshots == null ? List.of() : snapshots;
+    }
+    if (metadata == null || metadata.getRefsCount() == 0) {
+      return List.of();
     }
     Set<Long> refIds =
         metadata.getRefsMap().values().stream()

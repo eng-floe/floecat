@@ -112,6 +112,27 @@ class DeltaManifestMaterializerTest {
     verify(queryClient, times(2)).fetchScanBundle(any());
   }
 
+  @Test
+  void materializePopulatesManifestListForAllReturnedSnapshots() {
+    Table table = deltaTable("all-snapshots");
+    Snapshot firstSnapshot = snapshot(7L, 7L);
+    Snapshot secondSnapshot = snapshot(8L, 8L);
+
+    List<Snapshot> first = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
+    String firstManifestList = first.get(0).getManifestList();
+    String secondManifestList = first.get(1).getManifestList();
+    assertFalse(firstManifestList.isBlank());
+    assertFalse(secondManifestList.isBlank());
+    assertTrue(firstManifestList.endsWith("/metadata/snap-7-compat.avro"));
+    assertTrue(secondManifestList.endsWith("/metadata/snap-8-compat.avro"));
+
+    List<Snapshot> second = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
+    assertEquals(firstManifestList, second.get(0).getManifestList());
+    assertEquals(secondManifestList, second.get(1).getManifestList());
+
+    verify(queryClient, times(2)).fetchScanBundle(any());
+  }
+
   private Table deltaTable(String testName) {
     return Table.newBuilder()
         .setResourceId(ResourceId.newBuilder().setId("cat:examples:delta:call_center").build())

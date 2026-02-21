@@ -67,4 +67,27 @@ class TableMetadataBuilderTest {
     assertNotNull(mainRef);
     assertEquals(earliestSnapshotId, mainRef.get("snapshot-id"));
   }
+
+  @Test
+  void snapshotsAlwaysIncludeRequiredSpecFields() {
+    TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
+    Table table =
+        fixture.table().toBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
+            .build();
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    IcebergMetadata metadata = fixture.metadata();
+    Snapshot sparse = Snapshot.newBuilder().setSnapshotId(11L).build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog("orders", table, props, metadata, List.of(sparse));
+
+    Map<String, Object> snapshot = view.snapshots().get(0);
+    assertEquals(0L, snapshot.get("timestamp-ms"));
+    assertEquals("", snapshot.get("manifest-list"));
+    @SuppressWarnings("unchecked")
+    Map<String, Object> summary = (Map<String, Object>) snapshot.get("summary");
+    assertNotNull(summary);
+    assertEquals("append", summary.get("operation"));
+  }
 }

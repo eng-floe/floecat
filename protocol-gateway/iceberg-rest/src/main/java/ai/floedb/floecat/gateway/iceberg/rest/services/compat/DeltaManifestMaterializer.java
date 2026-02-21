@@ -35,12 +35,8 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -61,7 +57,6 @@ public class DeltaManifestMaterializer {
   private static final Logger LOG = Logger.getLogger(DeltaManifestMaterializer.class);
   private static final PartitionSpec UNPARTITIONED = PartitionSpec.unpartitioned();
   private static final String METADATA_DIR = "metadata";
-  private static final String MARKER_FILE = ".compat-latest";
 
   @Inject QueryClient queryClient;
   @Inject QuerySchemaClient querySchemaClient;
@@ -80,19 +75,6 @@ public class DeltaManifestMaterializer {
     FileIO fileIo = null;
     try {
       fileIo = newFileIo(table);
-      Snapshot latest = latestSnapshot(snapshots);
-      String latestManifestList = null;
-      if (latest != null && latest.getSnapshotId() >= 0) {
-        try {
-          latestManifestList = ensureLatestCompatArtifacts(fileIo, table, latest, metadataRoot);
-        } catch (Exception e) {
-          LOG.warnf(
-              e,
-              "Delta compat manifest generation failed table=%s snapshot=%d; returning snapshot without manifest-list",
-              table.getResourceId().getId(),
-              latest.getSnapshotId());
-        }
-      }
       List<Snapshot> rewritten = new ArrayList<>(snapshots.size());
       for (Snapshot snapshot : snapshots) {
         if (snapshot == null || snapshot.getSnapshotId() < 0) {
@@ -103,12 +85,19 @@ public class DeltaManifestMaterializer {
           rewritten.add(snapshot);
           continue;
         }
-        if (latest != null
-            && snapshot.getSnapshotId() == latest.getSnapshotId()
-            && latestManifestList != null
-            && !latestManifestList.isBlank()) {
-          rewritten.add(snapshot.toBuilder().setManifestList(latestManifestList).build());
-        } else {
+        try {
+          String manifestList = ensureCompatArtifacts(fileIo, table, snapshot, metadataRoot);
+          if (manifestList != null && !manifestList.isBlank()) {
+            rewritten.add(snapshot.toBuilder().setManifestList(manifestList).build());
+          } else {
+            rewritten.add(snapshot);
+          }
+        } catch (Exception e) {
+          LOG.warnf(
+              e,
+              "Delta compat manifest generation failed table=%s snapshot=%d; returning snapshot without manifest-list",
+              table.getResourceId().getId(),
+              snapshot.getSnapshotId());
           rewritten.add(snapshot);
         }
       }
@@ -182,41 +171,14 @@ public class DeltaManifestMaterializer {
     return manifestListPath;
   }
 
-  private String ensureLatestCompatArtifacts(
-      FileIO fileIo, Table table, Snapshot latestSnapshot, String metadataRoot) throws Exception {
-    long snapshotId = latestSnapshot.getSnapshotId();
+  private String ensureCompatArtifacts(
+      FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
+    long snapshotId = snapshot.getSnapshotId();
     String manifestListPath = metadataRoot + "/snap-" + snapshotId + "-compat.avro";
-    Marker marker = readMarker(fileIo, metadataRoot + "/" + MARKER_FILE);
-    if (marker != null
-        && marker.snapshotId() == snapshotId
-        && manifestListPath.equals(marker.manifestListPath())
-        && inputExists(fileIo, manifestListPath)) {
+    if (inputExists(fileIo, manifestListPath)) {
       return manifestListPath;
     }
-
-    String generated = writeManifestArtifacts(fileIo, table, latestSnapshot, metadataRoot);
-    writeMarker(fileIo, metadataRoot + "/" + MARKER_FILE, snapshotId, generated);
-    return generated;
-  }
-
-  private Snapshot latestSnapshot(List<Snapshot> snapshots) {
-    if (snapshots == null || snapshots.isEmpty()) {
-      return null;
-    }
-    return snapshots.stream()
-        .filter(s -> s != null)
-        .max(
-            Comparator.comparingLong(this::snapshotSequence)
-                .thenComparingLong(Snapshot::getSnapshotId))
-        .orElse(null);
-  }
-
-  private long snapshotSequence(Snapshot snapshot) {
-    if (snapshot == null) {
-      return Long.MIN_VALUE;
-    }
-    long seq = snapshot.getSequenceNumber();
-    return seq > 0 ? seq : snapshot.getSnapshotId();
+    return writeManifestArtifacts(fileIo, table, snapshot, metadataRoot);
   }
 
   private ScanBundle fetchScanBundle(Table table, long snapshotId) {
@@ -335,51 +297,10 @@ public class DeltaManifestMaterializer {
   }
 
   private boolean inputExists(FileIO fileIo, String location) {
-    return fileIo.newInputFile(location).exists();
-  }
-
-  private Marker readMarker(FileIO fileIo, String markerPath) {
     try {
-      if (!inputExists(fileIo, markerPath)) {
-        return null;
-      }
-      byte[] bytes;
-      try (var in = fileIo.newInputFile(markerPath).newStream();
-          var out = new ByteArrayOutputStream()) {
-        byte[] buf = new byte[1024];
-        int read;
-        while ((read = in.read(buf)) > 0) {
-          out.write(buf, 0, read);
-        }
-        bytes = out.toByteArray();
-      }
-      String payload = new String(bytes, StandardCharsets.UTF_8).trim();
-      if (payload.isEmpty()) {
-        return null;
-      }
-      int sep = payload.indexOf('\t');
-      if (sep <= 0 || sep >= payload.length() - 1) {
-        return null;
-      }
-      long snapshotId = Long.parseLong(payload.substring(0, sep).trim());
-      String manifest = payload.substring(sep + 1).trim();
-      if (manifest.isEmpty()) {
-        return null;
-      }
-      return new Marker(snapshotId, manifest);
-    } catch (Exception e) {
-      LOG.debugf(e, "Failed reading compat marker %s", markerPath);
-      return null;
-    }
-  }
-
-  private void writeMarker(
-      FileIO fileIo, String markerPath, long snapshotId, String manifestListPath) {
-    try (var out = fileIo.newOutputFile(markerPath).createOrOverwrite()) {
-      String payload = snapshotId + "\t" + manifestListPath;
-      out.write(payload.getBytes(StandardCharsets.UTF_8));
-    } catch (IOException e) {
-      LOG.debugf(e, "Failed writing compat marker %s", markerPath);
+      return fileIo.newInputFile(location).exists();
+    } catch (RuntimeException ignored) {
+      return false;
     }
   }
 
@@ -426,5 +347,4 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private record Marker(long snapshotId, String manifestListPath) {}
 }

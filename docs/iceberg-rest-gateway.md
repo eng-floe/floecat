@@ -102,7 +102,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
 4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
 5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream, run reconcile). Snapshot format metadata is synced from the committed `metadata.json` in the REST layer.
-6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags are set to the metadata location so clients can cache responses.
+6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags include the metadata location and representation selector (`snapshots=all|refs`) so clients can safely cache per response shape.
 
 ### `/transactions/commit`
 
@@ -142,17 +142,23 @@ tables.
 
 1. On Delta table load, the gateway translates Delta table/snapshot/schema state into Iceberg
    metadata JSON (including `snapshot-log`, `refs`, and Iceberg-compatible primitive type names).
-2. For the latest Delta snapshot, the gateway materializes Iceberg compat artifacts:
+2. For each returned Delta snapshot that lacks a manifest list, the gateway materializes Iceberg
+   compat artifacts:
    - data manifest: `<table-root>/metadata/<snapshot-id>-compat-m0.avro`
    - manifest list: `<table-root>/metadata/snap-<snapshot-id>-compat.avro`
-3. A persisted marker file tracks the last generated compat snapshot:
-   - `<table-root>/metadata/.compat-latest`
-   - format: `<snapshot-id>\t<manifest-list-path>`
-4. On each Delta load/query, the gateway compares latest Delta snapshot to the marker:
-   - unchanged: reuse existing compat manifest list
-   - changed: regenerate manifest + manifest-list and update marker
+3. On each Delta load/query, compat artifacts are resolved by deterministic snapshot path:
+   - existing `snap-<snapshot-id>-compat.avro`: reuse
+   - missing `snap-<snapshot-id>-compat.avro`: regenerate manifest + manifest-list from the
+     original Delta snapshot state at read time
 
-This gives "refresh-on-read" behavior without requiring clients to know anything about Delta.
+This gives "refresh-on-read" behavior without requiring clients to know anything about Delta,
+and no marker file/state is required.
+
+Load responses follow Iceberg REST `snapshots` semantics:
+- `snapshots=all` returns all valid snapshots
+- `snapshots=refs` returns only snapshots currently referenced by branches/tags (empty if no refs)
+
+ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 ### Configuration
 

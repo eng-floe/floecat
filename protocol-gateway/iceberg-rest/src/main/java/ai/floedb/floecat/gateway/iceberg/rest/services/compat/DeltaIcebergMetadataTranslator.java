@@ -43,7 +43,7 @@ public class DeltaIcebergMetadataTranslator {
   public IcebergMetadata translate(Table table, List<Snapshot> snapshots) {
     List<Snapshot> ordered = orderedSnapshots(snapshots);
     Snapshot current = ordered.isEmpty() ? null : ordered.get(ordered.size() - 1);
-    long currentSnapshotId = current == null ? 0L : current.getSnapshotId();
+    long currentSnapshotId = current == null ? -1L : current.getSnapshotId();
     long lastUpdatedMs = current == null ? System.currentTimeMillis() : snapshotMillis(current);
     long lastSequence = ordered.stream().mapToLong(this::snapshotSequence).max().orElse(0L);
     String metadataLocation =
@@ -72,7 +72,7 @@ public class DeltaIcebergMetadataTranslator {
                     .setFile(metadataLocation)
                     .build());
 
-    if (currentSnapshotId > 0) {
+    if (current != null && currentSnapshotId >= 0) {
       builder.putRefs(
           "main",
           IcebergRef.newBuilder().setSnapshotId(currentSnapshotId).setType("branch").build());
@@ -201,13 +201,30 @@ public class DeltaIcebergMetadataTranslator {
       if (!field.containsKey("type")) {
         field.put("type", "string");
       } else if (field.get("type") instanceof Map<?, ?> mapType) {
-        field.put("type", JSON.writeValueAsString(mapType));
+        field.put("type", normalizeNestedType(mapType));
       } else if (field.get("type") instanceof String typeName) {
         field.put("type", normalizeTypeName(typeName));
       }
       out.add(field);
     }
     return out;
+  }
+
+  private Object normalizeNestedType(Map<?, ?> mapType) {
+    Map<String, Object> normalized = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : mapType.entrySet()) {
+      if (entry.getKey() == null) {
+        continue;
+      }
+      String key = entry.getKey().toString();
+      Object value = entry.getValue();
+      if ("type".equals(key) && value instanceof String typeName) {
+        normalized.put(key, normalizeTypeName(typeName));
+      } else {
+        normalized.put(key, value);
+      }
+    }
+    return normalized;
   }
 
   private String normalizeTypeName(String rawType) {
