@@ -35,6 +35,8 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snaps
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.statistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -42,6 +44,9 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,6 +55,11 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class TableMetadataBuilder {
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final String DATA_SOURCE_FORMAT = "data_source_format";
+  private static final String DELTA_SOURCE = "DELTA";
+  private static final String NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
+
   private TableMetadataBuilder() {}
 
   public static TableMetadataView fromCatalog(
@@ -207,6 +217,7 @@ public final class TableMetadataBuilder {
     if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
+    ensureDeltaNameMappingProperty(props, schemaList, currentSchemaId);
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
@@ -369,6 +380,120 @@ public final class TableMetadataBuilder {
     order.put("order-id", 0);
     order.put("fields", List.of());
     return order;
+  }
+
+  private static void ensureDeltaNameMappingProperty(
+      Map<String, String> props, List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    if (props == null || props.isEmpty()) {
+      return;
+    }
+    String source = props.get(DATA_SOURCE_FORMAT);
+    if (source == null || !DELTA_SOURCE.equalsIgnoreCase(source)) {
+      return;
+    }
+    String existing = props.get(NAME_MAPPING_PROPERTY);
+    if (existing != null && !existing.isBlank()) {
+      return;
+    }
+    String mappingJson = buildNameMappingJson(schemaList, currentSchemaId);
+    if (mappingJson != null && !mappingJson.isBlank()) {
+      props.put(NAME_MAPPING_PROPERTY, mappingJson);
+    }
+  }
+
+  private static String buildNameMappingJson(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    Map<String, Object> schema = findSchema(schemaList, currentSchemaId);
+    if (schema == null) {
+      return null;
+    }
+    List<Map<String, Object>> fields = asFieldMapList(schema.get("fields"));
+    if (fields.isEmpty()) {
+      return null;
+    }
+    List<Map<String, Object>> mapping = buildNameMappingFields(fields);
+    if (mapping.isEmpty()) {
+      return null;
+    }
+    try {
+      // Iceberg expects schema.name-mapping.default as a top-level JSON array of mapped fields.
+      return JSON.writeValueAsString(mapping);
+    } catch (JsonProcessingException ignored) {
+      return null;
+    }
+  }
+
+  private static Map<String, Object> findSchema(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    if (schemaList == null || schemaList.isEmpty()) {
+      return null;
+    }
+    if (currentSchemaId != null) {
+      for (Map<String, Object> schema : schemaList) {
+        Integer schemaId = asInteger(schema == null ? null : schema.get("schema-id"));
+        if (schemaId != null && schemaId.equals(currentSchemaId)) {
+          return schema;
+        }
+      }
+    }
+    return schemaList.get(0);
+  }
+
+  private static List<Map<String, Object>> buildNameMappingFields(
+      List<Map<String, Object>> fields) {
+    if (fields == null || fields.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(fields.size());
+    for (Map<String, Object> field : fields) {
+      Map<String, Object> mapped = buildNameMappingField(field);
+      if (mapped != null) {
+        out.add(mapped);
+      }
+    }
+    return out;
+  }
+
+  private static Map<String, Object> buildNameMappingField(Map<String, Object> field) {
+    if (field == null || field.isEmpty()) {
+      return null;
+    }
+    Integer fieldId = asInteger(field.get("id"));
+    String name = asString(field.get("name"));
+    if (fieldId == null || fieldId <= 0 || name == null || name.isBlank()) {
+      return null;
+    }
+
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", fieldId);
+    mapped.put("names", List.of(name));
+
+    Map<String, Object> type = asObjectMap(field.get("type"));
+    if (type != null) {
+      String typeName = asString(type.get("type"));
+      if ("struct".equalsIgnoreCase(typeName)) {
+        List<Map<String, Object>> nested =
+            buildNameMappingFields(asFieldMapList(type.get("fields")));
+        if (!nested.isEmpty()) {
+          mapped.put("fields", nested);
+        }
+      }
+    }
+    return mapped;
+  }
+
+  private static List<Map<String, Object>> asFieldMapList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(list.size());
+    for (Object entry : list) {
+      Map<String, Object> mapped = asObjectMap(entry);
+      if (mapped != null && !mapped.isEmpty()) {
+        out.add(mapped);
+      }
+    }
+    return out;
   }
 
   private static String resolveMetadataLocation(IcebergMetadata metadata) {

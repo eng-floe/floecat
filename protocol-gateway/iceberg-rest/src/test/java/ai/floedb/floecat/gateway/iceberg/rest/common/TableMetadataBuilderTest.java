@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -25,12 +26,16 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class TableMetadataBuilderTest {
+  private static final ObjectMapper JSON = new ObjectMapper();
 
   @Test
   void currentSnapshotUsesMetadataReference() {
@@ -89,5 +94,42 @@ class TableMetadataBuilderTest {
     Map<String, Object> summary = (Map<String, Object>) snapshot.get("summary");
     assertNotNull(summary);
     assertEquals("append", summary.get("operation"));
+  }
+
+  @Test
+  void deltaTablesPopulateDefaultNameMappingForReadersWithoutFieldIds() throws Exception {
+    String schemaJson =
+        "{\"schema-id\":0,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":false},"
+            + "{\"id\":2,\"name\":\"v\",\"type\":\"string\",\"required\":false}],\"last-column-id\":2}";
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:delta:dv_demo_delta"))
+            .putProperties("data_source_format", "DELTA")
+            .build();
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setFormatVersion(2)
+            .setCurrentSchemaId(0)
+            .setLastColumnId(2)
+            .addSchemas(
+                IcebergSchema.newBuilder()
+                    .setSchemaId(0)
+                    .setSchemaJson(schemaJson)
+                    .setLastColumnId(2)
+                    .build())
+            .build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog("dv_demo_delta", table, props, metadata, List.of());
+
+    String mappingJson = view.properties().get("schema.name-mapping.default");
+    assertNotNull(mappingJson);
+    JsonNode mapping = JSON.readTree(mappingJson);
+    assertTrue(mapping.isArray());
+    assertEquals(1, mapping.get(0).get("field-id").asInt());
+    assertEquals("id", mapping.get(0).get("names").get(0).asText());
+    assertEquals(2, mapping.get(1).get("field-id").asInt());
+    assertEquals("v", mapping.get(1).get("names").get(0).asText());
   }
 }
