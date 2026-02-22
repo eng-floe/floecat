@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.arrow.ArrowBatchSink;
+import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.ArrayList;
@@ -109,7 +110,7 @@ class ArrowBatchSerializerTest {
       root.setRowCount(1);
 
       SimpleColumnarBatch batch = new SimpleColumnarBatch(root);
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of(batch));
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of(batch));
 
       List<String> calls = new ArrayList<>();
       ArrowBatchSink sink =
@@ -142,7 +143,7 @@ class ArrowBatchSerializerTest {
   void serialize_cleanupCalledOnException() {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       Schema schema = singleIntSchema();
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of());
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of());
 
       ArrowBatchSink failingSink =
           new ArrowBatchSink() {
@@ -192,7 +193,7 @@ class ArrowBatchSerializerTest {
           root2) {
         SimpleColumnarBatch batch1 = new SimpleColumnarBatch(root1);
         SimpleColumnarBatch batch2 = new SimpleColumnarBatch(root2);
-        ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of(batch1, batch2));
+        ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of(batch1, batch2));
 
         AtomicBoolean cancelled = new AtomicBoolean(false);
         List<String> calls = new ArrayList<>();
@@ -231,7 +232,7 @@ class ArrowBatchSerializerTest {
   void serialize_emptyStream_callsSchemaAndComplete() {
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
       Schema schema = singleIntSchema();
-      ArrowScanPlan plan = new ArrowScanPlan(schema, Stream.of());
+      ArrowScanPlan plan = ArrowScanPlan.of(schema, Stream.of());
 
       List<String> calls = new ArrayList<>();
       ArrowBatchSerializer.serialize(
