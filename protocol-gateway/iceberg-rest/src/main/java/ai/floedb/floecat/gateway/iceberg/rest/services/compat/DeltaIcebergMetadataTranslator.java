@@ -31,10 +31,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @ApplicationScoped
 public class DeltaIcebergMetadataTranslator {
@@ -145,33 +147,27 @@ public class DeltaIcebergMetadataTranslator {
       Map<String, Object> root =
           JSON.readValue(rawSchemaJson, new TypeReference<Map<String, Object>>() {});
       int schemaId = positiveInt(root.get("schema-id"), desiredSchemaId);
-      List<Map<String, Object>> fields = normalizeFields(root.get("fields"));
+      IdAllocator ids = new IdAllocator(maxFieldIdInSchema(root.get("fields")) + 1);
+      List<Map<String, Object>> fields = normalizeFields(root.get("fields"), ids);
       int existingLastColumnId = positiveInt(root.get("last-column-id"), 0);
-      int maxFieldId = fields.stream().mapToInt(f -> positiveInt(f.get("id"), 0)).max().orElse(0);
+      int maxFieldId = maxFieldId(fields);
       int lastColumnId = Math.max(existingLastColumnId, maxFieldId);
       root.put("schema-id", schemaId);
       root.put("last-column-id", lastColumnId);
       root.put("type", "struct");
       root.put("fields", fields);
       return new NormalizedSchema(schemaId, lastColumnId, JSON.writeValueAsString(root));
-    } catch (Exception ignored) {
-      int schemaId = Math.max(0, desiredSchemaId);
-      return new NormalizedSchema(
-          schemaId,
-          0,
-          "{\"schema-id\":"
-              + schemaId
-              + ",\"type\":\"struct\",\"fields\":[],\"last-column-id\":0}");
+    } catch (Exception e) {
+      throw new IllegalArgumentException("Failed to normalize Delta schema JSON", e);
     }
   }
 
-  private List<Map<String, Object>> normalizeFields(Object rawFields)
+  private List<Map<String, Object>> normalizeFields(Object rawFields, IdAllocator ids)
       throws JsonProcessingException {
     if (!(rawFields instanceof List<?> list)) {
       return List.of();
     }
     List<Map<String, Object>> out = new ArrayList<>(list.size());
-    int nextId = 1;
     for (Object entry : list) {
       if (!(entry instanceof Map<?, ?> mapLike)) {
         continue;
@@ -182,11 +178,7 @@ public class DeltaIcebergMetadataTranslator {
           field.put(e.getKey().toString(), e.getValue());
         }
       }
-      int id = positiveInt(field.get("id"), 0);
-      if (id <= 0) {
-        id = nextId;
-      }
-      nextId = Math.max(nextId + 1, id + 1);
+      int id = ids.assign(positiveInt(field.get("id"), 0));
       field.put("id", id);
       String name = stringValue(field.get("name"));
       if (name == null || name.isBlank()) {
@@ -201,7 +193,7 @@ public class DeltaIcebergMetadataTranslator {
       if (!field.containsKey("type")) {
         field.put("type", "string");
       } else if (field.get("type") instanceof Map<?, ?> mapType) {
-        field.put("type", normalizeNestedType(mapType));
+        field.put("type", normalizeNestedType(mapType, ids));
       } else if (field.get("type") instanceof String typeName) {
         field.put("type", normalizeTypeName(typeName));
       }
@@ -210,7 +202,8 @@ public class DeltaIcebergMetadataTranslator {
     return out;
   }
 
-  private Object normalizeNestedType(Map<?, ?> mapType) {
+  private Object normalizeNestedType(Map<?, ?> mapType, IdAllocator ids)
+      throws JsonProcessingException {
     Map<String, Object> normalized = new LinkedHashMap<>();
     for (Map.Entry<?, ?> entry : mapType.entrySet()) {
       if (entry.getKey() == null) {
@@ -218,6 +211,25 @@ public class DeltaIcebergMetadataTranslator {
       }
       String key = entry.getKey().toString();
       Object value = entry.getValue();
+      if ("fields".equals(key)) {
+        normalized.put(key, normalizeFields(value, ids));
+        continue;
+      }
+      if ("elementType".equals(key)
+          || "keyType".equals(key)
+          || "valueType".equals(key)
+          || "element".equals(key)
+          || "key".equals(key)
+          || "value".equals(key)) {
+        if (value instanceof Map<?, ?> nestedMap) {
+          normalized.put(key, normalizeNestedType(nestedMap, ids));
+        } else if (value instanceof String nestedTypeName) {
+          normalized.put(key, normalizeTypeName(nestedTypeName));
+        } else {
+          normalized.put(key, value);
+        }
+        continue;
+      }
       if ("type".equals(key) && value instanceof String typeName) {
         normalized.put(key, normalizeTypeName(typeName));
       } else {
@@ -234,7 +246,8 @@ public class DeltaIcebergMetadataTranslator {
     String type = rawType.trim();
     String lower = type.toLowerCase(Locale.ROOT);
     return switch (lower) {
-      case "integer" -> "int";
+      case "byte", "short", "integer" -> "int";
+      case "real" -> "float";
       case "str" -> "string";
       default -> type;
     };
@@ -250,6 +263,73 @@ public class DeltaIcebergMetadataTranslator {
 
   private String stringValue(Object value) {
     return value == null ? null : value.toString();
+  }
+
+  private int maxFieldIdInSchema(Object rawFields) {
+    if (!(rawFields instanceof List<?> list)) {
+      return 0;
+    }
+    int max = 0;
+    for (Object entry : list) {
+      if (!(entry instanceof Map<?, ?> mapLike)) {
+        continue;
+      }
+      Object id = mapLike.get("id");
+      max = Math.max(max, positiveInt(id, 0));
+      Object type = mapLike.get("type");
+      if (type instanceof Map<?, ?> typeMap) {
+        max = Math.max(max, maxFieldIdInType(typeMap));
+      }
+    }
+    return max;
+  }
+
+  private int maxFieldIdInType(Map<?, ?> typeMap) {
+    int max = 0;
+    Object fields = typeMap.get("fields");
+    max = Math.max(max, maxFieldIdInSchema(fields));
+    for (String key : List.of("elementType", "keyType", "valueType", "element", "key", "value")) {
+      Object nested = typeMap.get(key);
+      if (nested instanceof Map<?, ?> nestedMap) {
+        max = Math.max(max, maxFieldIdInType(nestedMap));
+      }
+    }
+    return max;
+  }
+
+  private int maxFieldId(List<Map<String, Object>> fields) {
+    int max = 0;
+    for (Map<String, Object> field : fields) {
+      max = Math.max(max, positiveInt(field.get("id"), 0));
+      Object type = field.get("type");
+      if (type instanceof Map<?, ?> typeMap) {
+        max = Math.max(max, maxFieldIdInType(typeMap));
+      }
+    }
+    return max;
+  }
+
+  private static final class IdAllocator {
+    private int next;
+    private final Set<Integer> seen = new HashSet<>();
+
+    private IdAllocator(int initial) {
+      this.next = Math.max(1, initial);
+    }
+
+    private int assign(int existing) {
+      if (existing > 0 && !seen.contains(existing)) {
+        seen.add(existing);
+        next = Math.max(next, existing + 1);
+        return existing;
+      }
+      while (seen.contains(next)) {
+        next++;
+      }
+      int assigned = next++;
+      seen.add(assigned);
+      return assigned;
+    }
   }
 
   private record NormalizedSchema(int schemaId, int lastColumnId, String schemaJson) {}

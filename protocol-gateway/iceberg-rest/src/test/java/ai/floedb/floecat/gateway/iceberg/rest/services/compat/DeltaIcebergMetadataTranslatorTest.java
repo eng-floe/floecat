@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -275,6 +276,71 @@ class DeltaIcebergMetadataTranslatorTest {
 
     assertTrue(typeNode.isObject());
     assertEquals("struct", typeNode.get("type").asText());
+    assertEquals(2, schema.get("last-column-id").asInt());
+    assertEquals(1, schema.get("fields").get(0).get("id").asInt());
+    assertEquals(2, typeNode.get("fields").get(0).get("id").asInt());
+  }
+
+  @Test
+  void translateAssignsIdsRecursivelyForCollectionTypes() throws Exception {
+    String schemaJson =
+        "{\"type\":\"struct\",\"fields\":["
+            + "{\"name\":\"items\",\"nullable\":true,\"type\":{\"type\":\"array\","
+            + "\"elementType\":{\"type\":\"struct\",\"fields\":[{\"name\":\"x\",\"type\":\"integer\",\"nullable\":true}]},"
+            + "\"containsNull\":true}},"
+            + "{\"name\":\"attributes\",\"nullable\":true,\"type\":{\"type\":\"map\","
+            + "\"keyType\":\"string\","
+            + "\"valueType\":{\"type\":\"struct\",\"fields\":[{\"name\":\"y\",\"type\":\"short\",\"nullable\":false}]},"
+            + "\"valueContainsNull\":true}}]}";
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:delta_collections").build())
+            .setSchemaJson(schemaJson)
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(3L)
+            .setSequenceNumber(3L)
+            .setSchemaId(9)
+            .setSchemaJson(schemaJson)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build();
+
+    var metadata = translator.translate(table, List.of(snapshot));
+    JsonNode schema = JSON.readTree(metadata.getSchemas(0).getSchemaJson());
+    JsonNode itemsType = schema.get("fields").get(0).get("type");
+    JsonNode attributesType = schema.get("fields").get(1).get("type");
+
+    assertEquals(9, schema.get("schema-id").asInt());
+    assertEquals("array", itemsType.get("type").asText());
+    assertEquals(2, itemsType.get("elementType").get("fields").get(0).get("id").asInt());
+    assertEquals("int", itemsType.get("elementType").get("fields").get(0).get("type").asText());
+    assertEquals("map", attributesType.get("type").asText());
+    assertEquals(4, attributesType.get("valueType").get("fields").get(0).get("id").asInt());
+    assertEquals("int", attributesType.get("valueType").get("fields").get(0).get("type").asText());
+    assertEquals(4, schema.get("last-column-id").asInt());
+  }
+
+  @Test
+  void translateThrowsForInvalidSchemaJson() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:delta_broken").build())
+            .setSchemaJson("{\"type\":\"struct\",")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(5L)
+            .setSequenceNumber(5L)
+            .setSchemaId(1)
+            .setSchemaJson("{invalid-json")
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build();
+
+    IllegalArgumentException thrown =
+        assertThrows(
+            IllegalArgumentException.class, () -> translator.translate(table, List.of(snapshot)));
+    assertTrue(thrown.getMessage().contains("Failed to normalize Delta schema JSON"));
   }
 
   @Test

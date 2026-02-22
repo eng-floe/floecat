@@ -24,16 +24,20 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Map;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SeekableInputStream;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 
-public final class InMemoryS3FileIO implements FileIO {
+public final class InMemoryS3FileIO implements SupportsPrefixOperations {
 
   private static final String DEFAULT_ROOT =
       Paths.get(System.getProperty("java.io.tmpdir"), "floecat-test-s3").toString();
@@ -82,6 +86,59 @@ public final class InMemoryS3FileIO implements FileIO {
   @Override
   public Map<String, String> properties() {
     return props;
+  }
+
+  @Override
+  public Iterable<FileInfo> listPrefix(String prefix) {
+    Path base = toLocalPath(prefix, false);
+    if (!Files.exists(base)) {
+      return java.util.List.of();
+    }
+    try (var stream = Files.walk(base)) {
+      ArrayList<FileInfo> out = new ArrayList<>();
+      stream
+          .filter(Files::isRegularFile)
+          .sorted(Comparator.comparing(Path::toString))
+          .forEach(
+              file -> {
+                Path relative = root.relativize(file);
+                String location = "s3://" + relative.toString().replace('\\', '/');
+                long size;
+                long createdAt;
+                try {
+                  size = Files.size(file);
+                  createdAt = Files.getLastModifiedTime(file).toMillis();
+                } catch (IOException e) {
+                  throw new RuntimeException("Failed to stat file " + file, e);
+                }
+                out.add(new FileInfo(location, size, Math.max(0L, createdAt)));
+              });
+      return out;
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to list prefix " + prefix, e);
+    }
+  }
+
+  @Override
+  public void deletePrefix(String prefix) {
+    Path base = toLocalPath(prefix, false);
+    if (!Files.exists(base)) {
+      return;
+    }
+    try (var stream = Files.walk(base)) {
+      stream
+          .sorted(Comparator.reverseOrder())
+          .forEach(
+              path -> {
+                try {
+                  Files.deleteIfExists(path);
+                } catch (IOException e) {
+                  throw new RuntimeException("Failed to delete " + path, e);
+                }
+              });
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to delete prefix " + prefix, e);
+    }
   }
 
   @Override
