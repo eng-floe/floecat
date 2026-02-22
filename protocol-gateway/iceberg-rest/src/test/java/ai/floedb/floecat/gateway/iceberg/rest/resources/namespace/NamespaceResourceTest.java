@@ -54,7 +54,7 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
         .thenReturn(CreateNamespaceResponse.newBuilder().setNamespace(created).build());
 
     given()
-        .body("{\"namespace\":\"analytics\"}")
+        .body("{\"namespace\":[\"analytics\"]}")
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/namespaces")

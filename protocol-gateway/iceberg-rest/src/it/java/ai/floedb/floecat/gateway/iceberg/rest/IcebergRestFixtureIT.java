@@ -163,7 +163,7 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace))
+        .body(Map.of("namespace", List.of(namespace)))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
@@ -281,7 +281,7 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace))
+        .body(Map.of("namespace", List.of(namespace)))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
@@ -362,7 +362,7 @@ class IcebergRestFixtureIT {
       String namespace = NAMESPACE_PREFIX + UUID.randomUUID().toString().replace("-", "");
       given()
           .spec(spec)
-          .body(Map.of("namespace", namespace))
+          .body(Map.of("namespace", List.of(namespace)))
           .when()
           .post("/v1/" + CATALOG + "/namespaces")
           .then()
@@ -433,7 +433,7 @@ class IcebergRestFixtureIT {
     String table = TABLE_PREFIX + UUID.randomUUID().toString().replace("-", "");
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace))
+        .body(Map.of("namespace", List.of(namespace)))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
@@ -565,7 +565,7 @@ class IcebergRestFixtureIT {
   @Test
   void createsAndDeletesNamespaceViaGateway() {
     String ns = uniqueName("it_ns_");
-    Map<String, Object> payload = Map.of("namespace", ns);
+    Map<String, Object> payload = Map.of("namespace", List.of(ns));
 
     given()
         .spec(spec)
@@ -1116,7 +1116,7 @@ class IcebergRestFixtureIT {
 
     given()
         .spec(spec)
-        .body(Map.of("namespace", namespace))
+        .body(Map.of("namespace", List.of(namespace)))
         .when()
         .post("/v1/" + CATALOG + "/namespaces")
         .then()
@@ -1336,8 +1336,7 @@ class IcebergRestFixtureIT {
   }
 
   private void createNamespace(String namespace) {
-    Map<String, Object> payload =
-        Map.of("namespace", namespace);
+    Map<String, Object> payload = Map.of("namespace", List.of(namespace));
     given()
         .spec(spec)
         .body(payload)

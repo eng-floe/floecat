@@ -378,6 +378,7 @@
             <inputExclude>**/*.yml</inputExclude>
             <inputExclude>**/*.avro</inputExclude>
             <inputExclude>**/*.crc</inputExclude>
+            <inputExclude>**/_last_checkpoint</inputExclude>
             <inputExclude>**/*.log</inputExclude>
             <inputExclude>log/*</inputExclude>
             <inputExclude>service/log/*</inputExclude>
