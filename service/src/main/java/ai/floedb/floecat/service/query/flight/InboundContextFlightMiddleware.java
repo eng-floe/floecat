@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.query.flight;
 
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
-import ai.floedb.floecat.service.context.impl.InboundCallContextHelper.ResolvedCallContext;
 import io.grpc.StatusRuntimeException;
 import org.apache.arrow.flight.CallHeaders;
 import org.apache.arrow.flight.CallInfo;

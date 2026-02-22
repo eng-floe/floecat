@@ -17,6 +17,7 @@
 package ai.floedb.floecat.arrow;
 
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.stream.Stream;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -32,6 +33,11 @@ public final class ArrowScanPlan implements AutoCloseable {
   ArrowScanPlan(Schema schema, Stream<ColumnarBatch> batches) {
     this.schema = schema;
     this.batches = batches;
+  }
+
+  public static ArrowScanPlan of(Schema schema, Stream<ColumnarBatch> batches) {
+    return new ArrowScanPlan(
+        Objects.requireNonNull(schema, "schema"), Objects.requireNonNull(batches, "batches"));
   }
 
   public Schema schema() {

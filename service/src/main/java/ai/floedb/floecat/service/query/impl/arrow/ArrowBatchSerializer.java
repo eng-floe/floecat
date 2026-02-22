@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.impl.arrow;
 
 import ai.floedb.floecat.arrow.ArrowBatchSink;
+import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;

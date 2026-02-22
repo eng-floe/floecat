@@ -16,19 +16,20 @@
 
 package ai.floedb.floecat.service.query.impl.arrow;
 
+import ai.floedb.floecat.arrow.ArrowScanPlan;
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.service.query.system.SystemRowFilter;
-import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import ai.floedb.floecat.scanner.columnar.ArrowFilterOperator;
 import ai.floedb.floecat.scanner.columnar.ArrowProjectOperator;
-import ai.floedb.floecat.arrow.ColumnarBatch;
-import ai.floedb.floecat.scanner.utils.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.RowStreamToArrowBatchAdapter;
+import ai.floedb.floecat.service.query.system.SystemRowFilter;
+import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import java.util.List;
 import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
@@ -77,6 +78,6 @@ public final class ArrowScanPlanner {
               .map(batch -> ArrowProjectOperator.project(batch, requiredColumns, allocator));
       batches = adapted.onClose(projected::close).onClose(filtered::close).onClose(rows::close);
     }
-    return new ArrowScanPlan(schema, batches);
+    return ArrowScanPlan.of(schema, batches);
   }
 }
