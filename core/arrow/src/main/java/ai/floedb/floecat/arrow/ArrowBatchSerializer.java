@@ -17,8 +17,6 @@
 package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.arrow.ArrowSchemaUtil;
-import ai.floedb.floecat.arrow.ColumnarBatch;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -65,7 +63,12 @@ public final class ArrowBatchSerializer {
       sink.onSchema(plan.schema());
       Iterator<ColumnarBatch> iterator = plan.iterator();
       while (!isCancelled.get() && iterator.hasNext()) {
-        ColumnarBatch batch = iterator.next();
+        ColumnarBatch batch;
+        try {
+          batch = iterator.next();
+        } catch (java.util.NoSuchElementException ignored) {
+          break;
+        }
         try {
           sink.onBatch(batch.root());
         } finally {

@@ -16,15 +16,15 @@
 
 package ai.floedb.floecat.systemcatalog.informationschema;
 
+import ai.floedb.floecat.arrow.ArrowSchemaUtil;
+import ai.floedb.floecat.arrow.ArrowValueWriters;
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
-import ai.floedb.floecat.arrow.ArrowSchemaUtil;
-import ai.floedb.floecat.arrow.ArrowValueWriters;
-import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;

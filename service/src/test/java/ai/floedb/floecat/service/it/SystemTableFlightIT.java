@@ -23,13 +23,14 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.FlightDevProfile;
 import ai.floedb.floecat.service.query.flight.FlightServerLifecycle;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
+import ai.floedb.floecat.system.rpc.SystemTableTarget;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import io.grpc.Metadata;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
@@ -121,7 +122,10 @@ public class SystemTableFlightIT {
   void getFlightInfo_returnsProjectedSchemaForInformationSchemaColumns() {
     ResourceId tableId = informationSchemaColumnsTableId();
     SystemTableFlightCommand command =
-        SystemTableFlightCommand.newBuilder().setTableId(tableId).setQueryId(queryId).build();
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
+            .setQueryId(queryId)
+            .build();
     FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
 
     FlightInfo info = client.getInfo(descriptor, queryHeader(queryId));
@@ -138,9 +142,10 @@ public class SystemTableFlightIT {
     ResourceId tableId = informationSchemaColumnsTableId();
     SystemTableFlightCommand command =
         SystemTableFlightCommand.newBuilder()
-            .setTableId(tableId)
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
             .addRequiredColumns("table_name")
             .addRequiredColumns("column_name")
+            .setQueryId(queryId)
             .build();
     FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
 
@@ -161,7 +166,10 @@ public class SystemTableFlightIT {
   void getStream_returnsRowsForInformationSchemaTables() {
     ResourceId tableId = informationSchemaTablesTableId();
     SystemTableFlightCommand command =
-        SystemTableFlightCommand.newBuilder().setTableId(tableId).build();
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
+            .setQueryId(queryId)
+            .build();
     FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
 
     FlightInfo info = client.getInfo(descriptor, queryHeader(queryId));
@@ -176,8 +184,9 @@ public class SystemTableFlightIT {
     ResourceId tableId = informationSchemaColumnsTableId();
     SystemTableFlightCommand command =
         SystemTableFlightCommand.newBuilder()
-            .setTableId(tableId)
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
             .addRequiredColumns("column_name")
+            .setQueryId(queryId)
             .build();
     FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
 

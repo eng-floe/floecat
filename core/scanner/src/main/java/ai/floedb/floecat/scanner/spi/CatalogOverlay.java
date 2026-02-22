@@ -74,6 +74,12 @@ public interface CatalogOverlay {
 
   Optional<ResourceId> resolveName(String correlationId, NameRef ref);
 
+  /** Resolves a system table name without involving the user graph. */
+  Optional<ResourceId> resolveSystemTable(NameRef ref);
+
+  /** Resolves a system table id back to name without involving the user graph. */
+  Optional<NameRef> resolveSystemTableName(ResourceId id);
+
   SnapshotPin snapshotPinFor(
       String correlationId,
       ResourceId tableId,

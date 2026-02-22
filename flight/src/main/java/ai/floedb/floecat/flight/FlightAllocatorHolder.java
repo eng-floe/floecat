@@ -26,9 +26,11 @@ public final class FlightAllocatorHolder {
   private volatile BufferAllocator allocator;
 
   public synchronized void setAllocator(BufferAllocator allocator) {
-    if (this.allocator != null) {
-      throw new IllegalStateException("Flight allocator already initialized");
+    if (allocator == null) {
+      throw new IllegalArgumentException("Flight allocator cannot be null");
     }
+    // Some services initialize a generic Flight allocator first and then replace it with
+    // a dedicated server allocator during startup. Keep the latest allocator.
     this.allocator = allocator;
   }
 

@@ -37,21 +37,29 @@ option java_outer_classname = "SystemScanFlightProto";
  *   - unknown predicate columns    → produce zero matches (conservative)
  *   - unknown predicate operators  → INVALID_ARGUMENT error
  *
- * query_id is optional and for correlation/logging only. Producers must NOT
- * depend on it for correctness or auth.
+ * query_id is required by Flight producers for correlation and request
+ * validation. Callers may provide it in the command, the x-query-id header,
+ * or both (if both are present they must match).
  */
-message SystemTableFlightCommand {
-  /** System table to scan. Required. */
-  ai.floedb.floecat.common.ResourceId table_id = 1;
+message SystemTableTarget {
+  oneof ref {
+    ai.floedb.floecat.common.NameRef name = 1;
+    ai.floedb.floecat.common.ResourceId id = 2;
+  }
+}
 
-  /** Optional query correlation id for logging/tracing. Must not affect results. */
-  string query_id = 2;
+message SystemTableFlightCommand {
+  /** Target system table (either canonical name or internal id). */
+  SystemTableTarget target = 1;
 
   /** Optional column projection. Empty means all columns. */
-  repeated string required_columns = 3;
+  repeated string required_columns = 2;
 
   /** Optional row-level filters. Empty means no filtering. */
-  repeated ai.floedb.floecat.common.Predicate predicates = 4;
+  repeated ai.floedb.floecat.common.Predicate predicates = 3;
+
+  /** Query correlation id. Required by the Flight base. */
+  string query_id = 4;
 }
 
 /**

@@ -19,7 +19,11 @@ package ai.floedb.floecat.service.query.flight;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.QUERY_NOT_FOUND;
 
 import ai.floedb.floecat.arrow.ArrowScanPlan;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Predicate;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.flight.FlightAllocatorHolder;
+import ai.floedb.floecat.flight.FlightExecutor;
 import ai.floedb.floecat.flight.SystemTableFlightProducerBase;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -28,6 +32,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
@@ -37,12 +42,17 @@ import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import org.apache.arrow.flight.FlightProducer.CallContext;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.memory.BufferAllocator;
@@ -65,6 +75,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;
   @Inject Authorizer authz;
+  @Inject SystemNodeRegistry nodeRegistry;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
@@ -77,6 +88,12 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   private Location flightLocation;
   private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
+
+  @Inject
+  public SystemTableFlightProducer(
+      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
+    super(allocatorHolder, flightExecutor);
+  }
 
   @PostConstruct
   void initFlightLocation() {
@@ -109,17 +126,27 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Override
   protected List<SchemaColumn> schemaColumns(
-      SystemTableFlightCommand command, ResolvedCallContext context) {
-    return resolveScanner(command, context).schema();
+      String tableName,
+      Optional<ResourceId> tableId,
+      SystemTableFlightCommand command,
+      ResolvedCallContext context) {
+    ResourceId resolvedTableId = requireTableId(tableId, tableName);
+    return resolveScanner(resolvedTableId, context).schema();
   }
 
   @Override
   protected ArrowScanPlan buildPlan(
-      SystemTableFlightCommand command, ResolvedCallContext context, BufferAllocator allocator) {
+      String tableName,
+      Optional<ResourceId> tableId,
+      SystemTableFlightCommand command,
+      ResolvedCallContext context,
+      BufferAllocator allocator,
+      BooleanSupplier cancelled) {
+    ResourceId resolvedTableId = requireTableId(tableId, tableName);
     String effectiveQueryId = requireQueryId(context, command);
     LOG.debugf(
         "getStream table=%s query=%s correlation=%s",
-        command.getTableId().getId(), effectiveQueryId, context.correlationId());
+        resolvedTableId.getId(), effectiveQueryId, context.correlationId());
 
     QueryContext queryCtx =
         queryStore
@@ -131,7 +158,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
                         QUERY_NOT_FOUND,
                         Map.of("query_id", effectiveQueryId)));
     StatsProvider statsProvider = statsFactory.forQuery(queryCtx, context.correlationId());
-    SystemObjectScanner scanner = resolveScanner(command, context);
+    SystemObjectScanner scanner = resolveScanner(resolvedTableId, context);
     List<String> requiredColumns = command.getRequiredColumnsList();
     List<Predicate> predicates = command.getPredicatesList();
     Expr arrowExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
@@ -148,18 +175,46 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   }
 
   @Override
-  protected boolean supportsCommand(SystemTableFlightCommand command) {
-    if (command == null || !command.hasTableId()) {
+  protected boolean supportsResolvedHandle(SystemTableHandle handle, ResolvedCallContext context) {
+    if (!super.supportsResolvedHandle(handle, context)) {
+      return false;
+    }
+    Optional<ResourceId> tableId = handle.tableId();
+    if (tableId.isEmpty()) {
       return false;
     }
     return graph
-        .resolve(command.getTableId())
+        .resolve(tableId.get())
         .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
         .isPresent();
   }
 
-  private SystemObjectScanner resolveScanner(
-      SystemTableFlightCommand command, ResolvedCallContext ctx) {
-    return scannerResolver.resolve(ctx.correlationId(), command.getTableId(), ctx.engineContext());
+  @Override
+  protected Collection<String> tableNames(ResolvedCallContext context) {
+    EngineContext ctx = context.engineContext();
+    var nodes = nodeRegistry.nodesFor(ctx);
+    if (nodes == null) {
+      return List.of();
+    }
+    return List.copyOf(nodes.tableNames().keySet());
+  }
+
+  @Override
+  protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
+    return graph.resolveSystemTable(name);
+  }
+
+  @Override
+  protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
+    return graph.resolveSystemTableName(id).map(NameRefUtil::canonical);
+  }
+
+  private SystemObjectScanner resolveScanner(ResourceId tableId, ResolvedCallContext ctx) {
+    return scannerResolver.resolve(ctx.correlationId(), tableId, ctx.engineContext());
+  }
+
+  private static ResourceId requireTableId(Optional<ResourceId> tableId, String tableName) {
+    return tableId.orElseThrow(
+        () -> new IllegalStateException("System table id is required for " + tableName));
   }
 }

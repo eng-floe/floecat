@@ -25,18 +25,14 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
-import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 
 public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
@@ -139,22 +135,36 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public ResolveResult batchResolveTables(String correlationId, List<NameRef> items, int limit, String token) {
+  public ResolveResult batchResolveTables(
+      String correlationId, List<NameRef> items, int limit, String token) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult listTablesByPrefix(String correlationId, NameRef prefix, int limit, String token) {
+  public ResolveResult listTablesByPrefix(
+      String correlationId, NameRef prefix, int limit, String token) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult batchResolveViews(String correlationId, List<NameRef> items, int limit, String token) {
+  public Optional<ResourceId> resolveSystemTable(NameRef ref) {
     throw unsupported();
   }
 
   @Override
-  public ResolveResult listViewsByPrefix(String correlationId, NameRef prefix, int limit, String token) {
+  public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+    throw unsupported();
+  }
+
+  @Override
+  public ResolveResult batchResolveViews(
+      String correlationId, List<NameRef> items, int limit, String token) {
+    throw unsupported();
+  }
+
+  @Override
+  public ResolveResult listViewsByPrefix(
+      String correlationId, NameRef prefix, int limit, String token) {
     throw unsupported();
   }
 
@@ -179,7 +189,8 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public SchemaResolution schemaFor(String correlationId, ResourceId tableId, SnapshotRef snapshot) {
+  public SchemaResolution schemaFor(
+      String correlationId, ResourceId tableId, SnapshotRef snapshot) {
     throw unsupported();
   }
 

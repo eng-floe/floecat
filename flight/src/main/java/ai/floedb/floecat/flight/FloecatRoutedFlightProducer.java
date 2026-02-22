@@ -21,8 +21,7 @@ import org.apache.arrow.flight.FlightProducer;
 import org.apache.arrow.flight.Ticket;
 
 /** Flight producer that can claim ownership of descriptors and tickets. */
-public interface RoutedFlightProducer extends FlightProducer {
-
+public interface FloecatRoutedFlightProducer extends FlightProducer {
   boolean supportsDescriptor(FlightDescriptor descriptor);
 
   boolean supportsTicket(Ticket ticket);

@@ -31,6 +31,8 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -38,8 +40,6 @@ import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemCatalogTr
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -275,6 +275,18 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveName(ref, ctx),
         () -> userGraph.resolveName(correlationId, ref));
+  }
+
+  @Override
+  public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+    EngineContext ctx = engineContext();
+    return systemGraph.resolveTable(ref, ctx);
+  }
+
+  @Override
+  public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+    EngineContext ctx = engineContext();
+    return systemGraph.tableName(id, ctx);
   }
 
   /**

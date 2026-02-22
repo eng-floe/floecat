@@ -16,9 +16,14 @@
 
 package ai.floedb.floecat.arrow;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 
@@ -35,6 +40,22 @@ public final class RecordArrowScanPlan {
     List<T> copy = List.copyOf(rows);
     ColumnarBatch batch = new RecordColumnarBatch<>(writer, copy, allocator);
     return ArrowScanPlan.of(writer.schema(), Stream.of(batch));
+  }
+
+  public static <T extends Record> ArrowScanPlan paged(
+      ArrowRecordWriter<T> writer,
+      Iterator<? extends List<T>> pages,
+      BufferAllocator allocator,
+      BooleanSupplier cancelled) {
+    Objects.requireNonNull(writer, "writer");
+    Objects.requireNonNull(pages, "pages");
+    Objects.requireNonNull(allocator, "allocator");
+    Iterator<ColumnarBatch> batchIterator =
+        new PagedColumnarBatchIterator<>(writer, pages, allocator, cancelled);
+    Stream<ColumnarBatch> stream =
+        StreamSupport.stream(
+            Spliterators.spliteratorUnknownSize(batchIterator, Spliterator.ORDERED), false);
+    return ArrowScanPlan.of(writer.schema(), stream);
   }
 
   private static final class RecordColumnarBatch<T extends Record> implements ColumnarBatch {
@@ -61,6 +82,51 @@ public final class RecordArrowScanPlan {
         closed = true;
         root.close();
       }
+    }
+  }
+
+  private static final class PagedColumnarBatchIterator<T extends Record>
+      implements Iterator<ColumnarBatch> {
+
+    private final ArrowRecordWriter<T> writer;
+    private final Iterator<? extends List<T>> pages;
+    private final BufferAllocator allocator;
+    private final BooleanSupplier cancelled;
+
+    PagedColumnarBatchIterator(
+        ArrowRecordWriter<T> writer, Iterator<? extends List<T>> pages, BufferAllocator allocator) {
+      this.writer = writer;
+      this.pages = pages;
+      this.allocator = allocator;
+      this.cancelled = () -> false;
+    }
+
+    PagedColumnarBatchIterator(
+        ArrowRecordWriter<T> writer,
+        Iterator<? extends List<T>> pages,
+        BufferAllocator allocator,
+        BooleanSupplier cancelled) {
+      this.writer = writer;
+      this.pages = pages;
+      this.allocator = allocator;
+      this.cancelled = cancelled;
+    }
+
+    @Override
+    public boolean hasNext() {
+      if (cancelled.getAsBoolean()) {
+        return false;
+      }
+      return pages.hasNext();
+    }
+
+    @Override
+    public ColumnarBatch next() {
+      if (!hasNext()) {
+        throw new java.util.NoSuchElementException();
+      }
+      List<T> rows = pages.next();
+      return new RecordColumnarBatch<>(writer, rows, allocator);
     }
   }
 }

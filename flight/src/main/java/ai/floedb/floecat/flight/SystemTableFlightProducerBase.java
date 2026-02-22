@@ -18,16 +18,27 @@ package ai.floedb.floecat.flight;
 
 import ai.floedb.floecat.arrow.ArrowBatchSerializer;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
+import ai.floedb.floecat.system.rpc.SystemTableTarget;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import jakarta.inject.Inject;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightEndpoint;
@@ -39,60 +50,81 @@ import org.apache.arrow.flight.Location;
 import org.apache.arrow.flight.NoOpFlightProducer;
 import org.apache.arrow.flight.Ticket;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.jboss.logging.Logger;
-import org.jboss.logging.MDC;
 
-/**
- * Shared base for Flight producers that speak the {@link SystemTableFlightCommand} protocol.
- *
- * <p>Subclasses provide the command-specific plan/schema hooks while this class drives the full
- * ticket lifecycle and serialization loop.
- *
- * <p>Ownership & lifecycle notes for external implementers:
- *
- * <ul>
- *   <li>The base owns the {@link ArrowScanPlan} produced by {@link #buildPlan}; it always hands the
- *       plan to {@link ArrowBatchSerializer#serialize}, so callers should not close it themselves.
- *   <li>An allocator is created by {@link #createStreamAllocator()} and guaranteed closed via the
- *       shared cleanup callback (including the defensive double-call guard in {@link
- *       #streamOnWorkerThread}).
- *   <li>Schema roots and batches are owned by the plan/serializer pair; implementations should
- *       allocate roots, write into them, and leave {@code close()}/row-count management to the
- *       plan/serializer.
- *   <li>{@link ArrowBatchSerializer#serialize} always runs the provided cleanup callback whether
- *       the stream completes normally or throws, so resources (allocator, sink) are released even
- *       when {@link #buildPlan} fails; the base adds its own defensive check so cleanup never runs
- *       twice.
- * </ul>
- */
+/** Shared base for Flight producers that speak the {@link SystemTableFlightCommand} protocol. */
 public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
-    implements RoutedFlightProducer {
+    implements FloecatRoutedFlightProducer {
 
   private static final int TICKET_VERSION = 1;
 
-  @Inject FlightAllocatorHolder allocatorHolder;
-  @Inject FlightExecutor flightExecutor;
+  private FlightAllocatorHolder allocatorHolder;
+  private FlightExecutor flightExecutor;
+
+  protected SystemTableFlightProducerBase() {}
+
+  protected SystemTableFlightProducerBase(
+      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
+    initFlightServices(allocatorHolder, flightExecutor);
+  }
+
+  @Inject
+  protected void initFlightServices(
+      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
+    this.allocatorHolder = Objects.requireNonNull(allocatorHolder, "allocatorHolder");
+    this.flightExecutor = Objects.requireNonNull(flightExecutor, "flightExecutor");
+  }
+
+  private Set<String> supportedNames(ResolvedCallContext context) {
+    ResolvedCallContext ctx = effectiveContext(context);
+    Collection<String> names = tableNames(ctx);
+    if (names == null || names.isEmpty()) {
+      return Set.of();
+    }
+    LinkedHashSet<String> normalized =
+        names.stream()
+            .filter(Objects::nonNull)
+            .map(SystemTableFlightProducerBase::normalizeTableName)
+            .filter(name -> !name.isBlank())
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+    return Set.copyOf(normalized);
+  }
+
+  protected record SystemTableHandle(String canonicalName, Optional<ResourceId> tableId) {}
 
   protected Logger logger() {
     return Logger.getLogger(getClass());
   }
 
   // -----------------------------------------------------------------------
-  //  Abstract contract
+  // Abstract contract
   // -----------------------------------------------------------------------
 
   protected abstract ResolvedCallContext resolveCallContext(CallContext context);
 
   protected void authorize(ResolvedCallContext ctx) {}
 
+  protected abstract Collection<String> tableNames(ResolvedCallContext context);
+
+  protected ResolvedCallContext effectiveContext(ResolvedCallContext ctx) {
+    return ctx == null ? ResolvedCallContext.unauthenticated() : ctx;
+  }
+
   protected abstract List<SchemaColumn> schemaColumns(
-      SystemTableFlightCommand command, ResolvedCallContext context);
+      String tableName,
+      Optional<ResourceId> tableId,
+      SystemTableFlightCommand command,
+      ResolvedCallContext context);
 
   protected abstract ArrowScanPlan buildPlan(
-      SystemTableFlightCommand command, ResolvedCallContext context, BufferAllocator allocator);
-
-  protected abstract boolean supportsCommand(SystemTableFlightCommand command);
+      String tableName,
+      Optional<ResourceId> tableId,
+      SystemTableFlightCommand command,
+      ResolvedCallContext context,
+      BufferAllocator allocator,
+      BooleanSupplier cancelled);
 
   protected abstract Location selfLocation();
 
@@ -100,22 +132,81 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     return Long.MAX_VALUE;
   }
 
+  protected final boolean supportsCommand(
+      SystemTableFlightCommand command, ResolvedCallContext context) {
+    if (command == null || !command.hasTarget()) {
+      return false;
+    }
+    ResolvedCallContext ctx = effectiveContext(context);
+    Set<String> supported = supportedNames(ctx);
+    if (supported.isEmpty()) {
+      return false;
+    }
+    SystemTableTarget target = command.getTarget();
+    if (target.hasName()) {
+      String canonical = normalizeTableName(NameRefUtil.canonical(target.getName()));
+      return !canonical.isBlank() && supported.contains(canonical);
+    }
+    if (target.hasId()) {
+      return resolveSystemTableName(target.getId(), ctx)
+          .map(SystemTableFlightProducerBase::normalizeTableName)
+          .filter(supported::contains)
+          .isPresent();
+    }
+    return false;
+  }
+
+  protected final Optional<SystemTableHandle> handleForCommand(SystemTableFlightCommand command) {
+    return handleForCommand(command, null);
+  }
+
+  protected final Optional<SystemTableHandle> handleForCommand(
+      SystemTableFlightCommand command, ResolvedCallContext context) {
+    if (command == null || !command.hasTarget()) {
+      return Optional.empty();
+    }
+    SystemTableTarget target = command.getTarget();
+    if (target.hasId()) {
+      return resolveHandleById(target.getId(), context);
+    }
+    if (target.hasName()) {
+      return resolveHandleByName(target.getName(), context);
+    }
+    return Optional.empty();
+  }
+
+  protected boolean supportsResolvedHandle(SystemTableHandle handle, ResolvedCallContext context) {
+    return handle != null
+        && !handle.canonicalName().isBlank()
+        && supportedNames(context).contains(handle.canonicalName());
+  }
+
+  protected boolean supportsResolvedHandle(SystemTableHandle handle) {
+    return supportsResolvedHandle(handle, ResolvedCallContext.unauthenticated());
+  }
+
   // -----------------------------------------------------------------------
-  //  Routing helpers
+  // Routing helpers
   // -----------------------------------------------------------------------
 
   @Override
   public boolean supportsDescriptor(FlightDescriptor descriptor) {
-    return decodeCommandQuietly(descriptor).map(this::supportsCommand).orElse(false);
+    ResolvedCallContext defaultCtx = ResolvedCallContext.unauthenticated();
+    return decodeCommandQuietly(descriptor)
+        .map(cmd -> supportsCommand(cmd, defaultCtx))
+        .orElse(false);
   }
 
   @Override
   public boolean supportsTicket(Ticket ticket) {
-    return decodeTicketCommandQuietly(ticket).map(this::supportsCommand).orElse(false);
+    ResolvedCallContext defaultCtx = ResolvedCallContext.unauthenticated();
+    return decodeTicketCommandQuietly(ticket)
+        .map(cmd -> supportsCommand(cmd, defaultCtx))
+        .orElse(false);
   }
 
   // -----------------------------------------------------------------------
-  //  Flight protocol
+  // Flight protocol
   // -----------------------------------------------------------------------
 
   @Override
@@ -123,13 +214,17 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     try {
       ResolvedCallContext callCtx = requireAuth(context);
       SystemTableFlightCommand command = decodeCommand(descriptor);
-      if (!supportsCommand(command)) {
+      requireQueryId(callCtx, command);
+      SystemTableHandle handle = requireHandle(command, callCtx);
+      if (!supportsResolvedHandle(handle, callCtx)) {
         throw CallStatus.NOT_FOUND
             .withDescription("No Flight producer registered for descriptor")
             .toRuntimeException();
       }
-      Schema projected = projectSchema(command, callCtx);
-      Ticket ticket = encodeTicket(command);
+      Optional<ResourceId> tableId = handle.tableId();
+      SystemTableFlightCommand enriched = commandWithTableId(command, tableId);
+      Schema projected = projectSchema(handle.canonicalName(), tableId, enriched, callCtx);
+      Ticket ticket = encodeTicket(enriched);
       FlightEndpoint endpoint = new FlightEndpoint(ticket, selfLocation());
       return FlightInfo.builder(projected, descriptor, List.of(endpoint)).build();
     } catch (Throwable t) {
@@ -141,10 +236,10 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
   public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener) {
     try {
       ResolvedCallContext callCtx = requireAuth(context);
-      Map<String, Object> mdcSnapshot = copyContext(MDC.getMap());
+      ContextSnapshot snapshot = ContextSnapshot.capture();
       flightExecutor
           .executor()
-          .submit(() -> streamOnWorkerThread(ticket, listener, callCtx, mdcSnapshot));
+          .submit(() -> streamOnWorkerThread(ticket, listener, callCtx, snapshot));
     } catch (Throwable t) {
       listener.error(toFlightStatus(t).toRuntimeException());
     }
@@ -154,20 +249,25 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       Ticket ticket,
       ServerStreamListener listener,
       ResolvedCallContext callCtx,
-      Map<String, Object> mdcSnapshot) {
-    applyContext(mdcSnapshot);
+      ContextSnapshot snapshot) {
+    AutoCloseable snapshotScope = null;
     try {
+      snapshotScope = snapshot.apply();
       SystemTableFlightCommand command = decodeTicket(ticket);
-      if (!supportsCommand(command)) {
+      SystemTableHandle handle = requireHandle(command, callCtx);
+      if (!supportsResolvedHandle(handle, callCtx)) {
         throw CallStatus.NOT_FOUND
             .withDescription("No Flight producer registered for ticket: " + ticket)
             .toRuntimeException();
       }
+      String tableName = handle.canonicalName();
+      Optional<ResourceId> tableId = handle.tableId();
+      String tableIdLog = tableId.map(ResourceId::getId).orElse("<name-only>");
       String effectiveQueryId = requireQueryId(callCtx, command);
       logger()
           .debugf(
-              "getStream table=%s query=%s correlation=%s",
-              command.getTableId().getId(), effectiveQueryId, callCtx.correlationId());
+              "getStream table=%s name=%s query=%s correlation=%s",
+              tableIdLog, tableName, effectiveQueryId, callCtx.correlationId());
 
       BufferAllocator allocator = createStreamAllocator();
       FlightArrowBatchSink sink = new FlightArrowBatchSink(listener, allocator);
@@ -180,7 +280,8 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
             }
           };
       try {
-        ArrowScanPlan plan = buildPlan(command, callCtx, allocator);
+        ArrowScanPlan plan =
+            buildPlan(tableName, tableId, command, callCtx, allocator, listener::isCancelled);
         ArrowBatchSerializer.serialize(plan, sink, listener::isCancelled, cleanup);
       } catch (Throwable t) {
         if (cleanupCalled.compareAndSet(false, true)) {
@@ -189,8 +290,15 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
         }
         listener.error(toFlightStatus(t).toRuntimeException());
       }
+    } catch (Throwable t) {
+      listener.error(toFlightStatus(t).toRuntimeException());
     } finally {
-      MDC.clear();
+      if (snapshotScope != null) {
+        try {
+          snapshotScope.close();
+        } catch (Exception ignored) {
+        }
+      }
     }
   }
 
@@ -207,22 +315,167 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     }
   }
 
-  private ResolvedCallContext requireAuth(CallContext context) {
+  protected final ResolvedCallContext requireAuth(CallContext context) {
     ResolvedCallContext resolved = resolveCallContext(context);
     authorize(resolved);
     return resolved;
   }
 
-  private Schema projectSchema(SystemTableFlightCommand command, ResolvedCallContext context) {
-    List<SchemaColumn> columns = schemaColumns(command, context);
+  private Schema projectSchema(
+      String tableName,
+      Optional<ResourceId> tableId,
+      SystemTableFlightCommand command,
+      ResolvedCallContext context) {
+    List<SchemaColumn> columns = schemaColumns(tableName, tableId, command, context);
     if (columns == null) {
       throw new IllegalStateException("Schema columns must not be null");
     }
     return ArrowBatchSerializer.schemaForColumns(columns, command.getRequiredColumnsList());
   }
 
-  protected String requireQueryId(ResolvedCallContext context, SystemTableFlightCommand command) {
-    return requireQueryId(context.queryId(), command.getQueryId(), context.correlationId());
+  protected final FlightDescriptor descriptorForTable(
+      String tableName, ResolvedCallContext context) {
+    requireKnownTable(tableName, context);
+    return SystemTableCommands.descriptor(tableName, descriptorQueryId(context));
+  }
+
+  private static String descriptorQueryId(ResolvedCallContext context) {
+    String queryId = context == null ? null : context.queryId();
+    if (queryId != null && !queryId.isBlank()) {
+      return queryId;
+    }
+    String correlationId = context == null ? null : context.correlationId();
+    if (correlationId != null && !correlationId.isBlank()) {
+      return correlationId;
+    }
+    return UUID.randomUUID().toString();
+  }
+
+  private SystemTableHandle requireHandle(
+      SystemTableFlightCommand command, ResolvedCallContext context) {
+    return handleForCommand(command, context)
+        .orElseThrow(
+            () ->
+                CallStatus.NOT_FOUND
+                    .withDescription("Unsupported system table: " + command)
+                    .toRuntimeException());
+  }
+
+  private void requireKnownTable(String tableName) {
+    requireKnownTable(tableName, ResolvedCallContext.unauthenticated());
+  }
+
+  private void requireKnownTable(String tableName, ResolvedCallContext context) {
+    ResolvedCallContext ctx = effectiveContext(context);
+    if (tableName == null || !supportedNames(ctx).contains(normalizeTableName(tableName))) {
+      throw new IllegalArgumentException("Unknown system table: " + tableName);
+    }
+  }
+
+  public static List<SchemaColumn> schemaColumnsFromSchema(Schema schema) {
+    if (schema == null) {
+      return List.of();
+    }
+    List<SchemaColumn> columns = new ArrayList<>(schema.getFields().size());
+    int ordinal = 1;
+    for (Field field : schema.getFields()) {
+      columns.add(
+          SchemaColumn.newBuilder()
+              .setName(field.getName())
+              .setLogicalType(field.getFieldType().getType().toString())
+              .setFieldId(ordinal)
+              .setNullable(field.isNullable())
+              .setOrdinal(ordinal)
+              .setLeaf(true)
+              .build());
+      ordinal++;
+    }
+    return List.copyOf(columns);
+  }
+
+  protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
+    return Optional.empty();
+  }
+
+  protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
+    return Optional.empty();
+  }
+
+  private Optional<SystemTableHandle> resolveHandleById(
+      ResourceId id, ResolvedCallContext context) {
+    if (id == null || id.getId() == null || id.getId().isBlank()) {
+      return Optional.empty();
+    }
+    ResolvedCallContext ctx = effectiveContext(context);
+    Set<String> supported = supportedNames(ctx);
+    return resolveSystemTableName(id, context)
+        .filter(supported::contains)
+        .map(name -> new SystemTableHandle(name, Optional.of(id)))
+        .or(() -> resolveFromSupportedNames(id, supported, context));
+  }
+
+  private Optional<SystemTableHandle> resolveHandleByName(
+      NameRef name, ResolvedCallContext context) {
+    if (name == null || NameRefUtil.canonical(name).isBlank()) {
+      return Optional.empty();
+    }
+    String canonical = NameRefUtil.canonical(name);
+    ResolvedCallContext ctx = effectiveContext(context);
+    if (!supportedNames(ctx).contains(canonical)) {
+      return Optional.empty();
+    }
+    Optional<ResourceId> resolvedId =
+        resolveSystemTableId(NameRefUtil.fromCanonical(canonical), context);
+    return Optional.of(new SystemTableHandle(canonical, resolvedId));
+  }
+
+  private Optional<SystemTableHandle> resolveFromSupportedNames(
+      ResourceId id, Set<String> supported, ResolvedCallContext context) {
+    if (supported.isEmpty()) {
+      return Optional.empty();
+    }
+    for (String tableName : supported) {
+      Optional<ResourceId> candidate =
+          resolveSystemTableId(NameRefUtil.fromCanonical(tableName), context);
+      if (candidate.filter(candidateId -> resourceIdsEqual(candidateId, id)).isPresent()) {
+        return Optional.of(new SystemTableHandle(tableName, Optional.of(id)));
+      }
+    }
+    return Optional.empty();
+  }
+
+  private static boolean resourceIdsEqual(ResourceId a, ResourceId b) {
+    if (a == null || b == null) {
+      return false;
+    }
+    if (a.getId() == null || b.getId() == null) {
+      return false;
+    }
+    return a.getId().equals(b.getId())
+        && a.getAccountId().equals(b.getAccountId())
+        && a.getKind() == b.getKind();
+  }
+
+  private SystemTableFlightCommand commandWithTableId(
+      SystemTableFlightCommand command, Optional<ResourceId> tableId) {
+    if (tableId == null || tableId.isEmpty()) {
+      return command;
+    }
+    SystemTableTarget target = SystemTableTarget.newBuilder().setId(tableId.get()).build();
+    return SystemTableFlightCommand.newBuilder(command).setTarget(target).build();
+  }
+
+  private static String normalizeTableName(String value) {
+    if (value == null) {
+      return "";
+    }
+    return value.trim().toLowerCase(Locale.ROOT);
+  }
+
+  protected String requireQueryId(ResolvedCallContext ctx, SystemTableFlightCommand command) {
+    Objects.requireNonNull(ctx, "context");
+    Objects.requireNonNull(command, "command");
+    return requireQueryId(ctx.queryId(), command.getQueryId(), ctx.correlationId());
   }
 
   private static String requireQueryId(
@@ -251,7 +504,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
   }
 
   // -------------------------------------------------------------------------
-  //  Utils
+  // Utils
   // -------------------------------------------------------------------------
 
   private static Optional<SystemTableFlightCommand> decodeCommandQuietly(
@@ -335,27 +588,11 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     }
   }
 
-  private static void applyContext(Map<String, Object> context) {
-    MDC.clear();
-    if (context == null || context.isEmpty()) {
-      return;
-    }
-    context.forEach((k, v) -> MDC.put(k, v == null ? "" : v.toString()));
-  }
-
-  private static Map<String, Object> copyContext(Map<String, Object> source) {
-    if (source == null || source.isEmpty()) {
-      return Map.of();
-    }
-    return new HashMap<>(source);
-  }
-
   protected static CallStatus toFlightStatus(Throwable t) {
     if (t instanceof FlightRuntimeException fre) {
       return fre.status();
     }
     if (t instanceof io.grpc.StatusRuntimeException sre) {
-      // PERMISSION_DENIED indicates the caller lacks catalog.read; map to Flight's UNAUTHORIZED.
       return switch (sre.getStatus().getCode()) {
         case NOT_FOUND -> CallStatus.NOT_FOUND.withDescription(sre.getMessage());
         case INVALID_ARGUMENT -> CallStatus.INVALID_ARGUMENT.withDescription(sre.getMessage());

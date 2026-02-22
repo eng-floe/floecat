@@ -18,8 +18,8 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import static org.assertj.core.api.Assertions.*;
 
-import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
