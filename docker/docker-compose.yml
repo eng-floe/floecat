@@ -14,8 +14,8 @@
 
 services:
   service:
-    image: floecat-service:local
-    pull_policy: never
+    image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
@@ -29,8 +29,8 @@ services:
       - ${HOME}/.aws:/root/.aws:ro
 
   iceberg-rest:
-    image: floecat-iceberg-rest:local
-    pull_policy: never
+    image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
@@ -63,8 +63,8 @@ services:
       - ${HOME}/.aws:/root/.aws:ro
 
   cli:
-    image: floecat-cli:local
-    pull_policy: never
+    image: ${FLOECAT_CLI_IMAGE:-floecat-cli:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     environment:

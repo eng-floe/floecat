@@ -99,6 +99,11 @@ KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-config
 KEYCLOAK_TOKEN_URL_DOCKER ?= http://keycloak:8080/realms/floecat/protocol/openid-connect/token
 JIB_PLATFORMS ?=
 JIB_BASE_IMAGE ?= eclipse-temurin:25-jre
+JIB_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
+CONTAINER_REGISTRY ?= ghcr.io
+CONTAINER_OWNER ?=
+CONTAINER_TAG ?= main
+CONTAINER_EXTRA_TAGS ?=
 UNAME_M := $(shell uname -m)
 
 ifeq ($(strip $(JIB_PLATFORMS)),)
@@ -700,7 +705,7 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache compose-up compose-down compose-shell compose-smoke
+.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke
 
 docker-clean-cache:
 	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
@@ -711,6 +716,9 @@ docker-clean-cache:
 	rm -rf "$$APP_CACHE" "$$BASE_CACHE"
 
 docker: docker-service docker-iceberg-rest docker-cli
+
+guard-container-owner:
+	@test -n "$(CONTAINER_OWNER)" || (echo "CONTAINER_OWNER is required (example: CONTAINER_OWNER=eng-floe)"; exit 1)
 
 docker-service:
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
@@ -740,6 +748,44 @@ docker-cli:
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
 	  -Dquarkus.container-image.image=floecat-cli:local \
+	  package
+
+docker-publish: guard-container-owner docker-publish-service docker-publish-iceberg-rest docker-publish-cli
+
+docker-publish-service:
+	@echo "==> [DOCKER] publish service (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-service:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
+	  package
+
+docker-publish-iceberg-rest:
+	@echo "==> [DOCKER] publish iceberg-rest (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-iceberg-rest:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
+	  package
+
+docker-publish-cli:
+	@echo "==> [DOCKER] publish cli (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-cli:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
 	  package
 
 compose-up: docker

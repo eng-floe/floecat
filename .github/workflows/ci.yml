@@ -1,9 +1,22 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
     types: [opened, synchronize]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish_preview:
+        description: "Publish preview images to GHCR"
+        required: false
+        type: boolean
+        default: false
+      preview_tag:
+        description: "Optional preview tag suffix (e.g. my-feature). Final tag becomes preview-<value>"
+        required: false
+        type: string
 
 jobs:
   gitleaks:
@@ -240,6 +253,81 @@ jobs:
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
           FLOECAT_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc COMPOSE_PROJECT_NAME=floecat-smoke-localstack-oidc \
             docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
+
+  publish-images:
+    name: publish-images
+    needs: [ci-core, ci-localstack, docker-smoke]
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_preview == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-publish-images
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      - name: Compute publish variables
+        id: vars
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_PREVIEW_TAG: ${{ github.event.inputs.preview_tag }}
+        run: |
+          set -euo pipefail
+          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          short_sha="$(echo "${GITHUB_SHA}" | cut -c1-12)"
+
+          sanitize_tag() {
+            echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9_.-]+#-#g; s#-+#-#g; s#^-+##; s#-+$##'
+          }
+
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            primary_tag="main"
+          else
+            if [ -n "${INPUT_PREVIEW_TAG}" ]; then
+              suffix="$(sanitize_tag "${INPUT_PREVIEW_TAG}")"
+            else
+              branch="${GITHUB_REF#refs/heads/}"
+              suffix="$(sanitize_tag "${branch}")"
+            fi
+            if [ -z "${suffix}" ]; then
+              suffix="manual"
+            fi
+            primary_tag="preview-${suffix}"
+          fi
+          echo "owner_lc=${owner_lc}" >> "$GITHUB_OUTPUT"
+          echo "primary_tag=${primary_tag}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch images (main + sha tag)
+        run: |
+          set -euo pipefail
+          make docker-publish \
+            CONTAINER_REGISTRY=ghcr.io \
+            CONTAINER_OWNER=${{ steps.vars.outputs.owner_lc }} \
+            CONTAINER_TAG=${{ steps.vars.outputs.primary_tag }} \
+            CONTAINER_EXTRA_TAGS=${{ steps.vars.outputs.sha_tag }} \
+            JIB_IMAGE_PLATFORMS=linux/amd64,linux/arm64
 
   detect-floedb-changes:
     name: detect floedb changes
