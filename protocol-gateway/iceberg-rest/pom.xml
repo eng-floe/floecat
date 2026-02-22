@@ -238,7 +238,9 @@
             <include>**/*Test.java</include>
           </includes>
           <skipTests>${skipUTs}</skipTests>
-          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+          <argLine>@{argLine} ${test.jvm.args} ${test.jvm.args.extra}</argLine>
         </configuration>
       </plugin>
       <plugin>
@@ -257,7 +259,9 @@
             <include>**/*IT.java</include>
           </includes>
           <skipITs>${skipITs}</skipITs>
-          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+          <argLine>@{argLine} ${test.jvm.args} ${test.jvm.args.extra}</argLine>
         </configuration>
       </plugin>
     </plugins>

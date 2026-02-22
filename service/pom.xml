@@ -340,6 +340,8 @@
           </includes>
           <skipTests>${skipUTs}</skipTests>
           <useSystemClassLoader>false</useSystemClassLoader>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
           </configuration>
       </plugin>
@@ -365,6 +367,8 @@
           <failIfNoTests>false</failIfNoTests>
 
           <useSystemClassLoader>false</useSystemClassLoader>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
