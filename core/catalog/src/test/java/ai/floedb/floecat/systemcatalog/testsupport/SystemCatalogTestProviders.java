@@ -18,12 +18,12 @@ package ai.floedb.floecat.systemcatalog.testsupport;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Optional;

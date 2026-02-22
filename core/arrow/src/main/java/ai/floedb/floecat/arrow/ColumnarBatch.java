@@ -18,9 +18,7 @@ package ai.floedb.floecat.arrow;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
 
-/**
- * Represents an owned batch of columnar data produced by a scan. Must be closed exactly once.
- */
+/** Represents an owned batch of columnar data produced by a scan. Must be closed exactly once. */
 public interface ColumnarBatch extends AutoCloseable {
 
   /** Returns the Arrow schema + vectors backing this batch. */

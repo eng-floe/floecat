@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.query.system;
 
-import ai.floedb.floecat.system.rpc.SystemTableRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.system.rpc.SystemTableRow;
 
 public final class SystemRowMappers {
 
