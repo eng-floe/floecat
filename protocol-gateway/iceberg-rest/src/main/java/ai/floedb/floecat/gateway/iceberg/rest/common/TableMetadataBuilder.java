@@ -48,10 +48,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public final class TableMetadataBuilder {
@@ -229,16 +231,33 @@ public final class TableMetadataBuilder {
                     Comparator.comparingLong(Snapshot::getSequenceNumber)
                         .thenComparingLong(Snapshot::getSnapshotId))
                 .toList();
+    List<Map<String, Object>> snapshotList = snapshots(orderedSnapshots);
+    Set<Long> snapshotIds = snapshotIds(snapshotList);
+    if (currentSnapshotId == null
+        || currentSnapshotId < 0
+        || !snapshotIds.contains(currentSnapshotId)) {
+      currentSnapshotId = null;
+    }
     Long maxSnapshotSequence = maxSnapshotSequence(orderedSnapshots);
     if (maxSnapshotSequence != null
         && (lastSequenceNumber == null || lastSequenceNumber < maxSnapshotSequence)) {
       lastSequenceNumber = maxSnapshotSequence;
     }
+    if (lastSequenceNumber == null || lastSequenceNumber < 0) {
+      lastSequenceNumber = 0L;
+    }
+    if (maxSnapshotSequence != null
+        && maxSnapshotSequence > 0
+        && (formatVersion == null || formatVersion < 2)) {
+      formatVersion = 2;
+    }
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
+    refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
     syncProperty(props, "table-uuid", tableUuid);
-    syncProperty(props, "current-snapshot-id", currentSnapshotId);
+    syncOrRemove(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
+    syncProperty(props, "format-version", formatVersion);
     syncProperty(props, "current-schema-id", currentSchemaId);
     syncProperty(props, "last-column-id", lastColumnId);
     syncProperty(props, "default-spec-id", defaultSpecId);
@@ -267,7 +286,7 @@ public final class TableMetadataBuilder {
         metadataLog(metadata),
         statisticsList,
         partitionStatisticsList,
-        snapshots(orderedSnapshots));
+        snapshotList);
   }
 
   private static TableMetadataView initialMetadata(
@@ -550,6 +569,17 @@ public final class TableMetadataBuilder {
     props.put(key, value.toString());
   }
 
+  private static void syncOrRemove(Map<String, String> props, String key, Object value) {
+    if (props == null || key == null || key.isBlank()) {
+      return;
+    }
+    if (value == null) {
+      props.remove(key);
+      return;
+    }
+    props.put(key, value.toString());
+  }
+
   private static void syncWriteMetadataPath(Map<String, String> props, String metadataLocation) {
     String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);
     if (directory == null || directory.isBlank()) {
@@ -580,6 +610,60 @@ public final class TableMetadataBuilder {
       }
     }
     return max > 0 ? max : null;
+  }
+
+  private static Set<Long> snapshotIds(List<Map<String, Object>> snapshots) {
+    Set<Long> ids = new HashSet<>();
+    if (snapshots == null) {
+      return ids;
+    }
+    for (Map<String, Object> snapshot : snapshots) {
+      Long id = asLong(snapshot == null ? null : snapshot.get("snapshot-id"));
+      if (id != null && id >= 0) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  private static Map<String, Object> sanitizeRefs(
+      Map<String, Object> refs, Set<Long> snapshotIds, Long currentSnapshotId) {
+    Map<String, Object> out = new LinkedHashMap<>();
+    if (refs != null && !refs.isEmpty()) {
+      refs.forEach(
+          (name, rawRef) -> {
+            if (name == null || name.isBlank() || !(rawRef instanceof Map<?, ?> rawMap)) {
+              return;
+            }
+            Map<String, Object> ref = new LinkedHashMap<>();
+            rawMap.forEach(
+                (k, v) -> {
+                  if (k instanceof String key && v != null) {
+                    ref.put(key, v);
+                  }
+                });
+            Long refSnapshotId = asLong(ref.get("snapshot-id"));
+            if (refSnapshotId == null
+                || refSnapshotId < 0
+                || !snapshotIds.contains(refSnapshotId)) {
+              return;
+            }
+            ref.put("snapshot-id", refSnapshotId);
+            String type = asString(ref.get("type"));
+            ref.put("type", (type == null || type.isBlank()) ? "branch" : type.toLowerCase());
+            if (ref.containsKey("max-reference-age-ms")) {
+              Object legacyValue = ref.remove("max-reference-age-ms");
+              ref.putIfAbsent("max-ref-age-ms", legacyValue);
+            }
+            out.put(name, Map.copyOf(ref));
+          });
+    }
+    if (currentSnapshotId == null || currentSnapshotId < 0) {
+      out.remove("main");
+      return out;
+    }
+    out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
+    return out;
   }
 
   private static String nextMetadataFileName() {

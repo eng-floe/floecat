@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -58,8 +59,12 @@ class TableMetadataBuilderTest {
         fixture.metadata().toBuilder()
             .setCurrentSnapshotId(earliestSnapshotId)
             .putRefs(
-                "main",
-                IcebergRef.newBuilder().setSnapshotId(earliestSnapshotId).setType("branch").build())
+                "dev",
+                IcebergRef.newBuilder()
+                    .setSnapshotId(earliestSnapshotId)
+                    .setType("branch")
+                    .setMaxReferenceAgeMs(1234L)
+                    .build())
             .build();
 
     TableMetadataView view =
@@ -68,9 +73,11 @@ class TableMetadataBuilderTest {
     assertEquals(earliestSnapshotId, view.currentSnapshotId());
     assertEquals(Long.toString(earliestSnapshotId), view.properties().get("current-snapshot-id"));
     @SuppressWarnings("unchecked")
-    Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
-    assertNotNull(mainRef);
-    assertEquals(earliestSnapshotId, mainRef.get("snapshot-id"));
+    Map<String, Object> devRef = (Map<String, Object>) view.refs().get("dev");
+    assertNotNull(devRef);
+    assertEquals(earliestSnapshotId, devRef.get("snapshot-id"));
+    assertEquals(1234L, devRef.get("max-ref-age-ms"));
+    assertFalse(devRef.containsKey("max-reference-age-ms"));
   }
 
   @Test
@@ -94,6 +101,62 @@ class TableMetadataBuilderTest {
     Map<String, Object> summary = (Map<String, Object>) snapshot.get("summary");
     assertNotNull(summary);
     assertEquals("append", summary.get("operation"));
+  }
+
+  @Test
+  void zeroSnapshotIdRemainsValidForCurrentRef() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:delta:call_center"))
+            .putProperties("data_source_format", "DELTA")
+            .build();
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    IcebergMetadata metadata =
+        IcebergMetadata.newBuilder()
+            .setFormatVersion(2)
+            .setCurrentSnapshotId(0L)
+            .setCurrentSchemaId(0)
+            .setLastColumnId(1)
+            .putRefs("main", IcebergRef.newBuilder().setSnapshotId(0L).setType("branch").build())
+            .build();
+    Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(0L).setSequenceNumber(0L).build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog("call_center", table, props, metadata, List.of(snapshot));
+
+    assertEquals(0L, view.currentSnapshotId());
+    assertEquals("0", view.properties().get("current-snapshot-id"));
+    @SuppressWarnings("unchecked")
+    Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
+    assertNotNull(mainRef);
+    assertEquals(0L, mainRef.get("snapshot-id"));
+  }
+
+  @Test
+  void refsNormalizeLegacyMaxReferenceAgeKeyFromProperties() {
+    TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
+    Table table =
+        fixture.table().toBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
+            .build();
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    long currentSnapshotId = fixture.metadata().getCurrentSnapshotId();
+    props.put("current-snapshot-id", Long.toString(currentSnapshotId));
+    props.put(
+        RefPropertyUtil.PROPERTY_KEY,
+        "{\"dev\":{\"snapshot-id\":"
+            + currentSnapshotId
+            + ",\"type\":\"branch\",\"max-reference-age-ms\":77}}");
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog(
+            "orders", table, props, fixture.metadata(), fixture.snapshots());
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> devRef = (Map<String, Object>) view.refs().get("dev");
+    assertNotNull(devRef);
+    assertEquals(77L, ((Number) devRef.get("max-ref-age-ms")).longValue());
+    assertFalse(devRef.containsKey("max-reference-age-ms"));
   }
 
   @Test

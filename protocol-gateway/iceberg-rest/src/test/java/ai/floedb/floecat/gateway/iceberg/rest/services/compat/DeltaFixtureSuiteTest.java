@@ -30,8 +30,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.Timestamp;
 import io.delta.kernel.engine.Engine;
-import java.net.URI;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.FileSystems;
@@ -100,7 +100,8 @@ class DeltaFixtureSuiteTest {
             latest.getSnapshotId(), metadata.getRefsOrThrow("main").getSnapshotId(), tableName);
         assertTrue(metadata.getSchemasCount() >= 1, "Expected translated schema for " + tableName);
 
-        var schema = org.apache.iceberg.SchemaParser.fromJson(metadata.getSchemas(0).getSchemaJson());
+        var schema =
+            org.apache.iceberg.SchemaParser.fromJson(metadata.getSchemas(0).getSchemaJson());
         assertFalse(
             schema.columns().isEmpty(), "Expected non-empty translated columns for " + tableName);
 
@@ -153,7 +154,8 @@ class DeltaFixtureSuiteTest {
         resourceFs = FileSystems.newFileSystem(resourceUri, Map.of());
         closeResourceFs = true;
       }
-      fixtureRoot = resourceFs.getPath(resourceDir.startsWith("/") ? resourceDir : "/" + resourceDir);
+      fixtureRoot =
+          resourceFs.getPath(resourceDir.startsWith("/") ? resourceDir : "/" + resourceDir);
     } else {
       fixtureRoot = Path.of(resourceUri);
     }
@@ -282,7 +284,8 @@ class DeltaFixtureSuiteTest {
       } else {
         InMemoryS3FileIO inMemory = new InMemoryS3FileIO();
         String root = System.getProperty("fs.floecat.test-root");
-        inMemory.initialize(root == null || root.isBlank() ? Map.of() : Map.of("fs.floecat.test-root", root));
+        inMemory.initialize(
+            root == null || root.isBlank() ? Map.of() : Map.of("fs.floecat.test-root", root));
         fileIo = inMemory;
       }
     }

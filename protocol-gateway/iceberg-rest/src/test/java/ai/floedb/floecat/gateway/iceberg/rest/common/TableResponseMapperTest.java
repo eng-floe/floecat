@@ -278,7 +278,7 @@ class TableResponseMapperTest {
             "orders", table, null, List.of(snapshot), Map.of(), List.of());
 
     assertNotNull(result.metadata());
-    assertEquals(1, result.metadata().formatVersion());
+    assertEquals(2, result.metadata().formatVersion());
     assertNotNull(result.metadata().tableUuid());
     assertEquals(1L, result.metadata().lastSequenceNumber());
     assertNotNull(result.metadata().lastUpdatedMs());

@@ -16,23 +16,19 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -115,7 +111,7 @@ class MaterializeMetadataServiceTest {
   }
 
   @Test
-  void materializeUpdatesLastSequenceNumberFromSnapshots() throws Exception {
+  void materializeRejectsInconsistentSequenceMetadata() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
     service.setMapper(MAPPER);
 
@@ -163,21 +159,15 @@ class MaterializeMetadataServiceTest {
             List.of(),
             List.of(snapshot));
 
-    MaterializeResult result =
-        service.materialize("sales.us", "orders", withSnapshot, withSnapshot.metadataLocation());
-    String payload = readFile(service.fileIo(), result.metadataLocation());
-    TableMetadata parsed =
-        TableMetadataParser.fromJson(result.metadataLocation(), MAPPER.readTree(payload));
-    long maxSnapshotSeq =
-        parsed.snapshots().stream().mapToLong(snap -> snap.sequenceNumber()).max().orElse(0L);
-    assertEquals(1L, maxSnapshotSeq, "Expected snapshot sequence to be 1");
-    assertTrue(
-        parsed.lastSequenceNumber() >= maxSnapshotSeq,
-        "Expected last-sequence-number to be >= snapshot sequence");
+    assertThrows(
+        MaterializeMetadataException.class,
+        () ->
+            service.materialize(
+                "sales.us", "orders", withSnapshot, withSnapshot.metadataLocation()));
   }
 
   @Test
-  void materializeDropsMainRefWhenCurrentSnapshotIsMissing() throws Exception {
+  void materializeRejectsMainRefWhenCurrentSnapshotMissing() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
     service.setMapper(MAPPER);
 
@@ -210,14 +200,11 @@ class MaterializeMetadataServiceTest {
             base.partitionStatistics(),
             base.snapshots());
 
-    MaterializeResult result =
-        service.materialize(
-            "sales.us", "orders", withoutCurrent, withoutCurrent.metadataLocation());
-    String payload = readFile(service.fileIo(), result.metadataLocation());
-    JsonNode root = MAPPER.readTree(payload);
-
-    assertFalse(
-        root.path("refs").has("main"), "main ref should be removed without current snapshot");
+    assertThrows(
+        MaterializeMetadataException.class,
+        () ->
+            service.materialize(
+                "sales.us", "orders", withoutCurrent, withoutCurrent.metadataLocation()));
   }
 
   private TableMetadataView fixtureMetadata(String location) {

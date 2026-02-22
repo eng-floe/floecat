@@ -824,7 +824,13 @@ compose-smoke: docker
 	  on_mode_error() { \
 	    echo "==> [SMOKE][FAIL] mode=$$label"; \
 	    eval "$$compose_cmd ps" || true; \
-	    eval "$$compose_cmd logs --no-color --tail=200" || true; \
+	    echo "==> [SMOKE][DIAG] focused error excerpt"; \
+	    eval "$$compose_cmd logs --no-color --tail=800" 2>&1 \
+	      | grep -E "ERROR|WARN|Exception|FAIL|failed|timed out|currentSnapshot=<null>|snapshotCount=0" \
+	      | grep -Ev "localstack.request.aws[[:space:]]+: AWS s3\\.[A-Za-z]+ => 200|io\\.qua\\.htt\\.access-log.*\\\"(GET|HEAD) .*\\\" 20[04]" \
+	      || true; \
+	    echo "==> [SMOKE][DIAG] fallback tail (last 120 lines)"; \
+	    eval "$$compose_cmd logs --no-color --tail=120" || true; \
 	  }; \
 	  trap on_mode_error ERR; \
 	  cleanup() { eval "$$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true; }; \
@@ -878,8 +884,13 @@ compose-smoke: docker
 	  assert_contains "$$label cli resolve dv_demo_delta table" "$$out_delta_dv" "table id:"; \
 	  if [ "$$profile" = "localstack" ]; then \
 	    echo "==> [SMOKE] duckdb federation check (localstack)"; \
-	    duckdb_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
-	      duckdb -c "INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0;"); \
+	    duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"; \
+	    if ! duckdb_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
+	      duckdb -c "$$duckdb_bootstrap SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then \
+	      echo "$$duckdb_out"; \
+	      echo "[FAIL] $$label duckdb command failed"; \
+	      return 1; \
+	    fi; \
 	    echo "$$duckdb_out"; \
 	    assert_contains "$$label duckdb smoke marker" "$$duckdb_out" "duckdb_smoke_ok"; \
 	    assert_contains "$$label duckdb call_center count" "$$duckdb_out" "call_center=42"; \
@@ -887,13 +898,27 @@ compose-smoke: docker
 	    assert_contains "$$label duckdb my_local_delta_table nonnull" "$$duckdb_out" "my_local_nonnull_name=4"; \
 	    assert_contains "$$label duckdb dv_demo_delta count" "$$duckdb_out" "dv_demo_delta=2"; \
 	    assert_contains "$$label duckdb dv_demo_delta content" "$$duckdb_out" "dv_content=1,3,a,c"; \
+	    assert_contains "$$label duckdb mutation create" "$$duckdb_out" "mut_after_create=0"; \
+	    assert_contains "$$label duckdb mutation insert" "$$duckdb_out" "mut_after_insert=3,6,a,c"; \
+	    assert_contains "$$label duckdb mutation delete" "$$duckdb_out" "mut_after_delete=2,4,a,c"; \
+	    assert_contains "$$label duckdb mutation update" "$$duckdb_out" "mut_after_update=2,4,a,c2"; \
+	    if alter_out=$$(docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
+	      duckdb -c "$$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then \
+	      echo "$$alter_out"; \
+	      assert_contains "$$label duckdb mutation alter" "$$alter_out" "mut_after_alter=2,0"; \
+	    else \
+	      echo "$$alter_out"; \
+	      assert_contains "$$label duckdb mutation alter unsupported" "$$alter_out" "Not implemented Error: Alter Schema Entry"; \
+	      docker run --rm --network "$${compose_project}_floecat" duckdb/duckdb:latest \
+	        duckdb -c "$$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true; \
+	    fi; \
 	  fi; \
 	  trap - ERR; \
 	  echo "==> [SMOKE][PASS] mode=$$label"; \
 	}; \
-	run_mode ./env.inmem "" inmem "" "" ""; \
-	run_mode ./env.localstack localstack localstack "localstack" "" ""; \
-	run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"; \
+	run_mode ./env.inmem "" inmem "" "" "" || exit 1; \
+	run_mode ./env.localstack localstack localstack "localstack" "" "" || exit 1; \
+	run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080" || exit 1; \
 	echo "==> [COMPOSE][PASS] smoke"
 
 # ===================================================

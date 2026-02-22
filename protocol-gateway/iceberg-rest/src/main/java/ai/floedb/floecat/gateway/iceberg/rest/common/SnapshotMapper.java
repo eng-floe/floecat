@@ -172,7 +172,7 @@ final class SnapshotMapper {
               entry.put("snapshot-id", ref.getSnapshotId());
               entry.put("type", ref.getType().toLowerCase(Locale.ROOT));
               if (ref.hasMaxReferenceAgeMs()) {
-                entry.put("max-reference-age-ms", ref.getMaxReferenceAgeMs());
+                entry.put("max-ref-age-ms", ref.getMaxReferenceAgeMs());
               }
               if (ref.hasMaxSnapshotAgeMs()) {
                 entry.put("max-snapshot-age-ms", ref.getMaxSnapshotAgeMs());

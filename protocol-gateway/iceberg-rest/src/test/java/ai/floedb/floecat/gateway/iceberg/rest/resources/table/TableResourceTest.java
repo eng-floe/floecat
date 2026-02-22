@@ -115,6 +115,9 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
   }
 
   @Test
@@ -456,7 +459,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo(FIXTURE.metadataLocation()));
+        .body("metadata-location", equalTo(FIXTURE.metadataLocation()))
+        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body(
+            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
@@ -569,7 +576,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo(newMetadata));
+        .body("metadata-location", equalTo(newMetadata))
+        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body(
+            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
     ArgumentCaptor<UpdateTableRequest> updateCaptor =
         ArgumentCaptor.forClass(UpdateTableRequest.class);
@@ -713,6 +724,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
     given()
         .body(
@@ -738,7 +751,7 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void createTableUsesRequestMetadataEvenWhenSnapshotMetadataDiffers() {
+  void createTableUsesPersistedMetadataWhenSnapshotMetadataDiffers() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
@@ -768,8 +781,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("metadata.'format-version'", equalTo(FIXTURE.metadata().getFormatVersion()))
-        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
+        .body("metadata.'format-version'", equalTo(2))
+        .body("'metadata-location'", equalTo(differentMetadata.getMetadataLocation()));
   }
 
   @Test
@@ -877,11 +890,17 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
 
     Table created =
-        baseTable(ResourceId.newBuilder().setId("cat:db:orders").build(), nsId)
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
             .setDisplayName("orders")
+            .putProperties("location", "s3://warehouse/db/orders")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
     Map<String, Object> field = new LinkedHashMap<>();
     field.put("id", 1);
