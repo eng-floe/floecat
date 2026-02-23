@@ -26,14 +26,19 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -50,14 +55,22 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 public final class TestDeltaFixtures {
+  private static final Logger LOG = Logger.getLogger(TestDeltaFixtures.class.getName());
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "common-test");
   private static final Path FIXTURE_ROOT = resolveFixtureRoot("delta-fixtures");
   private static final String DEFAULT_TABLE = "call_center";
 
   private static final Path TARGET_ROOT = resolveTargetRoot();
   private static final String USE_AWS_FIXTURES_PROP = "floecat.fixtures.use-aws-s3";
+  private static final String FORCE_RESEED_PROP = "floecat.fixtures.force-reseed";
+  private static final String SEEDED_MARKER_PROP = "floecat.fixtures.delta.seeded";
 
   private static final String BUCKET = "floecat-delta";
+  private static final int MAX_DELETE_PREFIX_PAGES = 10_000;
+  private static final Duration S3_VERIFY_TIMEOUT = Duration.ofSeconds(120);
+  private static final Duration S3_VERIFY_POLL_INTERVAL = Duration.ofMillis(500);
+  private static volatile boolean seeded;
+  private static final Object SEED_LOCK = new Object();
 
   private TestDeltaFixtures() {}
 
@@ -94,11 +107,55 @@ public final class TestDeltaFixtures {
   }
 
   public static void seedFixturesOnce() {
-    if (useAwsFixtures()) {
-      seedFixturesToS3();
+    if (!Boolean.getBoolean(FORCE_RESEED_PROP)
+        && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
       return;
     }
-    seedFixturesLocal();
+    synchronized (SEED_LOCK) {
+      if (!Boolean.getBoolean(FORCE_RESEED_PROP)
+          && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
+        return;
+      }
+      LOG.info("Seeding Delta test fixtures");
+      if (useAwsFixtures()) {
+        seedFixturesToS3();
+        verifyS3FixtureTablesReady();
+      } else {
+        seedFixturesLocal();
+      }
+      seeded = true;
+      System.setProperty(SEEDED_MARKER_PROP, Boolean.TRUE.toString());
+      LOG.info("Delta test fixture seeding completed");
+    }
+  }
+
+  public static void assertTablesReady(List<String> requiredTables) {
+    List<String> expected = requiredTables == null ? List.of() : requiredTables;
+    if (expected.isEmpty()) {
+      return;
+    }
+    if (useAwsFixtures()) {
+      try (S3Client s3 = buildS3Client()) {
+        for (String table : expected) {
+          String prefix = normalizeKey(normalizeTableName(table)) + "_delta_log/";
+          ListObjectsV2Response response =
+              s3.listObjectsV2(
+                  ListObjectsV2Request.builder().bucket(BUCKET).prefix(prefix).maxKeys(1).build());
+          if (response.contents().isEmpty()) {
+            throw new IllegalStateException(
+                "Required Delta fixture table not visible in S3: " + table);
+          }
+        }
+      }
+      return;
+    }
+    Path bucketRoot = TARGET_ROOT.resolve(BUCKET);
+    for (String table : expected) {
+      Path deltaLogDir = bucketRoot.resolve(normalizeTableName(table)).resolve("_delta_log");
+      if (!Files.isDirectory(deltaLogDir)) {
+        throw new IllegalStateException("Required Delta fixture table not present: " + table);
+      }
+    }
   }
 
   private static void seedFixturesLocal() {
@@ -186,10 +243,17 @@ public final class TestDeltaFixtures {
   }
 
   private static void deletePrefix(S3Client s3, String bucket, String prefix) {
-    ListObjectsV2Request request =
-        ListObjectsV2Request.builder().bucket(bucket).prefix(prefix).build();
-    ListObjectsV2Response response = s3.listObjectsV2(request);
-    while (true) {
+    String continuationToken = null;
+    String previousContinuationToken = null;
+    int pages = 0;
+    while (pages < MAX_DELETE_PREFIX_PAGES) {
+      ListObjectsV2Response response =
+          s3.listObjectsV2(
+              ListObjectsV2Request.builder()
+                  .bucket(bucket)
+                  .prefix(prefix)
+                  .continuationToken(continuationToken)
+                  .build());
       response
           .contents()
           .forEach(
@@ -197,16 +261,37 @@ public final class TestDeltaFixtures {
                   s3.deleteObject(
                       DeleteObjectRequest.builder().bucket(bucket).key(object.key()).build()));
       if (!response.isTruncated()) {
-        break;
+        return;
       }
-      response =
-          s3.listObjectsV2(
-              ListObjectsV2Request.builder()
-                  .bucket(bucket)
-                  .prefix(prefix)
-                  .continuationToken(response.nextContinuationToken())
-                  .build());
+      previousContinuationToken = continuationToken;
+      continuationToken = response.nextContinuationToken();
+      if (continuationToken == null || continuationToken.equals(previousContinuationToken)) {
+        throw new IllegalStateException(
+            "S3 pagination stalled while deleting prefix "
+                + bucket
+                + "/"
+                + prefix
+                + " token="
+                + continuationToken);
+      }
+      pages++;
+      if (pages % 100 == 0) {
+        LOG.info(
+            "Deleting Delta fixture prefix still in progress for "
+                + bucket
+                + "/"
+                + prefix
+                + " pages="
+                + pages);
+      }
     }
+    throw new IllegalStateException(
+        "Exceeded max pagination pages while deleting prefix "
+            + bucket
+            + "/"
+            + prefix
+            + " pages="
+            + pages);
   }
 
   private static void ensureBucketExists(S3Client s3, String bucket) {
@@ -413,5 +498,40 @@ public final class TestDeltaFixtures {
     } catch (Exception e) {
       throw new IOException("Failed to resolve fixture jar path", e);
     }
+  }
+
+  private static void verifyS3FixtureTablesReady() {
+    List<String> expectedTables =
+        fixtureTableRoots().stream().map(path -> path.getFileName().toString()).toList();
+    Set<String> pending = new LinkedHashSet<>(expectedTables);
+    Instant deadline = Instant.now().plus(S3_VERIFY_TIMEOUT);
+    try (S3Client s3 = buildS3Client()) {
+      while (!pending.isEmpty() && Instant.now().isBefore(deadline)) {
+        pending.removeIf(table -> deltaLogExists(s3, table));
+        if (!pending.isEmpty()) {
+          try {
+            Thread.sleep(S3_VERIFY_POLL_INTERVAL.toMillis());
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                "Interrupted while waiting for Delta fixture readiness", e);
+          }
+        }
+      }
+    }
+    if (!pending.isEmpty()) {
+      throw new IllegalStateException("Timed out waiting for Delta fixtures: " + pending);
+    }
+  }
+
+  private static boolean deltaLogExists(S3Client s3, String table) {
+    ListObjectsV2Response response =
+        s3.listObjectsV2(
+            ListObjectsV2Request.builder()
+                .bucket(BUCKET)
+                .prefix(normalizeKey(table) + "_delta_log/")
+                .maxKeys(1)
+                .build());
+    return !response.contents().isEmpty();
   }
 }

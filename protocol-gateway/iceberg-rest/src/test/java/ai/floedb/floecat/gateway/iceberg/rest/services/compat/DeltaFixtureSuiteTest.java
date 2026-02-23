@@ -73,6 +73,7 @@ class DeltaFixtureSuiteTest {
   @BeforeAll
   static void seedDeltaFixtures() {
     TestDeltaFixtures.seedFixturesOnce();
+    TestDeltaFixtures.assertTablesReady(SUITE_TABLES);
   }
 
   @Test
