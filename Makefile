@@ -40,6 +40,13 @@
 #   make localstack-down         # stop LocalStack container (if running)
 #   make keycloak-up            # start Keycloak container
 #   make keycloak-down          # stop Keycloak container (if running)
+#   make compose-up             # build images + start compose stack (default: COMPOSE_ENV_FILE=./env.inmem)
+#   make compose-down           # stop compose stack for COMPOSE_ENV_FILE/COMPOSE_PROFILES
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-smoke          # sequential docker smoke (inmem + localstack + localstack-oidc)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -85,6 +92,7 @@ DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
 DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
 DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --profile keycloak
 COMPOSE_ENV_FILE ?= ./env.inmem
+COMPOSE_PROFILES ?=
 KEYCLOAK_PORT ?= 12221
 KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
 KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
@@ -667,29 +675,23 @@ cli-docker-token:
 
 .PHONY: cli-docker
 cli-docker:
-	@echo "==> [RUN] client CLI (docker)"
-	@TOKEN=$$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
-	  -d "client_id=floecat-client" \
-	  -d "client_secret=floecat-secret" \
-	  -d "grant_type=client_credentials" \
-	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token); \
-	FLOECAT_ENV_FILE=./env.localstack \
+	@echo "==> [RUN] client CLI (docker, OIDC auto-refresh)"
+	FLOECAT_ENV_FILE=./env.localstack-oidc \
 	$(DOCKER_COMPOSE_MAIN) run --rm \
-	  -e FLOECAT_TOKEN=$$TOKEN \
 	  -e FLOECAT_ACCOUNT=$$FLOECAT_ACCOUNT \
 	  cli
 
 .PHONY: oidc-up
 oidc-up:
 	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack up -d
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc up -d
 
 .PHONY: oidc-down
 oidc-down:
 	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack down --remove-orphans
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)
@@ -698,7 +700,7 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache compose-up compose-down compose-shell
+.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache compose-up compose-down compose-shell compose-smoke
 
 docker-clean-cache:
 	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
@@ -712,7 +714,7 @@ docker: docker-service docker-iceberg-rest docker-cli
 
 docker-service:
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl service -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -722,7 +724,7 @@ docker-service:
 
 docker-iceberg-rest:
 	@echo "==> [DOCKER] iceberg-rest (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -732,7 +734,7 @@ docker-iceberg-rest:
 
 docker-cli:
 	@echo "==> [DOCKER] cli (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -742,15 +744,18 @@ docker-cli:
 
 compose-up: docker
 	@echo "==> [COMPOSE] up"
-	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) $(DOCKER_COMPOSE_MAIN) up -d
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) up -d
 
 compose-down:
 	@echo "==> [COMPOSE] down"
-	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) $(DOCKER_COMPOSE_MAIN) down
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) down --remove-orphans
 
 compose-shell:
 	@echo "==> [COMPOSE] shell"
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
+
+compose-smoke: docker
+	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' ./tools/compose-smoke.sh
 
 # ===================================================
 # Lint/format

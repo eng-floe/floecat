@@ -152,6 +152,12 @@ import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
 import jakarta.inject.Inject;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
@@ -163,6 +169,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
@@ -218,6 +226,32 @@ public class Shell implements Runnable {
       names = {"--session-header"},
       description = "Session header name (default: x-floe-session)")
   String sessionHeaderName;
+
+  @CommandLine.Option(
+      names = {"--oidc-token-url"},
+      description = "OIDC token endpoint URL (or set FLOECAT_OIDC_TOKEN_URL)")
+  String oidcTokenUrl;
+
+  @CommandLine.Option(
+      names = {"--oidc-issuer"},
+      description = "OIDC issuer URL (or set FLOECAT_OIDC_ISSUER)")
+  String oidcIssuer;
+
+  @CommandLine.Option(
+      names = {"--oidc-client-id"},
+      description = "OIDC client id (or set FLOECAT_OIDC_CLIENT_ID)")
+  String oidcClientId;
+
+  @CommandLine.Option(
+      names = {"--oidc-client-secret"},
+      description = "OIDC client secret (or set FLOECAT_OIDC_CLIENT_SECRET)")
+  String oidcClientSecret;
+
+  @CommandLine.Option(
+      names = {"--oidc-refresh-skew-seconds"},
+      description =
+          "Token refresh lead time in seconds (default: FLOECAT_OIDC_REFRESH_SKEW_SECONDS or 30)")
+  Integer oidcRefreshSkewSeconds;
 
   @Inject
   @GrpcClient("floecat")
@@ -278,6 +312,8 @@ public class Shell implements Runnable {
 
   private volatile String currentCatalog =
       System.getenv().getOrDefault("FLOECAT_CATALOG", "").trim();
+
+  private volatile OidcClientCredentialsTokenProvider oidcTokenProvider;
 
   @Override
   public void run() {
@@ -499,6 +535,11 @@ public class Shell implements Runnable {
          --account-id <id>      Default account id (default: FLOECAT_ACCOUNT)
          --auth-header <name>   Authorization header name
          --session-header <name>  Session header name
+         --oidc-token-url <url> OIDC token endpoint (default: FLOECAT_OIDC_TOKEN_URL)
+         --oidc-issuer <url>    OIDC issuer base URL (default: FLOECAT_OIDC_ISSUER)
+         --oidc-client-id <id>  OIDC client id (default: FLOECAT_OIDC_CLIENT_ID)
+         --oidc-client-secret <secret> OIDC client secret (default: FLOECAT_OIDC_CLIENT_SECRET)
+         --oidc-refresh-skew-seconds <n> Refresh token n seconds before expiry
 
          Commands:
          account <id|display_name>
@@ -617,6 +658,55 @@ public class Shell implements Runnable {
     if (currentAccountId == null || currentAccountId.isBlank()) {
       currentAccountId = accountId;
     }
+
+    if (oidcTokenUrl == null || oidcTokenUrl.isBlank()) {
+      oidcTokenUrl = System.getenv().getOrDefault("FLOECAT_OIDC_TOKEN_URL", "").trim();
+    }
+    if (oidcIssuer == null || oidcIssuer.isBlank()) {
+      oidcIssuer = System.getenv().getOrDefault("FLOECAT_OIDC_ISSUER", "").trim();
+    }
+    if (oidcClientId == null || oidcClientId.isBlank()) {
+      oidcClientId = System.getenv().getOrDefault("FLOECAT_OIDC_CLIENT_ID", "").trim();
+    }
+    if (oidcClientSecret == null || oidcClientSecret.isBlank()) {
+      oidcClientSecret = System.getenv().getOrDefault("FLOECAT_OIDC_CLIENT_SECRET", "").trim();
+    }
+    if (oidcRefreshSkewSeconds == null) {
+      String skew = System.getenv().getOrDefault("FLOECAT_OIDC_REFRESH_SKEW_SECONDS", "30").trim();
+      if (!skew.isBlank()) {
+        try {
+          oidcRefreshSkewSeconds = Integer.parseInt(skew);
+        } catch (NumberFormatException ignored) {
+          oidcRefreshSkewSeconds = 30;
+        }
+      }
+    }
+    if (oidcRefreshSkewSeconds == null || oidcRefreshSkewSeconds < 0) {
+      oidcRefreshSkewSeconds = 30;
+    }
+
+    if (authToken == null || authToken.isBlank()) {
+      String effectiveTokenUrl = effectiveOidcTokenUrl();
+      if (!effectiveTokenUrl.isBlank()
+          && oidcClientId != null
+          && !oidcClientId.isBlank()
+          && oidcClientSecret != null
+          && !oidcClientSecret.isBlank()) {
+        oidcTokenProvider =
+            new OidcClientCredentialsTokenProvider(
+                effectiveTokenUrl, oidcClientId, oidcClientSecret, oidcRefreshSkewSeconds);
+      }
+    }
+  }
+
+  private String effectiveOidcTokenUrl() {
+    if (oidcTokenUrl != null && !oidcTokenUrl.isBlank()) {
+      return oidcTokenUrl.trim();
+    }
+    if (oidcIssuer == null || oidcIssuer.isBlank()) {
+      return "";
+    }
+    return oidcIssuer.replaceFirst("/+$", "") + "/protocol/openid-connect/token";
   }
 
   private void applyAuthInterceptors() {
@@ -3670,7 +3760,7 @@ public class Shell implements Runnable {
           next.newCall(method, callOptions)) {
         @Override
         public void start(Listener<RespT> responseListener, Metadata headers) {
-          String token = authToken == null ? "" : authToken.trim();
+          String token = resolveAuthorizationToken();
           if (!token.isBlank()) {
             String headerValue = token;
             if (!token.regionMatches(true, 0, "bearer ", 0, 7)) {
@@ -3689,6 +3779,115 @@ public class Shell implements Runnable {
           super.start(responseListener, headers);
         }
       };
+    }
+  }
+
+  private String resolveAuthorizationToken() {
+    String staticToken = authToken == null ? "" : authToken.trim();
+    if (!staticToken.isBlank()) {
+      return staticToken;
+    }
+    if (oidcTokenProvider == null) {
+      return "";
+    }
+    return oidcTokenProvider.resolveToken();
+  }
+
+  private final class OidcClientCredentialsTokenProvider {
+    private static final Pattern ACCESS_TOKEN_PATTERN =
+        Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern EXPIRES_IN_PATTERN =
+        Pattern.compile("\"expires_in\"\\s*:\\s*(\\d+)");
+
+    private final String tokenUrl;
+    private final String clientId;
+    private final String clientSecret;
+    private final int refreshSkewSeconds;
+    private final HttpClient http;
+    private volatile String tokenValue = "";
+    private volatile long expiresAtEpochSecond = 0L;
+
+    private OidcClientCredentialsTokenProvider(
+        String tokenUrl, String clientId, String clientSecret, int refreshSkewSeconds) {
+      this.tokenUrl = tokenUrl;
+      this.clientId = clientId;
+      this.clientSecret = clientSecret;
+      this.refreshSkewSeconds = refreshSkewSeconds;
+      this.http = HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5)).build();
+    }
+
+    private String resolveToken() {
+      long now = Instant.now().getEpochSecond();
+      String current = tokenValue == null ? "" : tokenValue;
+      if (!current.isBlank() && now + refreshSkewSeconds < expiresAtEpochSecond) {
+        return current;
+      }
+      synchronized (this) {
+        now = Instant.now().getEpochSecond();
+        current = tokenValue == null ? "" : tokenValue;
+        if (!current.isBlank() && now + refreshSkewSeconds < expiresAtEpochSecond) {
+          return current;
+        }
+        try {
+          refreshToken(now);
+        } catch (Exception e) {
+          if (debugErrors) {
+            out.println("[debug] OIDC token refresh failed: " + e.getMessage());
+          }
+        }
+        return tokenValue == null ? "" : tokenValue;
+      }
+    }
+
+    private void refreshToken(long nowEpochSecond) throws Exception {
+      String body =
+          "grant_type=client_credentials&client_id="
+              + urlEncode(clientId)
+              + "&client_secret="
+              + urlEncode(clientSecret);
+      HttpRequest request =
+          HttpRequest.newBuilder(URI.create(tokenUrl))
+              .header("Content-Type", "application/x-www-form-urlencoded")
+              .timeout(java.time.Duration.ofSeconds(10))
+              .POST(HttpRequest.BodyPublishers.ofString(body))
+              .build();
+      HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new IllegalStateException(
+            "OIDC token endpoint returned status " + response.statusCode());
+      }
+      String responseBody = response.body() == null ? "" : response.body();
+      String accessToken = extractJsonString(ACCESS_TOKEN_PATTERN, responseBody);
+      if (accessToken.isBlank()) {
+        throw new IllegalStateException("OIDC token response missing access_token");
+      }
+      long expiresIn = extractJsonLong(EXPIRES_IN_PATTERN, responseBody, 300L);
+      tokenValue = accessToken;
+      expiresAtEpochSecond = nowEpochSecond + Math.max(30L, expiresIn);
+    }
+
+    private String urlEncode(String value) {
+      return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private String extractJsonString(Pattern pattern, String json) {
+      Matcher matcher = pattern.matcher(json);
+      if (!matcher.find()) {
+        return "";
+      }
+      return matcher.group(1);
+    }
+
+    private long extractJsonLong(Pattern pattern, String json, long defaultValue) {
+      Matcher matcher = pattern.matcher(json);
+      if (!matcher.find()) {
+        return defaultValue;
+      }
+      try {
+        return Long.parseLong(matcher.group(1));
+      } catch (NumberFormatException e) {
+        return defaultValue;
+      }
     }
   }
 

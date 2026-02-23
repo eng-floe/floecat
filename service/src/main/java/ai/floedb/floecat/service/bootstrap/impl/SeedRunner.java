@@ -613,7 +613,14 @@ public class SeedRunner {
     props.put("external.namespace", fixture.sourceNamespace());
     props.put("external.table-name", fixture.tableName());
     props.put("stats.ndv.enabled", "false");
-    props.putAll(TestDeltaFixtures.s3Options());
+    if (TestDeltaFixtures.useAwsFixtures()) {
+      props.putAll(TestDeltaFixtures.s3Options());
+    } else {
+      String fixtureRoot = System.getProperty("fs.floecat.test-root", "");
+      if (!fixtureRoot.isBlank()) {
+        props.put("fs.floecat.test-root", fixtureRoot);
+      }
+    }
     return props;
   }
 
