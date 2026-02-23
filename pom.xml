@@ -41,7 +41,7 @@
     <version.archunit>1.1.0</version.archunit>
     <version.arrow>18.3.0</version.arrow>
     <version.assertj>3.27.7</version.assertj>
-    <version.aws.sdk>2.39.5</version.aws.sdk>
+    <version.aws.sdk>2.41.34</version.aws.sdk>
     <version.bytebuddy.agent>1.15.4</version.bytebuddy.agent>
     <version.caffeine>3.2.3</version.caffeine>
     <version.common.smallrye>2.15.0</version.common.smallrye>
