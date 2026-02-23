@@ -96,7 +96,50 @@ jobs:
           cache: maven
 
       - name: Test (LocalStack)
-        run: make test-localstack
+        run: |
+          set -euo pipefail
+          DEBUG_DIR=target/ci-debug
+          MVN_LOG="$DEBUG_DIR/ci-localstack-maven.log"
+          mkdir -p "$DEBUG_DIR"
+          : > "$MVN_LOG"
+
+          (
+            while true; do
+              sleep 60
+              echo "[ci-localstack] heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              now=$(date +%s)
+              last=$(stat -c %Y "$MVN_LOG" 2>/dev/null || echo 0)
+              idle=$((now - last))
+              if [ "$idle" -ge 300 ]; then
+                ts=$(date -u +%Y%m%dT%H%M%SZ)
+                dump="$DEBUG_DIR/jcmd-thread-dump-$ts.log"
+                {
+                  echo "[ci-localstack] Maven output idle for ${idle}s at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  if command -v jcmd >/dev/null 2>&1; then
+                    echo "== jcmd -l =="
+                    jcmd -l || true
+                    echo
+                    pids=$(jcmd -l 2>/dev/null | awk '{print $1}' || true)
+                    for pid in $pids; do
+                      echo "== Thread.print pid=${pid} =="
+                      jcmd "$pid" Thread.print || true
+                      echo
+                    done
+                  else
+                    echo "jcmd not found on runner"
+                  fi
+                  echo "== ps -ef =="
+                  ps -ef || true
+                } > "$dump" 2>&1
+                echo "[ci-localstack] wrote $dump"
+                touch "$MVN_LOG"
+              fi
+            done
+          ) &
+          WATCHDOG_PID=$!
+          trap 'kill "$WATCHDOG_PID" 2>/dev/null || true' EXIT
+
+          make test-localstack 2>&1 | tee "$MVN_LOG"
 
       - name: Docker Diagnostics (on failure or cancellation)
         if: ${{ failure() || cancelled() }}
@@ -127,6 +170,7 @@ jobs:
             **/target/failsafe-reports/**
             **/target/*dump*
             protocol-gateway/iceberg-rest/target/floecat-service-it-*.log
+            target/ci-debug/**
 
       - name: Stop LocalStack
         if: always()
