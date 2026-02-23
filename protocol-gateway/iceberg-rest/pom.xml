@@ -50,7 +50,7 @@
   </dependencyManagement>
 
   <properties>
-    <test.jvm.args.extra>-Djdk.attach.allowAttachSelf=true -Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
+    <test.jvm.args.extra>-Djdk.attach.allowAttachSelf=true -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dquarkus.bootstrap.blocking-task-runner=true</test.jvm.args.extra>
   </properties>
 
   <dependencies>
