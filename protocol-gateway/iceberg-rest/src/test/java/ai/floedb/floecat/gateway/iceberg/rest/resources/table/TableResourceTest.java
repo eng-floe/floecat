@@ -786,6 +786,107 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void renameTableUpdatesNamespaceAndName() {
+    ResourceId sourceTableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId destinationNamespaceId = ResourceId.newBuilder().setId("cat:analytics").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(sourceTableId).build());
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder().setResourceId(destinationNamespaceId).build());
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(Table.newBuilder().build()).build());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<UpdateTableRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(tableStub).updateTable(updateCaptor.capture());
+    UpdateTableRequest sent = updateCaptor.getValue();
+    assertEquals(sourceTableId, sent.getTableId());
+    assertEquals(destinationNamespaceId, sent.getSpec().getNamespaceId());
+    assertEquals("orders_new", sent.getSpec().getDisplayName());
+    assertEquals(List.of("namespace_id", "display_name"), sent.getUpdateMask().getPathsList());
+  }
+
+  @Test
+  void renameTableReturnsNoSuchTableWhenSourceMissing() {
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"missing"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchTableException"))
+        .body("error.message", equalTo("Table db.missing not found"));
+  }
+
+  @Test
+  void renameTableReturnsNoSuchNamespaceWhenDestinationMissing() {
+    ResourceId sourceTableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(sourceTableId).build());
+    when(directoryStub.resolveNamespace(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["missing"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchNamespaceException"))
+        .body("error.message", equalTo("Namespace missing not found"));
+  }
+
+  @Test
+  void renameTablePropagatesUnexpectedGrpcError() {
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.INTERNAL));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(500);
+  }
+
+  @Test
   void deleteTablePassesThroughRequest() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
