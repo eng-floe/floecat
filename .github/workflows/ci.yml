@@ -195,20 +195,11 @@ jobs:
           java-version: "25"
           cache: maven
 
-      - name: Docker compose smoke
-        run: |
-          set -euo pipefail
-          make compose-smoke
+      - name: Build docker images
+        run: make docker
 
-      - name: Docker compose smoke cleanup
-        if: always()
-        run: |
-          FLOECAT_ENV_FILE=./env.inmem COMPOSE_PROFILES= COMPOSE_PROJECT_NAME=floecat-smoke-inmem \
-            docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
-          FLOECAT_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack COMPOSE_PROJECT_NAME=floecat-smoke-localstack \
-            docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
-          FLOECAT_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc COMPOSE_PROJECT_NAME=floecat-smoke-localstack-oidc \
-            docker compose -f docker/docker-compose.yml down --remove-orphans -v || true
+      - name: Docker compose smoke
+        run: ./tools/compose-smoke.sh
 
   publish-images:
     name: publish-images
