@@ -887,6 +887,32 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void tableExistsHeadContract() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db").build())
+                .build());
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given().when().head("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
+  }
+
+  @Test
+  void tableExistsHeadNotFoundContract() {
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db").build())
+                .build());
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().head("/v1/foo/namespaces/db/tables/missing").then().statusCode(404);
+  }
+
+  @Test
   void deleteTablePassesThroughRequest() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
@@ -1335,6 +1361,60 @@ class TableResourceTest extends AbstractRestResourceTest {
     var second = fetch.getValue().getPredicates(1);
     assertEquals(Operator.OP_IS_NULL, second.getOp());
     assertEquals("deletedflag", second.getColumn());
+  }
+
+  @Test
+  void fetchPlanMissingPlanIdReturns404() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/plan/missing")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
+  }
+
+  @Test
+  void cancelPlanReturns204() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(
+            FetchScanBundleResponse.newBuilder()
+                .setBundle(ScanBundle.newBuilder().build())
+                .build());
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
+
+    given().when().delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(204);
+  }
+
+  @Test
+  void cancelPlanMissingPlanIdReturns404() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders/plan/missing")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
   }
 
   @Test

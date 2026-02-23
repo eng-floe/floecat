@@ -36,7 +36,6 @@ public class NamespaceInfoService {
   }
 
   public Response exists(NamespaceRequestContext namespaceContext) {
-    load(namespaceContext.namespaceId());
     return Response.noContent().build();
   }
 

@@ -47,6 +47,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import java.io.OutputStream;
@@ -172,6 +173,52 @@ class ViewResourceTest extends AbstractRestResourceTest {
     given().when().delete("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
 
     verify(viewStub).deleteView(any(DeleteViewRequest.class));
+  }
+
+  @Test
+  void getsViewContract() throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    ViewRequests.ViewRepresentation rep =
+        new ViewRequests.ViewRepresentation("sql", "select 1", "ansi");
+    ViewRequests.ViewVersion version =
+        new ViewRequests.ViewVersion(
+            1, 1700000000L, 1, Map.of("operation", "create"), List.of(rep), List.of("db"), null);
+    ViewRequests.Create createReq =
+        new ViewRequests.Create(
+            "reports",
+            "s3://warehouse/views/db/reports/metadata.json",
+            json.readTree("{\"schema-id\":1,\"type\":\"struct\",\"fields\":[]}"),
+            version,
+            Map.of("comment", "demo"));
+    MetadataContext context = viewMetadataService.fromCreate(List.of("db"), "reports", createReq);
+    Map<String, String> props = viewMetadataService.buildPropertyMap(context);
+    View view =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setDisplayName("reports")
+            .setSql(context.sql())
+            .putAllProperties(props)
+            .build();
+    when(viewStub.getView(any())).thenReturn(GetViewResponse.newBuilder().setView(view).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/views/reports")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", equalTo("s3://warehouse/views/db/reports/metadata.json"))
+        .body("metadata.current-version-id", equalTo(1));
+  }
+
+  @Test
+  void getsViewMissingContract() {
+    when(directoryStub.resolveView(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().get("/v1/foo/namespaces/db/views/missing").then().statusCode(404);
   }
 
   @Test
@@ -424,6 +471,22 @@ class ViewResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/views/rename")
         .then()
         .statusCode(500);
+  }
+
+  @Test
+  void viewExistsHeadContract() {
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    given().when().head("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
+  }
+
+  @Test
+  void viewExistsHeadNotFoundContract() {
+    when(directoryStub.resolveView(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().head("/v1/foo/namespaces/db/views/missing").then().statusCode(404);
   }
 
   private void writeMetadataFile(Path root, String location, ViewMetadataView metadata)

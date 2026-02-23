@@ -31,10 +31,13 @@ import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.Test;
@@ -109,5 +112,68 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
         ArgumentCaptor.forClass(DeleteNamespaceRequest.class);
     verify(namespaceStub).deleteNamespace(req.capture());
     assertEquals(true, req.getValue().getRequireEmpty());
+  }
+
+  @Test
+  void namespaceExistsHeadContract() {
+    ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(204);
+  }
+
+  @Test
+  void namespaceExistsHeadNotFoundContract() {
+    when(directoryStub.resolveNamespace(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().head("/v1/foo/namespaces/missing").then().statusCode(404);
+  }
+
+  @Test
+  void updateNamespacePropertiesContract() {
+    ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    Namespace existing =
+        Namespace.newBuilder()
+            .setResourceId(nsId)
+            .setCatalogId(ResourceId.newBuilder().setId("foo").build())
+            .setDisplayName("analytics")
+            .putProperties("owner", "team-old")
+            .putProperties("region", "us-east-1")
+            .build();
+    when(namespaceStub.getNamespace(any()))
+        .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(existing).build());
+    when(namespaceStub.updateNamespace(any()))
+        .thenReturn(UpdateNamespaceResponse.newBuilder().setNamespace(existing).build());
+
+    given()
+        .body("{\"removals\":[\"region\",\"missing\"],\"updates\":{\"owner\":\"team-new\"}}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/analytics/properties")
+        .then()
+        .statusCode(200)
+        .body("updated[0]", equalTo("owner"))
+        .body("removed[0]", equalTo("region"))
+        .body("missing[0]", equalTo("missing"));
+  }
+
+  @Test
+  void updateNamespacePropertiesDuplicateKeyReturns422() {
+    ResourceId nsId = ResourceId.newBuilder().setId("foo:analytics").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    given()
+        .body("{\"removals\":[\"owner\"],\"updates\":{\"owner\":\"team-new\"}}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/analytics/properties")
+        .then()
+        .statusCode(422)
+        .body("error.type", equalTo("ValidationException"));
   }
 }
