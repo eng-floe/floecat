@@ -68,7 +68,7 @@
     <version.protobuf>4.32.1</version.protobuf>
     <version.slf4j>2.0.17</version.slf4j>
     <version.slf4j.jboss.logmanager>2.0.2.Final</version.slf4j.jboss.logmanager>
-    <version.trino>476</version.trino>
+    <version.trino>479</version.trino>
     <version.trino.grpc>1.78.0</version.trino.grpc>
     <version.plugin.antlr4>4.13.2</version.plugin.antlr4>
     <version.plugin.build.helper>3.6.1</version.plugin.build.helper>
