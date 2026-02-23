@@ -72,7 +72,7 @@
     <version.trino.grpc>1.78.0</version.trino.grpc>
     <version.plugin.antlr4>4.13.2</version.plugin.antlr4>
     <version.plugin.build.helper>3.6.1</version.plugin.build.helper>
-    <version.plugin.clean>3.4.0</version.plugin.clean>
+    <version.plugin.clean>3.5.0</version.plugin.clean>
     <version.plugin.compiler>3.14.1</version.plugin.compiler>
     <version.plugin.dependency>3.9.0</version.plugin.dependency>
     <version.plugin.exec>3.5.0</version.plugin.exec>
