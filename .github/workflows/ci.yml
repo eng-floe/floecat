@@ -108,8 +108,11 @@ jobs:
           java-version: "25"
           cache: maven
 
+      - name: Build docker images
+        run: make docker
+
       - name: Docker compose smoke
-        run: make compose-smoke
+        run: ./tools/compose-smoke.sh
 
   detect-floedb-changes:
     name: detect floedb changes
