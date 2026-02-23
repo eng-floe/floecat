@@ -146,7 +146,8 @@ class TableGatewaySupportTest {
 
   @Test
   void defaultTableConfigFiltersSecretsAndCachesResult() {
-    IcebergGatewayConfig.StorageCredentialConfig storage = mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    IcebergGatewayConfig.StorageCredentialConfig storage =
+        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
     when(storage.properties())
         .thenReturn(
             Map.of(
@@ -195,15 +196,15 @@ class TableGatewaySupportTest {
 
   @Test
   void credentialsForAccessDelegationRequiresAndReturnsConfiguredCredentials() {
-    IcebergGatewayConfig.StorageCredentialConfig storage = mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    IcebergGatewayConfig.StorageCredentialConfig storage =
+        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
     when(storage.properties()).thenReturn(Map.of("s3.endpoint", "http://localhost:4566"));
     when(storage.scope()).thenReturn(Optional.of("tenant/*"));
     when(config.storageCredential()).thenReturn(Optional.of(storage));
 
     IllegalArgumentException unsupported =
         assertThrows(
-            IllegalArgumentException.class,
-            () -> support.credentialsForAccessDelegation("sigv4"));
+            IllegalArgumentException.class, () -> support.credentialsForAccessDelegation("sigv4"));
     assertEquals("Unsupported access delegation mode: sigv4", unsupported.getMessage());
 
     List<StorageCredentialDto> credentials =
@@ -215,7 +216,8 @@ class TableGatewaySupportTest {
 
   @Test
   void resolveRegisterFileIoPropertiesMergesDefaultsAndRequestOverrides() {
-    IcebergGatewayConfig.StorageCredentialConfig storage = mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    IcebergGatewayConfig.StorageCredentialConfig storage =
+        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
     when(storage.properties())
         .thenReturn(
             Map.of(
@@ -268,10 +270,8 @@ class TableGatewaySupportTest {
     verify(connectorClient).createConnector(captor.capture());
     CreateConnectorRequest request = captor.getValue();
     assertEquals("idem-123:connector", request.getIdempotency().getKey());
-    assertEquals(
-        "register:cat:db.analytics.orders", request.getSpec().getDisplayName());
-    assertEquals(
-        "s3://bucket/orders/metadata/v1.metadata.json", request.getSpec().getUri());
+    assertEquals("register:cat:db.analytics.orders", request.getSpec().getDisplayName());
+    assertEquals("s3://bucket/orders/metadata/v1.metadata.json", request.getSpec().getUri());
     assertEquals(
         "s3://bucket/orders/metadata/v1.metadata.json",
         request.getSpec().getPropertiesOrThrow("external.metadata-location"));
@@ -315,14 +315,12 @@ class TableGatewaySupportTest {
     verify(connectorClient, never()).getConnector(any());
 
     ResourceId connectorId = ResourceId.newBuilder().setId("c1").build();
-    when(connectorClient.getConnector(any()))
-        .thenReturn(GetConnectorResponse.newBuilder().build());
+    when(connectorClient.getConnector(any())).thenReturn(GetConnectorResponse.newBuilder().build());
     support.updateConnectorMetadata(connectorId, "s3://bucket/meta.json");
     verify(connectorClient, times(1)).getConnector(any());
     verify(connectorClient, never()).updateConnector(any());
 
-    when(connectorClient.getConnector(any()))
-        .thenThrow(Status.INTERNAL.asRuntimeException());
+    when(connectorClient.getConnector(any())).thenThrow(Status.INTERNAL.asRuntimeException());
     support.updateConnectorMetadata(connectorId, "s3://bucket/meta.json");
   }
 
@@ -394,7 +392,8 @@ class TableGatewaySupportTest {
     assertEquals("idem-key:connector", request.getIdempotency().getKey());
     assertEquals("register:cat:db.orders", request.getSpec().getDisplayName());
     assertEquals("desc", request.getSpec().getDescription());
-    assertEquals("false", request.getSpec().getPropertiesOrThrow("floecat.connector.capture-statistics"));
+    assertEquals(
+        "false", request.getSpec().getPropertiesOrThrow("floecat.connector.capture-statistics"));
     assertEquals("v1", request.getSpec().getPropertiesOrThrow("k1"));
     assertEquals("bearer", request.getSpec().getAuth().getScheme());
     assertEquals("authv", request.getSpec().getAuth().getPropertiesOrThrow("authp"));
@@ -441,7 +440,8 @@ class TableGatewaySupportTest {
     assertEquals(tableId, request.getTableId());
     assertEquals(List.of("upstream"), request.getUpdateMask().getPathsList());
     assertEquals(connectorId, request.getSpec().getUpstream().getConnectorId());
-    assertEquals(List.of("db", "analytics"), request.getSpec().getUpstream().getNamespacePathList());
+    assertEquals(
+        List.of("db", "analytics"), request.getSpec().getUpstream().getNamespacePathList());
     assertEquals("orders", request.getSpec().getUpstream().getTableDisplayName());
     assertEquals("s3://target/orders", request.getSpec().getUpstream().getUri());
   }
@@ -492,8 +492,7 @@ class TableGatewaySupportTest {
     assertFalse(request.getIncludeStatistics());
     assertEquals(1, request.getDestinationNamespacePathsCount());
     assertEquals(
-        List.of("db", "analytics"),
-        request.getDestinationNamespacePaths(0).getSegmentsList());
+        List.of("db", "analytics"), request.getDestinationNamespacePaths(0).getSegmentsList());
   }
 
   @Test
@@ -513,15 +512,18 @@ class TableGatewaySupportTest {
     assertEquals("orders", request.getDestinationTableDisplayName());
     assertEquals(List.of("ns"), request.getDestinationNamespacePaths(0).getSegmentsList());
 
-    when(connectorClient.triggerReconcile(any()))
-        .thenThrow(Status.INTERNAL.asRuntimeException());
+    when(connectorClient.triggerReconcile(any())).thenThrow(Status.INTERNAL.asRuntimeException());
     support.triggerScopedReconcile(connectorId, List.of("ns"), "orders");
   }
 
   @Test
   void loadCurrentMetadataUsesCurrentSnapshotWhenIdsMatch() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table = Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "44").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("current-snapshot-id", "44")
+            .build();
     IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("t-44").build();
     when(snapshotClient.getSnapshot(any()))
         .thenReturn(
@@ -543,7 +545,11 @@ class TableGatewaySupportTest {
   @Test
   void loadCurrentMetadataFallsBackToSnapshotPropertyOnMismatchOrError() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table = Table.newBuilder().setResourceId(tableId).putProperties("current-snapshot-id", "99").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("current-snapshot-id", "99")
+            .build();
     IcebergMetadata firstMetadata = IcebergMetadata.newBuilder().setTableUuid("t-11").build();
     IcebergMetadata secondMetadata = IcebergMetadata.newBuilder().setTableUuid("t-99").build();
     when(snapshotClient.getSnapshot(any()))
@@ -615,7 +621,8 @@ class TableGatewaySupportTest {
 
   @Test
   void credentialsForAccessDelegationUsesPrefixedConfigAndScopeFallback() {
-    IcebergGatewayConfig.StorageCredentialConfig storage = mock(IcebergGatewayConfig.StorageCredentialConfig.class);
+    IcebergGatewayConfig.StorageCredentialConfig storage =
+        mock(IcebergGatewayConfig.StorageCredentialConfig.class);
     when(storage.properties()).thenReturn(Map.of());
     when(storage.scope()).thenReturn(Optional.of(" "));
     when(config.storageCredential()).thenReturn(Optional.of(storage));
@@ -646,7 +653,12 @@ class TableGatewaySupportTest {
   void runSyncMetadataCaptureWithoutNamespacePathOmitsNamespaceFilter() {
     ResourceId connectorId = ResourceId.newBuilder().setId("cx").build();
     when(connectorClient.syncCapture(any()))
-        .thenReturn(SyncCaptureResponse.newBuilder().setTablesScanned(0).setTablesChanged(0).setErrors(0).build());
+        .thenReturn(
+            SyncCaptureResponse.newBuilder()
+                .setTablesScanned(0)
+                .setTablesChanged(0)
+                .setErrors(0)
+                .build());
 
     support.runSyncMetadataCapture(connectorId, null, "orders");
 

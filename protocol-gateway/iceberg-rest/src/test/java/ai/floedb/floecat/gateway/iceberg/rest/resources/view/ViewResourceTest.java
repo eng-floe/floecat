@@ -331,7 +331,8 @@ class ViewResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(sourceViewId).build());
     when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(destinationNamespaceId).build());
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder().setResourceId(destinationNamespaceId).build());
     when(viewStub.updateView(any())).thenReturn(UpdateViewResponse.newBuilder().build());
 
     given()

@@ -84,10 +84,12 @@ class StagedTableServiceTest {
     StagedTableKey key = entry.key();
     when(repository.deleteOlderThan(any())).thenReturn(0);
     when(repository.get(key)).thenReturn(Optional.of(entry));
-    when(repository.findSingle("acct", "cat", List.of("db"), "orders")).thenReturn(Optional.of(entry));
+    when(repository.findSingle("acct", "cat", List.of("db"), "orders"))
+        .thenReturn(Optional.of(entry));
 
     Optional<StagedTableEntry> fetched = service.getStage(key);
-    Optional<StagedTableEntry> single = service.findSingleStage("acct", "cat", List.of("db"), "orders");
+    Optional<StagedTableEntry> single =
+        service.findSingleStage("acct", "cat", List.of("db"), "orders");
 
     assertEquals(Optional.of(entry), fetched);
     assertEquals(Optional.of(entry), single);

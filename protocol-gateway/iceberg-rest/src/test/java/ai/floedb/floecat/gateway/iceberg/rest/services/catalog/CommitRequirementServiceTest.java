@@ -225,11 +225,7 @@ class CommitRequirementServiceTest {
     requirements.add(null);
     Response resp =
         service.validateRequirements(
-            tableSupport,
-            requirements,
-            () -> Table.newBuilder().build(),
-            validation(),
-            conflict());
+            tableSupport, requirements, () -> Table.newBuilder().build(), validation(), conflict());
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
     assertEquals("commit requirement entry cannot be null", resp.getEntity());

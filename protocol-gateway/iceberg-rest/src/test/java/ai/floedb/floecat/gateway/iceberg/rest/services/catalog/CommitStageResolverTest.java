@@ -36,8 +36,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageMaterializatio
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.util.List;
 import jakarta.ws.rs.core.Response;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -160,7 +160,8 @@ class CommitStageResolverTest {
     assertSame(stageResult, resolution.stageCommitResult());
     assertEquals("stage-9", resolution.materializedStageId());
     verify(stageMaterializationService)
-        .materializeIfTableMissing(any(), eq("pref"), eq("cat"), eq(List.of("db")), eq("orders"), any(), any());
+        .materializeIfTableMissing(
+            any(), eq("pref"), eq("cat"), eq(List.of("db")), eq("orders"), any(), any());
   }
 
   @Test
