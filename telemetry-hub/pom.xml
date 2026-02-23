@@ -41,7 +41,7 @@
   </modules>
 
   <properties>
-    <micrometer.version>1.11.0</micrometer.version>
+    <micrometer.version>1.16.3</micrometer.version>
     <otel.version>1.50.0</otel.version>
   </properties>
 
