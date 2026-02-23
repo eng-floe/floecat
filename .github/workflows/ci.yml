@@ -79,10 +79,10 @@ jobs:
   ci-localstack:
     name: ci-localstack
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-localstack
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -98,8 +98,8 @@ jobs:
       - name: Test (LocalStack)
         run: make test-localstack
 
-      - name: Docker Diagnostics (on failure)
-        if: failure()
+      - name: Docker Diagnostics (on failure or cancellation)
+        if: ${{ failure() || cancelled() }}
         run: |
           set -euo pipefail
           echo "==> docker ps -a"
