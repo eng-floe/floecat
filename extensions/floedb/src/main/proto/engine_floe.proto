@@ -29,6 +29,16 @@ option java_package = "ai.floedb.floecat.extensions.floedb.proto";
  */
 
 /**
+ * FloeDB-specific decoration failures mapped into UserObjects `ColumnFailure.extension_code_value`.
+ */
+enum FloeDecorationFailureCode {
+  FLOE_DECORATION_FAILURE_CODE_UNSPECIFIED = 0;
+  FLOE_DECORATION_FAILURE_CODE_MISSING_OID = 1;
+  FLOE_DECORATION_FAILURE_CODE_LOGICAL_TYPE_MISSING = 2;
+  FLOE_DECORATION_FAILURE_CODE_TYPE_MAPPING_MISSING = 3;
+}
+
+/**
  * Engine-specific namespace attributes (pg_namespace).
  */
 message FloeNamespaceSpecific {

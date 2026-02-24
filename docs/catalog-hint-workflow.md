@@ -60,22 +60,30 @@ When `UserObjectBundleService` builds responses it:
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.
 * the decorator calls `FloeHintResolver`, asks the matching `FloePayloads.Descriptor` for the payloadType string (`Descriptor.type()`) and, when replaying overlays, optionally decodes persisted bytes via `Descriptor.decode()`, uses `toEngineSpecific` to build the wrapper, and attaches the `EngineSpecific` blob to the bundle.
+* emits one `ColumnResult` per requested column: `COLUMN_STATUS_READY` with `column` when decoration succeeded and required payloads are present, or `COLUMN_STATUS_FAILED` with `failure` (`code`, `message`, optional `details`) when decoration failed.
 * if snapshot-aware stats exist for the relation, the bundle includes them in `RelationInfo.stats` (a new `RelationStats` proto carrying best-effort `row_count` and `total_size_bytes`). This field is optional: resolvers may see `RelationInfo.stats` unset for views, system tables, or any unpinned relation, and should treat missing stats as a best-effort decoration rather than required data.
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.
 
 ## 5. Persisting engine hints
 
-Decorators persist every hint they emit so the metadata graph can replay it later. `FloeEngineSpecificDecorator`
+Decorators now stage hint payloads during `decorateRelation` / `decorateColumn` and persist in the
+`completeRelation(...)` lifecycle callback once column outcomes are known. `FloeEngineSpecificDecorator`
 receives the configured `EngineHintPersistence` bean via CDI injection (the service layer wires
-`EngineHintPersistenceImpl` as the implementation) and writes each payload through
+`EngineHintPersistenceImpl` as the implementation) and writes committed payloads through
 `EngineHintPersistenceImpl`. The implementation consults `EngineHintMetadata` to build the canonical
 `engine.hint.<payloadType>` or `engine.hint.column.<payloadType>.<columnId>` key, encodes `(engineKind,
 engineVersion, payload)` as a semicolon-delimited string, and updates either the table or view repository only
 when the stored value actually changes. Because column hints now carry the stable `columnId`, the loader +
 scanner flows can distinguish columns that share payload types even when new columns shift the ordinals.
+`UserObjectBundleService` computes the READY column ID set from `ColumnResult` and passes it to
+`completeRelation(...)`, so failed columns are reported to callers but their staged hints are discarded
+instead of being persisted.
 Payload types are normalized (trimmed and lower-cased) and limited to `[a-z0-9._+-]` to keep the key format
 stable; semicolons are forbidden because they would break the encoded `(engineKind;engineVersion;payload)` value.
+
+This staged flow adds short-lived memory proportional to staged payload bytes for a single relation
+(`O(ready_columns * payload_size)`), then clears the buffers immediately after `completeRelation(...)`.
 
 Those properties are loaded back into the `MetaGraph` because `NodeLoader` eventually calls
 `EngineHintMetadata.hintsFromProperties(...)` and `EngineHintMetadata.columnHints(...)` for every catalog, namespace, table, and view, so both relation- and column-level hints reappear even when no decorator runs. Column payloads now key by the stable `columnId` from `SchemaColumn`/`ColumnIdAlgorithm` rather than the ordinal/attnum, so loaders and decorators agree on the identifier. The live request path still benefits from the `EngineHintManager` cache that sits atop the provider pipeline.
@@ -118,7 +126,7 @@ so metadata writes stay best-effort while the decorators remain resilient to rac
 The planner now receives two consistent views:
 
 * `pg_*` scanners stream `FloeColumnSpecific` fields into rows.
-* Catalog bundles attach the same Floe payloads to `ColumnInfo`/`RelationInfo`, ensuring RPC consumers see the same metadata as scanners.
+* Catalog bundles attach the same Floe payloads to `RelationInfo` and to READY `ColumnResult.column` entries, while FAILED columns carry structured diagnostics (`ColumnFailure`) instead of silent omission.
 
 Both flows rely on:
 

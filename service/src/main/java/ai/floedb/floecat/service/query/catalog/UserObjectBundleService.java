@@ -27,7 +27,12 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.ColumnFailure;
+import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.ColumnResult;
+import ai.floedb.floecat.query.rpc.ColumnStatus;
+import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -55,6 +60,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
@@ -153,6 +159,11 @@ public class UserObjectBundleService {
     String defaultCatalog =
         overlay.catalog(ctx.getQueryDefaultCatalogId()).map(CatalogNode::displayName).orElse("");
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "GetUserObjects stream start query=%s correlation=%s candidates=%d default_catalog=%s",
+          ctx.getQueryId(), correlationId, candidates.size(), defaultCatalog);
+    }
     return Multi.createFrom()
         .<UserObjectsBundleChunk>deferred(
             () ->
@@ -276,6 +287,14 @@ public class UserObjectBundleService {
       ResolvedRelation relation,
       QueryContext queryContext,
       StatsProvider statsProvider) {
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "Building relation bundle query=%s relation=%s kind=%s origin=%s",
+          queryContext.getQueryId(),
+          relation.relationId(),
+          relation.node().kind(),
+          relation.node().origin());
+    }
 
     RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
     Origin origin = mapOrigin(relation.node().origin());
@@ -336,12 +355,13 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    List<ColumnInfo> decoratedColumns = columns;
-
     EngineContext ctx = engineContext.engineContext();
+    boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
+    RelationDecoration relationDecoration = null;
+    boolean relationDecorationSucceeded = true;
 
-    if (decorator.isPresent()) {
+    if (decorationRequired && decorator.isPresent()) {
       MetadataResolutionContext resolutionContext =
           MetadataResolutionContext.of(
               overlay,
@@ -350,7 +370,7 @@ public class UserObjectBundleService {
               ctx,
               statsProvider);
 
-      RelationDecoration relationDecoration =
+      relationDecoration =
           new RelationDecoration(
               builder,
               relation.relationId(),
@@ -362,6 +382,7 @@ public class UserObjectBundleService {
       try {
         decorator.get().decorateRelation(ctx, relationDecoration);
       } catch (RuntimeException e) {
+        relationDecorationSucceeded = false;
         LOG.debugf(
             e,
             "Decorator threw while decorating relation %s (engine=%s)",
@@ -370,7 +391,7 @@ public class UserObjectBundleService {
       }
 
       // Decorate columns
-      decoratedColumns = decorateColumns(columns, pruned, relationDecoration, decorator.get(), ctx);
+      // handled below so columns can always emit READY/FAILED status
 
       // decorate view
       if (viewBuilder != null) {
@@ -390,7 +411,55 @@ public class UserObjectBundleService {
       }
     }
 
-    builder.addAllColumns(decoratedColumns);
+    List<ColumnResult> columnResults =
+        decorateColumns(
+            columns,
+            pruned,
+            relationDecoration,
+            decorator,
+            ctx,
+            decorationRequired,
+            relation.relationId());
+
+    if (relationDecoration != null && decorator.isPresent()) {
+      boolean commitRelationHints = relationDecorationSucceeded;
+      boolean commitColumnHints =
+          relationDecorationSucceeded && shouldCommitColumnDecorations(columnResults);
+      Set<Long> readyColumnIds = commitColumnHints ? readyColumnIds(columnResults) : Set.of();
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Decorator completion decisions relation=%s relation_succeeded=%s"
+                + " commit_relation_hints=%s commit_column_hints=%s ready_column_ids=%d",
+            relation.relationId(),
+            relationDecorationSucceeded,
+            commitRelationHints,
+            commitColumnHints,
+            readyColumnIds.size());
+      }
+      try {
+        decorator
+            .get()
+            .completeRelation(
+                ctx, relationDecoration, commitRelationHints, commitColumnHints, readyColumnIds);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "Decorator threw while completing relation %s (engine=%s)",
+            relation.relationId(),
+            ctx == null ? "" : ctx.normalizedKind());
+      }
+    }
+
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "Built relation bundle relation=%s columns=%d ready=%d failed=%d",
+          relation.relationId(),
+          columnResults.size(),
+          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_READY),
+          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED));
+    }
+
+    builder.addAllColumns(columnResults);
     return builder.build();
   }
 
@@ -421,21 +490,63 @@ public class UserObjectBundleService {
         FlightEndpointRef.newBuilder().setHost(host.get()).setPort(port.get()).setTls(tls).build());
   }
 
-  private List<ColumnInfo> decorateColumns(
+  private List<ColumnResult> decorateColumns(
       List<ColumnInfo> columns,
       List<SchemaColumn> pruned,
       RelationDecoration relationDecoration,
-      EngineMetadataDecorator decorator,
-      EngineContext ctx) {
+      Optional<EngineMetadataDecorator> decorator,
+      EngineContext ctx,
+      boolean decorationRequired,
+      ResourceId relationId) {
 
     if (pruned == null || pruned.size() != columns.size()) {
-      LOG.debugf(
-          "Skip engine metadata: column count mismatch columns=%d pruned=%s",
-          columns.size(), pruned == null ? "null" : Integer.toString(pruned.size()));
-      return columns;
+      String msg =
+          String.format(
+              "Column/schema mismatch columns=%d pruned=%s",
+              columns.size(), pruned == null ? "null" : Integer.toString(pruned.size()));
+      LOG.debugf("Column decoration mismatch relation=%s %s", relationId, msg);
+      if (!decorationRequired) {
+        return columns.stream().map(UserObjectBundleService::readyColumn).toList();
+      }
+      List<ColumnResult> failed = new ArrayList<>(columns.size());
+      for (ColumnInfo column : columns) {
+        failed.add(
+            failedColumn(
+                column,
+                ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH,
+                msg,
+                Map.of("relation_id", relationId.getId())));
+      }
+      return failed;
     }
 
-    List<ColumnInfo> decorated = new ArrayList<>(columns.size());
+    if (!decorationRequired) {
+      return columns.stream().map(UserObjectBundleService::readyColumn).toList();
+    }
+
+    if (decorator.isEmpty() || relationDecoration == null) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Column decoration unavailable relation=%s engine_kind=%s engine_version=%s",
+            relationId,
+            safe(ctx == null ? null : ctx.normalizedKind()),
+            safe(ctx == null ? null : ctx.normalizedVersion()));
+      }
+      List<ColumnResult> failed = new ArrayList<>(columns.size());
+      for (ColumnInfo column : columns) {
+        failed.add(
+            failedColumn(
+                column,
+                ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE,
+                "Engine-specific column decorator is unavailable",
+                Map.of(
+                    "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
+                    "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
+      }
+      return failed;
+    }
+
+    List<ColumnResult> decorated = new ArrayList<>(columns.size());
     for (int i = 0; i < columns.size(); i++) {
       ColumnInfo column = columns.get(i);
       SchemaColumn schema = pruned.get(i);
@@ -445,18 +556,220 @@ public class UserObjectBundleService {
           new ColumnDecoration(
               builder, schema, logicalType, column.getOrdinal(), relationDecoration);
       try {
-        decorator.decorateColumn(ctx, columnDecoration);
+        decorator.get().decorateColumn(ctx, columnDecoration);
+        ColumnInfo decoratedColumn = columnDecoration.builder().build();
+        if (hasRequiredEnginePayload(decoratedColumn, ctx)) {
+          decorated.add(readyColumn(decoratedColumn));
+        } else {
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf(
+                "Column decoration missing required payload relation=%s column=%s ordinal=%d"
+                    + " engine_kind=%s",
+                relationId,
+                column.getName(),
+                column.getOrdinal(),
+                safe(ctx == null ? null : ctx.normalizedKind()));
+          }
+          decorated.add(
+              failedColumn(
+                  decoratedColumn,
+                  ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING,
+                  "Engine-specific payload is required but missing",
+                  Map.of(
+                      "engine_kind", safe(ctx == null ? null : ctx.normalizedKind()),
+                      "engine_version", safe(ctx == null ? null : ctx.normalizedVersion()))));
+        }
       } catch (RuntimeException e) {
+        ColumnFailure failure = mapFailure(e, ctx);
         LOG.debugf(
             e,
-            "Decorator threw while decorating column %s.%s (engine=%s)",
-            relationDecoration.relationId(),
+            "Decorator threw while decorating column %s.%s (engine=%s mapped_code=%s"
+                + " extension_code=%d)",
+            relationId,
             column.getName(),
-            ctx.normalizedKind());
+            ctx == null ? "" : ctx.normalizedKind(),
+            failure.getCode(),
+            failure.hasExtensionCodeValue() ? failure.getExtensionCodeValue() : 0);
+        decorated.add(failedColumn(column, failure));
       }
-      decorated.add(columnDecoration.builder().build());
     }
     return decorated;
+  }
+
+  private static ColumnResult readyColumn(ColumnInfo column) {
+    return ColumnResult.newBuilder()
+        .setColumnId(column.getId())
+        .setColumnName(column.getName())
+        .setOrdinal(column.getOrdinal())
+        .setStatus(ColumnStatus.COLUMN_STATUS_READY)
+        .setColumn(column)
+        .build();
+  }
+
+  private static ColumnResult failedColumn(
+      ColumnInfo column, ColumnFailureCode code, String message, Map<String, String> details) {
+    ColumnFailure.Builder failure = ColumnFailure.newBuilder().setCode(code).setMessage(message);
+    if (details != null && !details.isEmpty()) {
+      failure.putAllDetails(details);
+    }
+    return ColumnResult.newBuilder()
+        .setColumnId(column.getId())
+        .setColumnName(column.getName())
+        .setOrdinal(column.getOrdinal())
+        .setStatus(ColumnStatus.COLUMN_STATUS_FAILED)
+        .setFailure(failure)
+        .build();
+  }
+
+  private static ColumnResult failedColumn(ColumnInfo column, ColumnFailure failure) {
+    return ColumnResult.newBuilder()
+        .setColumnId(column.getId())
+        .setColumnName(column.getName())
+        .setOrdinal(column.getOrdinal())
+        .setStatus(ColumnStatus.COLUMN_STATUS_FAILED)
+        .setFailure(failure)
+        .build();
+  }
+
+  private ColumnFailure mapFailure(RuntimeException e, EngineContext ctx) {
+    if (e instanceof DecorationException de) {
+      ColumnFailureCode code =
+          de.hasExtensionCodeValue()
+              ? ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION
+              : de.code();
+      String message = userFacingFailureMessage(code);
+      if (de.hasExtensionCodeValue()) {
+        String extensionMessage = safe(de.getMessage()).trim();
+        if (!extensionMessage.isBlank()) {
+          message = extensionMessage;
+        }
+      }
+      ColumnFailure.Builder builder = ColumnFailure.newBuilder().setCode(code).setMessage(message);
+      if (!de.details().isEmpty()) {
+        builder.putAllDetails(de.details());
+      }
+      if (de.hasExtensionCodeValue()) {
+        builder.setExtensionCodeValue(de.extensionCodeValue());
+      }
+      addEngineDetails(builder, ctx);
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Mapped DecorationException to column failure code=%s extension_code=%d engine_kind=%s",
+            code,
+            de.hasExtensionCodeValue() ? de.extensionCodeValue() : 0,
+            safe(ctx == null ? null : ctx.normalizedKind()));
+      }
+      return builder.build();
+    }
+
+    ColumnFailureCode code = ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR;
+    if (e instanceof SecurityException) {
+      code = ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED;
+    } else if (e instanceof UnsupportedOperationException) {
+      code = ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED;
+    } else if (e instanceof NoSuchElementException) {
+      code = ColumnFailureCode.COLUMN_FAILURE_CODE_NOT_FOUND;
+    }
+
+    ColumnFailure.Builder builder =
+        ColumnFailure.newBuilder().setCode(code).setMessage(userFacingFailureMessage(code));
+    addEngineDetails(builder, ctx);
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "Mapped RuntimeException to column failure exception=%s code=%s engine_kind=%s",
+          e.getClass().getSimpleName(), code, safe(ctx == null ? null : ctx.normalizedKind()));
+    }
+    return builder.build();
+  }
+
+  private static boolean hasRequiredEnginePayload(ColumnInfo column, EngineContext ctx) {
+    String normalizedKind = ctx == null ? "" : safe(ctx.normalizedKind());
+    for (EngineSpecific spec : column.getEngineSpecificList()) {
+      String specKind = safe(spec.getEngineKind());
+      boolean kindMatches =
+          specKind.isBlank() || normalizedKind.isBlank() || specKind.equals(normalizedKind);
+      if (!kindMatches) {
+        continue;
+      }
+      if (!safe(spec.getPayloadType()).isBlank() && !spec.getPayload().isEmpty()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static String userFacingFailureMessage(ColumnFailureCode code) {
+    if (code == null) {
+      return "Column decoration failed.";
+    }
+    return switch (code) {
+      case COLUMN_FAILURE_CODE_SCHEMA_MISMATCH ->
+          "Column metadata does not match the relation schema.";
+      case COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE ->
+          "Engine-specific column metadata is unavailable.";
+      case COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING ->
+          "Required engine-specific metadata is missing for this column.";
+      case COLUMN_FAILURE_CODE_PERMISSION_DENIED ->
+          "Permission denied while decorating this column.";
+      case COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED ->
+          "This column type is not supported by the engine metadata decorator.";
+      case COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID ->
+          "The column logical type is invalid for engine metadata decoration.";
+      case COLUMN_FAILURE_CODE_NOT_FOUND -> "Column metadata was not found during decoration.";
+      case COLUMN_FAILURE_CODE_ENGINE_EXTENSION ->
+          "Engine extension failed to provide column metadata.";
+      default -> "Column decoration failed.";
+    };
+  }
+
+  private static String safe(String value) {
+    return value == null ? "" : value;
+  }
+
+  private static void addEngineDetails(ColumnFailure.Builder failure, EngineContext ctx) {
+    if (ctx == null) {
+      return;
+    }
+    failure.putDetails("engine_kind", safe(ctx.normalizedKind()));
+    failure.putDetails("engine_version", safe(ctx.normalizedVersion()));
+  }
+
+  private static boolean shouldCommitColumnDecorations(List<ColumnResult> columnResults) {
+    if (columnResults == null || columnResults.isEmpty()) {
+      return true;
+    }
+    for (ColumnResult result : columnResults) {
+      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_READY) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static Set<Long> readyColumnIds(List<ColumnResult> columnResults) {
+    if (columnResults == null || columnResults.isEmpty()) {
+      return Set.of();
+    }
+    Set<Long> ids = new java.util.HashSet<>();
+    for (ColumnResult result : columnResults) {
+      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_READY && result.getColumnId() > 0) {
+        ids.add(result.getColumnId());
+      }
+    }
+    return ids;
+  }
+
+  private static int countColumnsWithStatus(List<ColumnResult> columnResults, ColumnStatus status) {
+    int count = 0;
+    if (columnResults == null || status == null) {
+      return count;
+    }
+    for (ColumnResult result : columnResults) {
+      if (result.getStatus() == status) {
+        count++;
+      }
+    }
+    return count;
   }
 
   private LogicalType parseLogicalType(SchemaColumn column) {
@@ -476,10 +789,14 @@ public class UserObjectBundleService {
   }
 
   private Optional<EngineMetadataDecorator> currentDecorator(EngineContext ctx) {
-    if (!engineSpecificEnabled || ctx == null || !ctx.enginePluginOverlaysEnabled()) {
+    if (!decorationRequired(ctx)) {
       return Optional.empty();
     }
     return decoratorProvider.decorator(ctx);
+  }
+
+  private boolean decorationRequired(EngineContext ctx) {
+    return engineSpecificEnabled && ctx != null && ctx.enginePluginOverlaysEnabled();
   }
 
   private static List<SchemaColumn> requireSchema(List<SchemaColumn> schema) {
@@ -653,6 +970,12 @@ public class UserObjectBundleService {
       this.resolutionCount = tables.size();
       this.defaultCatalog = defaultCatalog;
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Initialized bundle iterator query=%s correlation=%s resolution_count=%d"
+                + " default_catalog=%s",
+            ctx.getQueryId(), correlationId, resolutionCount, defaultCatalog);
+      }
     }
 
     @Override
@@ -664,6 +987,9 @@ public class UserObjectBundleService {
     public UserObjectsBundleChunk next() {
       if (!headerEmitted) {
         headerEmitted = true;
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf("Emitting header chunk query=%s seq=%d", ctx.getQueryId(), seq);
+        }
         return headerChunk(ctx.getQueryId(), seq++);
       }
 
@@ -677,6 +1003,11 @@ public class UserObjectBundleService {
 
       if (!endEmitted) {
         endEmitted = true;
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Emitting end chunk query=%s seq=%d resolutions=%d found=%d not_found=%d",
+              ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+        }
         return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
       }
 
@@ -693,6 +1024,11 @@ public class UserObjectBundleService {
       TableReferenceCandidate candidate = tables.get(nextInputIndex);
       int inputIndex = nextInputIndex;
       nextInputIndex++;
+      if (LOG.isTraceEnabled()) {
+        LOG.tracef(
+            "Resolving candidate query=%s input_index=%d candidate_count=%d",
+            ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
+      }
       List<QueryInput> normalized = normalizeCandidates(correlationId, candidate, defaultCatalog);
       try {
         Optional<ResolvedRelation> resolved =
@@ -702,9 +1038,22 @@ public class UserObjectBundleService {
           SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
           accumulateChunkPins(pins);
           foundCount++;
+          if (LOG.isTraceEnabled()) {
+            LOG.tracef(
+                "Resolved candidate query=%s input_index=%d relation=%s pins=%d",
+                ctx.getQueryId(),
+                inputIndex,
+                relation.relationId(),
+                pins == null ? 0 : pins.getPinsCount());
+          }
           return new PendingFound(inputIndex, relation);
         }
       } catch (GraphNodeMissingException e) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Resolved candidate missing graph node query=%s input_index=%d resource_id=%s",
+              ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
+        }
         ResolutionFailure failure =
             ResolutionFailure.newBuilder()
                 .setCode("catalog_bundle.graph.missing_node")
@@ -721,6 +1070,11 @@ public class UserObjectBundleService {
                 .build());
       }
       notFoundCount++;
+      if (LOG.isTraceEnabled()) {
+        LOG.tracef(
+            "Candidate not found query=%s input_index=%d attempted=%d",
+            ctx.getQueryId(), inputIndex, normalized.size());
+      }
       ResolutionFailure failure =
           ResolutionFailure.newBuilder()
               .setCode("catalog_bundle.relation_not_found")
@@ -740,6 +1094,11 @@ public class UserObjectBundleService {
     private UserObjectsBundleChunk flushResolutionChunk() {
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Flushing resolution chunk query=%s seq=%d pending_items=%d pending_pins=%d",
+            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPins.getPinsCount());
+      }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
       commitChunkPins();
@@ -758,6 +1117,22 @@ public class UserObjectBundleService {
                 .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
                 .setRelation(info)
                 .build());
+      }
+      if (LOG.isDebugEnabled()) {
+        int chunkFound = 0;
+        int chunkNotFound = 0;
+        int chunkError = 0;
+        for (RelationResolution resolution : resolutions) {
+          switch (resolution.getStatus()) {
+            case RESOLUTION_STATUS_FOUND -> chunkFound++;
+            case RESOLUTION_STATUS_NOT_FOUND -> chunkNotFound++;
+            case RESOLUTION_STATUS_ERROR -> chunkError++;
+            default -> {}
+          }
+        }
+        LOG.debugf(
+            "Resolved chunk query=%s seq=%d items=%d found=%d not_found=%d error=%d",
+            ctx.getQueryId(), seq, resolutions.size(), chunkFound, chunkNotFound, chunkError);
       }
       return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
     }
@@ -818,14 +1193,26 @@ public class UserObjectBundleService {
       if (pendingChunkPins.getPinsCount() == 0) {
         return;
       }
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf(
+            "Committing chunk pins query=%s pin_count=%d",
+            ctx.getQueryId(), pendingChunkPins.getPinsCount());
+      }
       var updated =
           queryStore.update(
               ctx.getQueryId(),
               existing -> mergeSnapshotSet(existing, pendingChunkPins, correlationId));
       pendingChunkPins = SnapshotSet.getDefaultInstance();
       if (updated.isEmpty()) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Failed to commit chunk pins query=%s query context missing", ctx.getQueryId());
+        }
         throw GrpcErrors.notFound(
             correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
+      }
+      if (LOG.isDebugEnabled()) {
+        LOG.debugf("Committed chunk pins query=%s", ctx.getQueryId());
       }
     }
   }
