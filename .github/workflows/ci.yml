@@ -234,6 +234,7 @@ jobs:
           path: |
             target/ci-debug/docker-smoke.log
             target/ci-debug/compose-logs/**
+            target/compose-smoke-logs/**
             target/ci-debug/host-docker/**
             target/ci-debug/artifact-file-list.txt
 

@@ -16,6 +16,7 @@
 set -euo pipefail
 
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
+COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
 
 assert_contains() {
   local check_name="$1"
@@ -41,11 +42,7 @@ cleanup_mode() {
 save_mode_logs() {
   local compose_cmd="$1"
   local label="$2"
-  local log_dir="${COMPOSE_SMOKE_SAVE_LOG_DIR:-}"
-
-  if [ -z "$log_dir" ]; then
-    return 0
-  fi
+  local log_dir="$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT"
 
   mkdir -p "$log_dir" || true
   eval "$compose_cmd ps" > "$log_dir/${label}-ps.log" 2>&1 || true
@@ -57,11 +54,7 @@ save_mode_logs() {
 save_mode_container_diagnostics() {
   local compose_cmd="$1"
   local label="$2"
-  local log_dir="${COMPOSE_SMOKE_SAVE_LOG_DIR:-}"
-
-  if [ -z "$log_dir" ]; then
-    return 0
-  fi
+  local log_dir="$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT"
 
   mkdir -p "$log_dir" || true
   eval "$compose_cmd ps -a" > "$log_dir/${label}-ps-all.log" 2>&1 || true

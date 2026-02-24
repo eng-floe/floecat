@@ -823,7 +823,10 @@ compose-shell:
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
 
 compose-smoke: docker
-	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} ./tools/compose-smoke.sh
+	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
+	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
+	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
+	  ./tools/compose-smoke.sh
 
 # ===================================================
 # Lint/format
