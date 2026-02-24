@@ -100,12 +100,14 @@
       <module>core/proto</module>
       <module>core/types</module>
       <module>core/catalog</module>
+      <module>core/scanner</module>
       <module>core/metagraph</module>
       <module>core/connectors/spi</module>
       <module>core/connectors/common</module>
       <module>core/storage-spi</module>
       <module>core/reconciler-spi</module>
-
+      <module>core/arrow</module>
+      
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
       <module>connectors/catalogs/delta</module>
@@ -127,6 +129,7 @@
 
       <!-- Service -->
       <module>service</module>
+      <module>flight</module>
 
       <!-- CLI -->
       <module>client-cli</module>

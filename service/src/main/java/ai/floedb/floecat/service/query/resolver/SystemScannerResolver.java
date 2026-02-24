@@ -19,16 +19,16 @@ package ai.floedb.floecat.service.query.resolver;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -43,8 +43,24 @@ public final class SystemScannerResolver {
   @Inject EngineContextProvider engine;
   @Inject List<SystemObjectScannerProvider> providers;
 
+  /**
+   * Resolves the scanner for the given table ID, reading the engine context from the current gRPC
+   * call's thread-local context via {@link EngineContextProvider}.
+   *
+   * <p>Use this overload from gRPC service implementations where the engine context is already
+   * propagated by {@code InboundContextInterceptor}.
+   */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
-    EngineContext ctx = engine.engineContext();
+    return resolve(correlationId, tableId, engine.engineContext());
+  }
+
+  /**
+   * Resolves the scanner for the given table ID using an explicitly supplied engine context.
+   *
+   * <p>Use this overload from transports that carry their own context (e.g. Arrow Flight), where
+   * the gRPC thread-local context is not available.
+   */
+  public SystemObjectScanner resolve(String correlationId, ResourceId tableId, EngineContext ctx) {
     String engineKind = ctx.effectiveEngineKind();
     String engineVersion = ctx.normalizedVersion();
 

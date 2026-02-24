@@ -25,8 +25,8 @@ import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 

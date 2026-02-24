@@ -54,19 +54,19 @@
       <version>${project.version}</version>
     </dependency>
     
-    <!-- Apache Arrow for in-memory columnar data representation -->
     <dependency>
-      <groupId>org.apache.arrow</groupId>
-      <artifactId>arrow-vector</artifactId>
-      <version>${version.arrow}</version>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-scanner</artifactId>
+      <version>${project.version}</version>
     </dependency>
-
+    
+    <!--- Arrow core -->
     <dependency>
-      <groupId>org.apache.arrow</groupId>
-      <artifactId>arrow-memory-unsafe</artifactId>
-      <version>${version.arrow}</version>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-arrow</artifactId>
+      <version>${project.version}</version>
     </dependency>
-
+    
     <!-- JUnit for tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>

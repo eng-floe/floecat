@@ -33,6 +33,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -49,7 +50,6 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.util.ArrayList;
@@ -146,7 +146,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
   }
 
   @Test
@@ -243,7 +247,11 @@ class UserObjectBundleServiceTest {
             localStatsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     long expectedSnapshotId = 99L;
     TableStats stats =
@@ -330,7 +338,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -560,7 +572,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -583,7 +605,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()

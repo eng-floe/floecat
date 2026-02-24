@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -26,9 +29,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
@@ -206,8 +206,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
   /**
    * Returns the install extension for the provided engine kind. Versions are handled by the
-   * extension itself through the provided {@link
-   * ai.floedb.floecat.systemcatalog.util.EngineContext}.
+   * extension itself through the provided {@link ai.floedb.floecat.scanner.utils.EngineContext}.
    */
   public Optional<EngineSystemCatalogExtension> extensionFor(String engineKind) {
     if (engineKind == null || engineKind.isBlank()) {

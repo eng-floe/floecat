@@ -27,6 +27,9 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
@@ -40,9 +43,6 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.time.Instant;
 import java.util.List;
@@ -87,7 +87,9 @@ class SystemGraphTest {
                     List.<SystemColumnDef>of(),
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "scanner",
-                    List.of())),
+                    "",
+                    List.of(),
+                    null)),
             List.of() // views
             ,
             List.of());
@@ -352,7 +354,9 @@ class SystemGraphTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     private final SystemTableDef pluginTable =
         new SystemTableDef(
@@ -361,7 +365,9 @@ class SystemGraphTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "plugin-scanner",
-            List.of());
+            "",
+            List.of(),
+            null);
 
     @Override
     public List<SystemObjectDef> definitions() {

@@ -32,10 +32,10 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -176,6 +176,19 @@ public final class UserObjectBundleTestSupport {
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
           .findFirst();
+    }
+
+    @Override
+    public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+      return names.entrySet().stream()
+          .filter(entry -> entry.getValue().equals(ref))
+          .map(entry -> nodes.get(entry.getKey()).id())
+          .findFirst();
+    }
+
+    @Override
+    public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+      return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override

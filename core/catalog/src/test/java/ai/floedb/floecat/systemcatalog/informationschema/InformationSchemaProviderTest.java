@@ -19,7 +19,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;

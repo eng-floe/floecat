@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.systemcatalog.registry;
 
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;

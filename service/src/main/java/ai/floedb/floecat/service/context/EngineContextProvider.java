@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.context;
 
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
 
