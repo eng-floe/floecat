@@ -212,6 +212,14 @@ jobs:
           DEBUG_DIR=target/ci-debug
           DIAG_DIR="$DEBUG_DIR/host-docker"
           mkdir -p "$DIAG_DIR"
+          echo "==> docker versions"
+          docker version > "$DIAG_DIR/docker-version.log" 2>&1 || true
+          docker compose version > "$DIAG_DIR/docker-compose-version.log" 2>&1 || true
+          echo "==> rendered compose config (localstack/localstack-oidc)"
+          FLOECAT_ENV_FILE=./docker/env.localstack COMPOSE_PROFILES=localstack COMPOSE_PROJECT_NAME=floecat-smoke-localstack \
+            docker compose -f docker/docker-compose.yml config > "$DIAG_DIR/compose-localstack-config.yaml" 2>&1 || true
+          FLOECAT_ENV_FILE=./docker/env.localstack-oidc COMPOSE_PROFILES=localstack-oidc COMPOSE_PROJECT_NAME=floecat-smoke-localstack-oidc \
+            docker compose -f docker/docker-compose.yml config > "$DIAG_DIR/compose-localstack-oidc-config.yaml" 2>&1 || true
           echo "==> docker ps -a"
           docker ps -a > "$DIAG_DIR/docker-ps-a.log" 2>&1 || true
           docker ps -a --format '{{.ID}} {{.Names}}' \

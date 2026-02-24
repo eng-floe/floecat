@@ -76,6 +76,13 @@ save_mode_container_diagnostics() {
     safe_name=$(echo "$cname" | sed 's#[^A-Za-z0-9._-]#_#g')
     docker logs --timestamps "$cid" > "$log_dir/${label}-${safe_name}-docker.log" 2>&1 || true
     docker inspect "$cid" > "$log_dir/${label}-${safe_name}-inspect.json" 2>&1 || true
+    docker exec "$cid" sh -lc 'env | sort' > "$log_dir/${label}-${safe_name}-env.log" 2>&1 || true
+    case "$cname" in
+      *service*|*iceberg-rest*)
+        docker exec "$cid" sh -lc "find / -name 'floecat-protocol-gateway-common-test-*.jar' -print 2>/dev/null" \
+          > "$log_dir/${label}-${safe_name}-common-test-jar-paths.log" 2>&1 || true
+        ;;
+    esac
   done
 }
 
