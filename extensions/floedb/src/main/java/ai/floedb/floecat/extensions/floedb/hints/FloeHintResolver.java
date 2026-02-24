@@ -25,10 +25,14 @@ import ai.floedb.floecat.extensions.floedb.proto.FloeFunctionSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeTypeSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.ColumnTypeResolutionException;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
-import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
+import ai.floedb.floecat.extensions.floedb.utils.InvalidColumnLogicalTypeException;
+import ai.floedb.floecat.extensions.floedb.utils.MissingColumnLogicalTypeException;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemMetadataException;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils.OidPolicy;
+import ai.floedb.floecat.extensions.floedb.utils.UnmappedColumnTypeException;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
@@ -76,7 +80,7 @@ public final class FloeHintResolver {
     }
     if (ctx == null) {
       if (policy == ScannerUtils.OidPolicy.REQUIRE) {
-        throw new MissingSystemOidException(
+        throw new MissingSystemMetadataException(
             missingMsgPrefix + " id=" + id + " (no resolution context)");
       }
       return ScannerUtils.fallbackOid(id, descriptor.type());
@@ -187,16 +191,12 @@ public final class FloeHintResolver {
       SchemaColumn column,
       LogicalType logicalType) {
 
-    LogicalType resolved = logicalType == null ? parseLogicalType(column) : logicalType;
-
+    LogicalType resolved = resolveLogicalTypeOrThrow(column, logicalType);
     String columnName = column == null ? "<unknown>" : column.getName();
-    if (resolved == null) {
-      throw new MissingSystemOidException("Missing/invalid logical type for column " + columnName);
-    }
 
     ColumnMetadata metadata = resolveColumnMetadata(ctx, resolver, column, resolved);
     if (metadata == null) {
-      throw new MissingSystemOidException(
+      throw new MissingSystemMetadataException(
           "Failed to derive metadata for column " + columnName + " logicalType=" + resolved);
     }
     return metadata;
@@ -281,7 +281,7 @@ public final class FloeHintResolver {
 
     if (ctx == null) {
       if (policy == ScannerUtils.OidPolicy.REQUIRE) {
-        throw new MissingSystemOidException(
+        throw new MissingSystemMetadataException(
             "Missing required SYSTEM function hints for function id="
                 + function.id()
                 + " (no resolution context)");
@@ -377,9 +377,21 @@ public final class FloeHintResolver {
     int typmod = deriveTypmod(logicalType);
     TypeNode type;
     try {
-      type = resolver.resolveOrThrow(logicalType);
-    } catch (IllegalStateException e) {
-      throw new MissingSystemOidException(
+      type =
+          resolver
+              .resolve(logicalType)
+              .orElseThrow(
+                  () ->
+                      new UnmappedColumnTypeException(
+                          "No engine type mapping for logical type "
+                              + logicalType
+                              + " (column "
+                              + columnName
+                              + ")"));
+    } catch (UnmappedColumnTypeException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      throw new ColumnTypeResolutionException(
           "Failed to resolve type for column " + columnName + " logicalType=" + logicalType, e);
     }
 
@@ -426,6 +438,24 @@ public final class FloeHintResolver {
       return LogicalTypeFormat.parse(logical);
     } catch (IllegalArgumentException e) {
       return null;
+    }
+  }
+
+  private static LogicalType resolveLogicalTypeOrThrow(
+      SchemaColumn column, LogicalType logicalType) {
+    if (logicalType != null) {
+      return logicalType;
+    }
+    String columnName = column == null ? "<unknown>" : column.getName();
+    String logical = column == null ? null : column.getLogicalType();
+    if (logical == null || logical.isBlank()) {
+      throw new MissingColumnLogicalTypeException("Missing logical type for column " + columnName);
+    }
+    try {
+      return LogicalTypeFormat.parse(logical);
+    } catch (IllegalArgumentException e) {
+      throw new InvalidColumnLogicalTypeException(
+          "Invalid logical type for column " + columnName + ": " + logical, e);
     }
   }
 

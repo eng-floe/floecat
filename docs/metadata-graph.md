@@ -200,6 +200,8 @@ Resolved tables/views also go through `QueryInputResolver` so their snapshot pin
 pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
 relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC
 response to avoid exposing synthetic tables twice.
+Column decorations are surfaced per column via `RelationInfo.columns[*]` (`ColumnResult`), so a relation can
+still resolve as `FOUND` while individual columns report `COLUMN_STATUS_FAILED` with structured failure reasons.
 
 ## Metrics
 The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:

@@ -229,8 +229,8 @@ message RelationInfo {
   /** Relation kind (table, view, etc.) to help the planner decide how to bind. */
   RelationKind kind = 3;
   
-  /** Columns describing the resolved projection metadata. */
-  repeated ColumnInfo columns = 4;
+  /** Column results describing usable columns and per-column failures. */
+  repeated ColumnResult columns = 4;
   
   /** Optional view definition for relations of kind VIEW. */
   ViewDefinition view_definition = 5;
@@ -259,6 +259,69 @@ message RelationInfo {
 
   /** Optional engine-specific metadata extensions. */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+}
+
+/** Status of a resolved relation column. */
+enum ColumnStatus {
+  COLUMN_STATUS_UNSPECIFIED = 0;
+  COLUMN_STATUS_READY = 1;
+  COLUMN_STATUS_FAILED = 2;
+}
+
+/** Machine-readable reason for a column decoration failure. */
+enum ColumnFailureCode {
+  COLUMN_FAILURE_CODE_UNSPECIFIED = 0;
+  COLUMN_FAILURE_CODE_SCHEMA_MISMATCH = 1;
+  COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE = 2;
+  COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING = 3;
+  COLUMN_FAILURE_CODE_PERMISSION_DENIED = 4;
+  COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED = 5;
+  COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID = 6;
+  COLUMN_FAILURE_CODE_NOT_FOUND = 7;
+  COLUMN_FAILURE_CODE_DECORATION_ERROR = 8;
+  COLUMN_FAILURE_CODE_ENGINE_EXTENSION = 9;
+}
+
+/** Failure diagnostic for a single column. */
+message ColumnFailure {
+  /** Machine-readable column failure code enum. */
+  ColumnFailureCode code = 1;
+
+  /** Human-readable summary of the column failure. */
+  string message = 2;
+
+  /** Optional structured metadata to help debugging. */
+  map<string, string> details = 10;
+
+  /**
+   * Optional engine-specific numeric failure code.
+   * Engine kind/version already identify the extension domain.
+   * When set, `code` should be `COLUMN_FAILURE_CODE_ENGINE_EXTENSION`.
+   */
+  optional int32 extension_code_value = 11;
+}
+
+/** Outcome for a single relation column. */
+message ColumnResult {
+  /** Stable column identifier. */
+  int64 column_id = 1;
+
+  /** Column display name. */
+  string column_name = 2;
+
+  /** Column ordinal (1-based). */
+  int32 ordinal = 3;
+
+  /** Per-column readiness status. */
+  ColumnStatus status = 4;
+
+  oneof outcome {
+    /** Present when status == READY. */
+    ColumnInfo column = 10;
+
+    /** Present when status == FAILED. */
+    ColumnFailure failure = 11;
+  }
 }
 
 /**
