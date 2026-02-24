@@ -67,7 +67,7 @@ save_mode_container_diagnostics() {
   eval "$compose_cmd ps -a" > "$log_dir/${label}-ps-all.log" 2>&1 || true
 
   local container_ids
-  container_ids=$(eval "$compose_cmd ps -q" 2>/dev/null || true)
+  container_ids=$(eval "$compose_cmd ps -aq" 2>/dev/null || true)
   if [ -z "$container_ids" ]; then
     return 0
   fi
@@ -141,7 +141,13 @@ run_mode() {
   trap on_mode_error ERR
 
   on_mode_return() {
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+      save_mode_logs "$compose_cmd" "${label}-fail"
+      save_mode_container_diagnostics "$compose_cmd" "${label}-fail"
+    fi
     cleanup_mode "$compose_cmd"
+    return "$rc"
   }
   trap on_mode_return RETURN
 
