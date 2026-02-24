@@ -93,8 +93,7 @@ public final class TestDeltaFixtures {
     addIfPresent(props, "s3.endpoint", resolveAwsOverride("s3.endpoint", null));
     addIfPresent(props, "s3.region", resolveAwsOverride("s3.region", null));
     addIfPresent(props, "s3.access-key-id", resolveAwsOverride("s3.access-key-id", null));
-    addIfPresent(
-        props, "s3.secret-access-key", resolveAwsOverride("s3.secret-access-key", null));
+    addIfPresent(props, "s3.secret-access-key", resolveAwsOverride("s3.secret-access-key", null));
     addIfPresent(props, "s3.session-token", resolveAwsOverride("s3.session-token", null));
     addIfPresent(props, "s3.path-style-access", resolveAwsOverride("s3.path-style-access", null));
     return props;
