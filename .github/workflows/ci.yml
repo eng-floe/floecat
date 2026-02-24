@@ -203,7 +203,7 @@ jobs:
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs" \
-          make compose-smoke 2>&1 | tee "$SMOKE_LOG"
+          COMPOSE_SMOKE_CALL_CENTER_WAIT_SECONDS=120 make compose-smoke 2>&1 | tee "$SMOKE_LOG"
 
       - name: Upload Docker Smoke Artifacts
         if: always()

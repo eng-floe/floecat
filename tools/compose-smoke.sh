@@ -72,6 +72,29 @@ wait_for_url() {
   done
 }
 
+wait_for_s3_object() {
+  local aws_cli="$1"
+  local endpoint_url="$2"
+  local bucket="$3"
+  local key="$4"
+  local timeout_seconds="$5"
+  local label="$6"
+  local i
+  local out=""
+
+  for i in $(seq 1 "$timeout_seconds"); do
+    if out=$($aws_cli --endpoint-url "$endpoint_url" s3api head-object --bucket "$bucket" --key "$key" 2>&1); then
+      return 0
+    fi
+    if [ "$i" -eq "$timeout_seconds" ]; then
+      echo "$label timed out after ${timeout_seconds}s for s3://$bucket/$key" >&2
+      echo "$out" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 run_mode() {
   local env_file="$1"
   local profile="$2"
@@ -172,18 +195,18 @@ run_mode() {
 
   if [ "$profile" = "localstack" ]; then
     local call_center_key="call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53"
+    local call_center_wait_seconds="${COMPOSE_SMOKE_CALL_CENTER_WAIT_SECONDS:-90}"
     local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     echo "==> [SMOKE] verify seeded S3 object (localstack)"
-    local s3_head_out
-    if ! s3_head_out=$($aws_cli --endpoint-url http://localstack:4566 s3api head-object --bucket floecat-delta --key "$call_center_key" 2>&1); then
-      echo "[WARN] $label seeded-object probe failed for s3://floecat-delta/$call_center_key"
-      echo "$s3_head_out"
+    if ! wait_for_s3_object "$aws_cli" "http://localstack:4566" "floecat-delta" "$call_center_key" "$call_center_wait_seconds" "$label seeded-object probe"; then
+      echo "[FAIL] $label seeded-object probe failed for s3://floecat-delta/$call_center_key"
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/call_center/"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/_delta_log/"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/ (recursive, first 200)"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,200p' || true
+      return 1
     fi
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
