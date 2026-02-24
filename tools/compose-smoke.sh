@@ -104,50 +104,6 @@ wait_for_url() {
   done
 }
 
-wait_for_s3_object() {
-  local aws_cli="$1"
-  local endpoint_url="$2"
-  local bucket="$3"
-  local key="$4"
-  local timeout_seconds="$5"
-  local label="$6"
-  local i
-  local out=""
-
-  for i in $(seq 1 "$timeout_seconds"); do
-    if out=$($aws_cli --endpoint-url "$endpoint_url" s3api head-object --bucket "$bucket" --key "$key" 2>&1); then
-      return 0
-    fi
-    if [ "$i" -eq "$timeout_seconds" ]; then
-      echo "$label timed out after ${timeout_seconds}s for s3://$bucket/$key" >&2
-      echo "$out" >&2
-      return 1
-    fi
-    sleep 1
-  done
-}
-
-delta_add_path_from_log() {
-  local aws_cli="$1"
-  local endpoint_url="$2"
-  local bucket="$3"
-  local table="$4"
-  local log_key="${table}/_delta_log/00000000000000000000.json"
-  local log_text=""
-  local add_path=""
-
-  if ! log_text=$($aws_cli --endpoint-url "$endpoint_url" s3 cp "s3://$bucket/$log_key" - 2>/dev/null); then
-    return 1
-  fi
-
-  add_path=$(printf "%s\n" "$log_text" | grep -oE '"path":"[^"]+"' | head -n 1 | sed -E 's/"path":"([^"]+)"/\1/')
-  if [ -z "$add_path" ]; then
-    return 1
-  fi
-
-  printf "%s/%s\n" "$table" "$add_path"
-}
-
 run_mode() {
   local env_file="$1"
   local profile="$2"
@@ -248,29 +204,6 @@ run_mode() {
   assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
 
   if [ "$profile" = "localstack" ]; then
-    local call_center_key="call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53"
-    local call_center_log_key="call_center/_delta_log/00000000000000000000.json"
-    local call_center_wait_seconds="${COMPOSE_SMOKE_CALL_CENTER_WAIT_SECONDS:-90}"
-    local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
-    local resolved_call_center_key=""
-    if resolved_call_center_key=$(delta_add_path_from_log "$aws_cli" "http://localstack:4566" "floecat-delta" "call_center"); then
-      call_center_key="$resolved_call_center_key"
-      echo "==> [SMOKE] resolved call_center data key from Delta log: $call_center_key"
-    else
-      echo "[WARN] $label failed to resolve call_center data key from s3://floecat-delta/$call_center_log_key; using fallback key"
-    fi
-    echo "==> [SMOKE] verify seeded S3 object (localstack)"
-    if ! wait_for_s3_object "$aws_cli" "http://localstack:4566" "floecat-delta" "$call_center_key" "$call_center_wait_seconds" "$label seeded-object probe"; then
-      echo "[FAIL] $label seeded-object probe failed for s3://floecat-delta/$call_center_key"
-      echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/call_center/"
-      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive || true
-      echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/_delta_log/"
-      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive || true
-      echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/ (recursive, first 200)"
-      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,200p' || true
-      return 1
-    fi
-
     echo "==> [SMOKE] duckdb federation check (localstack)"
     local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
     local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"

@@ -203,7 +203,26 @@ jobs:
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs" \
-          COMPOSE_SMOKE_CALL_CENTER_WAIT_SECONDS=10 make compose-smoke 2>&1 | tee "$SMOKE_LOG"
+          make compose-smoke 2>&1 | tee "$SMOKE_LOG"
+
+      - name: Docker Smoke Diagnostics (on failure or cancellation)
+        if: ${{ failure() || cancelled() }}
+        run: |
+          set -euo pipefail
+          DEBUG_DIR=target/ci-debug
+          DIAG_DIR="$DEBUG_DIR/host-docker"
+          mkdir -p "$DIAG_DIR"
+          echo "==> docker ps -a"
+          docker ps -a > "$DIAG_DIR/docker-ps-a.log" 2>&1 || true
+          docker ps -a --format '{{.ID}} {{.Names}}' \
+            | awk '/floecat-smoke-/{print $1 " " $2}' > "$DIAG_DIR/floecat-smoke-containers.txt" || true
+          while read -r cid cname; do
+            [ -n "${cid:-}" ] || continue
+            safe_name="$(echo "${cname:-$cid}" | sed 's#[^A-Za-z0-9._-]#_#g')"
+            docker logs --timestamps "$cid" > "$DIAG_DIR/${safe_name}-docker.log" 2>&1 || true
+            docker inspect "$cid" > "$DIAG_DIR/${safe_name}-inspect.json" 2>&1 || true
+          done < "$DIAG_DIR/floecat-smoke-containers.txt"
+          find "$DEBUG_DIR" -type f | sort > "$DEBUG_DIR/artifact-file-list.txt" || true
 
       - name: Upload Docker Smoke Artifacts
         if: always()
@@ -215,6 +234,8 @@ jobs:
           path: |
             target/ci-debug/docker-smoke.log
             target/ci-debug/compose-logs/**
+            target/ci-debug/host-docker/**
+            target/ci-debug/artifact-file-list.txt
 
   publish-images:
     name: publish-images
