@@ -86,7 +86,8 @@ public final class TestS3Fixtures {
   private TestS3Fixtures() {}
 
   public static boolean useAwsFixtures() {
-    return Boolean.parseBoolean(System.getProperty(USE_AWS_FIXTURES_PROP, "false"));
+    return Boolean.parseBoolean(
+        resolveProperty(USE_AWS_FIXTURES_PROP, "FLOECAT_FIXTURES_USE_AWS_S3", "false"));
   }
 
   public static String bucketUri(String relativePath) {
@@ -478,9 +479,36 @@ public final class TestS3Fixtures {
   }
 
   private static String resolveFileIoProperty(String overrideKey, String defaultValue) {
-    String override = System.getProperty("floecat.fixture.aws." + overrideKey);
+    String override = resolveAwsOverride(overrideKey, null);
     if (override != null && !override.isBlank()) {
       return override;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveProperty(String propertyKey, String envKey, String defaultValue) {
+    String fromProperty = System.getProperty(propertyKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String fromEnv = System.getenv(envKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveAwsOverride(String overrideKey, String defaultValue) {
+    String fromProperty = System.getProperty("floecat.fixture.aws." + overrideKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String envKey =
+        "FLOECAT_FIXTURE_AWS_"
+            + overrideKey.replace('.', '_').replace('-', '_').toUpperCase(java.util.Locale.ROOT);
+    String fromEnv = System.getenv(envKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
     }
     return defaultValue;
   }

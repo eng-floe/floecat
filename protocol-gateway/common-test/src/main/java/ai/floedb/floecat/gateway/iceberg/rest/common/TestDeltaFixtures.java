@@ -75,7 +75,8 @@ public final class TestDeltaFixtures {
   private TestDeltaFixtures() {}
 
   public static boolean useAwsFixtures() {
-    return Boolean.parseBoolean(System.getProperty(USE_AWS_FIXTURES_PROP, "false"));
+    return Boolean.parseBoolean(
+        resolveProperty(USE_AWS_FIXTURES_PROP, "FLOECAT_FIXTURES_USE_AWS_S3", "false"));
   }
 
   public static String tableUri() {
@@ -89,20 +90,13 @@ public final class TestDeltaFixtures {
 
   public static Map<String, String> s3Options() {
     Map<String, String> props = new LinkedHashMap<>();
-    addIfPresent(props, "s3.endpoint", System.getProperty("floecat.fixture.aws.s3.endpoint"));
-    addIfPresent(props, "s3.region", System.getProperty("floecat.fixture.aws.s3.region"));
+    addIfPresent(props, "s3.endpoint", resolveAwsOverride("s3.endpoint", null));
+    addIfPresent(props, "s3.region", resolveAwsOverride("s3.region", null));
+    addIfPresent(props, "s3.access-key-id", resolveAwsOverride("s3.access-key-id", null));
     addIfPresent(
-        props, "s3.access-key-id", System.getProperty("floecat.fixture.aws.s3.access-key-id"));
-    addIfPresent(
-        props,
-        "s3.secret-access-key",
-        System.getProperty("floecat.fixture.aws.s3.secret-access-key"));
-    addIfPresent(
-        props, "s3.session-token", System.getProperty("floecat.fixture.aws.s3.session-token"));
-    addIfPresent(
-        props,
-        "s3.path-style-access",
-        System.getProperty("floecat.fixture.aws.s3.path-style-access"));
+        props, "s3.secret-access-key", resolveAwsOverride("s3.secret-access-key", null));
+    addIfPresent(props, "s3.session-token", resolveAwsOverride("s3.session-token", null));
+    addIfPresent(props, "s3.path-style-access", resolveAwsOverride("s3.path-style-access", null));
     return props;
   }
 
@@ -333,9 +327,36 @@ public final class TestDeltaFixtures {
   }
 
   private static String resolveProperty(String overrideKey, String defaultValue) {
-    String override = System.getProperty("floecat.fixture.aws." + overrideKey);
+    String override = resolveAwsOverride(overrideKey, null);
     if (override != null && !override.isBlank()) {
       return override;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveProperty(String propertyKey, String envKey, String defaultValue) {
+    String fromProperty = System.getProperty(propertyKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String fromEnv = System.getenv(envKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveAwsOverride(String overrideKey, String defaultValue) {
+    String fromProperty = System.getProperty("floecat.fixture.aws." + overrideKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String envKey =
+        "FLOECAT_FIXTURE_AWS_"
+            + overrideKey.replace('.', '_').replace('-', '_').toUpperCase(java.util.Locale.ROOT);
+    String fromEnv = System.getenv(envKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
     }
     return defaultValue;
   }
