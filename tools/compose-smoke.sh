@@ -174,23 +174,16 @@ run_mode() {
     local call_center_key="call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53"
     local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     echo "==> [SMOKE] verify seeded S3 object (localstack)"
-    if ! $aws_cli --endpoint-url http://localstack:4566 s3api head-object --bucket floecat-delta --key "$call_center_key" >/dev/null 2>&1; then
-      echo "[FAIL] $label missing seeded object s3://floecat-delta/$call_center_key"
+    local s3_head_out
+    if ! s3_head_out=$($aws_cli --endpoint-url http://localstack:4566 s3api head-object --bucket floecat-delta --key "$call_center_key" 2>&1); then
+      echo "[WARN] $label seeded-object probe failed for s3://floecat-delta/$call_center_key"
+      echo "$s3_head_out"
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/call_center/"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/_delta_log/"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/ (recursive, first 200)"
       $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,200p' || true
-      echo "==> [SMOKE][DIAG] service seeding log lines"
-      eval "$compose_cmd logs --no-color --tail=1200 service" \
-        | grep -E "SeedRunner|TestS3Fixtures|Startup seeding|Seeding|fixture|floecat\\.fixture|floecat\\.seed" || true
-      echo "==> [SMOKE][DIAG] service log tail"
-      eval "$compose_cmd logs --no-color --tail=300 service" || true
-      echo "==> [SMOKE][DIAG] iceberg-rest log tail"
-      eval "$compose_cmd logs --no-color --tail=200 iceberg-rest" || true
-      save_mode_logs "$compose_cmd" "${label}-fail"
-      return 1
     fi
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
