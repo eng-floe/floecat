@@ -46,7 +46,7 @@
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
 #   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
-#   make compose-smoke          # sequential docker smoke (inmem + localstack + localstack-oidc)
+#   make compose-smoke          # sequential docker smoke (localstack + localstack-oidc)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -185,7 +185,7 @@ LOCALSTACK_ENV := \
 
 REAL_AWS_BUCKET ?=
 REAL_AWS_TABLE ?=
-DOCKER_SERVICE_STORAGE ?= memory
+DOCKER_SERVICE_STORAGE ?= localstack
 
 LOCALSTACK_STORAGE_AWS_PROPS := \
 	-Dfloecat.storage.aws.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
@@ -822,7 +822,7 @@ compose-shell:
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
 
 compose-smoke: docker
-	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' ./tools/compose-smoke.sh
+	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} ./tools/compose-smoke.sh
 
 # ===================================================
 # Lint/format

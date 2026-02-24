@@ -176,12 +176,12 @@ jobs:
         if: always()
         run: make localstack-down
 
-  docker-smoke-inmem:
-    name: docker-smoke-inmem
+  docker-smoke:
+    name: docker-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-inmem
+      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke
       cancel-in-progress: true
     permissions:
       contents: read
@@ -195,40 +195,12 @@ jobs:
           java-version: "25"
           cache: maven
 
-      - name: Build docker images
-        run: make docker
-
-      - name: Docker compose smoke (inmem)
-        run: COMPOSE_SMOKE_MODES=inmem ./tools/compose-smoke.sh
-
-  docker-smoke-localstack:
-    name: docker-smoke-localstack
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-docker-smoke-localstack
-      cancel-in-progress: true
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Java 25
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "25"
-          cache: maven
-
-      - name: Build docker images (localstack storage)
-        run: make docker DOCKER_SERVICE_STORAGE=localstack LOCALSTACK_ENDPOINT=http://localstack:4566
-
-      - name: Docker compose smoke (localstack + localstack-oidc)
-        run: COMPOSE_SMOKE_MODES=localstack,localstack-oidc ./tools/compose-smoke.sh
+      - name: Docker compose smoke
+        run: LOCALSTACK_ENDPOINT=http://localstack:4566 make compose-smoke
 
   publish-images:
     name: publish-images
-    needs: [ci-core, ci-localstack, docker-smoke-inmem, docker-smoke-localstack]
+    needs: [ci-core, ci-localstack, docker-smoke]
     if: |
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_preview == 'true')
