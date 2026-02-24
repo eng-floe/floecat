@@ -54,6 +54,38 @@ save_mode_logs() {
   eval "$compose_cmd logs --no-color iceberg-rest" > "$log_dir/${label}-iceberg-rest.log" 2>&1 || true
 }
 
+save_mode_container_diagnostics() {
+  local compose_cmd="$1"
+  local label="$2"
+  local log_dir="${COMPOSE_SMOKE_SAVE_LOG_DIR:-}"
+
+  if [ -z "$log_dir" ]; then
+    return 0
+  fi
+
+  mkdir -p "$log_dir" || true
+  eval "$compose_cmd ps -a" > "$log_dir/${label}-ps-all.log" 2>&1 || true
+
+  local container_ids
+  container_ids=$(eval "$compose_cmd ps -q" 2>/dev/null || true)
+  if [ -z "$container_ids" ]; then
+    return 0
+  fi
+
+  local cid
+  for cid in $container_ids; do
+    local cname
+    local safe_name
+    cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##' || true)
+    if [ -z "$cname" ]; then
+      cname="$cid"
+    fi
+    safe_name=$(echo "$cname" | sed 's#[^A-Za-z0-9._-]#_#g')
+    docker logs --timestamps "$cid" > "$log_dir/${label}-${safe_name}-docker.log" 2>&1 || true
+    docker inspect "$cid" > "$log_dir/${label}-${safe_name}-inspect.json" 2>&1 || true
+  done
+}
+
 wait_for_url() {
   local url="$1"
   local timeout_seconds="$2"
@@ -95,6 +127,27 @@ wait_for_s3_object() {
   done
 }
 
+delta_add_path_from_log() {
+  local aws_cli="$1"
+  local endpoint_url="$2"
+  local bucket="$3"
+  local table="$4"
+  local log_key="${table}/_delta_log/00000000000000000000.json"
+  local log_text=""
+  local add_path=""
+
+  if ! log_text=$($aws_cli --endpoint-url "$endpoint_url" s3 cp "s3://$bucket/$log_key" - 2>/dev/null); then
+    return 1
+  fi
+
+  add_path=$(printf "%s\n" "$log_text" | grep -oE '"path":"[^"]+"' | head -n 1 | sed -E 's/"path":"([^"]+)"/\1/')
+  if [ -z "$add_path" ]; then
+    return 1
+  fi
+
+  printf "%s/%s\n" "$table" "$add_path"
+}
+
 run_mode() {
   local env_file="$1"
   local profile="$2"
@@ -126,6 +179,7 @@ run_mode() {
     echo "==> [SMOKE][DIAG] fallback tail (last 120 lines)"
     eval "$compose_cmd logs --no-color --tail=120" || true
     save_mode_logs "$compose_cmd" "${label}-fail"
+    save_mode_container_diagnostics "$compose_cmd" "${label}-fail"
     cleanup_mode "$compose_cmd"
   }
   trap on_mode_error ERR
@@ -195,8 +249,16 @@ run_mode() {
 
   if [ "$profile" = "localstack" ]; then
     local call_center_key="call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53"
+    local call_center_log_key="call_center/_delta_log/00000000000000000000.json"
     local call_center_wait_seconds="${COMPOSE_SMOKE_CALL_CENTER_WAIT_SECONDS:-90}"
     local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+    local resolved_call_center_key=""
+    if resolved_call_center_key=$(delta_add_path_from_log "$aws_cli" "http://localstack:4566" "floecat-delta" "call_center"); then
+      call_center_key="$resolved_call_center_key"
+      echo "==> [SMOKE] resolved call_center data key from Delta log: $call_center_key"
+    else
+      echo "[WARN] $label failed to resolve call_center data key from s3://floecat-delta/$call_center_log_key; using fallback key"
+    fi
     echo "==> [SMOKE] verify seeded S3 object (localstack)"
     if ! wait_for_s3_object "$aws_cli" "http://localstack:4566" "floecat-delta" "$call_center_key" "$call_center_wait_seconds" "$label seeded-object probe"; then
       echo "[FAIL] $label seeded-object probe failed for s3://floecat-delta/$call_center_key"
