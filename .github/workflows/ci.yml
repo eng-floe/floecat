@@ -141,23 +141,6 @@ jobs:
 
           make test-localstack 2>&1 | tee "$MVN_LOG"
 
-      - name: Docker Diagnostics (on failure or cancellation)
-        if: ${{ failure() || cancelled() }}
-        run: |
-          set -euo pipefail
-          echo "==> docker ps -a"
-          docker ps -a || true
-          echo "==> localstack compose ps"
-          docker compose -f tools/localstack/docker-compose.yml -p floecat-localstack ps || true
-          echo "==> localstack container logs (last 500 lines)"
-          docker compose -f tools/localstack/docker-compose.yml -p floecat-localstack logs --tail=500 || true
-          echo "==> keycloak compose ps"
-          KEYCLOAK_PORT=12221 KC_HOSTNAME=127.0.0.1 KC_HOSTNAME_PORT=12221 \
-            docker compose -f docker/docker-compose.yml --profile keycloak ps || true
-          echo "==> keycloak logs (last 300 lines)"
-          KEYCLOAK_PORT=12221 KC_HOSTNAME=127.0.0.1 KC_HOSTNAME_PORT=12221 \
-            docker compose -f docker/docker-compose.yml --profile keycloak logs --tail=300 keycloak || true
-
       - name: Upload Test Artifacts
         if: always()
         uses: actions/upload-artifact@v4
