@@ -46,9 +46,17 @@ save_mode_logs() {
 
   mkdir -p "$log_dir" || true
   eval "$compose_cmd ps" > "$log_dir/${label}-ps.log" 2>&1 || true
+  eval "$compose_cmd ps -a" > "$log_dir/${label}-ps-all.log" 2>&1 || true
+  eval "$compose_cmd config" > "$log_dir/${label}-compose-config.log" 2>&1 || true
   eval "$compose_cmd logs --no-color" > "$log_dir/${label}-compose.log" 2>&1 || true
-  eval "$compose_cmd logs --no-color service" > "$log_dir/${label}-service.log" 2>&1 || true
-  eval "$compose_cmd logs --no-color iceberg-rest" > "$log_dir/${label}-iceberg-rest.log" 2>&1 || true
+  local services
+  services=$(eval "$compose_cmd config --services" 2>/dev/null || true)
+  if [ -n "$services" ]; then
+    local svc
+    for svc in $services; do
+      eval "$compose_cmd logs --no-color $svc" > "$log_dir/${label}-service-${svc}.log" 2>&1 || true
+    done
+  fi
 }
 
 save_mode_container_diagnostics() {
@@ -57,7 +65,6 @@ save_mode_container_diagnostics() {
   local log_dir="$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT"
 
   mkdir -p "$log_dir" || true
-  eval "$compose_cmd ps -a" > "$log_dir/${label}-ps-all.log" 2>&1 || true
 
   local container_ids
   container_ids=$(eval "$compose_cmd ps -aq" 2>/dev/null || true)
@@ -142,7 +149,10 @@ run_mode() {
 
   on_mode_return() {
     local rc=$?
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 0 ]; then
+      save_mode_logs "$compose_cmd" "$label"
+      save_mode_container_diagnostics "$compose_cmd" "$label"
+    else
       save_mode_logs "$compose_cmd" "${label}-fail"
       save_mode_container_diagnostics "$compose_cmd" "${label}-fail"
     fi
@@ -175,12 +185,12 @@ run_mode() {
     fi
     if eval "$compose_cmd logs service 2>&1" | grep -q "Startup seeding failed"; then
       eval "$compose_cmd logs --no-color"
-      exit 1
+      return 1
     fi
     if [ "$i" -eq 180 ]; then
       echo "Service seed completion timed out" >&2
       eval "$compose_cmd logs --no-color"
-      exit 1
+      return 1
     fi
     sleep 1
   done
@@ -248,9 +258,6 @@ run_mode() {
   fi
 
   trap - ERR
-  trap - RETURN
-  save_mode_logs "$compose_cmd" "$label"
-  cleanup_mode "$compose_cmd"
   echo "==> [SMOKE][PASS] mode=$label"
 }
 
