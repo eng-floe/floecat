@@ -503,12 +503,18 @@ public final class TestS3Fixtures {
     if (fromProperty != null && !fromProperty.isBlank()) {
       return fromProperty;
     }
-    String envKey =
-        "FLOECAT_FIXTURE_AWS_"
-            + overrideKey.replace('.', '_').replace('-', '_').toUpperCase(java.util.Locale.ROOT);
-    String fromEnv = System.getenv(envKey);
+    String normalizedKey =
+        overrideKey.replace('.', '_').replace('-', '_').toUpperCase(java.util.Locale.ROOT);
+    String fromEnv = System.getenv("FLOECAT_FIXTURE_AWS_" + normalizedKey);
     if (fromEnv != null && !fromEnv.isBlank()) {
       return fromEnv;
+    }
+    // Backward-compatible env alias used in docker/env.localstack
+    if ("s3.path-style-access".equals(overrideKey)) {
+      String alias = System.getenv("FLOECAT_FIXTURE_AWS_S3_PATH_STYLE");
+      if (alias != null && !alias.isBlank()) {
+        return alias;
+      }
     }
     return defaultValue;
   }
