@@ -38,6 +38,22 @@ cleanup_mode() {
   eval "$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true
 }
 
+save_mode_logs() {
+  local compose_cmd="$1"
+  local label="$2"
+  local log_dir="${COMPOSE_SMOKE_SAVE_LOG_DIR:-}"
+
+  if [ -z "$log_dir" ]; then
+    return 0
+  fi
+
+  mkdir -p "$log_dir" || true
+  eval "$compose_cmd ps" > "$log_dir/${label}-ps.log" 2>&1 || true
+  eval "$compose_cmd logs --no-color" > "$log_dir/${label}-compose.log" 2>&1 || true
+  eval "$compose_cmd logs --no-color service" > "$log_dir/${label}-service.log" 2>&1 || true
+  eval "$compose_cmd logs --no-color iceberg-rest" > "$log_dir/${label}-iceberg-rest.log" 2>&1 || true
+}
+
 wait_for_url() {
   local url="$1"
   local timeout_seconds="$2"
@@ -86,6 +102,7 @@ run_mode() {
       || true
     echo "==> [SMOKE][DIAG] fallback tail (last 120 lines)"
     eval "$compose_cmd logs --no-color --tail=120" || true
+    save_mode_logs "$compose_cmd" "${label}-fail"
     cleanup_mode "$compose_cmd"
   }
   trap on_mode_error ERR
@@ -165,6 +182,16 @@ run_mode() {
       eval "$compose_cmd exec -T localstack sh -lc \"$s3_ls_call_center_cmd\"" || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/_delta_log/"
       eval "$compose_cmd exec -T localstack sh -lc \"$s3_ls_delta_log_cmd\"" || true
+      echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/ (recursive, first 200)"
+      eval "$compose_cmd exec -T localstack sh -lc \"if command -v awslocal >/dev/null 2>&1; then awslocal s3 ls s3://floecat-delta/ --recursive; else AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3 ls s3://floecat-delta/ --recursive; fi\"" \
+        | sed -n '1,200p' || true
+      echo "==> [SMOKE][DIAG] service seeding log lines"
+      eval "$compose_cmd logs --no-color --tail=1200 service" \
+        | grep -E "SeedRunner|TestS3Fixtures|Startup seeding|Seeding|fixture|floecat\\.fixture|floecat\\.seed" || true
+      echo "==> [SMOKE][DIAG] service log tail"
+      eval "$compose_cmd logs --no-color --tail=300 service" || true
+      echo "==> [SMOKE][DIAG] iceberg-rest log tail"
+      eval "$compose_cmd logs --no-color --tail=200 iceberg-rest" || true
       return 1
     fi
 
@@ -207,6 +234,7 @@ run_mode() {
 
   trap - ERR
   trap - RETURN
+  save_mode_logs "$compose_cmd" "$label"
   cleanup_mode "$compose_cmd"
   echo "==> [SMOKE][PASS] mode=$label"
 }
