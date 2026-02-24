@@ -196,8 +196,29 @@ run_mode() {
   echo "==> [SMOKE][PASS] mode=$label"
 }
 
-echo "==> [COMPOSE] smoke (inmem + localstack + localstack-oidc)"
-run_mode ./env.inmem "" inmem ""
-run_mode ./env.localstack localstack localstack "localstack"
-run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"
+SMOKE_MODES=${COMPOSE_SMOKE_MODES:-inmem,localstack,localstack-oidc}
+echo "==> [COMPOSE] smoke modes=$SMOKE_MODES"
+
+IFS=',' read -r -a mode_list <<< "$SMOKE_MODES"
+for raw_mode in "${mode_list[@]}"; do
+  mode="${raw_mode//[[:space:]]/}"
+  case "$mode" in
+    inmem)
+      run_mode ./env.inmem "" inmem ""
+      ;;
+    localstack)
+      run_mode ./env.localstack localstack localstack "localstack"
+      ;;
+    localstack-oidc)
+      run_mode ./env.localstack-oidc localstack-oidc localstack-oidc "localstack keycloak" "keycloak" "8080"
+      ;;
+    "")
+      ;;
+    *)
+      echo "Unknown compose smoke mode: '$mode'" >&2
+      exit 1
+      ;;
+  esac
+done
+
 echo "==> [COMPOSE][PASS] smoke"

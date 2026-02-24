@@ -27,6 +27,7 @@ services:
       - floecat
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
+      - ${HOME}/.aws:/home/jboss/.aws:ro
 
   iceberg-rest:
     image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
@@ -61,6 +62,7 @@ services:
       - floecat
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
+      - ${HOME}/.aws:/home/jboss/.aws:ro
 
   cli:
     image: ${FLOECAT_CLI_IMAGE:-floecat-cli:local}
