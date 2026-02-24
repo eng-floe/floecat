@@ -172,19 +172,16 @@ run_mode() {
 
   if [ "$profile" = "localstack" ]; then
     local call_center_key="call_center/20250825_183517_00001_s25in_55937b16-9009-4a18-81ea-5a83e97eca53"
-    local s3_head_cmd="if command -v awslocal >/dev/null 2>&1; then awslocal s3api head-object --bucket floecat-delta --key '$call_center_key'; else AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3api head-object --bucket floecat-delta --key '$call_center_key'; fi"
-    local s3_ls_call_center_cmd="if command -v awslocal >/dev/null 2>&1; then awslocal s3 ls s3://floecat-delta/call_center/ --recursive; else AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3 ls s3://floecat-delta/call_center/ --recursive; fi"
-    local s3_ls_delta_log_cmd="if command -v awslocal >/dev/null 2>&1; then awslocal s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive; else AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive; fi"
+    local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     echo "==> [SMOKE] verify seeded S3 object (localstack)"
-    if ! eval "$compose_cmd exec -T localstack sh -lc \"$s3_head_cmd\"" >/dev/null 2>&1; then
+    if ! $aws_cli --endpoint-url http://localstack:4566 s3api head-object --bucket floecat-delta --key "$call_center_key" >/dev/null 2>&1; then
       echo "[FAIL] $label missing seeded object s3://floecat-delta/$call_center_key"
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/call_center/"
-      eval "$compose_cmd exec -T localstack sh -lc \"$s3_ls_call_center_cmd\"" || true
+      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/_delta_log/"
-      eval "$compose_cmd exec -T localstack sh -lc \"$s3_ls_delta_log_cmd\"" || true
+      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/_delta_log/ --recursive || true
       echo "==> [SMOKE][DIAG] localstack s3 ls floecat-delta/ (recursive, first 200)"
-      eval "$compose_cmd exec -T localstack sh -lc \"if command -v awslocal >/dev/null 2>&1; then awslocal s3 ls s3://floecat-delta/ --recursive; else AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3 ls s3://floecat-delta/ --recursive; fi\"" \
-        | sed -n '1,200p' || true
+      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,200p' || true
       echo "==> [SMOKE][DIAG] service seeding log lines"
       eval "$compose_cmd logs --no-color --tail=1200 service" \
         | grep -E "SeedRunner|TestS3Fixtures|Startup seeding|Seeding|fixture|floecat\\.fixture|floecat\\.seed" || true
@@ -192,6 +189,7 @@ run_mode() {
       eval "$compose_cmd logs --no-color --tail=300 service" || true
       echo "==> [SMOKE][DIAG] iceberg-rest log tail"
       eval "$compose_cmd logs --no-color --tail=200 iceberg-rest" || true
+      save_mode_logs "$compose_cmd" "${label}-fail"
       return 1
     fi
 
