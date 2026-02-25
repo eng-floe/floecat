@@ -701,6 +701,182 @@ system_tables {
 system_tables {
   name {
     path: "sys"
+    name: "cluster"
+  }
+  display_name: "cluster"
+  columns {
+    name: "cluster_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_id"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "architecture"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "architecture"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "num_nodes"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "num_nodes"
+        atttypid: 23
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "active_nodes"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "active_nodes"
+        atttypid: 23
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "vcpu_cores"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "vcpu_cores"
+        atttypid: 23
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_total_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_total_bytes"
+        atttypid: 20
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "spill_total_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "spill_total_bytes"
+        atttypid: 20
+        attnum: 8
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_state"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_state"
+        atttypid: 1043
+        attnum: 9
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://cluster-manager"
+    endpoint_key: "cluster-manager"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 5197
+      relname: "cluster"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
     name: "const"
   }
   display_name: "const"
@@ -728,331 +904,6 @@ system_tables {
       relnamespace: 3300
       relkind: "r"
       reltuples: 1.0
-    }
-    payload_type: "floe.relation+proto"
-  }
-}
-
-system_tables {
-  name {
-    path: "sys"
-    name: "rowgenerator"
-  }
-  display_name: "rowgenerator"
-  columns {
-    name: "worker_id"
-    type {
-      name: "UUID"
-    }
-    nullable: true
-    ordinal: 1
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "worker_id"
-        atttypid: 2950
-        attnum: 1
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "worker_lid"
-    type {
-      name: "SMALLINT"
-    }
-    ordinal: 2
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "worker_lid"
-        atttypid: 21
-        attnum: 2
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "node_id"
-    type {
-      name: "INT"
-    }
-    ordinal: 3
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "node_id"
-        atttypid: 23
-        attnum: 3
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "thread_id"
-    type {
-      name: "SMALLINT"
-    }
-    ordinal: 4
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "thread_id"
-        atttypid: 21
-        attnum: 4
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "range"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 5
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "range"
-        atttypid: 20
-        attnum: 5
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "range_min"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 6
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "range_min"
-        atttypid: 20
-        attnum: 6
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "range_max"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 7
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "range_max"
-        atttypid: 20
-        attnum: 7
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "row_number"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 8
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "row_number"
-        atttypid: 20
-        attnum: 8
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "random_seed"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 9
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "random_seed"
-        atttypid: 20
-        attnum: 9
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "random"
-    type {
-      name: "BIGINT"
-    }
-    ordinal: 10
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "random"
-        atttypid: 20
-        attnum: 10
-        attnotnull: true
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  backend_kind: TABLE_BACKEND_KIND_ENGINE
-  engine_specific {
-    [floe.ext.floe_relation] {
-      oid: 6033
-      relname: "rowgenerator"
-      relnamespace: 3300
-      relkind: "r"
-      reltuples: 0.0
-    }
-    payload_type: "floe.relation+proto"
-  }
-}
-
-# STORAGE-backed system tables served by non-FLOECAT Flight providers.
-# Endpoint routing uses storage.endpoint_key with storage.path fallback.
-
-system_tables {
-  name {
-    path: "sys"
-    name: "session"
-  }
-  display_name: "session"
-  columns {
-    name: "session_id"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 1
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "session_id"
-        atttypid: 1043
-        attnum: 1
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "username"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 2
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "username"
-        atttypid: 1043
-        attnum: 2
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "database"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 3
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "database"
-        atttypid: 1043
-        attnum: 3
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "version"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 4
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "version"
-        atttypid: 1043
-        attnum: 4
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "source"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 5
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "source"
-        atttypid: 1043
-        attnum: 5
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "started_at"
-    type {
-      name: "TIMESTAMP"
-    }
-    nullable: true
-    ordinal: 6
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "started_at"
-        atttypid: 1114
-        attnum: 6
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "last_seen_at"
-    type {
-      name: "TIMESTAMP"
-    }
-    nullable: true
-    ordinal: 7
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "last_seen_at"
-        atttypid: 1114
-        attnum: 7
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  backend_kind: TABLE_BACKEND_KIND_STORAGE
-  storage {
-    path: "sys://session"
-    endpoint_key: "session"
-  }
-  engine_specific {
-    [floe.ext.floe_relation] {
-      oid: 5238
-      relname: "session"
-      relnamespace: 3300
-      relkind: "r"
-      reltuples: 0.0
     }
     payload_type: "floe.relation+proto"
   }
@@ -2563,6 +2414,328 @@ system_tables {
 system_tables {
   name {
     path: "sys"
+    name: "rowgenerator"
+  }
+  display_name: "rowgenerator"
+  columns {
+    name: "worker_id"
+    type {
+      name: "UUID"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "worker_id"
+        atttypid: 2950
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "worker_lid"
+    type {
+      name: "SMALLINT"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "worker_lid"
+        atttypid: 21
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "node_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "node_id"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "thread_id"
+    type {
+      name: "SMALLINT"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "thread_id"
+        atttypid: 21
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range"
+        atttypid: 20
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range_min"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range_min"
+        atttypid: 20
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range_max"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range_max"
+        atttypid: 20
+        attnum: 7
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "row_number"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "row_number"
+        atttypid: 20
+        attnum: 8
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "random_seed"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "random_seed"
+        atttypid: 20
+        attnum: 9
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "random"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 10
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "random"
+        atttypid: 20
+        attnum: 10
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_ENGINE
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 6033
+      relname: "rowgenerator"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "session"
+  }
+  display_name: "session"
+  columns {
+    name: "session_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "session_id"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "username"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "username"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "database"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "database"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "version"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "version"
+        atttypid: 1043
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "source"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "source"
+        atttypid: 1043
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "started_at"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "started_at"
+        atttypid: 1114
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "last_seen_at"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "last_seen_at"
+        atttypid: 1114
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://session"
+    endpoint_key: "session"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 5238
+      relname: "session"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
     name: "wlm_profile"
   }
   display_name: "wlm_profile"
@@ -3012,182 +3185,6 @@ system_tables {
     [floe.ext.floe_relation] {
       oid: 7003
       relname: "wlm_rule"
-      relnamespace: 3300
-      relkind: "r"
-      reltuples: 0.0
-    }
-    payload_type: "floe.relation+proto"
-  }
-}
-
-system_tables {
-  name {
-    path: "sys"
-    name: "cluster"
-  }
-  display_name: "cluster"
-  columns {
-    name: "cluster_id"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 1
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "cluster_id"
-        atttypid: 1043
-        attnum: 1
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "cluster_name"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 2
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "cluster_name"
-        atttypid: 1043
-        attnum: 2
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "architecture"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 3
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "architecture"
-        atttypid: 1043
-        attnum: 3
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "num_nodes"
-    type {
-      name: "INT"
-    }
-    nullable: true
-    ordinal: 4
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "num_nodes"
-        atttypid: 23
-        attnum: 4
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "active_nodes"
-    type {
-      name: "INT"
-    }
-    nullable: true
-    ordinal: 5
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "active_nodes"
-        atttypid: 23
-        attnum: 5
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "vcpu_cores"
-    type {
-      name: "INT"
-    }
-    nullable: true
-    ordinal: 6
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "vcpu_cores"
-        atttypid: 23
-        attnum: 6
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "memory_total_bytes"
-    type {
-      name: "BIGINT"
-    }
-    nullable: true
-    ordinal: 7
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "memory_total_bytes"
-        atttypid: 20
-        attnum: 7
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "spill_total_bytes"
-    type {
-      name: "BIGINT"
-    }
-    nullable: true
-    ordinal: 8
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "spill_total_bytes"
-        atttypid: 20
-        attnum: 8
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  columns {
-    name: "cluster_state"
-    type {
-      name: "VARCHAR"
-    }
-    nullable: true
-    ordinal: 9
-    engine_specific {
-      [floe.ext.floe_column] {
-        attname: "cluster_state"
-        atttypid: 1043
-        attnum: 9
-        attnotnull: false
-      }
-      payload_type: "floe.column+proto"
-    }
-  }
-  backend_kind: TABLE_BACKEND_KIND_STORAGE
-  storage {
-    path: "sys://cluster-manager"
-    endpoint_key: "cluster-manager"
-  }
-  engine_specific {
-    [floe.ext.floe_relation] {
-      oid: 5197
-      relname: "cluster"
       relnamespace: 3300
       relkind: "r"
       reltuples: 0.0
