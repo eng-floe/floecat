@@ -142,7 +142,7 @@ jobs:
           make test-localstack 2>&1 | tee "$MVN_LOG"
 
       - name: Upload Test Artifacts
-        if: always()
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-localstack-test-artifacts
@@ -189,7 +189,7 @@ jobs:
           make compose-smoke 2>&1 | tee "$SMOKE_LOG"
 
       - name: Upload Docker Smoke Artifacts
-        if: always()
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: docker-smoke-artifacts
