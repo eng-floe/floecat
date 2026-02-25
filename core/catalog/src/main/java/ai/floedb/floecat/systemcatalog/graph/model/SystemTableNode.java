@@ -88,6 +88,7 @@ public sealed interface SystemTableNode extends TableNode
       Map<Long, Map<EngineHintKey, EngineHint>> columnHints,
       Map<EngineHintKey, EngineHint> engineHints,
       String storagePath,
+      String storageEndpointKey,
       FlightEndpointRef flightEndpoint)
       implements SystemTableNode {
 
@@ -97,6 +98,7 @@ public sealed interface SystemTableNode extends TableNode
       engineHints = GraphNode.normalizeEngineHints(engineHints);
       displayName = displayName == null ? "" : displayName;
       storagePath = storagePath == null ? "" : storagePath;
+      storageEndpointKey = storageEndpointKey == null ? "" : storageEndpointKey;
     }
 
     @Override

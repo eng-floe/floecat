@@ -315,10 +315,14 @@ public final class SystemCatalogProtoMapper {
           builder.setFloecat(FloeCatTableDetails.newBuilder().setScannerId(def.scannerId()));
       case TABLE_BACKEND_KIND_STORAGE -> {
         var storageBuilder = StorageTableDetails.newBuilder();
+        if (!def.storagePath().isBlank()) {
+          storageBuilder.setPath(def.storagePath());
+        }
         if (def.flightEndpoint() != null) {
           storageBuilder.setFlightEndpoint(def.flightEndpoint());
-        } else if (!def.storagePath().isBlank()) {
-          storageBuilder.setPath(def.storagePath());
+        }
+        if (!def.storageEndpointKey().isBlank()) {
+          storageBuilder.setEndpointKey(def.storageEndpointKey());
         }
         builder.setStorage(storageBuilder);
       }
@@ -334,6 +338,7 @@ public final class SystemCatalogProtoMapper {
     if (proto.hasStorage() && proto.getStorage().hasFlightEndpoint()) {
       flightEndpoint = proto.getStorage().getFlightEndpoint();
     }
+    String storageEndpointKey = proto.hasStorage() ? proto.getStorage().getEndpointKey() : "";
     return new SystemTableDef(
         proto.getName(),
         proto.getDisplayName(),
@@ -343,6 +348,7 @@ public final class SystemCatalogProtoMapper {
         proto.getBackendKind(),
         proto.hasFloecat() ? proto.getFloecat().getScannerId() : "",
         proto.hasStorage() ? proto.getStorage().getPath() : "",
+        storageEndpointKey,
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList(),

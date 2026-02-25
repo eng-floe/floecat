@@ -88,6 +88,7 @@ public final class SystemCatalogTestProviders {
           TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
           "version-scanner",
           "",
+          "",
           List.of(),
           null);
     }
@@ -138,6 +139,7 @@ public final class SystemCatalogTestProviders {
           List.<SystemColumnDef>of(),
           TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
           scannerId,
+          "",
           "",
           List.of(),
           null);

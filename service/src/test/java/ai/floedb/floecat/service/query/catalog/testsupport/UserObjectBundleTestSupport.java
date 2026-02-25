@@ -63,7 +63,7 @@ public final class UserObjectBundleTestSupport {
   }
 
   public static final class FakeCatalogOverlay implements CatalogOverlay {
-    private final Map<String, SimpleGraphNode> nodes = new HashMap<>();
+    private final Map<String, GraphNode> nodes = new HashMap<>();
     private final Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> schemas =
         new HashMap<>();
     private final Map<String, NameRef> names = new HashMap<>();
@@ -89,6 +89,16 @@ public final class UserObjectBundleTestSupport {
         NameRef name,
         GraphNodeOrigin origin) {
       nodes.put(id.getId(), new SimpleGraphNode(id, origin));
+      schemas.put(id.getId(), schema);
+      names.put(id.getId(), name);
+    }
+
+    public void registerRelation(
+        ResourceId id,
+        RelationNode node,
+        List<ai.floedb.floecat.query.rpc.SchemaColumn> schema,
+        NameRef name) {
+      nodes.put(id.getId(), node);
       schemas.put(id.getId(), schema);
       names.put(id.getId(), name);
     }

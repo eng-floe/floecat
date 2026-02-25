@@ -33,6 +33,7 @@ public record SystemTableDef(
     TableBackendKind backendKind,
     String scannerId,
     String storagePath,
+    String storageEndpointKey,
     List<EngineSpecificRule> engineSpecific,
     FlightEndpointRef flightEndpoint)
     implements SystemObjectDef {
@@ -44,6 +45,7 @@ public record SystemTableDef(
     scannerId = Objects.requireNonNull(scannerId, "scannerId");
     displayName = displayName == null ? "" : displayName;
     storagePath = storagePath == null ? "" : storagePath;
+    storageEndpointKey = storageEndpointKey == null ? "" : storageEndpointKey;
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
     Set<String> columnNames = new HashSet<>();
     for (SystemColumnDef column : columns) {
@@ -57,10 +59,12 @@ public record SystemTableDef(
     }
     if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_STORAGE) {
       boolean hasPath = !storagePath.isBlank();
+      boolean hasEndpointKey = !storageEndpointKey.isBlank();
       boolean hasEndpoint = flightEndpoint != null;
-      if (hasPath == hasEndpoint) {
+      if (!hasPath && !hasEndpointKey && !hasEndpoint) {
         throw new IllegalArgumentException(
-            "specify exactly one of storagePath or flightEndpoint for TABLE_BACKEND_KIND_STORAGE");
+            "specify at least one of storagePath, storageEndpointKey or flightEndpoint for"
+                + " TABLE_BACKEND_KIND_STORAGE");
       }
     }
   }

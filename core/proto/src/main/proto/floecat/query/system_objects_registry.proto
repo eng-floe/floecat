@@ -138,18 +138,21 @@ message FloeCatTableDetails {
 
 /** Details for storage backends. */
 message StorageTableDetails {
-  oneof storage {
-    /** Storage path or identifier */
-    string path = 1;
-    
-    /**
-     * Arrow Flight endpoint for the external service that owns this table.
-     * Populated by STORAGE services when they register with Floecat.
-     * Present when the service exposes an Arrow Flight endpoint.
-     */
-    FlightEndpointRef flight_endpoint = 2;
-  }
-  
+  /** Storage path or identifier (used as fallback when no endpoint is available). */
+  optional string path = 1;
+
+  /**
+   * Arrow Flight endpoint for the external service that owns this table.
+   * Populated by STORAGE services when they register with Floecat.
+   * Present when the service exposes an Arrow Flight endpoint.
+   */
+  optional FlightEndpointRef flight_endpoint = 2;
+
+  /**
+   * Logical endpoint key resolved from service configuration.
+   * Example: "query", "session", "cluster-manager".
+   */
+  optional string endpoint_key = 3;
 }
 
 /** Details for engine backends. */
