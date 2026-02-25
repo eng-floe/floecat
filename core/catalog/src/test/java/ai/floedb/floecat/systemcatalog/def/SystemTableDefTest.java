@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.def;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
@@ -39,15 +40,16 @@ class SystemTableDefTest {
                     TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
                     "scanner",
                     "",
+                    "",
                     List.of(),
                     null))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("storagePath or flightEndpoint");
+        .hasMessageContaining("storagePath, storageEndpointKey or flightEndpoint");
   }
 
   @Test
-  void storageWithBothPathAndFlightFails() {
-    assertThatThrownBy(
+  void storageWithBothPathAndFlightIsAllowed() {
+    assertThatCode(
             () ->
                 new SystemTableDef(
                     NameRefUtil.name("namespace", "t"),
@@ -56,10 +58,27 @@ class SystemTableDefTest {
                     TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
                     "scanner",
                     "path",
+                    "",
                     List.of(),
                     FlightEndpointRef.newBuilder().setHost("foo").setPort(1).build()))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("storagePath or flightEndpoint");
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void storageWithEndpointKeyOnlyIsAllowed() {
+    assertThatCode(
+            () ->
+                new SystemTableDef(
+                    NameRefUtil.name("namespace", "t"),
+                    "t",
+                    COLUMNS,
+                    TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
+                    "scanner",
+                    "",
+                    "query",
+                    List.of(),
+                    null))
+        .doesNotThrowAnyException();
   }
 
   @Test
@@ -71,6 +90,7 @@ class SystemTableDefTest {
                     "t",
                     COLUMNS,
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "",
                     "",
                     "",
                     List.of(),

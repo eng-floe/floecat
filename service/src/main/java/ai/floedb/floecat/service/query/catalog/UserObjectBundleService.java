@@ -75,6 +75,8 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -84,6 +86,7 @@ public class UserObjectBundleService {
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
   private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
+  private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
@@ -299,7 +302,8 @@ public class UserObjectBundleService {
     /*
      * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
      * tables always use our built-in Flight server, and STORAGE tables can either point at their
-     * own Flight endpoint or expose a storage path. ENGINE tables never set an endpoint.
+     * own Flight endpoint, use an endpoint key resolved from service config, or expose a storage
+     * path fallback. ENGINE tables never set an endpoint.
      */
     if (relation.node() instanceof SystemTableNode systemTableNode) {
       builder.setBackendKind(systemTableNode.backendKind());
@@ -308,8 +312,14 @@ public class UserObjectBundleService {
       } else if (systemTableNode instanceof SystemTableNode.StorageSystemTableNode storage) {
         if (storage.flightEndpoint() != null) {
           builder.setFlightEndpoint(storage.flightEndpoint());
-        } else if (!storage.storagePath().isBlank()) {
-          builder.setStoragePath(storage.storagePath());
+        } else {
+          Optional<FlightEndpointRef> configuredEndpoint =
+              configuredEndpointForKey(storage.storageEndpointKey());
+          if (configuredEndpoint.isPresent()) {
+            builder.setFlightEndpoint(configuredEndpoint.get());
+          } else if (!storage.storagePath().isBlank()) {
+            builder.setStoragePath(storage.storagePath());
+          }
         }
       }
     }
@@ -382,6 +392,33 @@ public class UserObjectBundleService {
 
     builder.addAllColumns(decoratedColumns);
     return builder.build();
+  }
+
+  private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
+    if (endpointKey == null || endpointKey.isBlank()) {
+      return Optional.empty();
+    }
+
+    String normalizedKey = endpointKey.trim();
+    String prefix = SYSTEM_FLIGHT_ENDPOINTS_PREFIX + normalizedKey + ".";
+    Config config = ConfigProvider.getConfig();
+    Optional<String> host =
+        config
+            .getOptionalValue(prefix + "host", String.class)
+            .map(String::trim)
+            .filter(value -> !value.isBlank());
+    Optional<Integer> port =
+        config.getOptionalValue(prefix + "port", Integer.class).filter(value -> value > 0);
+    if (host.isEmpty() || port.isEmpty()) {
+      LOG.debugf(
+          "Storage endpoint key '%s' has no config at %shost/%sport; falling back to storage path",
+          normalizedKey, prefix, prefix);
+      return Optional.empty();
+    }
+
+    boolean tls = config.getOptionalValue(prefix + "tls", Boolean.class).orElse(false);
+    return Optional.of(
+        FlightEndpointRef.newBuilder().setHost(host.get()).setPort(port.get()).setTls(tls).build());
   }
 
   private List<ColumnInfo> decorateColumns(

@@ -299,6 +299,7 @@ public class SystemNodeRegistry {
                     normalizedColumnHints,
                     tableHints,
                     table.storagePath(),
+                    table.storageEndpointKey(),
                     table.flightEndpoint());
         case TABLE_BACKEND_KIND_ENGINE ->
             node =
@@ -607,6 +608,7 @@ public class SystemNodeRegistry {
         def.backendKind(),
         def.scannerId(),
         def.storagePath(),
+        def.storageEndpointKey(),
         matched,
         def.flightEndpoint());
   }

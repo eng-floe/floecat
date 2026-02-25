@@ -88,6 +88,7 @@ class SystemGraphTest {
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "scanner",
                     "",
+                    "",
                     List.of(),
                     null)),
             List.of() // views
@@ -355,6 +356,7 @@ class SystemGraphTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
             "",
+            "",
             List.of(),
             null);
 
@@ -365,6 +367,7 @@ class SystemGraphTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "plugin-scanner",
+            "",
             "",
             List.of(),
             null);

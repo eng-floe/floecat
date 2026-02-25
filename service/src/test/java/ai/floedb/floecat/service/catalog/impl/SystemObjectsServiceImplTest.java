@@ -171,6 +171,7 @@ class SystemObjectsServiceImplTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
             "",
+            "",
             List.of(),
             null);
     SystemViewDef view =

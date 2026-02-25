@@ -107,6 +107,7 @@ final class SystemEngineCatalogTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
             "",
+            "",
             List.of(),
             null);
 

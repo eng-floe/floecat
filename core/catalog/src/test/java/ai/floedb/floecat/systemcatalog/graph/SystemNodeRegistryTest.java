@@ -210,6 +210,7 @@ class SystemNodeRegistryTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
             "",
+            "",
             List.of(),
             null);
     SystemTableDef unqualified =
@@ -219,6 +220,7 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
+            "",
             "",
             List.of(),
             null);
@@ -253,6 +255,7 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
+            "",
             "",
             List.of(),
             null);
@@ -801,6 +804,7 @@ class SystemNodeRegistryTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "legacy_scanner",
             "",
+            "",
             List.of(tableRule),
             null);
     SystemViewDef view =
@@ -950,6 +954,7 @@ class SystemNodeRegistryTest {
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
             "",
+            "",
             List.of(),
             null);
     SystemCatalogData catalog =
@@ -980,6 +985,7 @@ class SystemNodeRegistryTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
+            "",
             "",
             List.of(),
             null);
