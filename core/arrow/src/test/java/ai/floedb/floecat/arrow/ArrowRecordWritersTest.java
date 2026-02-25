@@ -67,8 +67,7 @@ class ArrowRecordWritersTest {
       writer.write(
           root,
           List.of(
-              new NullableRow(
-                  null, null, null, null, null, null, null, null, null),
+              new NullableRow(null, null, null, null, null, null, null, null, null),
               new NullableRow(
                   "value",
                   42,
@@ -85,7 +84,8 @@ class ArrowRecordWritersTest {
       BitVector boolValue = (BitVector) root.getVector("bool_value");
       BigIntVector longValue = (BigIntVector) root.getVector("long_value");
       Float8Vector doubleValue = (Float8Vector) root.getVector("double_value");
-      TimeStampMicroTZVector instantValue = (TimeStampMicroTZVector) root.getVector("instant_value");
+      TimeStampMicroTZVector instantValue =
+          (TimeStampMicroTZVector) root.getVector("instant_value");
       DateDayVector localDateValue = (DateDayVector) root.getVector("local_date_value");
       VarBinaryVector bytesValue = (VarBinaryVector) root.getVector("bytes_value");
 

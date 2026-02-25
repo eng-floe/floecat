@@ -59,8 +59,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.BooleanSupplier;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import org.apache.arrow.flight.FlightProducer.CallContext;
 import org.apache.arrow.flight.FlightRuntimeException;
 import org.apache.arrow.flight.FlightStatusCode;
@@ -291,9 +291,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     if ("cancelled".equals(reason)) {
       status = "cancelled";
       observability.counter(
-          ServiceMetrics.Flight.CANCELLED,
-          1,
-          metricTags(operation, tableName, status, reason));
+          ServiceMetrics.Flight.CANCELLED, 1, metricTags(operation, tableName, status, reason));
     } else {
       observability.counter(
           ServiceMetrics.Flight.ERRORS, 1, metricTags(operation, tableName, status, reason));
@@ -311,7 +309,8 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
         metricTags(operation, tableName, status, reason));
   }
 
-  private static Tag[] metricTags(String operation, String tableName, String status, String reason) {
+  private static Tag[] metricTags(
+      String operation, String tableName, String status, String reason) {
     List<Tag> tags = new ArrayList<>(5);
     tags.add(Tag.of(TagKey.COMPONENT, "service"));
     tags.add(Tag.of(TagKey.OPERATION, operation));

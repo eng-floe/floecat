@@ -36,8 +36,7 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Set<String> flightAllowed =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.STATUS, TagKey.RESOURCE, TagKey.REASON);
     Set<String> flightInFlightRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
-    Set<String> flightInFlightAllowed =
-        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
+    Set<String> flightInFlightAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
 
     add(
         defs,

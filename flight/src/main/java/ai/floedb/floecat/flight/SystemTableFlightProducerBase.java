@@ -241,9 +241,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
           "onGetFlightInfoSuccess",
           () ->
               onGetFlightInfoSuccess(
-                  successCallCtx,
-                  successTableName,
-                  Math.max(0, System.nanoTime() - startedNanos)));
+                  successCallCtx, successTableName, Math.max(0, System.nanoTime() - startedNanos)));
       return FlightInfo.builder(projected, descriptor, List.of(endpoint)).build();
     } catch (Throwable t) {
       ResolvedCallContext finalCallCtx = callCtx;
@@ -252,10 +250,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
           "onGetFlightInfoError",
           () ->
               onGetFlightInfoError(
-                  finalCallCtx,
-                  finalTableName,
-                  t,
-                  Math.max(0, System.nanoTime() - startedNanos)));
+                  finalCallCtx, finalTableName, t, Math.max(0, System.nanoTime() - startedNanos)));
       throw toFlightStatus(t).toRuntimeException();
     }
   }
@@ -356,8 +351,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
             () -> onGetStreamCancelled(callCtx, finalTableName, elapsedNanos));
       } else if (streamStarted) {
         safeHook(
-            "onGetStreamSuccess",
-            () -> onGetStreamSuccess(callCtx, finalTableName, elapsedNanos));
+            "onGetStreamSuccess", () -> onGetStreamSuccess(callCtx, finalTableName, elapsedNanos));
       }
       if (snapshotScope != null) {
         try {

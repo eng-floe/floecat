@@ -40,11 +40,7 @@ public final class ServiceMetrics {
   public static final class Flight {
     public static final MetricId REQUESTS =
         new MetricId(
-            "floecat.service.flight.requests.total",
-            MetricType.COUNTER,
-            "",
-            CONTRACT,
-            "service");
+            "floecat.service.flight.requests.total", MetricType.COUNTER, "", CONTRACT, "service");
     public static final MetricId LATENCY =
         new MetricId("floecat.service.flight.latency", MetricType.TIMER, "ms", CONTRACT, "service");
     public static final MetricId ERRORS =
@@ -52,11 +48,7 @@ public final class ServiceMetrics {
             "floecat.service.flight.errors.total", MetricType.COUNTER, "", CONTRACT, "service");
     public static final MetricId CANCELLED =
         new MetricId(
-            "floecat.service.flight.cancelled.total",
-            MetricType.COUNTER,
-            "",
-            CONTRACT,
-            "service");
+            "floecat.service.flight.cancelled.total", MetricType.COUNTER, "", CONTRACT, "service");
     public static final MetricId INFLIGHT =
         new MetricId("floecat.service.flight.inflight", MetricType.GAUGE, "", CONTRACT, "service");
   }
