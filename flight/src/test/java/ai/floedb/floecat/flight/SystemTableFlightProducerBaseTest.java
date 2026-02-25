@@ -33,6 +33,7 @@ import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import io.grpc.Context;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -58,6 +59,7 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.jboss.logging.MDC;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -65,6 +67,8 @@ import org.junit.jupiter.api.Test;
 class SystemTableFlightProducerBaseTest {
 
   private static final String TABLE_NAME = "sys.test";
+  private static final Context.Key<String> TEST_GRPC_CONTEXT_KEY =
+      Context.key("flight.test.query_id");
   private static final SchemaColumn COLUMN =
       SchemaColumn.newBuilder()
           .setName("dummy")
@@ -186,6 +190,27 @@ class SystemTableFlightProducerBaseTest {
   }
 
   @Test
+  void getStreamPropagatesMdcAndGrpcContextToWorkerThread() throws InterruptedException {
+    producer.setContext(makeContext("header"));
+    FlightDescriptor descriptor = descriptorWithQueryId("header");
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+    Ticket ticket = info.getEndpoints().get(0).getTicket();
+
+    CapturingStreamListener listener = new CapturingStreamListener();
+    Context contextWithQueryId = Context.current().withValue(TEST_GRPC_CONTEXT_KEY, "grpc-query");
+    MDC.put("query_id", "header");
+    try {
+      contextWithQueryId.run(() -> producer.getStream(callContext, ticket, listener));
+      assertTrue(listener.awaitCompleted());
+      assertTrue(producer.awaitBuildPlanInvocation());
+      assertEquals("header", producer.observedMdcQueryId());
+      assertEquals("grpc-query", producer.observedGrpcQueryId());
+    } finally {
+      MDC.clear();
+    }
+  }
+
+  @Test
   void getFlightInfoWithIdTargetFailsWhenIdCannotBeResolvedToName() {
     producer.setContext(makeContext("header"));
     ResourceId unknownId =
@@ -250,6 +275,9 @@ class SystemTableFlightProducerBaseTest {
 
     private ResolvedCallContext context = ResolvedCallContext.unauthenticated();
     private final Map<String, String> resolvedNamesById = new HashMap<>();
+    private final CountDownLatch buildPlanLatch = new CountDownLatch(1);
+    private volatile String observedMdcQueryId;
+    private volatile String observedGrpcQueryId;
 
     TestProducer(BufferAllocator allocator, FlightExecutor executor) {
       super(allocator, executor);
@@ -290,6 +318,10 @@ class SystemTableFlightProducerBaseTest {
         ResolvedCallContext context,
         BufferAllocator allocator,
         BooleanSupplier cancelled) {
+      Object mdcValue = MDC.get("query_id");
+      observedMdcQueryId = mdcValue == null ? null : String.valueOf(mdcValue);
+      observedGrpcQueryId = TEST_GRPC_CONTEXT_KEY.get(Context.current());
+      buildPlanLatch.countDown();
       return ArrowScanPlan.of(SCHEMA, Stream.empty());
     }
 
@@ -306,6 +338,18 @@ class SystemTableFlightProducerBaseTest {
     @Override
     protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
       return Optional.ofNullable(resolvedNamesById.get(id.getId()));
+    }
+
+    boolean awaitBuildPlanInvocation() throws InterruptedException {
+      return buildPlanLatch.await(5, TimeUnit.SECONDS);
+    }
+
+    String observedMdcQueryId() {
+      return observedMdcQueryId;
+    }
+
+    String observedGrpcQueryId() {
+      return observedGrpcQueryId;
     }
   }
 
