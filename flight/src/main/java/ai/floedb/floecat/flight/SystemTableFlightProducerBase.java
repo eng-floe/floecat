@@ -60,20 +60,25 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   private static final int TICKET_VERSION = 1;
 
-  private FlightAllocatorHolder allocatorHolder;
+  private FlightAllocatorProvider allocatorProvider;
   private FlightExecutor flightExecutor;
 
   protected SystemTableFlightProducerBase() {}
 
   protected SystemTableFlightProducerBase(
-      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
-    initFlightServices(allocatorHolder, flightExecutor);
+      FlightAllocatorProvider allocatorProvider, FlightExecutor flightExecutor) {
+    initFlightServices(allocatorProvider, flightExecutor);
+  }
+
+  protected SystemTableFlightProducerBase(
+      BufferAllocator allocator, FlightExecutor flightExecutor) {
+    this(() -> Objects.requireNonNull(allocator, "allocator"), flightExecutor);
   }
 
   @Inject
   protected void initFlightServices(
-      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
-    this.allocatorHolder = Objects.requireNonNull(allocatorHolder, "allocatorHolder");
+      FlightAllocatorProvider allocatorProvider, FlightExecutor flightExecutor) {
+    this.allocatorProvider = Objects.requireNonNull(allocatorProvider, "allocatorProvider");
     this.flightExecutor = Objects.requireNonNull(flightExecutor, "flightExecutor");
   }
 
@@ -305,7 +310,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
   private BufferAllocator createStreamAllocator() {
     long limit = streamAllocatorLimit();
     long cap = limit > 0 ? limit : Long.MAX_VALUE;
-    return allocatorHolder.allocator().newChildAllocator("flight-stream", 0, cap);
+    return allocatorProvider.allocator().newChildAllocator("flight-stream", 0, cap);
   }
 
   private void closeAllocator(BufferAllocator allocator) {

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.query.flight;
 
-import ai.floedb.floecat.flight.FlightAllocatorHolder;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.quarkus.oidc.TenantIdentityProvider;
@@ -30,8 +29,6 @@ import java.io.UncheckedIOException;
 import java.util.Optional;
 import org.apache.arrow.flight.FlightServer;
 import org.apache.arrow.flight.Location;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -61,9 +58,6 @@ public class FlightServerLifecycle {
   @ConfigProperty(name = "floecat.flight.tls", defaultValue = "false")
   boolean flightTls;
 
-  @ConfigProperty(name = "floecat.flight.memory.max-bytes", defaultValue = "0")
-  long flightMemoryMaxBytes;
-
   // Auth config — same properties as BlockingInboundContextInterceptor
   @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
   boolean validateAccount;
@@ -84,9 +78,8 @@ public class FlightServerLifecycle {
   String roleClaimName;
 
   private FlightServer server;
-  private BufferAllocator allocator;
 
-  @Inject FlightAllocatorHolder allocatorHolder;
+  @Inject FlightServerAllocator allocatorProvider;
 
   void onStart(@Observes StartupEvent event) {
     InboundCallContextHelper contextHelper =
@@ -104,13 +97,10 @@ public class FlightServerLifecycle {
       throw new IllegalStateException(
           "Arrow Flight TLS is not yet supported; set floecat.flight.tls=false");
     }
-    long parentCap = flightMemoryMaxBytes > 0 ? flightMemoryMaxBytes : Long.MAX_VALUE;
-    allocator = new RootAllocator(parentCap);
-    allocatorHolder.setAllocator(allocator);
     Location location = Location.forGrpcInsecure("0.0.0.0", flightPort);
     try {
       server =
-          FlightServer.builder(allocator, location, producer)
+          FlightServer.builder(allocatorProvider.allocator(), location, producer)
               .middleware(
                   InboundContextFlightMiddleware.KEY,
                   new InboundContextFlightMiddleware.Factory(contextHelper))
@@ -118,7 +108,6 @@ public class FlightServerLifecycle {
       server.start();
       LOG.infof("Arrow Flight server started on port %d (authMode=%s)", flightPort, authMode);
     } catch (IOException e) {
-      allocator.close();
       throw new UncheckedIOException(
           "Failed to start Arrow Flight server on port " + flightPort, e);
     }
@@ -132,15 +121,6 @@ public class FlightServerLifecycle {
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         LOG.warn("Interrupted while stopping Arrow Flight server", e);
-      }
-    }
-    if (allocator != null) {
-      try {
-        allocator.close();
-      } catch (Exception e) {
-        LOG.warn("Error closing Flight server allocator", e);
-      } finally {
-        allocatorHolder.clear();
       }
     }
   }

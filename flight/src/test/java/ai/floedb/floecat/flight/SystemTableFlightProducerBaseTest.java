@@ -78,7 +78,6 @@ class SystemTableFlightProducerBaseTest {
           List.of(new Field("dummy", FieldType.nullable(new ArrowType.Int(32, true)), null)));
 
   private BufferAllocator allocator;
-  private FlightAllocatorHolder allocatorHolder;
   private FlightExecutor executor;
   private TestProducer producer;
   private FlightProducer.CallContext callContext;
@@ -86,10 +85,8 @@ class SystemTableFlightProducerBaseTest {
   @BeforeEach
   void setUp() {
     allocator = new RootAllocator(Long.MAX_VALUE);
-    allocatorHolder = new FlightAllocatorHolder();
-    allocatorHolder.setAllocator(allocator);
     executor = new FlightExecutor();
-    producer = new TestProducer(allocatorHolder, executor);
+    producer = new TestProducer(allocator, executor);
     callContext =
         new FlightProducer.CallContext() {
           @Override
@@ -123,7 +120,6 @@ class SystemTableFlightProducerBaseTest {
       executor.executor().awaitTermination(5, TimeUnit.SECONDS);
     }
     allocator.close();
-    allocatorHolder.clear();
   }
 
   @Test
@@ -255,8 +251,8 @@ class SystemTableFlightProducerBaseTest {
     private ResolvedCallContext context = ResolvedCallContext.unauthenticated();
     private final Map<String, String> resolvedNamesById = new HashMap<>();
 
-    TestProducer(FlightAllocatorHolder holder, FlightExecutor executor) {
-      super(holder, executor);
+    TestProducer(BufferAllocator allocator, FlightExecutor executor) {
+      super(allocator, executor);
     }
 
     void registerTableId(ResourceId id, String tableName) {

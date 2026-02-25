@@ -22,7 +22,6 @@ import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.flight.FlightAllocatorHolder;
 import ai.floedb.floecat.flight.FlightExecutor;
 import ai.floedb.floecat.flight.SystemTableFlightProducerBase;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
@@ -91,8 +90,8 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Inject
   public SystemTableFlightProducer(
-      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
-    super(allocatorHolder, flightExecutor);
+      FlightServerAllocator allocatorProvider, FlightExecutor flightExecutor) {
+    super(allocatorProvider, flightExecutor);
   }
 
   @PostConstruct
