@@ -63,6 +63,11 @@ This lists all metrics available in the repository right now:
 
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
+| floecat.service.flight.cancelled.total | COUNTER |  | v1 | Flight request cancellations by operation, table, and reason. | component, operation, reason | component, operation, reason, resource, status |
+| floecat.service.flight.errors.total | COUNTER |  | v1 | Flight request failures by operation, table, and reason. | component, operation, reason | component, operation, reason, resource, status |
+| floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
+| floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 

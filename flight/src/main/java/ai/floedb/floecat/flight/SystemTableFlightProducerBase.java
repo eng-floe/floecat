@@ -216,8 +216,11 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   @Override
   public FlightInfo getFlightInfo(CallContext context, FlightDescriptor descriptor) {
+    long startedNanos = System.nanoTime();
+    ResolvedCallContext callCtx = ResolvedCallContext.unauthenticated();
+    String tableName = null;
     try {
-      ResolvedCallContext callCtx = requireAuth(context);
+      callCtx = requireAuth(context);
       SystemTableFlightCommand command = decodeCommand(descriptor);
       requireQueryId(callCtx, command);
       SystemTableHandle handle = requireHandle(command, callCtx);
@@ -226,26 +229,55 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
             .withDescription("No Flight producer registered for descriptor")
             .toRuntimeException();
       }
+      tableName = handle.canonicalName();
       Optional<ResourceId> tableId = handle.tableId();
       SystemTableFlightCommand enriched = commandWithTableId(command, tableId);
       Schema projected = projectSchema(handle.canonicalName(), tableId, enriched, callCtx);
       Ticket ticket = encodeTicket(enriched);
       FlightEndpoint endpoint = new FlightEndpoint(ticket, selfLocation());
+      ResolvedCallContext successCallCtx = callCtx;
+      String successTableName = tableName;
+      safeHook(
+          "onGetFlightInfoSuccess",
+          () ->
+              onGetFlightInfoSuccess(
+                  successCallCtx,
+                  successTableName,
+                  Math.max(0, System.nanoTime() - startedNanos)));
       return FlightInfo.builder(projected, descriptor, List.of(endpoint)).build();
     } catch (Throwable t) {
+      ResolvedCallContext finalCallCtx = callCtx;
+      String finalTableName = tableName;
+      safeHook(
+          "onGetFlightInfoError",
+          () ->
+              onGetFlightInfoError(
+                  finalCallCtx,
+                  finalTableName,
+                  t,
+                  Math.max(0, System.nanoTime() - startedNanos)));
       throw toFlightStatus(t).toRuntimeException();
     }
   }
 
   @Override
   public void getStream(CallContext context, Ticket ticket, ServerStreamListener listener) {
+    long startedNanos = System.nanoTime();
+    ResolvedCallContext callCtx = ResolvedCallContext.unauthenticated();
     try {
-      ResolvedCallContext callCtx = requireAuth(context);
+      callCtx = requireAuth(context);
       ContextSnapshot snapshot = ContextSnapshot.capture();
+      ResolvedCallContext streamCallCtx = callCtx;
       flightExecutor
           .executor()
-          .submit(() -> streamOnWorkerThread(ticket, listener, callCtx, snapshot));
+          .submit(() -> streamOnWorkerThread(ticket, listener, streamCallCtx, snapshot));
     } catch (Throwable t) {
+      ResolvedCallContext finalCallCtx = callCtx;
+      safeHook(
+          "onGetStreamDispatchError",
+          () ->
+              onGetStreamDispatchError(
+                  finalCallCtx, t, Math.max(0, System.nanoTime() - startedNanos)));
       listener.error(toFlightStatus(t).toRuntimeException());
     }
   }
@@ -256,6 +288,11 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       ResolvedCallContext callCtx,
       ContextSnapshot snapshot) {
     AutoCloseable snapshotScope = null;
+    long startedNanos = System.nanoTime();
+    String tableName = null;
+    Throwable failure = null;
+    boolean cancelled = false;
+    boolean streamStarted = false;
     try {
       snapshotScope = snapshot.apply();
       SystemTableFlightCommand command = decodeTicket(ticket);
@@ -265,7 +302,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
             .withDescription("No Flight producer registered for ticket: " + ticket)
             .toRuntimeException();
       }
-      String tableName = handle.canonicalName();
+      tableName = handle.canonicalName();
       Optional<ResourceId> tableId = handle.tableId();
       String tableIdLog = tableId.map(ResourceId::getId).orElse("<name-only>");
       String effectiveQueryId = requireQueryId(callCtx, command);
@@ -273,6 +310,9 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
           .debugf(
               "getStream table=%s name=%s query=%s correlation=%s",
               tableIdLog, tableName, effectiveQueryId, callCtx.correlationId());
+      streamStarted = true;
+      String finalTableName = tableName;
+      safeHook("onGetStreamStart", () -> onGetStreamStart(callCtx, finalTableName));
 
       BufferAllocator allocator = createStreamAllocator();
       FlightArrowBatchSink sink = new FlightArrowBatchSink(listener, allocator);
@@ -284,20 +324,41 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
               closeAllocator(allocator);
             }
           };
+      ArrowScanPlan plan =
+          buildPlan(tableName, tableId, command, callCtx, allocator, listener::isCancelled);
       try {
-        ArrowScanPlan plan =
-            buildPlan(tableName, tableId, command, callCtx, allocator, listener::isCancelled);
         ArrowBatchSerializer.serialize(plan, sink, listener::isCancelled, cleanup);
+        cancelled = listener.isCancelled();
       } catch (Throwable t) {
+        failure = t;
         if (cleanupCalled.compareAndSet(false, true)) {
           sink.close();
           closeAllocator(allocator);
         }
-        listener.error(toFlightStatus(t).toRuntimeException());
+        throw t;
       }
     } catch (Throwable t) {
+      if (failure == null) {
+        failure = t;
+      }
       listener.error(toFlightStatus(t).toRuntimeException());
     } finally {
+      long elapsedNanos = Math.max(0, System.nanoTime() - startedNanos);
+      String finalTableName = tableName;
+      if (failure != null) {
+        Throwable finalFailure = failure;
+        safeHook(
+            "onGetStreamError",
+            () -> onGetStreamError(callCtx, finalTableName, finalFailure, elapsedNanos));
+      } else if (streamStarted && cancelled) {
+        safeHook(
+            "onGetStreamCancelled",
+            () -> onGetStreamCancelled(callCtx, finalTableName, elapsedNanos));
+      } else if (streamStarted) {
+        safeHook(
+            "onGetStreamSuccess",
+            () -> onGetStreamSuccess(callCtx, finalTableName, elapsedNanos));
+      }
       if (snapshotScope != null) {
         try {
           snapshotScope.close();
@@ -608,5 +669,33 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       };
     }
     return CallStatus.INTERNAL.withDescription(t.getMessage()).withCause(t);
+  }
+
+  protected void onGetFlightInfoSuccess(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {}
+
+  protected void onGetFlightInfoError(
+      ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {}
+
+  protected void onGetStreamDispatchError(
+      ResolvedCallContext context, Throwable error, long elapsedNanos) {}
+
+  protected void onGetStreamStart(ResolvedCallContext context, String tableName) {}
+
+  protected void onGetStreamSuccess(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {}
+
+  protected void onGetStreamCancelled(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {}
+
+  protected void onGetStreamError(
+      ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {}
+
+  private void safeHook(String hookName, Runnable runnable) {
+    try {
+      runnable.run();
+    } catch (Throwable hookError) {
+      logger().debugf("Ignoring %s failure: %s", hookName, hookError.getMessage());
+    }
   }
 }

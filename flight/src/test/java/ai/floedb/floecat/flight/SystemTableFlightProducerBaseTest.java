@@ -39,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -134,6 +135,7 @@ class SystemTableFlightProducerBaseTest {
         assertThrows(
             FlightRuntimeException.class, () -> producer.getFlightInfo(callContext, descriptor));
     assertEquals(CallStatus.INVALID_ARGUMENT.code(), err.status().code());
+    assertEquals(1, producer.getFlightInfoErrorCount());
   }
 
   @Test
@@ -151,6 +153,7 @@ class SystemTableFlightProducerBaseTest {
     producer.setContext(makeContext("header"));
     FlightDescriptor descriptor = descriptorWithQueryId(null);
     assertNotNull(producer.getFlightInfo(callContext, descriptor));
+    assertEquals(1, producer.getFlightInfoSuccessCount());
   }
 
   @Test
@@ -173,6 +176,8 @@ class SystemTableFlightProducerBaseTest {
     assertTrue(listener.awaitError());
     assertTrue(listener.rawError() instanceof FlightRuntimeException);
     assertEquals(CallStatus.INVALID_ARGUMENT.code(), listener.error().status().code());
+    assertTrue(producer.awaitStreamErrorHook());
+    assertEquals(1, producer.getStreamErrorCount());
   }
 
   @Test
@@ -186,7 +191,9 @@ class SystemTableFlightProducerBaseTest {
     producer.getStream(callContext, ticket, listener);
 
     assertTrue(listener.awaitCompleted());
+    assertTrue(producer.awaitStreamSuccessHook());
     assertNull(listener.rawError());
+    assertEquals(1, producer.getStreamSuccessCount());
   }
 
   @Test
@@ -276,6 +283,12 @@ class SystemTableFlightProducerBaseTest {
     private ResolvedCallContext context = ResolvedCallContext.unauthenticated();
     private final Map<String, String> resolvedNamesById = new HashMap<>();
     private final CountDownLatch buildPlanLatch = new CountDownLatch(1);
+    private final CountDownLatch streamSuccessHookLatch = new CountDownLatch(1);
+    private final CountDownLatch streamErrorHookLatch = new CountDownLatch(1);
+    private final AtomicInteger getFlightInfoSuccessCount = new AtomicInteger();
+    private final AtomicInteger getFlightInfoErrorCount = new AtomicInteger();
+    private final AtomicInteger getStreamSuccessCount = new AtomicInteger();
+    private final AtomicInteger getStreamErrorCount = new AtomicInteger();
     private volatile String observedMdcQueryId;
     private volatile String observedGrpcQueryId;
 
@@ -350,6 +363,56 @@ class SystemTableFlightProducerBaseTest {
 
     String observedGrpcQueryId() {
       return observedGrpcQueryId;
+    }
+
+    boolean awaitStreamSuccessHook() throws InterruptedException {
+      return streamSuccessHookLatch.await(5, TimeUnit.SECONDS);
+    }
+
+    boolean awaitStreamErrorHook() throws InterruptedException {
+      return streamErrorHookLatch.await(5, TimeUnit.SECONDS);
+    }
+
+    int getFlightInfoSuccessCount() {
+      return getFlightInfoSuccessCount.get();
+    }
+
+    int getFlightInfoErrorCount() {
+      return getFlightInfoErrorCount.get();
+    }
+
+    int getStreamSuccessCount() {
+      return getStreamSuccessCount.get();
+    }
+
+    int getStreamErrorCount() {
+      return getStreamErrorCount.get();
+    }
+
+    @Override
+    protected void onGetFlightInfoSuccess(
+        ResolvedCallContext context, String tableName, long elapsedNanos) {
+      getFlightInfoSuccessCount.incrementAndGet();
+    }
+
+    @Override
+    protected void onGetFlightInfoError(
+        ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {
+      getFlightInfoErrorCount.incrementAndGet();
+    }
+
+    @Override
+    protected void onGetStreamSuccess(
+        ResolvedCallContext context, String tableName, long elapsedNanos) {
+      getStreamSuccessCount.incrementAndGet();
+      streamSuccessHookLatch.countDown();
+    }
+
+    @Override
+    protected void onGetStreamError(
+        ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {
+      getStreamErrorCount.incrementAndGet();
+      streamErrorHookLatch.countDown();
     }
   }
 
