@@ -16,12 +16,21 @@
 
 package ai.floedb.floecat.service.it;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
+import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.statistics.rpc.*;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +38,9 @@ import org.junit.jupiter.api.Test;
 public class StatsCaptureIT {
   @GrpcClient("floecat")
   StatsCaptureGrpc.StatsCaptureBlockingStub statscapture;
+
+  @GrpcClient("floecat")
+  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -47,6 +59,20 @@ public class StatsCaptureIT {
   @Test
   void analyze() {
     var r = statscapture.analyze(AnalyzeRequest.newBuilder().build());
+  }
+
+  @Test
+  void analyzeTableRejectsSeededTableWithoutUpstreamConnector() {
+    ResourceId tableId =
+        TestSupport.resolveTableId(directory, "examples", List.of("iceberg"), "orders");
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statscapture.analyzeTable(
+                    AnalyzeTableRequest.newBuilder().setTableId(tableId).build()));
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
   }
 
   @Test

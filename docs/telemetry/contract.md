@@ -68,6 +68,8 @@ This lists all metrics available in the repository right now:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.reconcile.sync_capture.total | COUNTER |  | v1 | SyncCapture request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
+| floecat.service.reconcile.trigger.total | COUNTER |  | v1 | TriggerReconcile request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Estimated per-account storage byte consumption (sampled, not exact). | account | account |
 | floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
 

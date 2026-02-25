@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Map;
 import java.util.Optional;
@@ -27,6 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 @ApplicationScoped
+@IfBuildProperty(
+    name = "floecat.reconciler.job-store",
+    stringValue = "memory",
+    enableIfMissing = true)
 public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();

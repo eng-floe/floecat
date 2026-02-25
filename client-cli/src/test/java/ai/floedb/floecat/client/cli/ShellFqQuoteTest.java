@@ -19,6 +19,8 @@ package ai.floedb.floecat.client.cli;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -439,5 +441,33 @@ class ShellFqQuoteTest {
     assertEquals("\"a b\"", quoteIfNeeded("a b"));
     assertEquals("\"a.b\"", quoteIfNeeded("a.b"));
     assertEquals("\"a\\\\b\"", quoteIfNeeded("a\\b"));
+  }
+
+  @Test
+  void helpIncludesAnalyzeCommand() {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream original = System.out;
+    try {
+      System.setOut(new PrintStream(baos));
+      invoke(shell, "printHelp", new Class<?>[] {});
+    } finally {
+      System.setOut(original);
+    }
+    String help = baos.toString();
+    assertTrue(help.contains("analyze <tableFQ> [--columns c1,c2,...]"));
+  }
+
+  @Test
+  void analyzeWithoutArgsPrintsUsage() {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream original = System.out;
+    try {
+      System.setOut(new PrintStream(baos));
+      invoke(shell, "cmdAnalyze", new Class<?>[] {List.class}, List.of());
+    } finally {
+      System.setOut(original);
+    }
+    String output = baos.toString();
+    assertTrue(output.contains("usage: analyze <tableFQ> [--columns c1,c2,...]"));
   }
 }
