@@ -32,6 +32,11 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
   private static Map<MetricId, MetricDef> buildDefinitions() {
     Map<MetricId, MetricDef> defs = new LinkedHashMap<>();
     Set<String> accountTag = Set.of(TagKey.ACCOUNT);
+    Set<String> flightRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.STATUS);
+    Set<String> flightAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.STATUS, TagKey.RESOURCE, TagKey.REASON);
+    Set<String> flightInFlightRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> flightInFlightAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
 
     add(
         defs,
@@ -45,6 +50,36 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         accountTag,
         accountTag,
         "Estimated per-account storage byte consumption (sampled, not exact).");
+    add(
+        defs,
+        ServiceMetrics.Flight.REQUESTS,
+        flightRequired,
+        flightAllowed,
+        "Total Flight requests by operation, table, and terminal status.");
+    add(
+        defs,
+        ServiceMetrics.Flight.LATENCY,
+        flightRequired,
+        flightAllowed,
+        "Flight request latency by operation, table, and terminal status.");
+    add(
+        defs,
+        ServiceMetrics.Flight.ERRORS,
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON),
+        flightAllowed,
+        "Flight request failures by operation, table, and reason.");
+    add(
+        defs,
+        ServiceMetrics.Flight.CANCELLED,
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON),
+        flightAllowed,
+        "Flight request cancellations by operation, table, and reason.");
+    add(
+        defs,
+        ServiceMetrics.Flight.INFLIGHT,
+        flightInFlightRequired,
+        flightInFlightAllowed,
+        "Current number of in-flight Flight streams.");
     return Collections.unmodifiableMap(defs);
   }
 

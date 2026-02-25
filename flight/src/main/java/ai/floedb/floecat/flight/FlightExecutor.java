@@ -18,11 +18,14 @@ package ai.floedb.floecat.flight;
 
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 /** Shared executor for processing Flight streams off the calling thread. */
 @ApplicationScoped
@@ -30,8 +33,8 @@ public final class FlightExecutor {
 
   private static final AtomicInteger COUNTER = new AtomicInteger(1);
 
-  // Daemon threads ensure Flight stream work doesn't prevent shutdown.
-  private final ExecutorService executor =
+  // Default fallback when no managed executor is available (e.g. plain unit tests).
+  private ExecutorService executor =
       Executors.newCachedThreadPool(
           new ThreadFactory() {
             @Override
@@ -41,13 +44,35 @@ public final class FlightExecutor {
               return thread;
             }
           });
+  private boolean ownsExecutor = true;
+
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors == null) {
+      return;
+    }
+    managedExecutors.stream().findFirst().ifPresent(this::adoptManagedExecutor);
+  }
 
   public ExecutorService executor() {
     return executor;
   }
 
+  synchronized void adoptManagedExecutor(ManagedExecutor managedExecutor) {
+    if (managedExecutor == null || !ownsExecutor) {
+      return;
+    }
+    ExecutorService previous = executor;
+    executor = managedExecutor;
+    ownsExecutor = false;
+    previous.shutdown();
+  }
+
   @PreDestroy
   void shutdown() {
+    if (!ownsExecutor) {
+      return;
+    }
     executor.shutdown();
     try {
       if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {

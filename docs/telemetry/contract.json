@@ -410,6 +410,56 @@
     "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
   },
   {
+    "name": "floecat.service.flight.cancelled.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request cancellations by operation, table, and reason.",
+    "requiredTags": ["component", "operation", "reason"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.errors.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request failures by operation, table, and reason.",
+    "requiredTags": ["component", "operation", "reason"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.inflight",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of in-flight Flight streams.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation", "resource"]
+  },
+  {
+    "name": "floecat.service.flight.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Flight request latency by operation, table, and terminal status.",
+    "requiredTags": ["component", "operation", "status"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
+    "name": "floecat.service.flight.requests.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Total Flight requests by operation, table, and terminal status.",
+    "requiredTags": ["component", "operation", "status"],
+    "allowedTags": ["component", "operation", "reason", "resource", "status"]
+  },
+  {
     "name": "floecat.service.storage.account.bytes",
     "type": "GAUGE",
     "unit": "bytes",

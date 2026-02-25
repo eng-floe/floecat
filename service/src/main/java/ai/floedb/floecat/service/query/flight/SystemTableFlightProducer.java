@@ -22,7 +22,6 @@ import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.flight.FlightAllocatorHolder;
 import ai.floedb.floecat.flight.FlightExecutor;
 import ai.floedb.floecat.flight.SystemTableFlightProducerBase;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
@@ -41,19 +40,30 @@ import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
 import ai.floedb.floecat.service.query.resolver.SystemScannerResolver;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.security.impl.Authorizer;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.apache.arrow.flight.FlightProducer.CallContext;
+import org.apache.arrow.flight.FlightRuntimeException;
+import org.apache.arrow.flight.FlightStatusCode;
 import org.apache.arrow.flight.Location;
 import org.apache.arrow.memory.BufferAllocator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -76,6 +86,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @Inject StatsProviderFactory statsFactory;
   @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
+  @Inject Observability observability;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
@@ -88,16 +99,23 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   private Location flightLocation;
   private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
+  private final AtomicInteger inflightStreams = new AtomicInteger();
 
   @Inject
   public SystemTableFlightProducer(
-      FlightAllocatorHolder allocatorHolder, FlightExecutor flightExecutor) {
-    super(allocatorHolder, flightExecutor);
+      FlightServerAllocator allocatorProvider, FlightExecutor flightExecutor) {
+    super(allocatorProvider, flightExecutor);
   }
 
   @PostConstruct
   void initFlightLocation() {
     flightLocation = Location.forGrpcInsecure(flightHost, flightPort);
+    observability.gauge(
+        ServiceMetrics.Flight.INFLIGHT,
+        inflightStreams::get,
+        "Current number of in-flight Flight streams",
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "getStream"));
   }
 
   @Override
@@ -216,5 +234,142 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   private static ResourceId requireTableId(Optional<ResourceId> tableId, String tableName) {
     return tableId.orElseThrow(
         () -> new IllegalStateException("System table id is required for " + tableName));
+  }
+
+  @Override
+  protected void onGetFlightInfoSuccess(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {
+    recordOutcome("getFlightInfo", tableName, "success", null, elapsedNanos);
+  }
+
+  @Override
+  protected void onGetFlightInfoError(
+      ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {
+    recordFailure("getFlightInfo", tableName, error, elapsedNanos);
+  }
+
+  @Override
+  protected void onGetStreamDispatchError(
+      ResolvedCallContext context, Throwable error, long elapsedNanos) {
+    recordFailure("getStream", "unknown", error, elapsedNanos);
+  }
+
+  @Override
+  protected void onGetStreamStart(ResolvedCallContext context, String tableName) {
+    inflightStreams.incrementAndGet();
+  }
+
+  @Override
+  protected void onGetStreamSuccess(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {
+    inflightStreams.updateAndGet(current -> Math.max(0, current - 1));
+    recordOutcome("getStream", tableName, "success", null, elapsedNanos);
+  }
+
+  @Override
+  protected void onGetStreamCancelled(
+      ResolvedCallContext context, String tableName, long elapsedNanos) {
+    inflightStreams.updateAndGet(current -> Math.max(0, current - 1));
+    recordOutcome("getStream", tableName, "cancelled", "cancelled", elapsedNanos);
+    observability.counter(
+        ServiceMetrics.Flight.CANCELLED,
+        1,
+        metricTags("getStream", tableName, "cancelled", "cancelled"));
+  }
+
+  @Override
+  protected void onGetStreamError(
+      ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {
+    inflightStreams.updateAndGet(current -> Math.max(0, current - 1));
+    recordFailure("getStream", tableName, error, elapsedNanos);
+  }
+
+  private void recordFailure(
+      String operation, String tableName, Throwable error, long elapsedNanos) {
+    String reason = failureReason(error);
+    String status = "error";
+    if ("cancelled".equals(reason)) {
+      status = "cancelled";
+      observability.counter(
+          ServiceMetrics.Flight.CANCELLED, 1, metricTags(operation, tableName, status, reason));
+    } else {
+      observability.counter(
+          ServiceMetrics.Flight.ERRORS, 1, metricTags(operation, tableName, status, reason));
+    }
+    recordOutcome(operation, tableName, status, reason, elapsedNanos);
+  }
+
+  private void recordOutcome(
+      String operation, String tableName, String status, String reason, long elapsedNanos) {
+    observability.counter(
+        ServiceMetrics.Flight.REQUESTS, 1, metricTags(operation, tableName, status, reason));
+    observability.timer(
+        ServiceMetrics.Flight.LATENCY,
+        Duration.ofNanos(Math.max(0, elapsedNanos)),
+        metricTags(operation, tableName, status, reason));
+  }
+
+  private static Tag[] metricTags(
+      String operation, String tableName, String status, String reason) {
+    List<Tag> tags = new ArrayList<>(5);
+    tags.add(Tag.of(TagKey.COMPONENT, "service"));
+    tags.add(Tag.of(TagKey.OPERATION, operation));
+    tags.add(Tag.of(TagKey.STATUS, status));
+    tags.add(Tag.of(TagKey.RESOURCE, normalizeResource(tableName)));
+    if (reason != null && !reason.isBlank()) {
+      tags.add(Tag.of(TagKey.REASON, reason));
+    }
+    return tags.toArray(Tag[]::new);
+  }
+
+  private static String normalizeResource(String tableName) {
+    if (tableName == null || tableName.isBlank()) {
+      return "unknown";
+    }
+    return tableName;
+  }
+
+  private static String failureReason(Throwable error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof FlightRuntimeException flight) {
+        return mapFlightCode(flight.status().code());
+      }
+      if (current instanceof StatusRuntimeException grpc) {
+        return mapGrpcCode(grpc.getStatus().getCode());
+      }
+      current = current.getCause();
+    }
+    return "internal";
+  }
+
+  private static String mapFlightCode(FlightStatusCode code) {
+    if (code == null) {
+      return "internal";
+    }
+    return switch (code) {
+      case CANCELLED -> "cancelled";
+      case UNAVAILABLE, TIMED_OUT -> "unavailable";
+      case NOT_FOUND -> "not_found";
+      case INVALID_ARGUMENT -> "invalid_argument";
+      case UNAUTHENTICATED -> "unauthenticated";
+      case UNAUTHORIZED -> "unauthorized";
+      default -> "internal";
+    };
+  }
+
+  private static String mapGrpcCode(Status.Code code) {
+    if (code == null) {
+      return "internal";
+    }
+    return switch (code) {
+      case CANCELLED -> "cancelled";
+      case UNAVAILABLE, DEADLINE_EXCEEDED -> "unavailable";
+      case NOT_FOUND -> "not_found";
+      case INVALID_ARGUMENT -> "invalid_argument";
+      case UNAUTHENTICATED -> "unauthenticated";
+      case PERMISSION_DENIED -> "unauthorized";
+      default -> "internal";
+    };
   }
 }
