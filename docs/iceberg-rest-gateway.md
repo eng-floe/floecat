@@ -30,7 +30,7 @@ Non-goals for the current release:
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
 | `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
 | `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
-| `/tables/rename`, `/transactions/commit` | Table services + staging store | Multi-table transaction commit short-circuits on terminal backend states (`TS_APPLIED` => 204, `TS_APPLY_FAILED_CONFLICT` => 409); otherwise commit requires backend `TS_APPLIED`. |
+| `/tables/rename`, `/transactions/commit` | Table services + staging store | Replays staged payloads per Iceberg semantics; idempotent request replay, no cross-table ACID. |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
 | `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
 | `/register-view` | `ViewService` + `ViewMetadataService` | Registers an Iceberg view from a metadata location. |
@@ -71,7 +71,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
 4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records, triggers reconcile for async stats, and resolves storage credentials returned to clients. Snapshot format metadata is backfilled directly from the committed `metadata.json`.
+6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records and resolves storage credentials returned to clients. Post-commit connector sync/reconcile triggers are queued through `PostCommitSyncOutboxService` (retryable async side effects). Snapshot format metadata is backfilled directly from the committed `metadata.json`.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -101,39 +101,19 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 2. `CommitStageResolver` fetches/validates the staged payload (assert-create, assert-current-schema, etc.) and either returns a resolved table ID or synthesizes a new table via `StageCommitProcessor`.
 3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
 4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
-5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream, run reconcile). Snapshot format metadata is synced from the committed `metadata.json` in the REST layer.
-6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags are set to the metadata location so clients can cache responses.
+5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream). Post-core reconcile/sync actions are queued for async retry by `PostCommitSyncOutboxService`.
+6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags include the metadata location and representation selector (`snapshots=all|refs`) so clients can safely cache per response shape.
+
+Idempotency behavior:
+- `Iceberg-Transaction-Id` is used as the primary replay key; `Idempotency-Key` is fallback when transaction id is absent.
+- Same key + same payload replays the prior response.
+- Same key + different payload returns `409 Conflict`.
+- `IN_PROGRESS` records are guarded with timeout; stale records can be retried.
+- Prior `5xx` failures are retryable; prior `4xx` failures are terminal and replayed.
 
 ### `/transactions/commit`
 
-Receives Iceberg’s transaction payload (list of table changes). The gateway:
-
-1. Begins a gRPC transaction and records a deterministic request hash (`iceberg.commit.request-hash`) in transaction properties.
-   - When no client idempotency header is present, begin idempotency falls back to `req:<catalog>:<request-hash>`.
-2. Reads current transaction state and short-circuits terminal states:
-   - `TS_APPLIED` => HTTP 204 (no replay of side effects)
-   - `TS_APPLY_FAILED_CONFLICT` => `CommitFailedException` (409)
-3. For non-terminal states, resolves/plans/validates all table changes (requirements + updates), then prepares intent payloads.
-   - Each prepared change carries a backend pointer `expected_version` precondition from table `MutationMeta`.
-   - `stage-id` is rejected for multi-table `/transactions/commit` (stage-create materialization is not part of this atomic path).
-4. Applies pre-commit snapshot changes (add/ref/remove). If any pre-commit snapshot step fails, the gateway rolls back snapshot changes and aborts the backend transaction.
-5. Commits the transaction:
-   - backend must end in `TS_APPLIED` to return HTTP 204
-   - deterministic commit failures map to `CommitFailedException` (409)
-   - unknown commit state maps to `CommitStateUnknownException` with:
-     - 503 (`UNAVAILABLE` or retryable unknown state)
-     - 502 (`UNKNOWN` upstream response)
-     - 504 (`DEADLINE_EXCEEDED`)
-     - 500 fallback for other unknown/runtime failures
-   - auth failures map to:
-     - 401 (`UNAUTHENTICATED`)
-     - 403 (`PERMISSION_DENIED`)
-6. After successful backend apply, executes post-commit snapshot metadata updates and connector synchronization as best-effort (logged on failure; response remains 204 once apply is committed).
-7. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
-
-This provides cross-table atomicity for backend pointer application and safe retries. REST-layer
-post-commit side effects (snapshot metadata follow-ups and connector sync) are outside the atomic
-backend transaction boundary and remain best-effort.
+Receives Iceberg’s transaction payload (list of table changes referencing stage-ids). The gateway replays each staged change sequentially using the same path as per-table commits. Requirements (assert stage, schema, snapshot refs, etc.) are enforced per change. The endpoint is idempotent but **does not** offer multi-table ACID guarantees or cross-table rollback.
 
 ---
 
@@ -159,20 +139,93 @@ Limits/Follow-ups:
 
 ---
 
+## Delta Compatibility Layer
+
+The gateway now supports loading Floecat Delta tables through the Iceberg REST surface so engines
+like DuckDB can query `examples.delta.<table>` via the same REST attach used for native Iceberg
+tables.
+
+### How it works
+
+1. On Delta table load, the gateway translates Delta table/snapshot/schema state into Iceberg
+   metadata JSON (including `snapshot-log`, `refs`, and Iceberg-compatible primitive type names).
+2. For each returned Delta snapshot that lacks a manifest list, the gateway materializes Iceberg
+   compat artifacts:
+   - data manifest: `<table-root>/metadata/<snapshot-id>-compat-m0.avro`
+   - delete manifest (when Delta delete vectors exist): `<table-root>/metadata/<snapshot-id>-compat-d0.avro`
+   - position-delete files (generated from Delta DV bitmaps): `<table-root>/metadata/<snapshot-id>-compat-pd-*.avro`
+   - manifest list: `<table-root>/metadata/snap-<snapshot-id>-compat.avro`
+3. On each Delta load/query, compat artifacts are resolved by deterministic snapshot path:
+   - existing `snap-<snapshot-id>-compat.avro`: reuse
+   - missing `snap-<snapshot-id>-compat.avro`: regenerate manifest + manifest-list from the
+     original Delta snapshot state at read time
+
+This gives "refresh-on-read" behavior without requiring clients to know anything about Delta,
+and no marker file/state is required.
+
+Load responses follow Iceberg REST `snapshots` semantics:
+- `snapshots=all` returns all valid snapshots
+- `snapshots=refs` returns only snapshots currently referenced by branches/tags (empty if no refs)
+
+ETags for load responses are representation-aware and vary by `snapshots` mode.
+
+### Configuration
+
+- `floecat.gateway.delta-compat.enabled=true` enables Delta compatibility translation/materialization.
+- `floecat.gateway.delta-compat.read-only=true` keeps behavior read-only from the compatibility path.
+
+### Storage behavior
+
+- Compat files are written to object storage under the Delta table’s own `metadata/` prefix
+  (same bucket/prefix family as the source Delta table), not served from in-memory-only state.
+
+### Current limitations
+
+- Supported delete behavior:
+  - Delta `remove` actions that fully remove parquet files are reflected correctly (removed files
+    are absent from generated Iceberg data manifests).
+  - Copy-on-write deletes (remove old parquet file, add rewritten parquet file) are reflected
+    correctly from the active Delta snapshot file set.
+- Only on-disk Delta deletion vectors are projected today; inline deletion vectors are currently skipped.
+- Equality-delete projection is not implemented; compatibility materialization emits Iceberg position deletes.
+
+---
+
+## Commit Guarantees (Current)
+
+- **Single-table core state:** synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.
+- **Post-core side effects (connector sync/reconcile trigger):** eventual consistency with retries. These are not atomic with the core commit.
+- **Multi-table `/transactions/commit`:** sequential staged replay with idempotent request handling; no true cross-table atomic commit/rollback yet.
+
+---
+
 ## Testing
 
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
 - **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
+- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
+  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
 
 ---
 
 ## Operational Notes & Current Limitations
 
-- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access delegation; per-request signing is not yet implemented.
+- **Register IO scope:** `POST /v1/{prefix}/namespaces/{namespace}/register` now treats
+  FileIO properties as request-scoped connector config. Runtime/global storage wiring
+  (`floecat.storage.aws.*`)
+  is no longer required for register flows. Use the register payload `properties` for
+  `io-impl`, `s3.endpoint`, `s3.region`, `s3.access-key-id`, `s3.secret-access-key`,
+  `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
+  Request-supplied FileIO properties are merged over gateway defaults from
+  `floecat.gateway.storage-credential.properties.*`.
+- **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
+  delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
+  and `aws.profile_path` when clients expect AWS SDK profile-based access.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
-- **Multi-table ACID:** `/transactions/commit` returns 204 only when backend transaction state is `TS_APPLIED`; `TS_APPLY_FAILED_CONFLICT` maps to 409 and unknown commit state maps to `CommitStateUnknownException` (`503`/`502`/`504`, with `500` fallback).
+- **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.
+- **Durability of side-effect orchestration:** current retry queue is gateway-managed; long-term durable orchestration is planned to move to a service-owned queue/store.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---

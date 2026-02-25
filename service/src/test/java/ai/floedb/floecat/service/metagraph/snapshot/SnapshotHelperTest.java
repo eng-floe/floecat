@@ -19,12 +19,10 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.service.testsupport.TestNodes;
@@ -38,14 +36,11 @@ class SnapshotHelperTest {
 
   private SnapshotHelper helper;
   private SnapshotTestSupport.FakeSnapshotRepository repository;
-  private SnapshotTestSupport.FakeSnapshotClient snapshotClient;
 
   @BeforeEach
   void setUp() {
     repository = new SnapshotTestSupport.FakeSnapshotRepository();
-    helper = new SnapshotHelper(repository, null);
-    snapshotClient = new SnapshotTestSupport.FakeSnapshotClient();
-    helper.setSnapshotClient(snapshotClient);
+    helper = new SnapshotHelper(repository);
   }
 
   @Test
@@ -58,6 +53,20 @@ class SnapshotHelperTest {
             Optional.empty());
 
     assertThat(pin.getSnapshotId()).isEqualTo(5);
+    assertThat(pin.hasSnapshotId()).isTrue();
+  }
+
+  @Test
+  void pinUsesExplicitSnapshotIdZero() {
+    SnapshotPin pin =
+        helper.snapshotPinFor(
+            "corr",
+            tableId("tbl"),
+            SnapshotRef.newBuilder().setSnapshotId(0).build(),
+            Optional.empty());
+
+    assertThat(pin.getSnapshotId()).isEqualTo(0);
+    assertThat(pin.hasSnapshotId()).isTrue();
   }
 
   @Test
@@ -68,7 +77,7 @@ class SnapshotHelperTest {
             "corr", tableId("tbl"), SnapshotRef.newBuilder().setAsOf(ts).build(), Optional.empty());
 
     assertThat(pin.getAsOf()).isEqualTo(ts);
-    assertThat(pin.getSnapshotId()).isZero();
+    assertThat(pin.hasSnapshotId()).isFalse();
   }
 
   @Test
@@ -80,19 +89,18 @@ class SnapshotHelperTest {
   }
 
   @Test
-  void pinFallsBackToSnapshotService() {
+  void pinUsesRepositoryCurrentSnapshotWhenNoRefProvided() {
+    ResourceId tableId = tableId("tbl");
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setSnapshotId(99L)
             .setUpstreamCreatedAt(ts("2024-03-01T00:00:00Z"))
             .build();
-    snapshotClient.nextResponse = GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build();
+    repository.put(tableId, snapshot);
 
-    SnapshotPin pin = helper.snapshotPinFor("corr", tableId("tbl"), null, Optional.empty());
+    SnapshotPin pin = helper.snapshotPinFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getSnapshotId()).isEqualTo(99L);
-    assertThat(snapshotClient.lastRequest.getSnapshot().getSpecial())
-        .isEqualTo(SpecialSnapshot.SS_CURRENT);
   }
 
   @Test

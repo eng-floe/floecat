@@ -106,7 +106,10 @@ final class SystemEngineCatalogTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData data =
         new SystemCatalogData(

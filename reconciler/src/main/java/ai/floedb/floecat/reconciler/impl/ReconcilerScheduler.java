@@ -16,8 +16,10 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -26,7 +28,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @ApplicationScoped
 public class ReconcilerScheduler {
-  @Inject GrpcClients clients;
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
 
@@ -55,19 +56,52 @@ public class ReconcilerScheduler {
                 .setKind(ResourceKind.RK_CONNECTOR)
                 .build();
 
-        var result = reconcilerService.reconcile(connectorId, lease.fullRescan, lease.scope);
-
-        long finished = System.currentTimeMillis();
-        if (result.ok()) {
-          jobs.markSucceeded(lease.jobId, finished, result.scanned, result.changed);
-        } else {
+        var principal =
+            PrincipalContext.newBuilder()
+                .setAccountId(lease.accountId)
+                .setSubject("reconciler.scheduler")
+                .setCorrelationId("reconciler-job-" + lease.jobId)
+                .build();
+        var result =
+            reconcilerService.reconcile(
+                principal,
+                connectorId,
+                lease.fullRescan,
+                lease.scope,
+                CaptureMode.METADATA_ONLY_CORE);
+        if (!result.ok()) {
           jobs.markFailed(
               lease.jobId,
-              finished,
+              System.currentTimeMillis(),
               result.message(),
               result.scanned,
               result.changed,
               result.errors);
+          return;
+        }
+        var statsResult =
+            reconcilerService.reconcile(
+                principal,
+                connectorId,
+                lease.fullRescan,
+                lease.scope,
+                CaptureMode.STATS_ONLY_ASYNC);
+
+        long finished = System.currentTimeMillis();
+        if (statsResult.ok()) {
+          jobs.markSucceeded(
+              lease.jobId,
+              finished,
+              Math.max(result.scanned, statsResult.scanned),
+              Math.max(result.changed, statsResult.changed));
+        } else {
+          jobs.markFailed(
+              lease.jobId,
+              finished,
+              statsResult.message(),
+              Math.max(result.scanned, statsResult.scanned),
+              Math.max(result.changed, statsResult.changed),
+              statsResult.errors);
         }
       } catch (Exception e) {
         var msg = describeFailure(e);

@@ -25,6 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
@@ -43,6 +44,7 @@ import org.apache.iceberg.io.InputFile;
 public class ViewRegisterService {
   @Inject ViewClient viewClient;
   @Inject ViewMetadataService viewMetadataService;
+  @Inject TableGatewaySupport tableGatewaySupport;
   @Inject ObjectMapper mapper;
   @Inject IcebergGatewayConfig config;
 
@@ -115,7 +117,8 @@ public class ViewRegisterService {
   private ViewMetadataView loadMetadata(String metadataLocation) {
     FileIO fileIO = null;
     try {
-      fileIO = FileIoFactory.createFileIo(Map.of(), config, true);
+      Map<String, String> ioProps = tableGatewaySupport.defaultFileIoProperties();
+      fileIO = FileIoFactory.createFileIo(ioProps, config, true);
       InputFile input = fileIO.newInputFile(metadataLocation);
       try (InputStream stream = input.newStream()) {
         String payload = new String(stream.readAllBytes(), StandardCharsets.UTF_8);

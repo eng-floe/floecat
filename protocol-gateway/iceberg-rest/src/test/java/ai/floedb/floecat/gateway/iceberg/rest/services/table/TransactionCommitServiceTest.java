@@ -715,6 +715,76 @@ class TransactionCommitServiceTest {
   }
 
   @Test
+  void alreadyAppliedReplaysPreCommitSnapshotUpdatesWhenPresent() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    when(stageResolver.resolve(any()))
+        .thenReturn(
+            new CommitStageResolver.StageResolution(
+                tableId,
+                new StageCommitProcessor.StageCommitResult(table, null, true),
+                null,
+                null));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient, never()).prepareTransaction(any());
+    verify(transactionClient, never()).commitTransaction(any());
+    verify(tableCommitPlanner).plan(any(), any(), any(), any());
+    verify(snapshotMetadataService)
+        .applySnapshotUpdates(
+            any(),
+            any(),
+            any(),
+            any(),
+            any(),
+            argThat(
+                updates ->
+                    updates != null
+                        && updates.stream()
+                            .anyMatch(
+                                u -> "add-snapshot".equals(u == null ? null : u.get("action")))),
+            argThat("idem"::equals));
+  }
+
+  @Test
+  void assertCreateFailsWhenTableAlreadyExistsWithoutStageCreate() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", null, requestWithAssertCreate(), tableSupport);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
+    assertEquals("CommitFailedException", error.error().type());
+    verify(transactionClient, never()).prepareTransaction(any());
+    verify(transactionClient, never()).commitTransaction(any());
+  }
+
+  @Test
   void conflictStateSkipsSnapshotAndCommitWork() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
@@ -1340,6 +1410,16 @@ class TransactionCommitServiceTest {
         List.of(
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(List.of("db"), "orders"), null, null, List.of())));
+  }
+
+  private TransactionCommitRequest requestWithAssertCreate() {
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"),
+                null,
+                List.of(Map.of("type", "assert-create")),
+                List.of())));
   }
 
   private TransactionCommitRequest requestWithNullUpdates() {

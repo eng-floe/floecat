@@ -25,8 +25,10 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
@@ -42,20 +44,21 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleHeader;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
-import ai.floedb.floecat.systemcatalog.spi.scanner.StatsProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -66,10 +69,14 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -78,6 +85,8 @@ public class UserObjectBundleService {
 
   private static final int MAX_RESOLUTIONS_PER_CHUNK = 25;
   private static final Logger LOG = Logger.getLogger(UserObjectBundleService.class);
+  private static final Set<String> LOCAL_FLIGHT_HOSTS = Set.of("localhost", "127.0.0.1", "0.0.0.0");
+  private static final String SYSTEM_FLIGHT_ENDPOINTS_PREFIX = "floedb.system-flight.endpoints.";
 
   private final CatalogOverlay overlay;
   private final QueryInputResolver inputResolver;
@@ -86,6 +95,28 @@ public class UserObjectBundleService {
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
+  private final FlightEndpointRef floecatFlightEndpoint;
+
+  private static void warnFlightHost(String flightHost, String quarkusProfile) {
+    if (flightHost == null) {
+      return;
+    }
+    String normalized =
+        flightHost
+            .trim()
+            .toLowerCase(Locale.ROOT)
+            .replaceAll("^\\[(.*)]$", "$1"); // handle IPv6 braces
+    boolean isLocalHost = LOCAL_FLIGHT_HOSTS.contains(normalized);
+    boolean isDevProfile =
+        quarkusProfile != null
+            && (quarkusProfile.equalsIgnoreCase("dev") || quarkusProfile.equalsIgnoreCase("test"));
+    if (isLocalHost && !isDevProfile) {
+      LOG.warnf(
+          "floecat.flight.host=%s resolves to %s; configure FLOECAT_FLIGHT_HOST to a routable"
+              + " endpoint before running in prod so workers can connect.",
+          flightHost, normalized);
+    }
+  }
 
   @Inject
   public UserObjectBundleService(
@@ -95,8 +126,12 @@ public class UserObjectBundleService {
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
-      @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "false")
-          boolean engineSpecificEnabled) {
+      @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
+          boolean engineSpecificEnabled,
+      @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost") String flightHost,
+      @ConfigProperty(name = "floecat.flight.port", defaultValue = "47470") int flightPort,
+      @ConfigProperty(name = "floecat.flight.tls", defaultValue = "false") boolean flightTls,
+      @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
@@ -104,6 +139,13 @@ public class UserObjectBundleService {
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
     this.engineSpecificEnabled = engineSpecificEnabled;
+    this.floecatFlightEndpoint =
+        FlightEndpointRef.newBuilder()
+            .setHost(flightHost)
+            .setPort(flightPort)
+            .setTls(flightTls)
+            .build();
+    warnFlightHost(flightHost, quarkusProfile);
   }
 
   public Multi<UserObjectsBundleChunk> stream(
@@ -158,11 +200,18 @@ public class UserObjectBundleService {
       Optional<GraphNode> node = overlay.resolve(relationId);
       if (node.isEmpty()) {
         if (input.getTargetCase() == QueryInput.TargetCase.NAME) {
-          throw new GraphNodeMissingException(relationId);
+          throw new GraphNodeMissingException(
+              relationId, "Id " + relationId + " does not map to any known object");
         }
         continue;
       }
-      return Optional.of(new ResolvedRelation(candidate, relationId, node.get(), input));
+      GraphNode gn = node.get();
+      if (!(gn instanceof RelationNode rel)) {
+        throw new GraphNodeMissingException(
+            relationId,
+            "Resolved id " + relationId + " maps to non-relation node kind=" + gn.kind());
+      }
+      return Optional.of(new ResolvedRelation(candidate, relationId, rel, input));
     }
     return Optional.empty();
   }
@@ -250,6 +299,31 @@ public class UserObjectBundleService {
             .setKind(kind)
             .setOrigin(origin);
 
+    /*
+     * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
+     * tables always use our built-in Flight server, and STORAGE tables can either point at their
+     * own Flight endpoint, use an endpoint key resolved from service config, or expose a storage
+     * path fallback. ENGINE tables never set an endpoint.
+     */
+    if (relation.node() instanceof SystemTableNode systemTableNode) {
+      builder.setBackendKind(systemTableNode.backendKind());
+      if (systemTableNode instanceof SystemTableNode.FloeCatSystemTableNode) {
+        builder.setFlightEndpoint(floecatFlightEndpoint);
+      } else if (systemTableNode instanceof SystemTableNode.StorageSystemTableNode storage) {
+        if (storage.flightEndpoint() != null) {
+          builder.setFlightEndpoint(storage.flightEndpoint());
+        } else {
+          Optional<FlightEndpointRef> configuredEndpoint =
+              configuredEndpointForKey(storage.storageEndpointKey());
+          if (configuredEndpoint.isPresent()) {
+            builder.setFlightEndpoint(configuredEndpoint.get());
+          } else if (!storage.storagePath().isBlank()) {
+            builder.setStoragePath(storage.storagePath());
+          }
+        }
+      }
+    }
+
     statsProvider
         .tableStats(relation.relationId())
         .map(StatsProviderFactory::toRelationStats)
@@ -318,6 +392,33 @@ public class UserObjectBundleService {
 
     builder.addAllColumns(decoratedColumns);
     return builder.build();
+  }
+
+  private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
+    if (endpointKey == null || endpointKey.isBlank()) {
+      return Optional.empty();
+    }
+
+    String normalizedKey = endpointKey.trim();
+    String prefix = SYSTEM_FLIGHT_ENDPOINTS_PREFIX + normalizedKey + ".";
+    Config config = ConfigProvider.getConfig();
+    Optional<String> host =
+        config
+            .getOptionalValue(prefix + "host", String.class)
+            .map(String::trim)
+            .filter(value -> !value.isBlank());
+    Optional<Integer> port =
+        config.getOptionalValue(prefix + "port", Integer.class).filter(value -> value > 0);
+    if (host.isEmpty() || port.isEmpty()) {
+      LOG.debugf(
+          "Storage endpoint key '%s' has no config at %shost/%sport; falling back to storage path",
+          normalizedKey, prefix, prefix);
+      return Optional.empty();
+    }
+
+    boolean tls = config.getOptionalValue(prefix + "tls", Boolean.class).orElse(false);
+    return Optional.of(
+        FlightEndpointRef.newBuilder().setHost(host.get()).setPort(port.get()).setTls(tls).build());
   }
 
   private List<ColumnInfo> decorateColumns(
@@ -505,13 +606,14 @@ public class UserObjectBundleService {
   private record ResolvedRelation(
       TableReferenceCandidate candidate,
       ResourceId relationId,
-      GraphNode node,
+      RelationNode node,
       QueryInput selectedInput) {}
 
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
 
-    private GraphNodeMissingException(ResourceId relationId) {
+    private GraphNodeMissingException(ResourceId relationId, String msg) {
+      super(msg);
       this.relationId = relationId;
     }
 

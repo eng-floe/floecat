@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -35,6 +36,7 @@ public class TableDropCleanupService {
   private static final Logger LOG = Logger.getLogger(TableDropCleanupService.class);
 
   @Inject IcebergGatewayConfig config;
+  @Inject TableGatewaySupport tableGatewaySupport;
 
   public void purgeTableData(String catalogName, String namespace, String tableName, Table table) {
     String tableId =
@@ -67,13 +69,15 @@ public class TableDropCleanupService {
           namespace, tableName, catalogName);
       return;
     }
-    Map<String, String> ioProps = FileIoFactory.filterIoProperties(props);
+    Map<String, String> ioProps =
+        new LinkedHashMap<>(tableGatewaySupport.defaultFileIoProperties());
+    ioProps.putAll(FileIoFactory.filterIoProperties(props));
     LOG.infof(
         "Purging Iceberg data namespace=%s table=%s metadata=%s ioProps=%s",
         namespace, tableName, metadataLocation, ioProps);
     FileIO fileIO = null;
     try {
-      fileIO = FileIoFactory.createFileIo(props, config, true);
+      fileIO = FileIoFactory.createFileIo(ioProps, config, true);
       TableMetadata metadata = TableMetadataParser.read(fileIO, metadataLocation);
       CatalogUtil.dropTableData(fileIO, metadata);
       LOG.infof(

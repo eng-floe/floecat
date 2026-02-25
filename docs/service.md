@@ -47,7 +47,7 @@ query lifecycle / scan bundle logic.
   (see [`docs/metadata-graph.md`](metadata-graph.md)).
 - `service/gc` – Scheduled cleanup of stale idempotency entries.
 - `service/bootstrap` – Optional seeding of demo accounts and catalog data.
-- `service/metrics` – `MeteringInterceptor` + `StorageUsageMetrics` for Micrometer integration.
+- `service/metrics` – `ServiceTelemetryInterceptor` + `StorageUsageMetrics` for Micrometer integration.
 
 ## Public API / Surface Area
 Each gRPC implementation derives from `BaseServiceImpl`, gaining retry semantics, error mapping, and
@@ -70,6 +70,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
+  `SyncCapture` maps to reconciler capture modes:
+  - `include_statistics=false` -> `METADATA_ONLY_CORE`
+  - `include_statistics=true` -> `STATS_ONLY_ASYNC`
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
   demand.
@@ -128,6 +131,13 @@ idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob p
 CAS blobs with no remaining pointers once they exceed the configured min-age. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
+For connector-backed fixture tables, seeding now runs two reconcile passes per fixture scope:
+- core metadata pass (`METADATA_ONLY_CORE`)
+- stats capture pass (`STATS_ONLY_ASYNC`)
+
+This ensures query scan bundles and Delta-compat manifest materialization have required file stats
+available immediately after startup.
+
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
 `PutColumnStats`/`PutFileColumnStats`, rejects mixed idempotency keys within a stream, and applies
@@ -140,7 +150,7 @@ rows upserted after all batches have been consumed.
 client → Quarkus Server
   → InboundContextInterceptor (principal/query/correlation)
   → LocalizeErrorsInterceptor (message catalog)
-  → MeteringInterceptor (metrics/latency)
+  → ServiceTelemetryInterceptor (metrics/latency)
   → ServiceImpl (authz + validation)
       → Repository (CAS pointer/blob operations)
   ← response + MutationMeta
@@ -163,13 +173,19 @@ Notable `application.properties` keys:
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |
 | `floecat.auth.mode` | Auth enforcement mode (`oidc`, `dev`). |
 | `floecat.auth.platform-admin.role` | IdP role name granted permission to manage accounts (default `platform-admin`). |
+| `floecat.secrets.aws.role-arn` | Optional role to assume per account when using AWS Secrets Manager. |
 
 Extension points:
 - **Storage** – Provide custom `PointerStore`/`BlobStore` (see [`docs/storage-spi.md`](storage-spi.md)).
 - **Security** – Replace `Authorizer` or interceptors with CDI alternatives.
 - **Connectors** – Register new SPI implementations and expose them via `ConnectorRepository`.
 - **QueryService** – Extend query metadata by enriching `QueryContext` creation or injecting
-  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`.
+  additional connector metadata via the `FetchScanBundle` RPC / `ScanBundleService`. `BeginQuery`
+  optionally accepts a client-specified `query_id` plus `common.QueryInput` records so lifecycle can
+  pre-pin snapshots/expansions for deterministic replay.
+
+Secrets Manager integration (tags + optional per-account assume-role) is documented in
+[`docs/secrets-manager.md`](secrets-manager.md).
 
 ## Examples & Scenarios
 - **Create Catalog** – `CatalogServiceImpl.createCatalog` canonicalises `display_name`, allocates a

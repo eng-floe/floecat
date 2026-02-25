@@ -20,14 +20,12 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.fir
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -38,8 +36,6 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
-import org.apache.iceberg.io.OutputFile;
-import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.jboss.logging.Logger;
 
@@ -50,6 +46,7 @@ public class MaterializeMetadataService {
 
   @Inject ObjectMapper mapper;
   @Inject IcebergGatewayConfig config;
+  @Inject TableGatewaySupport tableGatewaySupport;
 
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
@@ -78,7 +75,11 @@ public class MaterializeMetadataService {
     String resolvedLocation = null;
     FileIO fileIO = null;
     try {
-      Map<String, String> props = sanitizeProperties(metadata.properties());
+      Map<String, String> props = new LinkedHashMap<>();
+      if (tableGatewaySupport != null) {
+        props.putAll(tableGatewaySupport.defaultFileIoProperties());
+      }
+      props.putAll(sanitizeProperties(metadata.properties()));
       fileIO = newFileIo(props);
       resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
@@ -88,8 +89,8 @@ public class MaterializeMetadataService {
         return new MaterializeResult(requestedLocation, metadata);
       }
       TableMetadataView resolvedMetadata = metadata.withMetadataLocation(resolvedLocation);
-      String canonicalJson = canonicalMetadataJson(resolvedMetadata, resolvedLocation);
-      writeJson(fileIO, resolvedLocation, canonicalJson);
+      TableMetadata parsed = parseMetadata(resolvedMetadata, resolvedLocation);
+      writeMetadata(fileIO, resolvedLocation, parsed);
       LOG.infof(
           "Materialized Iceberg metadata files for %s.%s to %s",
           namespaceFq, tableName, resolvedLocation);
@@ -137,87 +138,20 @@ public class MaterializeMetadataService {
     this.config = config;
   }
 
-  private String canonicalMetadataJson(TableMetadataView metadata, String metadataLocation) {
+  private TableMetadata parseMetadata(TableMetadataView metadata, String metadataLocation) {
     try {
       JsonNode node = mapper.valueToTree(metadata);
-      ObjectNode objectNode = node instanceof ObjectNode obj ? obj : null;
-      if (objectNode != null) {
-        long snapshotId = objectNode.path("current-snapshot-id").asLong(-1L);
-        if (snapshotId <= 0) {
-          objectNode.remove("current-snapshot-id");
-        }
-        long maxSequence = maxSnapshotSequence(objectNode);
-        long metadataMaxSequence = maxSnapshotSequence(metadata);
-        if (metadataMaxSequence > maxSequence) {
-          maxSequence = metadataMaxSequence;
-        }
-        long metadataDeclared = declaredSequence(metadata);
-        if (metadataDeclared > maxSequence) {
-          maxSequence = metadataDeclared;
-        }
-        if (maxSequence > 0) {
-          long existingSequence = objectNode.path("last-sequence-number").asLong(-1L);
-          if (existingSequence < maxSequence) {
-            objectNode.put("last-sequence-number", maxSequence);
-          }
-        }
-        long lastUpdated = objectNode.path("last-updated-ms").asLong(-1L);
-        if (lastUpdated <= 0) {
-          objectNode.put("last-updated-ms", System.currentTimeMillis());
-        }
-        if (LOG.isDebugEnabled()) {
-          long debugSeq = objectNode.path("last-sequence-number").asLong(-1L);
-          long debugSnapSeq = maxSnapshotSequence(objectNode);
-          Long debugMetaSeq = metadata == null ? null : metadata.lastSequenceNumber();
-          String debugPropSeq =
-              metadata == null || metadata.properties() == null
-                  ? null
-                  : metadata.properties().get("last-sequence-number");
-          LOG.debugf(
-              "Materialize sequence debug metaSeq=%s propSeq=%s jsonSeq=%d jsonSnapMax=%d",
-              debugMetaSeq, debugPropSeq, debugSeq, debugSnapSeq);
-        }
-      }
-      try {
-        TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, node);
-        return TableMetadataParser.toJson(parsed);
-      } catch (RuntimeException e) {
-        if (objectNode != null) {
-          long maxSequence = maxSnapshotSequence(objectNode);
-          long metadataMaxSequence = maxSnapshotSequence(metadata);
-          if (metadataMaxSequence > maxSequence) {
-            maxSequence = metadataMaxSequence;
-          }
-          long metadataDeclared = declaredSequence(metadata);
-          if (metadataDeclared > maxSequence) {
-            maxSequence = metadataDeclared;
-          }
-          if (maxSequence > 0) {
-            objectNode.put("last-sequence-number", maxSequence);
-            TableMetadata parsed = TableMetadataParser.fromJson(metadataLocation, objectNode);
-            return TableMetadataParser.toJson(parsed);
-          }
-        }
-        throw e;
-      }
+      return TableMetadataParser.fromJson(metadataLocation, node);
     } catch (RuntimeException e) {
       throw new MaterializeMetadataException("Unable to serialize Iceberg metadata", e);
     }
   }
 
-  private void writeJson(FileIO fileIO, String location, String payload) {
-    OutputFile outputFile = fileIO.newOutputFile(location);
-    byte[] data = payload.getBytes(StandardCharsets.UTF_8);
+  private void writeMetadata(FileIO fileIO, String location, TableMetadata metadata) {
+    LOG.infof("Writing Iceberg metadata file %s", location == null ? "<null>" : location);
+    TableMetadataParser.write(metadata, fileIO.newOutputFile(location));
     LOG.infof(
-        "Writing Iceberg metadata file %s (%,d bytes)",
-        location == null ? "<null>" : location, data.length);
-    try (PositionOutputStream stream = outputFile.createOrOverwrite()) {
-      stream.write(data);
-      LOG.infof(
-          "Successfully wrote Iceberg metadata file %s", location == null ? "<null>" : location);
-    } catch (IOException e) {
-      throw new MaterializeMetadataException("Failed to write metadata file " + location, e);
-    }
+        "Successfully wrote Iceberg metadata file %s", location == null ? "<null>" : location);
   }
 
   private void closeQuietly(FileIO fileIO) {
@@ -247,7 +181,14 @@ public class MaterializeMetadataService {
 
   private String resolveVersionedLocation(
       FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
-    String directory = metadataLocation != null ? directoryOf(metadataLocation) : null;
+    String directory = null;
+    if (metadataLocation != null) {
+      if (metadataLocation.endsWith("/")) {
+        directory = metadataLocation;
+      } else {
+        directory = directoryOf(metadataLocation);
+      }
+    }
     if (directory == null) {
       directory = metadataDirectory(metadata);
     }
@@ -306,87 +247,6 @@ public class MaterializeMetadataService {
     }
     String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
     return base + "/metadata/";
-  }
-
-  private long maxSnapshotSequence(ObjectNode objectNode) {
-    JsonNode snapshots = objectNode.get("snapshots");
-    if (snapshots == null || !snapshots.isArray()) {
-      return -1L;
-    }
-    long max = -1L;
-    for (JsonNode snapshot : snapshots) {
-      if (snapshot == null || !snapshot.isObject()) {
-        continue;
-      }
-      long seq = snapshot.path("sequence-number").asLong(-1L);
-      if (seq <= 0) {
-        seq = snapshot.path("sequence_number").asLong(-1L);
-      }
-      if (seq <= 0) {
-        seq = snapshot.path("sequenceNumber").asLong(-1L);
-      }
-      if (seq > max) {
-        max = seq;
-      }
-    }
-    return max;
-  }
-
-  private long maxSnapshotSequence(TableMetadataView metadata) {
-    if (metadata == null || metadata.snapshots() == null || metadata.snapshots().isEmpty()) {
-      return -1L;
-    }
-    long max = -1L;
-    for (Map<String, Object> snapshot : metadata.snapshots()) {
-      if (snapshot == null) {
-        continue;
-      }
-      Long seq = parseSequence(snapshot.get("sequence-number"));
-      if (seq == null || seq <= 0) {
-        seq = parseSequence(snapshot.get("sequence_number"));
-      }
-      if (seq == null || seq <= 0) {
-        seq = parseSequence(snapshot.get("sequenceNumber"));
-      }
-      if (seq != null && seq > max) {
-        max = seq;
-      }
-    }
-    return max;
-  }
-
-  private Long parseSequence(Object value) {
-    if (value == null) {
-      return null;
-    }
-    if (value instanceof Number number) {
-      return number.longValue();
-    }
-    String text = value.toString();
-    if (text.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(text);
-    } catch (NumberFormatException e) {
-      return null;
-    }
-  }
-
-  private long declaredSequence(TableMetadataView metadata) {
-    if (metadata == null) {
-      return -1L;
-    }
-    Long declared = metadata.lastSequenceNumber();
-    if (declared != null && declared > 0) {
-      return declared;
-    }
-    Map<String, String> props = metadata.properties();
-    if (props == null || props.isEmpty()) {
-      return -1L;
-    }
-    Long propValue = parseSequence(props.get("last-sequence-number"));
-    return propValue != null ? propValue : -1L;
   }
 
   private String metadataDirectoryFromLocation(String location) {

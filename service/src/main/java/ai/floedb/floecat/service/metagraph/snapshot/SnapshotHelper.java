@@ -18,9 +18,7 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc.SnapshotServiceBlockingStub;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -30,6 +28,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import com.google.protobuf.Timestamp;
+import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -39,28 +38,13 @@ import java.util.Optional;
  * resolution - AS OF timestamp fallback - Default "CURRENT" snapshot semantics - Schema resolution
  * based on effective snapshot
  */
+@ApplicationScoped
 public class SnapshotHelper {
 
-  public interface SnapshotClient {
-    ai.floedb.floecat.catalog.rpc.GetSnapshotResponse getSnapshot(
-        ai.floedb.floecat.catalog.rpc.GetSnapshotRequest request);
-  }
-
-  private SnapshotClient client;
   private final SnapshotRepository snapshots;
 
-  public SnapshotHelper(SnapshotRepository snapshots, SnapshotServiceBlockingStub stub) {
+  public SnapshotHelper(SnapshotRepository snapshots) {
     this.snapshots = snapshots;
-    this.client =
-        (stub != null)
-            ? stub::getSnapshot
-            : req -> {
-              throw new IllegalStateException("Snapshot client missing");
-            };
-  }
-
-  public void setSnapshotClient(SnapshotClient c) {
-    this.client = c;
   }
 
   // ----------------------------------------------------------------------
@@ -82,14 +66,8 @@ public class SnapshotHelper {
       return pin(tableId, 0, asOfDefault.get());
     }
 
-    var resp =
-        client.getSnapshot(
-            GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                .build());
-
-    return pin(tableId, resp.getSnapshot().getSnapshotId(), null);
+    Snapshot current = currentSnapshot(cid, tableId);
+    return pin(tableId, current.getSnapshotId(), null);
   }
 
   // ----------------------------------------------------------------------
@@ -160,10 +138,7 @@ public class SnapshotHelper {
               cid, SNAPSHOT_SPECIAL_UNSUPPORTED, Map.of("requested", ref.getSpecial().name()));
         }
 
-        yield snapshots
-            .getCurrentSnapshot(tableId)
-            .orElseThrow(
-                () -> GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId())));
+        yield currentSnapshot(cid, tableId);
       }
 
       case WHICH_NOT_SET ->
@@ -178,8 +153,14 @@ public class SnapshotHelper {
 
   private SnapshotPin pin(ResourceId tableId, long id, Timestamp ts) {
     SnapshotPin.Builder b = SnapshotPin.newBuilder().setTableId(tableId);
-    if (id > 0) b.setSnapshotId(id);
+    if (id >= 0 && ts == null) b.setSnapshotId(id);
     if (ts != null) b.setAsOf(ts);
     return b.build();
+  }
+
+  private Snapshot currentSnapshot(String cid, ResourceId tableId) {
+    return snapshots
+        .getCurrentSnapshot(tableId)
+        .orElseThrow(() -> GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId())));
   }
 }

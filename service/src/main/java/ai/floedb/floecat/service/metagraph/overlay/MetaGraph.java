@@ -24,20 +24,22 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemCatalogTranslator;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -112,7 +114,7 @@ public final class MetaGraph implements CatalogOverlay {
    * @return list of all relations in the catalog
    */
   @Override
-  public List<GraphNode> listRelations(ResourceId catalogId) {
+  public List<RelationNode> listRelations(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelations(catalogId, ctx), () -> userGraph.listRelations(catalogId));
@@ -129,7 +131,7 @@ public final class MetaGraph implements CatalogOverlay {
    * @return list of all relations in the namespace
    */
   @Override
-  public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
@@ -204,10 +206,11 @@ public final class MetaGraph implements CatalogOverlay {
   @Override
   public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
+    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx);
     return resolveWithAmbiguityCheck(
         correlationId,
         ref,
-        () -> systemGraph.resolveNamespace(ref, ctx),
+        () -> systemGraph.resolveNamespace(systemRef, ctx),
         () -> userGraph.resolveNamespace(correlationId, ref));
   }
 
@@ -272,6 +275,18 @@ public final class MetaGraph implements CatalogOverlay {
         ref,
         () -> systemGraph.resolveName(ref, ctx),
         () -> userGraph.resolveName(correlationId, ref));
+  }
+
+  @Override
+  public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+    EngineContext ctx = engineContext();
+    return systemGraph.resolveTable(ref, ctx);
+  }
+
+  @Override
+  public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+    EngineContext ctx = engineContext();
+    return systemGraph.tableName(id, ctx);
   }
 
   /**
@@ -643,55 +658,14 @@ public final class MetaGraph implements CatalogOverlay {
     }
   }
 
-  /**
-   * Converts a user-facing namespace reference to a system-catalog namespace reference for the
-   * current engine context.
-   */
-  private static NameRef toSystemNamespaceRef(NameRef userRef, EngineContext ctx) {
-    String sysCatalog =
-        (ctx == null || ctx.effectiveEngineKind().isBlank())
-            ? userRef.getCatalog()
-            : ctx.effectiveEngineKind();
-    List<String> nsPath = NameRefUtil.namespacePath(userRef);
-    NameRef.Builder builder = NameRef.newBuilder().setCatalog(sysCatalog);
-    if (!nsPath.isEmpty()) {
-      for (int i = 0; i < nsPath.size() - 1; i++) {
-        builder.addPath(nsPath.get(i));
-      }
-      builder.setName(nsPath.get(nsPath.size() - 1));
-    }
-    return builder.build();
-  }
-
-  /**
-   * Converts a user-facing relation reference (table/view) to a system-catalog reference for the
-   * current engine context.
-   */
-  private static NameRef toSystemRelationRef(NameRef userRef, EngineContext ctx) {
-    String sysCatalog =
-        (ctx == null || ctx.effectiveEngineKind().isBlank())
-            ? userRef.getCatalog()
-            : ctx.effectiveEngineKind();
-    return userRef.toBuilder().setCatalog(sysCatalog).build();
-  }
-
-  /**
-   * Aliases a system canonical name back to the user-facing catalog name.
-   *
-   * <p>This produces a "symlink" effect where system objects appear under the user catalog.
-   */
-  private static NameRef aliasBackToUserCatalog(NameRef input, NameRef systemName) {
-    return systemName.toBuilder().setCatalog(input.getCatalog()).build();
-  }
-
   private Map<String, CatalogOverlay.QualifiedRelation> collectSystemRelationsForNames(
       List<NameRef> refs, EngineContext ctx, boolean tables) {
     Map<String, CatalogOverlay.QualifiedRelation> result = new LinkedHashMap<>();
     for (NameRef ref : refs) {
       Optional<ResourceId> sysId =
           tables
-              ? systemGraph.resolveTable(toSystemRelationRef(ref, ctx), ctx)
-              : systemGraph.resolveView(toSystemRelationRef(ref, ctx), ctx);
+              ? systemGraph.resolveTable(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx)
+              : systemGraph.resolveView(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx);
       if (sysId.isEmpty()) {
         continue;
       }
@@ -700,7 +674,7 @@ public final class MetaGraph implements CatalogOverlay {
           tables
               ? systemGraph.tableName(sysId.get(), ctx).orElse(ref)
               : systemGraph.viewName(sysId.get(), ctx).orElse(ref);
-      NameRef alias = aliasBackToUserCatalog(ref, systemName);
+      NameRef alias = SystemCatalogTranslator.aliasToUserCatalog(ref, systemName);
       CatalogOverlay.QualifiedRelation relation =
           new CatalogOverlay.QualifiedRelation(alias, sysId.get());
       result.put(canonicalName(alias), relation);
@@ -711,16 +685,17 @@ public final class MetaGraph implements CatalogOverlay {
   private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
       NameRef prefix, EngineContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
-        systemGraph.resolveNamespace(toSystemNamespaceRef(prefix, ctx), ctx);
+        systemGraph.resolveNamespace(
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
     if (sysNsId.isEmpty()) {
       return List.of();
     }
 
-    List<GraphNode> nodes =
+    List<RelationNode> nodes =
         systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx);
     List<CatalogOverlay.QualifiedRelation> out = new ArrayList<>(Math.min(nodes.size(), max));
 
-    for (GraphNode n : nodes) {
+    for (RelationNode n : nodes) {
       if (out.size() >= max) {
         break;
       }
@@ -728,12 +703,16 @@ public final class MetaGraph implements CatalogOverlay {
         NameRef systemName =
             systemGraph.tableName(t.id(), ctx).orElse(NameRef.getDefaultInstance());
         NameRef alias =
-            aliasBackToUserCatalog(prefix, systemName).toBuilder().setResourceId(t.id()).build();
+            SystemCatalogTranslator.aliasToUserCatalog(prefix, systemName).toBuilder()
+                .setResourceId(t.id())
+                .build();
         out.add(new CatalogOverlay.QualifiedRelation(alias, t.id()));
       } else if (!tables && n instanceof ViewNode v) {
         NameRef systemName = systemGraph.viewName(v.id(), ctx).orElse(NameRef.getDefaultInstance());
         NameRef alias =
-            aliasBackToUserCatalog(prefix, systemName).toBuilder().setResourceId(v.id()).build();
+            SystemCatalogTranslator.aliasToUserCatalog(prefix, systemName).toBuilder()
+                .setResourceId(v.id())
+                .build();
         out.add(new CatalogOverlay.QualifiedRelation(alias, v.id()));
       }
     }

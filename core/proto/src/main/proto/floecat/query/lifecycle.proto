@@ -142,6 +142,12 @@ message BeginQueryRequest {
   
   // default catalog for this query
   ai.floedb.floecat.common.ResourceId default_catalog_id = 3;
+
+  // Optional client-supplied identifier for deterministic replay; duplicates are rejected.
+  optional string query_id = 4;
+
+  // Optional inputs to resolve/pin (tables/views and snapshots) when creating the context.
+  repeated ai.floedb.floecat.common.QueryInput inputs = 5;
 }
 
 /**

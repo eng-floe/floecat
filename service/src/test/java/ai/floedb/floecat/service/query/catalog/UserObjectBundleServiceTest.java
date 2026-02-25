@@ -33,6 +33,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -46,14 +47,16 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionRes
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -146,7 +149,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
   }
 
   @Test
@@ -243,7 +250,11 @@ class UserObjectBundleServiceTest {
             localStatsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     long expectedSnapshotId = 99L;
     TableStats stats =
@@ -330,7 +341,11 @@ class UserObjectBundleServiceTest {
             statsFactory,
             decoratorProvider,
             engineContextProvider,
-            false);
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -455,6 +470,96 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void storageSystemTableFlightEndpointUsesConfigByEndpointKey() {
+    ResourceId systemStorageA =
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYSTEM_STORAGE_A")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ResourceId systemStorageB =
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYSTEM_STORAGE_B")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String keyA = "bundle-test-a";
+    String keyB = "bundle-test-b";
+    String prefixA = "floedb.system-flight.endpoints." + keyA + ".";
+    String prefixB = "floedb.system-flight.endpoints." + keyB + ".";
+    List<String> propertyKeys =
+        List.of(
+            prefixA + "host",
+            prefixA + "port",
+            prefixA + "tls",
+            prefixB + "host",
+            prefixB + "port",
+            prefixB + "tls");
+    Map<String, String> previousValues = rememberProperties(propertyKeys);
+
+    System.setProperty(prefixA + "host", "endpoint-a");
+    System.setProperty(prefixA + "port", "4111");
+    System.setProperty(prefixA + "tls", "true");
+    System.setProperty(prefixB + "host", "endpoint-b");
+    System.setProperty(prefixB + "port", "4222");
+    System.setProperty(prefixB + "tls", "false");
+
+    try {
+      overlay.registerRelation(
+          systemStorageA,
+          storageSystemTableNode(systemStorageA, "sys://a", keyA),
+          UserObjectBundleTestSupport.schemaFor("col_a"),
+          NameRef.newBuilder().setCatalog("sys").setName("storage_a").build());
+      overlay.registerRelation(
+          systemStorageB,
+          storageSystemTableNode(systemStorageB, "sys://b", keyB),
+          UserObjectBundleTestSupport.schemaFor("col_b"),
+          NameRef.newBuilder().setCatalog("sys").setName("storage_b").build());
+
+      TableReferenceCandidate candidateA =
+          TableReferenceCandidate.newBuilder()
+              .addCandidates(QueryInput.newBuilder().setTableId(systemStorageA))
+              .build();
+      TableReferenceCandidate candidateB =
+          TableReferenceCandidate.newBuilder()
+              .addCandidates(QueryInput.newBuilder().setTableId(systemStorageB))
+              .build();
+
+      List<UserObjectsBundleChunk> chunks =
+          service.stream("cid", ctx, List.of(candidateA, candidateB))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+
+      RelationInfo relationA =
+          chunks.get(1).getResolutions().getItemsList().stream()
+              .map(RelationResolution::getRelation)
+              .filter(r -> r.getRelationId().equals(systemStorageA))
+              .findFirst()
+              .orElseThrow();
+      RelationInfo relationB =
+          chunks.get(1).getResolutions().getItemsList().stream()
+              .map(RelationResolution::getRelation)
+              .filter(r -> r.getRelationId().equals(systemStorageB))
+              .findFirst()
+              .orElseThrow();
+
+      assertThat(relationA.hasFlightEndpoint()).isTrue();
+      assertThat(relationA.getFlightEndpoint().getHost()).isEqualTo("endpoint-a");
+      assertThat(relationA.getFlightEndpoint().getPort()).isEqualTo(4111);
+      assertThat(relationA.getFlightEndpoint().getTls()).isTrue();
+
+      assertThat(relationB.hasFlightEndpoint()).isTrue();
+      assertThat(relationB.getFlightEndpoint().getHost()).isEqualTo("endpoint-b");
+      assertThat(relationB.getFlightEndpoint().getPort()).isEqualTo(4222);
+      assertThat(relationB.getFlightEndpoint().getTls()).isFalse();
+    } finally {
+      restoreProperties(previousValues);
+    }
+  }
+
+  @Test
   void cancellationStopsAfterFirstResolutionChunk() {
     TableReferenceCandidate first =
         TableReferenceCandidate.newBuilder()
@@ -560,7 +665,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -583,7 +698,17 @@ class UserObjectBundleServiceTest {
         ctx -> Optional.of(new CountingDecorator(columnDecorations));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
-            overlay, resolver, queryStore, statsFactory, provider, engineContextProvider, true);
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -619,5 +744,41 @@ class UserObjectBundleServiceTest {
     public void decorateColumn(EngineContext ctx, ColumnDecoration columnDecoration) {
       columnDecorations.incrementAndGet();
     }
+  }
+
+  private static SystemTableNode.StorageSystemTableNode storageSystemTableNode(
+      ResourceId id, String storagePath, String endpointKey) {
+    return new SystemTableNode.StorageSystemTableNode(
+        id,
+        1L,
+        Instant.EPOCH,
+        "",
+        id.getId(),
+        ResourceId.getDefaultInstance(),
+        List.of(),
+        Map.of(),
+        Map.of(),
+        storagePath,
+        endpointKey,
+        null);
+  }
+
+  private static Map<String, String> rememberProperties(List<String> keys) {
+    java.util.HashMap<String, String> values = new java.util.HashMap<>();
+    for (String key : keys) {
+      values.put(key, System.getProperty(key));
+    }
+    return values;
+  }
+
+  private static void restoreProperties(Map<String, String> values) {
+    values.forEach(
+        (key, value) -> {
+          if (value == null) {
+            System.clearProperty(key);
+          } else {
+            System.setProperty(key, value);
+          }
+        });
   }
 }

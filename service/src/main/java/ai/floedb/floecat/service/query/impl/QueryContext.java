@@ -337,7 +337,7 @@ public final class QueryContext {
    * default.
    */
   public java.util.Optional<Timestamp> parseAsOfDefault(String correlationId) {
-    if (asOfDefault == null) {
+    if (asOfDefault == null || asOfDefault.length == 0) {
       return java.util.Optional.empty();
     }
 

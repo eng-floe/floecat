@@ -25,8 +25,8 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -238,7 +238,7 @@ public class QueryInputResolver {
     if (pin == null) {
       return -1;
     }
-    if (pin.hasSnapshotId() && pin.getSnapshotId() > 0) {
+    if (pin.hasSnapshotId() && pin.getSnapshotId() >= 0) {
       return 3;
     }
     if (pin.hasAsOf()) {

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -32,7 +31,7 @@ public final class DeltaConnectorProvider implements ConnectorProvider {
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
     Map<String, String> options = new HashMap<>(cfg.options());
-    AuthProvider authProvider = DatabricksAuthFactory.from(cfg.auth());
+    var authProvider = DatabricksAuthFactory.from(cfg);
     return DeltaConnectorFactory.create(cfg.uri(), options, authProvider);
   }
 }

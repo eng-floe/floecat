@@ -17,7 +17,7 @@
 package ai.floedb.floecat.service.query.system;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
+import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import java.util.List;
 import java.util.stream.Stream;
 

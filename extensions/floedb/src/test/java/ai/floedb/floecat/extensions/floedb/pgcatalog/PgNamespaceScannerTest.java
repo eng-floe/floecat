@@ -16,40 +16,40 @@
 
 package ai.floedb.floecat.extensions.floedb.pgcatalog;
 
+import static ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogTestSupport.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.extensions.floedb.proto.FloeNamespaceSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
-import java.time.Instant;
-import java.util.List;
+import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for pg_catalog.pg_namespace scanner.
  *
- * <p>Validates: - Engine-specific payload decoding - Fallback behavior when payload is missing -
- * Stable deterministic OIDs
+ * <p>Validates:
+ *
+ * <ul>
+ *   <li>Engine-specific payload decoding
+ *   <li>SYSTEM objects require persisted hints (no fallback)
+ *   <li>USER namespaces may fall back when payload is missing
+ *   <li>Stable deterministic OIDs (for USER fallback)
+ * </ul>
  */
 final class PgNamespaceScannerTest {
 
   private final PgNamespaceScanner scanner = new PgNamespaceScanner();
-  private static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   @Test
   void scan_usesEngineSpecificPayload_whenPresent() {
     NamespaceNode pgCatalog =
-        namespace(
+        systemNamespace(
             "pg_catalog",
             Map.of(
                 new EngineHintKey("floedb", "1.0", "floe.namespace+proto"),
@@ -61,79 +61,45 @@ final class PgNamespaceScannerTest {
                         .build()
                         .toByteArray())));
 
-    SystemObjectScanContext ctx = contextWith(pgCatalog);
+    SystemObjectScanContext ctx = contextWithNamespaces(pgCatalog);
 
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
     Object[] v = row.values();
 
-    assertThat(v[0]).isEqualTo(11); // oid
-    assertThat(v[1]).isEqualTo("pg_catalog"); // nspname
+    assertThat(v[0]).isEqualTo(11);
+    assertThat(v[1]).isEqualTo("pg_catalog");
   }
 
   @Test
-  void scan_fallsBack_whenPayloadMissing() {
-    NamespaceNode ns = namespace("public", Map.of());
+  void scan_throws_whenSystemPayloadMissing() {
+    NamespaceNode ns = systemNamespace("public", Map.of());
+    SystemObjectScanContext ctx = contextWithNamespaces(ns);
 
-    SystemObjectScanContext ctx = contextWith(ns);
+    assertThatThrownBy(() -> scanner.scan(ctx).findFirst().orElseThrow())
+        .isInstanceOf(MissingSystemOidException.class);
+  }
+
+  @Test
+  void scan_fallsBack_whenUserPayloadMissing() {
+    NamespaceNode ns = userNamespace("public", Map.of());
+    SystemObjectScanContext ctx = contextWithNamespaces(ns);
 
     SystemObjectRow row = scanner.scan(ctx).findFirst().orElseThrow();
     Object[] v = row.values();
 
-    assertThat(v[0]).isInstanceOf(Integer.class); // oid fallback
-    assertThat(v[1]).isEqualTo("public"); // displayName
+    assertThat(v[0]).isInstanceOf(Integer.class);
+    assertThat((int) v[0]).isNotZero();
+    assertThat(v[1]).isEqualTo("public");
   }
 
   @Test
   void scan_oidFallback_isStable() {
-    NamespaceNode ns = namespace("analytics", Map.of());
-
-    SystemObjectScanContext ctx = contextWith(ns);
+    NamespaceNode ns = userNamespace("analytics", Map.of());
+    SystemObjectScanContext ctx = contextWithNamespaces(ns);
 
     int oid1 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
     int oid2 = (int) scanner.scan(ctx).findFirst().orElseThrow().values()[0];
 
     assertThat(oid1).isEqualTo(oid2);
-  }
-
-  // ----------------------------------------------------------------------
-  // Test fixtures
-  // ----------------------------------------------------------------------
-
-  private static SystemObjectScanContext contextWith(NamespaceNode... namespaces) {
-    TestCatalogOverlay overlay = new TestCatalogOverlay();
-    for (NamespaceNode ns : namespaces) {
-      overlay.addNode(ns);
-    }
-
-    return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
-  }
-
-  private static NamespaceNode namespace(String name, Map<EngineHintKey, EngineHint> engineHints) {
-
-    ResourceId nsId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("pg:" + name)
-            .build();
-
-    return new NamespaceNode(
-        nsId,
-        1,
-        Instant.EPOCH,
-        catalogId(),
-        List.of(),
-        name,
-        GraphNodeOrigin.SYSTEM,
-        Map.of(),
-        engineHints);
-  }
-
-  private static ResourceId catalogId() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("pg")
-        .build();
   }
 }

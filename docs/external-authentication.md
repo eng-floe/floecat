@@ -35,6 +35,8 @@ Role intent:
 - `administrator` grants full tenant‑scoped access (catalogs/namespaces/tables/connectors) but does
   not grant account management.
 
+See [`docs/fixed-roles.md`](fixed-roles.md).
+
 Note: the realm config uses a service-account client (`client_credentials` flow). Password grant is
 disabled.
 
@@ -69,7 +71,7 @@ curl -s \
 
 ## OIDC Quickstart (Local + Shell CLI)
 
-1) Enable local OIDC in `docker/env.localstack` (the only OIDC-enabled env file):
+1) Enable local OIDC in `docker/env.localstack-oidc`:
 ```
 FLOECAT_AUTH_MODE=oidc
 FLOECAT_AUTH_PLATFORM_ADMIN_ROLE=platform-admin
@@ -100,12 +102,11 @@ TOKEN=$(curl -s \
 
 4) Run the Shell CLI in Docker (interactive):
 ```
-FLOECAT_TOKEN=$TOKEN \
 FLOECAT_ACCOUNT=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2 \
 make cli-docker
 ```
-Note: `make cli-docker` now fetches its own token inside the Docker network via
-`http://keycloak:8080/...` (see `KEYCLOAK_TOKEN_URL_DOCKER` in the Makefile).
+Note: `make cli-docker` obtains tokens using `FLOECAT_OIDC_*` settings in
+`docker/env.localstack-oidc` and refreshes them automatically before expiry.
 
 Inside the shell:
 ```
@@ -150,8 +151,8 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
 
 ### Development (local)
 - Use `docker/env.inmem` with `docker/docker-compose.yml` (via `env_file`) for local defaults.
-- For OIDC + Keycloak, use `docker/env.localstack` by setting `FLOECAT_ENV_FILE=./env.localstack`
-  (or run `make oidc-up`). This is the only OIDC-enabled env file.
+- For OIDC + Keycloak, use `docker/env.localstack-oidc` by setting
+  `FLOECAT_ENV_FILE=./env.localstack-oidc` (or run `make oidc-up`).
 - `floecat.auth.mode=oidc` (or `dev` for fully local use).
 - Use Keycloak dev realm or another local IdP.
 - `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`

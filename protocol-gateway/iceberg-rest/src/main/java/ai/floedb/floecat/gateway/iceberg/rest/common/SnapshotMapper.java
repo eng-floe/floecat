@@ -137,19 +137,23 @@ final class SnapshotMapper {
       if (sequenceNumber > 0) {
         entry.put("sequence-number", sequenceNumber);
       }
-      if (snapshot.hasUpstreamCreatedAt()) {
-        entry.put("timestamp-ms", snapshot.getUpstreamCreatedAt().getSeconds() * 1000L);
-      }
-      if (!snapshot.getManifestList().isBlank()) {
-        entry.put("manifest-list", snapshot.getManifestList());
-      }
+      long timestampMs =
+          snapshot.hasUpstreamCreatedAt()
+              ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
+              : 0L;
+      entry.put("timestamp-ms", timestampMs);
+      entry.put(
+          "manifest-list", snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
       int schemaId = snapshot.getSchemaId();
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
       }
+      Map<String, String> summary = new LinkedHashMap<>();
       if (!snapshot.getSummaryMap().isEmpty()) {
-        entry.put("summary", snapshot.getSummaryMap());
+        summary.putAll(snapshot.getSummaryMap());
       }
+      summary.putIfAbsent("operation", "append");
+      entry.put("summary", summary);
       out.add(entry);
     }
     return out;
@@ -168,7 +172,7 @@ final class SnapshotMapper {
               entry.put("snapshot-id", ref.getSnapshotId());
               entry.put("type", ref.getType().toLowerCase(Locale.ROOT));
               if (ref.hasMaxReferenceAgeMs()) {
-                entry.put("max-reference-age-ms", ref.getMaxReferenceAgeMs());
+                entry.put("max-ref-age-ms", ref.getMaxReferenceAgeMs());
               }
               if (ref.hasMaxSnapshotAgeMs()) {
                 entry.put("max-snapshot-age-ms", ref.getMaxSnapshotAgeMs());

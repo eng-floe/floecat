@@ -19,7 +19,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -28,7 +31,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import jakarta.ws.rs.core.Response;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -218,101 +220,29 @@ class CommitRequirementServiceTest {
   }
 
   @Test
-  void validateRequirementsAssertCreateFailsWhenTableExists() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
-            .build();
-
+  void validateRequirementsRejectsNullRequirementEntry() {
+    List<Map<String, Object>> requirements = new java.util.ArrayList<>();
+    requirements.add(null);
     Response resp =
         service.validateRequirements(
-            tableSupport,
-            List.of(Map.of("type", "assert-create")),
-            () -> table,
-            validation(),
-            conflict());
+            tableSupport, requirements, () -> Table.newBuilder().build(), validation(), conflict());
 
-    assertNotNull(resp);
-    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
-    assertEquals("assert-create failed", resp.getEntity());
-  }
-
-  @Test
-  void validateRequirementsAssertCreatePassesWhenTableMissing() {
-    Response resp =
-        service.validateRequirements(
-            tableSupport,
-            List.of(Map.of("type", "assert-create")),
-            Table::getDefaultInstance,
-            validation(),
-            conflict());
-
-    assertNull(resp);
-  }
-
-  @Test
-  void validateRequirementsRefSnapshotIdNullRequiresRefNotExist() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
-            .build();
-    IcebergMetadata metadata =
-        FIXTURE.metadata().toBuilder()
-            .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(42L).build())
-            .build();
-    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
-
-    Response resp =
-        service.validateRequirements(
-            tableSupport,
-            List.of(requirementWithNullSnapshotId("branch")),
-            () -> table,
-            validation(),
-            conflict());
-
-    assertNotNull(resp);
-    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
-    assertEquals("assert-ref-snapshot-id failed for ref branch", resp.getEntity());
-  }
-
-  @Test
-  void validateRequirementsRefSnapshotIdNullPassesWhenRefMissing() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
-            .build();
-    when(tableSupport.loadCurrentMetadata(table))
-        .thenReturn(FIXTURE.metadata().toBuilder().clearRefs().build());
-
-    Response resp =
-        service.validateRequirements(
-            tableSupport,
-            List.of(requirementWithNullSnapshotId("dev")),
-            () -> table,
-            validation(),
-            conflict());
-
-    assertNull(resp);
-  }
-
-  @Test
-  void validateRequirementsRefSnapshotIdRequiresSnapshotIdKey() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
-            .build();
-
-    Response resp =
-        service.validateRequirements(
-            tableSupport,
-            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main")),
-            () -> table,
-            validation(),
-            conflict());
-
-    assertNotNull(resp);
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
-    assertEquals("assert-ref-snapshot-id requires snapshot-id", resp.getEntity());
+    assertEquals("commit requirement entry cannot be null", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsRejectsMissingRequirementType() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("uuid", "a")),
+            () -> Table.newBuilder().build(),
+            validation(),
+            conflict());
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("commit requirement missing type", resp.getEntity());
   }
 
   @Test
@@ -320,14 +250,104 @@ class CommitRequirementServiceTest {
     Response resp =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-unknown-requirement")),
-            Table::getDefaultInstance,
+            List.of(Map.of("type", "assert-unknown")),
+            () -> Table.newBuilder().build(),
+            validation(),
+            conflict());
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("unsupported commit requirement: assert-unknown", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsRejectsMissingTableUuidValue() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid")),
+            () -> Table.newBuilder().build(),
+            validation(),
+            conflict());
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("assert-table-uuid requires uuid", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsRejectsMissingRefName() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-ref-snapshot-id", "snapshot-id", 7)),
+            () -> Table.newBuilder().build(),
+            validation(),
+            conflict());
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
+    assertEquals("assert-ref-snapshot-id requires ref", resp.getEntity());
+  }
+
+  @Test
+  void validateRequirementsSkipsRefSnapshotCheckWhenSnapshotMissing() {
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main")),
+            () -> Table.newBuilder().build(),
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
+  void validateRequirementsChecksSchemaAndAssignedIds() {
+    Table table = Table.newBuilder().build();
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder()
+            .setCurrentSchemaId(33)
+            .setLastColumnId(88)
+            .setLastPartitionId(5)
+            .setDefaultSpecId(9)
+            .setDefaultSortOrderId(2)
+            .build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(
+                Map.of("type", "assert-current-schema-id", "current-schema-id", 33),
+                Map.of("type", "assert-last-assigned-field-id", "last-assigned-field-id", 88),
+                Map.of(
+                    "type", "assert-last-assigned-partition-id", "last-assigned-partition-id", 5),
+                Map.of("type", "assert-default-spec-id", "default-spec-id", 9),
+                Map.of("type", "assert-default-sort-order-id", "default-sort-order-id", 2)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+    verify(tableSupport, times(1)).loadCurrentMetadata(table);
+  }
+
+  @Test
+  void validateRequirementsReturnsConflictForSchemaMismatch() {
+    Table table = Table.newBuilder().build();
+    IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setCurrentSchemaId(11).build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 22)),
+            () -> table,
             validation(),
             conflict());
 
     assertNotNull(resp);
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), resp.getStatus());
-    assertEquals("unsupported commit requirement: assert-unknown-requirement", resp.getEntity());
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), resp.getStatus());
+    assertTrue(resp.getEntity().toString().contains("assert-current-schema-id failed"));
   }
 
   private Function<String, Response> validation() {
@@ -336,13 +356,5 @@ class CommitRequirementServiceTest {
 
   private Function<String, Response> conflict() {
     return message -> Response.status(Response.Status.CONFLICT).entity(message).build();
-  }
-
-  private Map<String, Object> requirementWithNullSnapshotId(String ref) {
-    Map<String, Object> requirement = new LinkedHashMap<>();
-    requirement.put("type", "assert-ref-snapshot-id");
-    requirement.put("ref", ref);
-    requirement.put("snapshot-id", null);
-    return requirement;
   }
 }

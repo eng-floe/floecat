@@ -20,15 +20,17 @@ import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.SystemObjectsService;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.RequestValidation;
+import ai.floedb.floecat.service.security.impl.Authorizer;
+import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -37,11 +39,13 @@ import java.util.List;
 /**
  * gRPC endpoint exposed to planners so they can fetch builtin metadata once per engine version.
  * Reads engine builtin catalogs from {@link SystemDefinitionRegistry} (plugin-based or empty
- * fallback)
+ * fallback).
  */
 @GrpcService
 public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemObjectsService {
 
+  @Inject PrincipalProvider principal;
+  @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject EngineContextProvider engineContextProvider;
 
@@ -50,6 +54,8 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
     return mapFailures(
         run(
             () -> {
+              var principalContext = principal.get();
+              authz.require(principalContext, "system-objects.read");
               EngineContext ctx = engineContextProvider.engineContext();
               RequestValidation.requireNonBlank(
                   ctx.engineVersion(),

@@ -28,7 +28,7 @@ public record ConnectorConfig(
     Objects.requireNonNull(displayName);
     Objects.requireNonNull(uri);
     options = options == null ? Map.of() : Collections.unmodifiableMap(options);
-    auth = auth == null ? new Auth("none", Map.of(), Map.of(), "") : auth;
+    auth = auth == null ? new Auth("none", Map.of(), Map.of()) : auth;
   }
 
   public enum Kind {
@@ -38,13 +38,11 @@ public record ConnectorConfig(
     UNITY
   }
 
-  public record Auth(
-      String scheme, Map<String, String> props, Map<String, String> headerHints, String secretRef) {
+  public record Auth(String scheme, Map<String, String> props, Map<String, String> headerHints) {
     public Auth {
       scheme = Objects.requireNonNullElse(scheme, "none");
       props = props == null ? Map.of() : Map.copyOf(props);
       headerHints = headerHints == null ? Map.of() : Map.copyOf(headerHints);
-      secretRef = Objects.requireNonNullElse(secretRef, "");
     }
   }
 }

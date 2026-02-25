@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.engine;
 
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;

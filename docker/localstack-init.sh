@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REGION="${FLOECAT_S3_REGION:-us-east-1}"
+REGION="${FLOECAT_STORAGE_AWS_REGION:-us-east-1}"
 BUCKET="${FLOECAT_BLOB_S3_BUCKET:-floecat-dev}"
 TABLE="${FLOECAT_KV_TABLE:-floecat_pointers}"
 

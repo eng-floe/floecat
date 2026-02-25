@@ -27,14 +27,15 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -62,7 +63,7 @@ public final class UserObjectBundleTestSupport {
   }
 
   public static final class FakeCatalogOverlay implements CatalogOverlay {
-    private final Map<String, SimpleGraphNode> nodes = new HashMap<>();
+    private final Map<String, GraphNode> nodes = new HashMap<>();
     private final Map<String, List<ai.floedb.floecat.query.rpc.SchemaColumn>> schemas =
         new HashMap<>();
     private final Map<String, NameRef> names = new HashMap<>();
@@ -88,6 +89,16 @@ public final class UserObjectBundleTestSupport {
         NameRef name,
         GraphNodeOrigin origin) {
       nodes.put(id.getId(), new SimpleGraphNode(id, origin));
+      schemas.put(id.getId(), schema);
+      names.put(id.getId(), name);
+    }
+
+    public void registerRelation(
+        ResourceId id,
+        RelationNode node,
+        List<ai.floedb.floecat.query.rpc.SchemaColumn> schema,
+        NameRef name) {
+      nodes.put(id.getId(), node);
       schemas.put(id.getId(), schema);
       names.put(id.getId(), name);
     }
@@ -124,7 +135,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<GraphNode> listRelations(ResourceId catalogId) {
+    public List<RelationNode> listRelations(ResourceId catalogId) {
       throw unsupported();
     }
 
@@ -134,7 +145,8 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<GraphNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+    public List<RelationNode> listRelationsInNamespace(
+        ResourceId catalogId, ResourceId namespaceId) {
       throw unsupported();
     }
 
@@ -174,6 +186,19 @@ public final class UserObjectBundleTestSupport {
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
           .findFirst();
+    }
+
+    @Override
+    public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+      return names.entrySet().stream()
+          .filter(entry -> entry.getValue().equals(ref))
+          .map(entry -> nodes.get(entry.getKey()).id())
+          .findFirst();
+    }
+
+    @Override
+    public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+      return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override
@@ -243,7 +268,7 @@ public final class UserObjectBundleTestSupport {
     }
   }
 
-  private static final class SimpleGraphNode implements GraphNode {
+  private static final class SimpleGraphNode implements RelationNode {
     private final ResourceId id;
     private final GraphNodeOrigin origin;
 
@@ -260,6 +285,11 @@ public final class UserObjectBundleTestSupport {
     @Override
     public long version() {
       return 1;
+    }
+
+    @Override
+    public ResourceId namespaceId() {
+      return ResourceId.getDefaultInstance();
     }
 
     @Override
@@ -334,6 +364,15 @@ public final class UserObjectBundleTestSupport {
     @Override
     public void put(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
+    }
+
+    @Override
+    public boolean putIfAbsent(QueryContext ctx) {
+      if (contexts.containsKey(ctx.getQueryId())) {
+        return false;
+      }
+      contexts.put(ctx.getQueryId(), ctx);
+      return true;
     }
 
     @Override

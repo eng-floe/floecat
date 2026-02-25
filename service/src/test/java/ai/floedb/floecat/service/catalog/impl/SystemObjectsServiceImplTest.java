@@ -17,13 +17,19 @@
 package ai.floedb.floecat.service.catalog.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
+import ai.floedb.floecat.service.security.impl.Authorizer;
+import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
@@ -33,10 +39,9 @@ import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.Context;
+import io.grpc.Status;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -80,13 +85,19 @@ class SystemObjectsServiceImplTest {
             return builtin;
           }
         };
-    SystemObjectsServiceImpl service = new SystemObjectsServiceImpl();
-    service.nodeRegistry = nodeRegistry;
-    service.engineContextProvider = new EngineContextProvider();
+    SystemObjectsServiceImpl service = createService(nodeRegistry);
 
     EngineContext ctx = EngineContext.of("pg", "1.0");
+    PrincipalContext principal =
+        PrincipalContext.newBuilder()
+            .setAccountId("acct-1")
+            .setSubject("tester")
+            .addPermissions("system-objects.read")
+            .build();
     Context context =
-        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx);
+        Context.current()
+            .withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx)
+            .withValue(PrincipalProvider.KEY, principal);
     Context previous = context.attach();
     try {
       GetSystemObjectsResponse response =
@@ -104,6 +115,51 @@ class SystemObjectsServiceImplTest {
     }
   }
 
+  @Test
+  void getSystemObjectsRequiresSystemObjectsReadPermission() {
+    SystemObjectsServiceImpl service =
+        createService(
+            new SystemNodeRegistry(
+                new SystemDefinitionRegistry(
+                    new StaticSystemCatalogProvider(
+                        Map.of(
+                            EngineCatalogNames.FLOECAT_DEFAULT_CATALOG,
+                            SystemCatalogData.empty()))),
+                new FloecatInternalProvider(),
+                List.of()));
+
+    EngineContext ctx = EngineContext.of("pg", "1.0");
+    PrincipalContext principal =
+        PrincipalContext.newBuilder().setAccountId("acct-1").setSubject("tester").build();
+    Context context =
+        Context.current()
+            .withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, ctx)
+            .withValue(PrincipalProvider.KEY, principal);
+    Context previous = context.attach();
+    try {
+      assertThatThrownBy(
+              () ->
+                  service
+                      .getSystemObjects(GetSystemObjectsRequest.getDefaultInstance())
+                      .await()
+                      .indefinitely())
+          .isInstanceOf(io.grpc.StatusRuntimeException.class)
+          .extracting(ex -> ((io.grpc.StatusRuntimeException) ex).getStatus().getCode())
+          .isEqualTo(Status.Code.PERMISSION_DENIED);
+    } finally {
+      context.detach(previous);
+    }
+  }
+
+  private static SystemObjectsServiceImpl createService(SystemNodeRegistry nodeRegistry) {
+    SystemObjectsServiceImpl service = new SystemObjectsServiceImpl();
+    service.principal = new PrincipalProvider();
+    service.authz = new Authorizer();
+    service.nodeRegistry = nodeRegistry;
+    service.engineContextProvider = new EngineContextProvider();
+    return service;
+  }
+
   private static SystemCatalogData catalogWithRelations() {
     SystemNamespaceDef namespace =
         new SystemNamespaceDef(NameRefUtil.name("sanitized"), "sanitized", List.of());
@@ -114,7 +170,10 @@ class SystemObjectsServiceImplTest {
             List.of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
     SystemViewDef view =
         new SystemViewDef(
             NameRefUtil.name("sanitized", "view"), "view", "select 1", "", List.of(), List.of());

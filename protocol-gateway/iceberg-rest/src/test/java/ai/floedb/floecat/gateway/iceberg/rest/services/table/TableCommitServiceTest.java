@@ -31,8 +31,11 @@ import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
@@ -46,6 +49,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolv
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
@@ -84,10 +88,15 @@ class TableCommitServiceTest {
       mock(TableMetadataImportService.class);
   private final SnapshotMetadataService snapshotMetadataService =
       mock(SnapshotMetadataService.class);
+  private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
+  private final IcebergGatewayConfig.DeltaCompatConfig deltaCompatConfig =
+      mock(IcebergGatewayConfig.DeltaCompatConfig.class);
+  private final TableFormatSupport tableFormatSupport = new TableFormatSupport();
 
   @BeforeEach
   void setUp() {
     service.grpc = grpc;
+    service.config = config;
     responseBuilder.setSnapshotClient(new SnapshotClient(grpc));
     service.responseBuilder = responseBuilder;
     service.tableLifecycleService = tableLifecycleService;
@@ -97,6 +106,7 @@ class TableCommitServiceTest {
     service.tableUpdatePlanner = tableUpdatePlanner;
     service.snapshotMetadataService = snapshotMetadataService;
     service.tableMetadataImportService = tableMetadataImportService;
+    service.tableFormatSupport = tableFormatSupport;
     when(grpc.raw()).thenReturn(grpcClients);
     when(grpcClients.snapshot()).thenReturn(snapshotStub);
     when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
@@ -110,6 +120,9 @@ class TableCommitServiceTest {
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
                 null, Map.of(), null, null, null, List.of()));
+    when(config.deltaCompat()).thenReturn(java.util.Optional.of(deltaCompatConfig));
+    when(deltaCompatConfig.enabled()).thenReturn(false);
+    when(deltaCompatConfig.readOnly()).thenReturn(true);
   }
 
   @Test
@@ -133,7 +146,7 @@ class TableCommitServiceTest {
     TableUpdatePlanner.UpdatePlan failurePlan =
         TableUpdatePlanner.UpdatePlan.failure(
             TableSpec.newBuilder(), FieldMask.newBuilder(), conflict);
-    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(failurePlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(failurePlan);
 
     Response response = service.commit(command(emptyCommitRequest()));
 
@@ -156,7 +169,7 @@ class TableCommitServiceTest {
 
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
@@ -229,7 +242,7 @@ class TableCommitServiceTest {
     when(stageResolver.resolve(any())).thenReturn(resolution);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(null);
     ArgumentCaptor<CommitTableResponseDto> responseCaptor =
         ArgumentCaptor.forClass(CommitTableResponseDto.class);
@@ -266,7 +279,7 @@ class TableCommitServiceTest {
 
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata =
         FIXTURE.metadata().toBuilder().setMetadataLocation(catalogMetadataLocation).build();
     when(tableSupport.loadCurrentMetadata(stagedTable)).thenReturn(metadata);
@@ -303,7 +316,7 @@ class TableCommitServiceTest {
     when(tableLifecycleService.getTable(any())).thenReturn(table);
     TableUpdatePlanner.UpdatePlan successPlan =
         TableUpdatePlanner.UpdatePlan.success(TableSpec.newBuilder(), FieldMask.newBuilder());
-    when(tableUpdatePlanner.planUpdates(any(), any(), any(), any())).thenReturn(successPlan);
+    when(tableUpdatePlanner.planUpdates(any(), any(), any())).thenReturn(successPlan);
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
     when(sideEffectService.synchronizeConnector(
@@ -326,6 +339,25 @@ class TableCommitServiceTest {
 
     CommitTableResponseDto dto = (CommitTableResponseDto) response.getEntity();
     assertEquals(FIXTURE.metadataLocation(), dto.metadataLocation());
+  }
+
+  @Test
+  void commitRejectsDeltaTableWhenCompatReadOnlyEnabled() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Table deltaTable =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).build())
+            .build();
+    StageResolution resolution = new StageResolution(tableId, null, null, null);
+    when(stageResolver.resolve(any())).thenReturn(resolution);
+    when(tableLifecycleService.getTable(tableId)).thenReturn(deltaTable);
+    when(deltaCompatConfig.enabled()).thenReturn(true);
+    when(deltaCompatConfig.readOnly()).thenReturn(true);
+
+    Response response = service.commit(command(emptyCommitRequest()));
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
   }
 
   private TableRequests.Commit emptyCommitRequest() {

@@ -1,53 +1,73 @@
-# System table scanning
+# System table scans
 
-This document explains the current streaming system-table scan contract. Arrow IPC is the default response format, but the legacy `ROWS` path remains available for clients that still expect text-like row payloads. For background on system object definitions, scanners, and providers, see [System Objects](system-objects.md).
+This document is the high-level overview for system-table scanning in Floecat.
 
-## RPC contract
+System-table scans are exposed over two transports:
 
-`ScanSystemTableRequest` takes:
-1. `query_id` – the caller’s query context.
-2. `table_id` – the system table being queried.
-3. `required_columns` – optional projection.
-4. `predicates` – canonical filters exported from `SystemRowFilter`.
-5. `output_format` – prefers `ROWS` vs `ARROW_IPC`. Unspecified defaults to Arrow.
+- gRPC streaming (`QuerySystemScanService`)
+- Arrow Flight (`GetFlightInfo` + `GetStream`)
 
-The service no longer returns a single response message. Instead it streams `ScanSystemTableChunk` messages:
+Both transports use the same scanner resolution, filter/projection semantics, and Arrow execution
+pipeline. Transport differences are mostly protocol and framing.
 
-```
-message ScanSystemTableChunk {
-  oneof payload {
-    bytes arrow_schema_ipc = 1;
-    bytes arrow_batch_ipc = 2;
-    SystemTableRow row = 3;
-  }
-}
-```
+## Which document to read
 
-When Arrow is requested, the stream always begins with `arrow_schema_ipc`, then the remaining batches appear as `arrow_batch_ipc`. When `output_format = ROWS`, the stream only emits row chunks, one per `SystemTableRow`.
+- gRPC protocol details: [system-scans-grpc.md](system-scans-grpc.md)
+- Arrow Flight protocol + producer/consumer implementation: [arrow-flight.md](arrow-flight.md)
+- System object/scanner model: [system-objects.md](system-objects.md)
 
-## Optional statistics
+## Shared execution model
 
-Scanners now receive best-effort statistics through the `MetadataResolutionContext` that backs each scan. The context exposes a `StatsProvider` (defined in `core/catalog/src/main/java/ai/floedb/floecat/systemcatalog/spi/scanner/StatsProvider.java`) which returns `Optional<TableStatsView>` and `Optional<ColumnStatsView>`; the service wires an implementation via `StatsProviderFactory` so lookups are cached per `(tableId, snapshotId)` and never mutate the query context. `ColumnStatsView` now surfaces richer metadata (logical type, nan count, canonical min/max strings, and available NDV summaries) so scanners can make better decisions when stats materialize.
+Regardless of transport:
 
-Stats remain optional: the provider defaults to `StatsProvider.NONE`, statistics are only present when a pinned snapshot has cached metadata, and callers must treat the `Optional` results as best-effort decorations. System tables (and any unpinned relation) keep working when the stats provider yields `Optional.empty()`. The same best-effort numbers flow into `RelationInfo.stats` on catalog bundles, so bundle consumers should guard `relation.hasStats()` before reading the values (keep in mind that a `0` may simply mean “unknown” depending on the upstream source) and treat missing stats as expected.
+1. Resolve the system scanner for the target table.
+2. Apply canonical predicates (`SystemRowFilter`) and column projection (`required_columns`).
+3. Build an `ArrowScanPlan` and stream batches through `ArrowBatchSerializer`.
+4. Enforce allocator limits and close native resources on completion/cancel/error.
 
-## Execution paths
+The row-compatibility path remains available for gRPC callers that request `ROWS`, but Arrow is the
+default/primary path.
 
-### Arrow-first path (default)
+Scanner resolution is shared across transports and uses the same engine-context-aware path. When an
+engine-specific table ID is presented, resolver translation (`translateToDefault`) can remap to the
+default FLOECAT catalog ID where applicable.
 
-1. `QuerySystemScanServiceImpl` resolves the scanner, gathers the predicates/projections, and produces an `ArrowScanPlan`. The RootAllocator size caps itself via `ai.floedb.floecat.arrow.max-bytes` (default **1 GiB**) so a single scan cannot exhaust native memory.
-2. If the scanner advertises `ScanOutputFormat.ARROW_IPC`, the scanner itself emits `ColumnarBatch` instances that already respect the schema. Otherwise the adapter takes the filtered/projected `SystemObjectRow` stream, batches it (`RowStreamToArrowBatchAdapter`), and builds Arrow `VectorSchemaRoot` objects.
-3. Each `ColumnarBatch` flows through optional `ArrowFilterOperator` (vectorized mask evaluation) and optional `ArrowProjectOperator` (zero-copy `TransferPair` projection), then the Arrow IPC message serializer emits a schema message once, followed by record-batch messages for each batch.
-4. The first streamed chunk carries that schema message, subsequent `arrow_batch_ipc` chunks carry only the record-batch bodies, and the allocator is closed at the end so no native buffers leak.
+## Transport comparison
 
-### Row compatibility path
+| Area | gRPC scan stream | Arrow Flight |
+|---|---|---|
+| Entry point | `ScanSystemTable` | `GetFlightInfo` then `GetStream` |
+| Request identity | `query_id` in request | `query_id` in command and/or `x-query-id` header |
+| Target table | `table_id` (`ResourceId`) | `target` (`name` or `id`) |
+| Result framing | `ScanSystemTableChunk` union | Arrow Flight schema + record batches |
+| Discovery | Direct service endpoint | `FlightEndpointRef` in catalog bundle + `FlightInfo` endpoint |
 
-When `output_format = ROWS`, the service now streams `SystemObjectRow`s directly: the scanner `Stream` feeds `SystemRowFilter.filter(...)` and `SystemRowProjector.project(...)`, and each projected row is emitted as a `row` chunk without Arrow conversion. This path remains compatibility-only; Arrow consumers route through the columnar pipeline to benefit from zero-copy projection and vectorized filtering.
+## Shared filtering/projection semantics
 
-## Predicate & projection semantics
+- `required_columns` is optional. Empty means “all columns”.
+- Unknown projected columns are ignored (dropped from output).
+- Predicate trees are canonicalized through `SystemRowFilter.EXPRESSION_PROVIDER`.
+- Projection order is preserved in output schema/batches.
 
-`ArrowFilterOperator` sees the `Expr` tree produced by `SystemRowFilter.EXPRESSION_PROVIDER`, evaluates each leaf over typed vectors (integer, float, varchar, boolean, `IS NULL`), builds a boolean mask, and copies the matching vectors into a new root. Invalid boolean literals (anything other than `true`/`false`, case-insensitive) produce zero matches, and numeric comparisons are exact (floating-point predicates require exact equality). `ArrowProjectOperator` transfers only the requested columns via `TransferPair`, so projection is always zero-copy even when the order changes; unknown columns are ignored and simply dropped from the output batch.
+## Optional statistics (shared behavior)
 
-## Streaming guarantees & testing
+Scanners receive a best-effort `StatsProvider` in scan context. Stats are optional and may be
+absent for system/unpinned relations; callers must treat them as advisory only.
 
-`QuerySystemScanServiceIT` validates the new server-streaming contract (rows in `ROWS` mode, schema followed by batches in Arrow mode, and Arrow as the default when unspecified). Arrow-specific unit tests include `RowStreamToArrowBatchAdapterTest`, `ArrowFilterOperatorTest`, and `ArrowProjectOperatorTest`. This layered approach keeps the legacy predicate/projector logic as the truth while shipping a fully Arrow-native execution lane on the default path.
+## Memory and cancellation
+
+- Per-stream allocators are child allocators with an explicit cap.
+- Cancellation signals terminate streaming work as early as practical.
+- Stream cleanup always closes sink/batches/allocators to avoid native memory leaks.
+
+## Configuration knobs (summary)
+
+- `ai.floedb.floecat.arrow.max-bytes`: per-stream Arrow allocator cap.
+- `floecat.flight.memory.max-bytes`: Flight server parent allocator cap.
+- `floecat.flight.host` / `floecat.flight.port`: endpoint advertised to consumers.
+
+See:
+
+- [system-scans-grpc.md](system-scans-grpc.md)
+- [arrow-flight.md](arrow-flight.md)
+- [operations.md](operations.md)

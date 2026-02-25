@@ -40,6 +40,8 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
@@ -84,13 +86,16 @@ public abstract class BaseServiceImpl {
 
   protected <T> Uni<T> run(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    Context otelCtx = Context.current();
     Uni<T> u =
         Uni.createFrom()
             .item(
                 () ->
                     grpcCtx.call(
                         () -> {
-                          return body.get();
+                          try (Scope ignored = otelCtx.makeCurrent()) {
+                            return body.get();
+                          }
                         }));
     return u.runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }

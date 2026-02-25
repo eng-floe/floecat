@@ -270,7 +270,7 @@ public class TableMetadataImportService {
           entry.put("snapshot-id", ref.snapshotId());
           entry.put("type", ref.type().name().toLowerCase(Locale.ROOT));
           if (ref.maxRefAgeMs() != null) {
-            entry.put("max-reference-age-ms", ref.maxRefAgeMs());
+            entry.put("max-ref-age-ms", ref.maxRefAgeMs());
           }
           if (ref.maxSnapshotAgeMs() != null) {
             entry.put("max-snapshot-age-ms", ref.maxSnapshotAgeMs());

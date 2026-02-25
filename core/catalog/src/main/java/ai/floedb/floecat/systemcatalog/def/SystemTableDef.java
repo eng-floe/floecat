@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.HashSet;
@@ -32,7 +33,9 @@ public record SystemTableDef(
     TableBackendKind backendKind,
     String scannerId,
     String storagePath,
-    List<EngineSpecificRule> engineSpecific)
+    String storageEndpointKey,
+    List<EngineSpecificRule> engineSpecific,
+    FlightEndpointRef flightEndpoint)
     implements SystemObjectDef {
 
   public SystemTableDef {
@@ -42,6 +45,7 @@ public record SystemTableDef(
     scannerId = Objects.requireNonNull(scannerId, "scannerId");
     displayName = displayName == null ? "" : displayName;
     storagePath = storagePath == null ? "" : storagePath;
+    storageEndpointKey = storageEndpointKey == null ? "" : storageEndpointKey;
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
     Set<String> columnNames = new HashSet<>();
     for (SystemColumnDef column : columns) {
@@ -53,19 +57,16 @@ public record SystemTableDef(
     if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_FLOECAT && scannerId.isBlank()) {
       throw new IllegalArgumentException("scannerId is required for TABLE_BACKEND_KIND_FLOECAT");
     }
-    if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_STORAGE && storagePath.isBlank()) {
-      throw new IllegalArgumentException("storagePath is required for TABLE_BACKEND_KIND_STORAGE");
+    if (backendKind == TableBackendKind.TABLE_BACKEND_KIND_STORAGE) {
+      boolean hasPath = !storagePath.isBlank();
+      boolean hasEndpointKey = !storageEndpointKey.isBlank();
+      boolean hasEndpoint = flightEndpoint != null;
+      if (!hasPath && !hasEndpointKey && !hasEndpoint) {
+        throw new IllegalArgumentException(
+            "specify at least one of storagePath, storageEndpointKey or flightEndpoint for"
+                + " TABLE_BACKEND_KIND_STORAGE");
+      }
     }
-  }
-
-  public SystemTableDef(
-      NameRef name,
-      String displayName,
-      List<SystemColumnDef> columns,
-      TableBackendKind backendKind,
-      String scannerId,
-      List<EngineSpecificRule> engineSpecific) {
-    this(name, displayName, columns, backendKind, scannerId, "", engineSpecific);
   }
 
   @Override

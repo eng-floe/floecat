@@ -97,7 +97,8 @@ class AccountMutationIT {
             StatusRuntimeException.class,
             () ->
                 tenancy.createAccount(CreateAccountRequest.newBuilder().setSpec(newSpec).build()));
-    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "already exists");
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
   @Test

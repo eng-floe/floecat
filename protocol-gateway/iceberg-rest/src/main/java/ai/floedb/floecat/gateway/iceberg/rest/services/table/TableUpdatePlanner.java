@@ -95,18 +95,6 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(
           spec, mask, validationError("unsupported commit update action: " + unsupported));
     }
-    Response snapshotError =
-        snapshotMetadataService.applySnapshotUpdates(
-            command.tableSupport(),
-            tableId,
-            command.namespacePath(),
-            command.table(),
-            tableSupplier,
-            req.updates(),
-            command.idempotencyKey());
-    if (snapshotError != null) {
-      return UpdatePlan.failure(spec, mask, snapshotError);
-    }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);

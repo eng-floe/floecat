@@ -146,7 +146,6 @@ public class TransactionCommitService {
           "InternalServerError",
           Response.Status.INTERNAL_SERVER_ERROR);
     }
-
     ai.floedb.floecat.transaction.rpc.GetTransactionResponse currentTxn;
     TransactionState currentState;
     try {
@@ -181,6 +180,7 @@ public class TransactionCommitService {
     String idempotencyBase = firstNonBlank(idempotencyKey, transactionId, txId);
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
     List<SyncTarget> syncTargets = new ArrayList<>();
+    boolean hasStageCreatedTable = false;
 
     if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return IcebergErrorResponses.failure(
@@ -255,19 +255,35 @@ public class TransactionCommitService {
                     ? ai.floedb.floecat.catalog.rpc.Table.getDefaultInstance()
                     : stageResolution.stagedTable())
                 : tableResponse.getTable();
+        boolean stageCreatedTable =
+            stageResolution.stageCommitResult() != null
+                && stageResolution.stageCommitResult().tableCreated();
+        hasStageCreatedTable = hasStageCreatedTable || stageCreatedTable;
+        Response assertCreateError =
+            validateAssertCreateRequirement(
+                change.requirements(), stageCreatedTable, tableResponse, persistedTable);
+        if (assertCreateError != null) {
+          maybeAbortOpenTransaction(currentState, txId, "assert-create requirement failed");
+          return assertCreateError;
+        }
         long pointerVersion =
             tableResponse != null && tableResponse.hasMeta()
                 ? tableResponse.getMeta().getPointerVersion()
                 : 0L;
+        Response nullRefRequirementError =
+            validateNullSnapshotRefRequirements(
+                tableSupport, persistedTable, change.requirements());
+        if (nullRefRequirementError != null) {
+          maybeAbortOpenTransaction(currentState, txId, "null snapshot-id ref requirement failed");
+          return nullRefRequirementError;
+        }
         ai.floedb.floecat.catalog.rpc.Table updated;
-        if (alreadyApplied) {
+        boolean shouldPlan = !alreadyApplied || stageCreatedTable;
+        if (!shouldPlan) {
           // Replay path: skip requirement re-evaluation and rebuild side effects from current table
           // state.
           updated = persistedTable;
         } else {
-          boolean stageCreatedTable =
-              stageResolution.stageCommitResult() != null
-                  && stageResolution.stageCommitResult().tableCreated();
           TableRequests.Commit planningReq =
               normalizeCommitRequestForStage(commitReq, stageCreatedTable);
           TableCommitService.CommitCommand planningCommand =
@@ -338,6 +354,13 @@ public class TransactionCommitService {
               plan.tableId(),
               plan.table(),
               plan.snapshotPlan()));
+    }
+    if (alreadyApplied && hasStageCreatedTable && hasPreCommitSnapshotWork(syncTargets)) {
+      Response preCommitReplayError =
+          applyPreCommitSnapshots(tableSupport, syncTargets, idempotencyBase, txId, false);
+      if (preCommitReplayError != null) {
+        return preCommitReplayError;
+      }
     }
 
     if (!isCommitAccepted(currentState)) {
@@ -883,6 +906,24 @@ public class TransactionCommitService {
     return state == TransactionState.TS_APPLIED;
   }
 
+  private boolean hasPreCommitSnapshotWork(List<SyncTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return false;
+    }
+    for (SyncTarget target : targets) {
+      if (target == null || target.snapshotPlan() == null) {
+        continue;
+      }
+      SnapshotPlan plan = target.snapshotPlan();
+      if (!plan.additions().isEmpty()
+          || !plan.refUpdates().isEmpty()
+          || !plan.removals().isEmpty()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private boolean isDeterministicFailedState(TransactionState state) {
     return state == TransactionState.TS_APPLY_FAILED_CONFLICT
         || state == TransactionState.TS_ABORTED;
@@ -1114,5 +1155,82 @@ public class TransactionCommitService {
       return request;
     }
     return new TableRequests.Commit(filtered, request.updates());
+  }
+
+  private Response validateNullSnapshotRefRequirements(
+      TableGatewaySupport tableSupport,
+      ai.floedb.floecat.catalog.rpc.Table table,
+      List<Map<String, Object>> requirements) {
+    if (requirements == null || requirements.isEmpty()) {
+      return null;
+    }
+    IcebergMetadata metadata = null;
+    for (Map<String, Object> requirement : requirements) {
+      if (requirement == null) {
+        continue;
+      }
+      Object typeObj = requirement.get("type");
+      String type = typeObj instanceof String value ? value : null;
+      if (!"assert-ref-snapshot-id".equals(type) || !requirement.containsKey("snapshot-id")) {
+        continue;
+      }
+      if (requirement.get("snapshot-id") != null) {
+        continue;
+      }
+      Object refObj = requirement.get("ref");
+      String refName = refObj instanceof String value ? value : null;
+      if (refName == null || refName.isBlank()) {
+        return IcebergErrorResponses.validation("assert-ref-snapshot-id requires ref");
+      }
+      if (metadata == null) {
+        metadata = tableSupport.loadCurrentMetadata(table);
+      }
+      boolean refExists =
+          metadata != null
+              && (metadata.getRefsMap().containsKey(refName)
+                  || ("main".equals(refName) && metadata.getCurrentSnapshotId() > 0));
+      if (refExists) {
+        return IcebergErrorResponses.failure(
+            "assert-ref-snapshot-id failed for ref " + refName,
+            "CommitFailedException",
+            Response.Status.CONFLICT);
+      }
+    }
+    return null;
+  }
+
+  private Response validateAssertCreateRequirement(
+      List<Map<String, Object>> requirements,
+      boolean stageCreatedTable,
+      ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse,
+      ai.floedb.floecat.catalog.rpc.Table persistedTable) {
+    if (stageCreatedTable || requirements == null || requirements.isEmpty()) {
+      return null;
+    }
+    boolean requiresCreate = false;
+    for (Map<String, Object> requirement : requirements) {
+      if (requirement == null) {
+        continue;
+      }
+      Object typeObj = requirement.get("type");
+      String type = typeObj instanceof String value ? value : null;
+      if ("assert-create".equals(type)) {
+        requiresCreate = true;
+        break;
+      }
+    }
+    if (!requiresCreate) {
+      return null;
+    }
+    boolean tableExists =
+        (tableResponse != null
+                && tableResponse.hasTable()
+                && tableResponse.getTable().hasResourceId())
+            || (persistedTable != null && persistedTable.hasResourceId());
+    if (!tableExists) {
+      return null;
+    }
+    return IcebergErrorResponses.failure(
+        "assert-create failed", "CommitFailedException", Response.Status.CONFLICT);
   }
 }

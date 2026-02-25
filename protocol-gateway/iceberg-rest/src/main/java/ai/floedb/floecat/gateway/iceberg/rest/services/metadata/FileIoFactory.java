@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.storage.spi.io.RuntimeFileIoOverrides;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -37,7 +36,6 @@ public final class FileIoFactory {
     if (allowConfigOverrides && config != null) {
       config.metadataFileIoRoot().ifPresent(root -> normalized.put("fs.floecat.test-root", root));
     }
-    RuntimeFileIoOverrides.mergeInto(normalized);
     String impl =
         allowConfigOverrides && config != null
             ? config.metadataFileIo().orElse(normalized.getOrDefault("io-impl", DEFAULT_IO_IMPL))

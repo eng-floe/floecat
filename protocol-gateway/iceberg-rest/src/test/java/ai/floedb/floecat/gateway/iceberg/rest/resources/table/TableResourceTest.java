@@ -43,6 +43,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -82,6 +83,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import jakarta.ws.rs.core.MediaType;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -113,6 +115,9 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(snapshotStub.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(snapshot).build());
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder().addAllSnapshots(FIXTURE.snapshots()).build());
   }
 
   @Test
@@ -214,13 +219,17 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .header(
-            "ETag", equalTo(IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation())))
+            "ETag",
+            equalTo(
+                IcebergHttpUtil.etagForMetadataLocation(
+                    FIXTURE.metadataLocation() + "|snapshots=all")))
         .body("metadata.snapshots.size()", equalTo(2))
         .body("'storage-credentials'", nullValue());
 
     given()
         .header(
-            "If-None-Match", IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation()))
+            "If-None-Match",
+            IcebergHttpUtil.etagForMetadataLocation(FIXTURE.metadataLocation() + "|snapshots=all"))
         .when()
         .get("/v1/foo/namespaces/db/tables/orders")
         .then()
@@ -234,6 +243,126 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("metadata.snapshots.size()", equalTo(1))
         .body("metadata.snapshots[0].'snapshot-id'", equalTo(currentSnapshot.getSnapshotId()));
+  }
+
+  @Test
+  void getTableSnapshotsRefsReturnsEmptyWhenNoRefsPresent() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    List<Snapshot> fixtureSnapshots = FIXTURE.snapshots();
+    Snapshot currentSnapshot = fixtureSnapshots.get(fixtureSnapshots.size() - 1);
+    Table table =
+        baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("orders")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
+            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
+            .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    IcebergMetadata metadataNoRefs = FIXTURE.metadata().toBuilder().clearRefs().build();
+    Snapshot metaSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(currentSnapshot.getSnapshotId())
+            .putFormatMetadata("iceberg", metadataNoRefs.toByteString())
+            .build();
+    when(snapshotStub.getSnapshot(any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(metaSnapshot).build());
+
+    Snapshot snapshot1 = currentSnapshot.toBuilder().setTableId(tableId).build();
+    Snapshot snapshot2 = fixtureSnapshots.get(0).toBuilder().setTableId(tableId).build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(snapshot1)
+                .addSnapshots(snapshot2)
+                .build());
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.snapshots.size()", equalTo(0));
+  }
+
+  @Test
+  void getDeltaTableUsesTranslatedMetadataAndRefsFiltering() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:delta_orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setId("cat").build())
+            .setNamespaceId(ResourceId.newBuilder().setId("cat:db").build())
+            .setDisplayName("delta_orders")
+            .putProperties("storage_location", "s3://warehouse/delta_orders")
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA).build())
+            .build();
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+
+    Snapshot s1 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(101L)
+            .setSequenceNumber(1L)
+            .setSchemaId(3)
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstreamCreatedAt(
+                Timestamps.fromMillis(Instant.parse("2026-01-01T00:00:00Z").toEpochMilli()))
+            .build();
+    Snapshot s2 =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(102L)
+            .setSequenceNumber(2L)
+            .setSchemaId(3)
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false}]}")
+            .setUpstreamCreatedAt(
+                Timestamps.fromMillis(Instant.parse("2026-01-02T00:00:00Z").toEpochMilli()))
+            .build();
+    when(snapshotStub.listSnapshots(any()))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(s1).addSnapshots(s2).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("delta-load-q1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    ScanBundle bundle =
+        ScanBundle.newBuilder()
+            .addDataFiles(
+                ScanFile.newBuilder()
+                    .setFilePath("s3://warehouse/delta_orders/data/part-00000.parquet")
+                    .setFileFormat("PARQUET")
+                    .setFileSizeInBytes(128L)
+                    .setRecordCount(1L)
+                    .build())
+            .build();
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    given()
+        .queryParam("snapshots", "refs")
+        .when()
+        .get("/v1/foo/namespaces/db/tables/delta_orders")
+        .then()
+        .statusCode(200)
+        .body("metadata.'current-snapshot-id'", equalTo(102))
+        .body("metadata.'current-schema-id'", equalTo(3))
+        .body("metadata.schemas[0].fields[0].id", equalTo(1))
+        .body("metadata.'snapshot-log'.size()", equalTo(2))
+        .body("metadata.snapshots.size()", equalTo(1))
+        .body("metadata.snapshots[0].'snapshot-id'", equalTo(102))
+        .body("metadata.snapshots[0].'manifest-list'", notNullValue())
+        .body("'metadata-location'", notNullValue());
   }
 
   @Test
@@ -330,7 +459,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo(FIXTURE.metadataLocation()));
+        .body("metadata-location", equalTo(FIXTURE.metadataLocation()))
+        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body(
+            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
@@ -443,7 +576,11 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/register")
         .then()
         .statusCode(200)
-        .body("metadata-location", equalTo(newMetadata));
+        .body("metadata-location", equalTo(newMetadata))
+        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body(
+            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
+        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
     ArgumentCaptor<UpdateTableRequest> updateCaptor =
         ArgumentCaptor.forClass(UpdateTableRequest.class);
@@ -587,6 +724,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
     given()
         .body(
@@ -612,7 +751,7 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void createTableUsesRequestMetadataEvenWhenSnapshotMetadataDiffers() {
+  void createTableUsesPersistedMetadataWhenSnapshotMetadataDiffers() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
@@ -642,8 +781,135 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("metadata.'format-version'", equalTo(FIXTURE.metadata().getFormatVersion()))
-        .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()));
+        .body("metadata.'format-version'", equalTo(2))
+        .body("'metadata-location'", equalTo(differentMetadata.getMetadataLocation()));
+  }
+
+  @Test
+  void renameTableUpdatesNamespaceAndName() {
+    ResourceId sourceTableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId destinationNamespaceId = ResourceId.newBuilder().setId("cat:analytics").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(sourceTableId).build());
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder().setResourceId(destinationNamespaceId).build());
+    when(tableStub.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(Table.newBuilder().build()).build());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<UpdateTableRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(tableStub).updateTable(updateCaptor.capture());
+    UpdateTableRequest sent = updateCaptor.getValue();
+    assertEquals(sourceTableId, sent.getTableId());
+    assertEquals(destinationNamespaceId, sent.getSpec().getNamespaceId());
+    assertEquals("orders_new", sent.getSpec().getDisplayName());
+    assertEquals(List.of("namespace_id", "display_name"), sent.getUpdateMask().getPathsList());
+  }
+
+  @Test
+  void renameTableReturnsNoSuchTableWhenSourceMissing() {
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"missing"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchTableException"))
+        .body("error.message", equalTo("Table db.missing not found"));
+  }
+
+  @Test
+  void renameTableReturnsNoSuchNamespaceWhenDestinationMissing() {
+    ResourceId sourceTableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(sourceTableId).build());
+    when(directoryStub.resolveNamespace(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["missing"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchNamespaceException"))
+        .body("error.message", equalTo("Namespace missing not found"));
+  }
+
+  @Test
+  void renameTablePropagatesUnexpectedGrpcError() {
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.INTERNAL));
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"orders"},
+              "destination":{"namespace":["analytics"],"name":"orders_new"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/tables/rename")
+        .then()
+        .statusCode(500);
+  }
+
+  @Test
+  void tableExistsHeadContract() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db").build())
+                .build());
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given().when().head("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
+  }
+
+  @Test
+  void tableExistsHeadNotFoundContract() {
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db").build())
+                .build());
+    when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().head("/v1/foo/namespaces/db/tables/missing").then().statusCode(404);
   }
 
   @Test
@@ -751,11 +1017,17 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenReturn(GetNamespaceResponse.newBuilder().setNamespace(ns).build());
 
     Table created =
-        baseTable(ResourceId.newBuilder().setId("cat:db:orders").build(), nsId)
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setNamespaceId(nsId)
             .setDisplayName("orders")
+            .putProperties("location", "s3://warehouse/db/orders")
             .build();
     when(tableStub.createTable(any()))
         .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
     Map<String, Object> field = new LinkedHashMap<>();
     field.put("id", 1);
@@ -1092,6 +1364,60 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
+  void fetchPlanMissingPlanIdReturns404() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/tables/orders/plan/missing")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
+  }
+
+  @Test
+  void cancelPlanReturns204() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryScanStub.fetchScanBundle(any()))
+        .thenReturn(
+            FetchScanBundleResponse.newBuilder()
+                .setBundle(ScanBundle.newBuilder().build())
+                .build());
+
+    given()
+        .body("{\"snapshot-id\":7}")
+        .header("Content-Type", "application/json")
+        .post("/v1/foo/namespaces/db/tables/orders/plan")
+        .then()
+        .statusCode(200);
+
+    given().when().delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(204);
+  }
+
+  @Test
+  void cancelPlanMissingPlanIdReturns404() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+
+    given()
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders/plan/missing")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchPlanIdException"));
+  }
+
+  @Test
   void fetchScanTasksReturnsBundle() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
@@ -1151,6 +1477,14 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    String expectedAccessKey =
+        System.getProperty(
+            "floecat.gateway.storage-credential.properties.s3.access-key-id",
+            System.getProperty("floecat.fixture.aws.s3.access-key-id", "test-key"));
+    String expectedSecretKey =
+        System.getProperty(
+            "floecat.gateway.storage-credential.properties.s3.secret-access-key",
+            System.getProperty("floecat.fixture.aws.s3.secret-access-key", "test-secret"));
 
     given()
         .when()
@@ -1160,8 +1494,8 @@ class TableResourceTest extends AbstractRestResourceTest {
         .body("'storage-credentials'.size()", equalTo(1))
         .body("'storage-credentials'[0].prefix", equalTo("*"))
         .body("'storage-credentials'[0].config.type", equalTo("s3"))
-        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo("test-key"))
-        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo("test-secret"));
+        .body("'storage-credentials'[0].config.'s3.access-key-id'", equalTo(expectedAccessKey))
+        .body("'storage-credentials'[0].config.'s3.secret-access-key'", equalTo(expectedSecretKey));
   }
 
   @Test

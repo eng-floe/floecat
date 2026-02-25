@@ -18,7 +18,9 @@ package ai.floedb.floecat.service.connector.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
@@ -47,9 +49,11 @@ import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
+import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -59,6 +63,7 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -77,6 +82,7 @@ import jakarta.inject.Inject;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -91,6 +97,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
+  @Inject CredentialResolver credentialResolver;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -112,7 +119,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "destination.table_id",
           "auth",
           "auth.scheme",
-          "auth.secret_ref",
+          "auth.credentials",
           "auth.header_hints",
           "auth.properties",
           "policy",
@@ -122,6 +129,25 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.not_before");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
+  private static final String REDACTED = "****";
+  private static final List<String> SENSITIVE_TOKENS =
+      List.of(
+          "secret",
+          "token",
+          "password",
+          "key",
+          "pem",
+          "private",
+          "client_id",
+          "clientid",
+          "access_key",
+          "session",
+          "refresh",
+          "authorization",
+          "bearer",
+          "jwt",
+          "assertion",
+          "external_id");
 
   @Override
   public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
@@ -147,8 +173,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       MutationOps.pageOut(
                           next.toString(), connectorRepo.count(principalContext.getAccountId()));
 
+                  var masked = connectors.stream().map(ConnectorsImpl::maskConnector).toList();
                   return ListConnectorsResponse.newBuilder()
-                      .addAllConnectors(connectors)
+                      .addAllConnectors(masked)
                       .setPage(page)
                       .build();
                 }),
@@ -184,7 +211,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       GeneratedErrorMessages.MessageKey.CONNECTOR,
                                       Map.of("id", connectorId.getId())));
 
-                  return GetConnectorResponse.newBuilder().setConnector(connector).build();
+                  return GetConnectorResponse.newBuilder()
+                      .setConnector(maskConnector(connector))
+                      .build();
                 }),
             correlationId())
         .onFailure()
@@ -338,7 +367,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .setKind(spec.getKind())
                           .setUri(uri)
                           .putAllProperties(spec.getPropertiesMap())
-                          .setAuth(spec.getAuth())
                           .setPolicy(spec.getPolicy())
                           .setCreatedAt(tsNow)
                           .setUpdatedAt(tsNow)
@@ -348,20 +376,34 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (spec.hasSource()) builder.setSource(spec.getSource());
                   builder.setDestination(destB.build());
 
-                  var connector = builder.build();
-
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr,
                           GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                           Map.of("display_name", display));
                     }
-                    connectorRepo.create(connector);
+                    boolean storedCredentials = hasAuthCredentials(spec.getAuth());
+                    String secretId = connectorId.getId();
+                    AuthConfig storedAuth =
+                        storeAuthCredentials(spec.getAuth(), accountId, connectorId.getId());
+                    ensureNoStoredCredentials(storedAuth);
+                    var connector = builder.setAuth(storedAuth).build();
+                    try {
+                      connectorRepo.create(connector);
+                    } catch (BaseResourceRepository.NameConflictException nce) {
+                      if (storedCredentials) {
+                        credentialResolver.delete(accountId, secretId);
+                      }
+                      throw GrpcErrors.alreadyExists(
+                          corr,
+                          GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
+                          Map.of("display_name", display));
+                    }
                     var meta = connectorRepo.metaFor(connectorId);
                     return CreateConnectorResponse.newBuilder()
-                        .setConnector(connector)
+                        .setConnector(maskConnector(connector))
                         .setMeta(meta)
                         .build();
                   }
@@ -375,18 +417,45 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   idempotencyKey,
                                   () -> fp,
                                   () -> {
+                                    AuthConfig storedAuth =
+                                        storeAuthCredentials(
+                                            spec.getAuth(), accountId, connectorId.getId());
+                                    boolean storedCredentials = hasAuthCredentials(spec.getAuth());
+                                    String secretId = connectorId.getId();
+                                    ensureNoStoredCredentials(storedAuth);
+                                    var connector = builder.setAuth(storedAuth).build();
                                     try {
                                       connectorRepo.create(connector);
                                     } catch (BaseResourceRepository.NameConflictException nce) {
+                                      if (storedCredentials) {
+                                        credentialResolver.delete(accountId, secretId);
+                                      }
                                       var existingOpt = connectorRepo.getByName(accountId, display);
                                       if (existingOpt.isPresent()) {
                                         var existingSpec = specFromConnector(existingOpt.get());
+                                        if (hasAuthCredentials(spec.getAuth())) {
+                                          var existingAuth = existingSpec.getAuth();
+                                          String existingSecretId =
+                                              existingOpt.get().getResourceId().getId();
+                                          var resolved =
+                                              credentialResolver.resolve(
+                                                  accountId, existingSecretId);
+                                          if (resolved.isPresent()) {
+                                            existingSpec =
+                                                existingSpec.toBuilder()
+                                                    .setAuth(
+                                                        existingAuth.toBuilder()
+                                                            .setCredentials(resolved.get())
+                                                            .build())
+                                                    .build();
+                                          }
+                                        }
                                         if (Arrays.equals(fp, canonicalFingerprint(existingSpec))) {
                                           return new IdempotencyGuard.CreateResult<>(
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           GeneratedErrorMessages.MessageKey
                                               .CONNECTOR_ALREADY_EXISTS,
@@ -403,7 +472,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   Connector::parseFrom));
 
                   return CreateConnectorResponse.newBuilder()
-                      .setConnector(result.body)
+                      .setConnector(maskConnector(result.body))
                       .setMeta(result.meta)
                       .build();
                 }),
@@ -447,17 +516,35 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       GeneratedErrorMessages.MessageKey.CONNECTOR,
                                       Map.of("id", connectorId.getId())));
 
+                  FieldMask normalizedMask = normalizeMask(request.getUpdateMask());
                   var desired =
-                      applyConnectorSpecPatch(
-                              current,
-                              request.getSpec(),
-                              normalizeMask(request.getUpdateMask()),
-                              corr)
+                      applyConnectorSpecPatch(current, request.getSpec(), normalizedMask, corr)
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  String accountId = pc.getAccountId();
+                  String secretId = connectorId.getId();
+                  boolean authTouched =
+                      maskTargets(normalizedMask, "auth")
+                          || maskTargets(normalizedMask, "auth.credentials");
+                  boolean incomingHasCredentials = hasAuthCredentials(desired.getAuth());
+                  Optional<AuthCredentials> priorCredentials = Optional.empty();
+                  AuthConfig storedAuth = desired.getAuth();
+                  if (incomingHasCredentials) {
+                    priorCredentials = credentialResolver.resolve(accountId, secretId);
+                    storedAuth =
+                        storeAuthCredentials(desired.getAuth(), accountId, connectorId.getId());
+                    if (storedAuth != desired.getAuth()) {
+                      desired = desired.toBuilder().setAuth(storedAuth).build();
+                    }
+                  }
+                  ensureNoStoredCredentials(desired.getAuth());
+                  boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
 
                   if (desired.equals(current)) {
+                    if (shouldDeleteSecret) {
+                      credentialResolver.delete(accountId, secretId);
+                    }
                     var metaNoop = connectorRepo.metaFor(connectorId);
                     boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
                     if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
@@ -471,7 +558,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, metaNoop, request.getPrecondition());
                     return UpdateConnectorResponse.newBuilder()
-                        .setConnector(current)
+                        .setConnector(maskConnector(current))
                         .setMeta(metaNoop)
                         .build();
                   }
@@ -480,6 +567,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     boolean ok = connectorRepo.update(desired, meta.getPointerVersion());
                     if (!ok) {
                       var nowMeta = connectorRepo.metaForSafe(connectorId);
+                      if (incomingHasCredentials) {
+                        restoreCredentials(accountId, secretId, priorCredentials);
+                      }
                       throw GrpcErrors.preconditionFailed(
                           corr,
                           GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
@@ -488,12 +578,18 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(
+                    if (incomingHasCredentials) {
+                      restoreCredentials(accountId, secretId, priorCredentials);
+                    }
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = connectorRepo.metaForSafe(connectorId);
+                    if (incomingHasCredentials) {
+                      restoreCredentials(accountId, secretId, priorCredentials);
+                    }
                     throw GrpcErrors.preconditionFailed(
                         corr,
                         GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
@@ -502,11 +598,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
 
+                  if (shouldDeleteSecret) {
+                    credentialResolver.delete(accountId, secretId);
+                  }
+
                   var outMeta = connectorRepo.metaForSafe(connectorId);
                   var outConnector = connectorRepo.getById(connectorId).orElse(desired);
 
                   return UpdateConnectorResponse.newBuilder()
-                      .setConnector(outConnector)
+                      .setConnector(maskConnector(outConnector))
                       .setMeta(outMeta)
                       .build();
                 }),
@@ -549,6 +649,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
                   }
 
+                  String secretId = connectorId.getId();
+
                   var out =
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
@@ -558,6 +660,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           corr,
                           "connector",
                           Map.of("id", connectorId.getId()));
+
+                  credentialResolver.delete(pc.getAccountId(), secretId);
 
                   return DeleteConnectorResponse.newBuilder().setMeta(out).build();
                 }),
@@ -592,12 +696,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                             throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
                       };
 
-                  var auth =
-                      new ConnectorConfig.Auth(
-                          spec.getAuth().getScheme(),
-                          spec.getAuth().getPropertiesMap(),
-                          spec.getAuth().getHeaderHintsMap(),
-                          spec.getAuth().getSecretRef());
+                  var auth = toConnectorAuth(spec.getAuth());
 
                   var cfg =
                       new ConnectorConfig(
@@ -607,7 +706,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           spec.getPropertiesMap(),
                           auth);
 
-                  try (var connector = ConnectorFactory.create(cfg)) {
+                  var resolved = resolveCredentials(cfg, spec.getAuth());
+                  try (var connector = ConnectorFactory.create(resolved)) {
                     var namespaces = connector.listNamespaces();
 
                     if (spec.hasSource()) {
@@ -659,6 +759,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var connectorId = request.getConnectorId();
                   ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+                  var connector = connectorRepo.getById(connectorId).orElse(null);
 
                   List<List<String>> nsPaths =
                       request.getDestinationNamespacePathsList().stream()
@@ -673,10 +774,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   CaptureMode mode =
                       request.getIncludeStatistics()
-                          ? CaptureMode.METADATA_AND_STATS
-                          : CaptureMode.METADATA_ONLY;
+                          ? CaptureMode.STATS_ONLY_ASYNC
+                          : CaptureMode.METADATA_ONLY_CORE;
 
-                  var result = reconcilerService.reconcile(connectorId, false, scope, mode);
+                  var result = reconcilerService.reconcile(pc, connectorId, false, scope, mode);
                   if (!result.ok()) {
                     if (result.error != null) {
                       throw new RuntimeException("sync capture failed", result.error);
@@ -776,6 +877,179 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private static boolean hasAuthCredentials(AuthConfig auth) {
+    if (auth == null || !auth.hasCredentials()) {
+      return false;
+    }
+    return auth.getCredentials().getCredentialCase()
+        != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
+  }
+
+  private void restoreCredentials(
+      String accountId, String secretId, Optional<AuthCredentials> priorCredentials) {
+    if (priorCredentials != null && priorCredentials.isPresent()) {
+      credentialResolver.store(accountId, secretId, priorCredentials.get());
+    } else {
+      credentialResolver.delete(accountId, secretId);
+    }
+  }
+
+  private AuthConfig storeAuthCredentials(AuthConfig auth, String accountId, String connectorId) {
+    AuthConfig safeAuth = auth == null ? AuthConfig.getDefaultInstance() : auth;
+    if (!hasAuthCredentials(safeAuth)) {
+      return safeAuth;
+    }
+    credentialResolver.store(accountId, connectorId, safeAuth.getCredentials());
+    // AuthCredentials are stored in the secrets manager; connector records must not persist them.
+    return safeAuth.toBuilder().clearCredentials().build();
+  }
+
+  private static void ensureNoStoredCredentials(AuthConfig auth) {
+    if (hasAuthCredentials(auth)) {
+      throw new IllegalStateException("AuthCredentials must not be stored in connector records");
+    }
+  }
+
+  private static Connector maskConnector(Connector connector) {
+    if (connector == null || !connector.hasAuth()) {
+      return connector;
+    }
+    AuthConfig masked = maskAuthConfig(connector.getAuth());
+    return connector.toBuilder().setAuth(masked).build();
+  }
+
+  private static AuthConfig maskAuthConfig(AuthConfig auth) {
+    if (auth == null) {
+      return AuthConfig.getDefaultInstance();
+    }
+    var builder = auth.toBuilder();
+    if (hasAuthCredentials(auth)) {
+      builder.setCredentials(maskAuthCredentials(auth.getCredentials()));
+    } else {
+      builder.clearCredentials();
+    }
+    builder.clearProperties().putAllProperties(maskSensitiveMap(auth.getPropertiesMap()));
+    builder.clearHeaderHints().putAllHeaderHints(maskSensitiveMap(auth.getHeaderHintsMap()));
+    return builder.build();
+  }
+
+  private static AuthCredentials maskAuthCredentials(AuthCredentials credentials) {
+    if (credentials == null) {
+      return AuthCredentials.getDefaultInstance();
+    }
+    AuthCredentials.Builder builder = AuthCredentials.newBuilder();
+    switch (credentials.getCredentialCase()) {
+      case BEARER -> builder.setBearer(AuthCredentials.BearerToken.newBuilder().setToken(REDACTED));
+      case CLIENT ->
+          builder.setClient(
+              AuthCredentials.ClientCredentials.newBuilder()
+                  .setEndpoint(credentials.getClient().getEndpoint())
+                  .setClientId(REDACTED)
+                  .setClientSecret(REDACTED));
+      case CLI ->
+          builder.setCli(
+              AuthCredentials.CliCredentials.newBuilder()
+                  .setProvider(credentials.getCli().getProvider()));
+      case RFC8693_TOKEN_EXCHANGE ->
+          builder.setRfc8693TokenExchange(
+              AuthCredentials.Rfc8693TokenExchange.newBuilder()
+                  .setBase(maskTokenExchange(credentials.getRfc8693TokenExchange().getBase())));
+      case AZURE_TOKEN_EXCHANGE ->
+          builder.setAzureTokenExchange(
+              AuthCredentials.AzureTokenExchange.newBuilder()
+                  .setBase(maskTokenExchange(credentials.getAzureTokenExchange().getBase())));
+      case GCP_TOKEN_EXCHANGE ->
+          builder.setGcpTokenExchange(
+              AuthCredentials.GcpTokenExchange.newBuilder()
+                  .setBase(maskTokenExchange(credentials.getGcpTokenExchange().getBase()))
+                  .setServiceAccountEmail(
+                      credentials.getGcpTokenExchange().getServiceAccountEmail())
+                  .setDelegatedUser(credentials.getGcpTokenExchange().getDelegatedUser())
+                  .setServiceAccountPrivateKeyPem(REDACTED)
+                  .setServiceAccountPrivateKeyId(REDACTED));
+      case AWS ->
+          builder.setAws(
+              AuthCredentials.AwsCredentials.newBuilder()
+                  .setAccessKeyId(REDACTED)
+                  .setSecretAccessKey(REDACTED)
+                  .setSessionToken(REDACTED));
+      case AWS_WEB_IDENTITY ->
+          builder.setAwsWebIdentity(
+              AuthCredentials.AwsWebIdentity.newBuilder()
+                  .setRoleArn(credentials.getAwsWebIdentity().getRoleArn())
+                  .setRoleSessionName(credentials.getAwsWebIdentity().getRoleSessionName())
+                  .setProviderId(credentials.getAwsWebIdentity().getProviderId())
+                  .setDurationSeconds(credentials.getAwsWebIdentity().getDurationSeconds()));
+      case AWS_ASSUME_ROLE ->
+          builder.setAwsAssumeRole(
+              AuthCredentials.AwsAssumeRole.newBuilder()
+                  .setRoleArn(credentials.getAwsAssumeRole().getRoleArn())
+                  .setRoleSessionName(credentials.getAwsAssumeRole().getRoleSessionName())
+                  .setExternalId(REDACTED)
+                  .setDurationSeconds(credentials.getAwsAssumeRole().getDurationSeconds()));
+      case CREDENTIAL_NOT_SET -> {}
+    }
+
+    builder.putAllProperties(maskSensitiveMap(credentials.getPropertiesMap()));
+    builder.putAllHeaders(maskSensitiveMap(credentials.getHeadersMap()));
+    return builder.build();
+  }
+
+  private static AuthCredentials.TokenExchange maskTokenExchange(
+      AuthCredentials.TokenExchange base) {
+    if (base == null) {
+      return AuthCredentials.TokenExchange.getDefaultInstance();
+    }
+    return AuthCredentials.TokenExchange.newBuilder()
+        .setEndpoint(base.getEndpoint())
+        .setSubjectTokenType(base.getSubjectTokenType())
+        .setRequestedTokenType(base.getRequestedTokenType())
+        .setAudience(base.getAudience())
+        .setScope(base.getScope())
+        .setClientId(REDACTED)
+        .setClientSecret(REDACTED)
+        .build();
+  }
+
+  private static Map<String, String> maskSensitiveMap(Map<String, String> input) {
+    if (input == null || input.isEmpty()) {
+      return Map.of();
+    }
+    var out = new java.util.HashMap<String, String>(input.size());
+    for (var entry : input.entrySet()) {
+      String key = entry.getKey();
+      String value = entry.getValue();
+      out.put(key, isSensitiveKey(key) ? REDACTED : value);
+    }
+    return out;
+  }
+
+  private static boolean isSensitiveKey(String key) {
+    if (key == null || key.isBlank()) {
+      return false;
+    }
+    String lower = key.toLowerCase(java.util.Locale.ROOT);
+    for (String token : SENSITIVE_TOKENS) {
+      if (lower.contains(token)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private ConnectorConfig resolveCredentials(ConnectorConfig base, AuthConfig auth) {
+    if (hasAuthCredentials(auth)) {
+      AuthResolutionContext context = AuthResolutionContexts.fromInboundContext();
+      return CredentialResolverSupport.apply(base, auth.getCredentials(), context);
+    }
+    return base;
+  }
+
+  private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {
+    return new ConnectorConfig.Auth(
+        auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
   }
 
   private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {
@@ -1047,11 +1321,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           ab.clearScheme();
         }
       }
-      if (maskTargets(mask, "auth.secret_ref")) {
-        if (inAuth.getSecretRef() != null && !inAuth.getSecretRef().isBlank()) {
-          ab.setSecretRef(inAuth.getSecretRef());
+      if (maskTargets(mask, "auth.credentials")) {
+        if (hasAuthCredentials(inAuth)) {
+          ab.setCredentials(inAuth.getCredentials());
         } else {
-          ab.clearSecretRef();
+          ab.clearCredentials();
         }
       }
       if (maskTargets(mask, "auth.header_hints")) {
@@ -1181,7 +1455,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         "auth",
         g ->
             g.scalar("scheme", auth.getScheme())
-                .scalar("secret_ref", auth.getSecretRef())
+                .scalar("credentials", auth.getCredentials())
                 .map("header_hints", auth.getHeaderHintsMap())
                 .map("properties", auth.getPropertiesMap()));
 

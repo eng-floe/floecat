@@ -64,10 +64,6 @@ public class ScanBundleService {
                 () -> GrpcErrors.notFound(correlationId, TABLE, Map.of("id", tableId.getId())));
 
     long snapshotId = snapshotPin.getSnapshotId();
-    if (snapshotId == 0L) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, QUERY_SNAPSHOT_REQUIRED, Map.of("table_id", tableId.getId()));
-    }
 
     Snapshot snapshot =
         snapshots

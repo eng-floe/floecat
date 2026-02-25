@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.service.testsupport;
 
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
@@ -23,9 +26,6 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;

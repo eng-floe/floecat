@@ -73,6 +73,16 @@ public final class GrpcErrors {
     return build(io.grpc.Status.ABORTED, ErrorCode.MC_CONFLICT, corrId, params, suffix(key), t);
   }
 
+  public static StatusRuntimeException alreadyExists(
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("alreadyExists", key, ErrorCode.MC_CONFLICT);
+    return build(
+        io.grpc.Status.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, corrId, params, suffix(key), t);
+  }
+
   public static StatusRuntimeException preconditionFailed(
       String corrId,
       GeneratedErrorMessages.MessageKey key,
@@ -203,6 +213,11 @@ public final class GrpcErrors {
   public static StatusRuntimeException conflict(
       String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
     return conflict(corrId, key, params, null);
+  }
+
+  public static StatusRuntimeException alreadyExists(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return alreadyExists(corrId, key, params, null);
   }
 
   public static StatusRuntimeException preconditionFailed(

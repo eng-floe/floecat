@@ -19,11 +19,14 @@ package ai.floedb.floecat.systemcatalog.graph;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
@@ -45,13 +48,12 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.testsupport.SystemCatalogTestProviders;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -207,7 +209,10 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
     SystemTableDef unqualified =
         new SystemTableDef(
             NameRefUtil.name("orphan"),
@@ -215,7 +220,10 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -247,7 +255,10 @@ class SystemNodeRegistryTest {
             List.of(column("id")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -287,7 +298,10 @@ class SystemNodeRegistryTest {
 
     assertThat(id.getAccountId()).isEqualTo("_system");
     assertThat(id.getKind()).isEqualTo(ResourceKind.RK_FUNCTION);
-    assertThat(id.getId()).isEqualTo("floe:pg_catalog.abs");
+    byte[] base = SystemResourceIdGenerator.base(ResourceKind.RK_FUNCTION, "pg_catalog.abs");
+    byte[] masked = SystemResourceIdGenerator.xor(base, SystemResourceIdGenerator.mask("floe"));
+    UUID expected = SystemResourceIdGenerator.uuidFromBytes(masked);
+    assertThat(id.getId()).isEqualTo(expected.toString());
   }
 
   @Test
@@ -333,8 +347,10 @@ class SystemNodeRegistryTest {
     var built = nodes.functions().get(0);
 
     assertThat(built.displayName()).isEqualTo("pg.abs");
-    assertThat(built.argumentTypes().get(0).getId()).isEqualTo(FLOE_KIND + ":pg.int4");
-    assertThat(built.returnType().getId()).isEqualTo(FLOE_KIND + ":pg.int4");
+    String expectedTypeId =
+        SystemNodeRegistry.resourceId(FLOE_KIND, ResourceKind.RK_TYPE, nr("pg.int4")).getId();
+    assertThat(built.argumentTypes().get(0).getId()).isEqualTo(expectedTypeId);
+    assertThat(built.returnType().getId()).isEqualTo(expectedTypeId);
   }
 
   @Test
@@ -381,10 +397,11 @@ class SystemNodeRegistryTest {
     assertThat(nodes.functions()).hasSize(2);
 
     var ids = nodes.functions().stream().map(fn -> fn.id().getId()).toList();
-    assertThat(ids)
-        .containsExactlyInAnyOrder(
-            FLOE_KIND + ":pg_catalog.overloaded(pg_catalog.int4)",
-            FLOE_KIND + ":pg_catalog.overloaded(pg_catalog.text)");
+    var expected =
+        List.of(
+            SystemNodeRegistry.resourceId(FLOE_KIND, fInt).getId(),
+            SystemNodeRegistry.resourceId(FLOE_KIND, fText).getId());
+    assertThat(ids).containsExactlyInAnyOrderElementsOf(expected);
 
     // sanity: both are for the same display name (safeName) but distinct IDs
     assertThat(nodes.functions())
@@ -434,10 +451,11 @@ class SystemNodeRegistryTest {
     var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
 
     var ids = nodes.operators().stream().map(node -> node.id().getId()).toList();
-    assertThat(ids)
-        .containsExactlyInAnyOrder(
-            FLOE_KIND + ":add(pg_catalog.int4,pg_catalog.int4)->pg_catalog.int4",
-            FLOE_KIND + ":add(pg_catalog.text,pg_catalog.text)->pg_catalog.text");
+    var expected =
+        List.of(
+            SystemNodeRegistry.resourceId(FLOE_KIND, opInt).getId(),
+            SystemNodeRegistry.resourceId(FLOE_KIND, opText).getId());
+    assertThat(ids).containsExactlyInAnyOrderElementsOf(expected);
   }
 
   @Test
@@ -484,12 +502,14 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
 
+    var expected =
+        List.of(
+            SystemNodeRegistry.resourceId(FLOE_KIND, aggSum).getId(),
+            SystemNodeRegistry.resourceId(FLOE_KIND, aggCount).getId(),
+            SystemNodeRegistry.resourceId(FLOE_KIND, aggStateDifferent).getId());
     assertThat(nodes.aggregates())
         .extracting(node -> node.id().getId())
-        .containsExactlyInAnyOrder(
-            FLOE_KIND + ":sum(pg_catalog.int4)->pg_catalog.int4[pg_catalog.int4]",
-            FLOE_KIND + ":sum(pg_catalog.text)->pg_catalog.int4[pg_catalog.int4]",
-            FLOE_KIND + ":sum(pg_catalog.int4)->pg_catalog.int4[pg_catalog.text]");
+        .containsExactlyInAnyOrderElementsOf(expected);
   }
 
   @Test
@@ -516,9 +536,13 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
 
+    var expectedCollations =
+        List.of(
+            SystemNodeRegistry.resourceId(FLOE_KIND, enColl).getId(),
+            SystemNodeRegistry.resourceId(FLOE_KIND, frColl).getId());
     assertThat(nodes.collations())
         .extracting(node -> node.id().getId())
-        .containsExactlyInAnyOrder(FLOE_KIND + ":locale.en_US", FLOE_KIND + ":locale.fr_FR");
+        .containsExactlyInAnyOrderElementsOf(expectedCollations);
   }
 
   @Test
@@ -779,7 +803,10 @@ class SystemNodeRegistryTest {
             List.of(column("value")),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "legacy_scanner",
-            List.of(tableRule));
+            "",
+            "",
+            List.of(tableRule),
+            null);
     SystemViewDef view =
         new SystemViewDef(
             NameRefUtil.name("custom", "preview_view"),
@@ -892,10 +919,14 @@ class SystemNodeRegistryTest {
         .containsKey("information_schema.tables")
         .containsKey("information_schema.columns")
         .containsKey("information_schema.schemata");
+    String infoSchemaTableId =
+        SystemNodeRegistry.resourceId(
+                "pg", ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"))
+            .getId();
     assertThat(
             nodes.tableNodes().stream()
                 .map(node -> node.id().getId())
-                .filter(id -> id.startsWith("pg:information_schema"))
+                .filter(id -> id.equals(infoSchemaTableId))
                 .toList())
         .isNotEmpty();
   }
@@ -922,7 +953,10 @@ class SystemNodeRegistryTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(),
@@ -951,7 +985,10 @@ class SystemNodeRegistryTest {
             List.<SystemColumnDef>of(),
             TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
             "scanner",
-            List.of());
+            "",
+            "",
+            List.of(),
+            null);
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(),
@@ -988,13 +1025,15 @@ class SystemNodeRegistryTest {
             .orElseThrow();
     assertThat(overridden.scannerId()).isEqualTo("overridden_scanner");
     String scannerId = null;
-    for (SystemTableNode node : nodes.tableNodes()) {
-      if (!node.id().getId().endsWith("information_schema.tables")) {
-        continue;
-      }
-      scannerId = ((SystemTableNode.FloeCatSystemTableNode) node).scannerId();
-      break;
-    }
-    assertThat(scannerId).isEqualTo("overridden_scanner");
+    ResourceId expectedTableId =
+        SystemNodeRegistry.resourceId(
+            PG_KIND, ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"));
+    SystemTableNode overriddenNode =
+        nodes.tableNodes().stream()
+            .filter(node -> node.id().equals(expectedTableId))
+            .findFirst()
+            .orElseThrow();
+    assertThat(((SystemTableNode.FloeCatSystemTableNode) overriddenNode).scannerId())
+        .isEqualTo("overridden_scanner");
   }
 }

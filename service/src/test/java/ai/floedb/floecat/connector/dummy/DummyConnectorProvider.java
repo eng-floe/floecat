@@ -19,8 +19,11 @@ package ai.floedb.floecat.connector.dummy;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class DummyConnectorProvider implements ConnectorProvider {
+  private static final AtomicReference<ConnectorConfig> LAST_CONFIG = new AtomicReference<>();
+
   @Override
   public String kind() {
     return "unity";
@@ -28,6 +31,15 @@ public final class DummyConnectorProvider implements ConnectorProvider {
 
   @Override
   public FloecatConnector create(ConnectorConfig cfg) {
+    LAST_CONFIG.set(cfg);
     return DummyConnector.create();
+  }
+
+  public static ConnectorConfig lastConfig() {
+    return LAST_CONFIG.get();
+  }
+
+  public static void reset() {
+    LAST_CONFIG.set(null);
   }
 }

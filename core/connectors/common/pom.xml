@@ -29,13 +29,7 @@
 
   <artifactId>floecat-connectors-common</artifactId>
   <packaging>jar</packaging>
-  
-  <properties>
-    <iceberg.version>1.10.0</iceberg.version>
-    <parquet.version>1.16.0</parquet.version>
-    <hadoop.version>3.4.2</hadoop.version>
-  </properties>
-  
+
   <dependencies>
 
     <!-- Typesystem dependency (LogicalType, LogicalComparators, ValueEncoders, etc) -->
@@ -44,59 +38,80 @@
       <artifactId>floecat-types</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <!-- MetaGraph definition -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-metagraph</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <!-- Proto (stats, NDV, value encoders, etc) -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-proto</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <!-- Connectors SPI -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <!-- Heavy libraries connectors-common really uses -->
     <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-hadoop</artifactId>
-      <version>${parquet.version}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.parquet</groupId>
       <artifactId>parquet-column</artifactId>
-      <version>${parquet.version}</version>
+      <version>${version.parquet}</version>
     </dependency>
 
     <dependency>
       <groupId>org.apache.datasketches</groupId>
       <artifactId>datasketches-java</artifactId>
-      <version>6.0.0</version>
+      <version>${version.datasketches}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
+      <version>${version.aws.sdk}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>auth</artifactId>
+      <version>${version.aws.sdk}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>profiles</artifactId>
+      <version>${version.aws.sdk}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${version.jackson}</version>
     </dependency>
 
     <!-- Needed for reading parquet via Iceberg IO wrappers -->
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
-      <version>${iceberg.version}</version>
     </dependency>
-    
+
     <!-- Hadoop filesystem + config -->
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
-      <version>${hadoop.version}</version>
       <exclusions>
         <exclusion>
           <groupId>org.apache.httpcomponents</groupId>
@@ -133,23 +148,27 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
-      <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
 
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
-      <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
 
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-params</artifactId>
-      <version>5.10.2</version>
       <scope>test</scope>
     </dependency>
+
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+
   </dependencies>
 
 </project>

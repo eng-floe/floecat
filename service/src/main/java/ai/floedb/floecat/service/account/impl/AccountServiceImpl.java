@@ -174,7 +174,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                   if (idempotencyKey == null) {
                     var existingOpt = accountRepo.getByName(normName);
                     if (existingOpt.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           corr, ACCOUNT_ALREADY_EXISTS, Map.of("display_name", normName));
                     }
 
@@ -207,7 +207,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           corr,
                                           ACCOUNT_ALREADY_EXISTS,
                                           Map.of("display_name", normName));
@@ -336,7 +336,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         ACCOUNT_ALREADY_EXISTS,
                         Map.of("display_name", desired.getDisplayName()));

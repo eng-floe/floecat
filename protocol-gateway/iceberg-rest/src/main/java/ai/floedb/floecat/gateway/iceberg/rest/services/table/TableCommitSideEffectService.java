@@ -35,6 +35,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import org.jboss.logging.Logger;
@@ -56,6 +57,12 @@ public class TableCommitSideEffectService {
     if (metadata == null) {
       return MaterializeMetadataResult.failure(
           IcebergErrorResponses.validation("metadata is required for materialization"));
+    }
+    // When no metadata-location is available (e.g. first gRPC connector-driven
+    // commit), derive one from the table's location so that materialization can
+    // seed the property and break the chicken-and-egg cycle.
+    if (!hasText(metadataLocation) && !hasText(metadata.metadataLocation())) {
+      metadataLocation = deriveMetadataLocation(tableRecord, metadata);
     }
     boolean requestedLocation = hasText(metadataLocation) || hasText(metadata.metadataLocation());
     try {
@@ -178,9 +185,15 @@ public class TableCommitSideEffectService {
         String baseLocation = tableLocation(tableRecord);
         String resolvedLocation =
             tableSupport.resolveTableLocation(baseLocation, effectiveMetadata);
+        Map<String, String> connectorIoProps = tableSupport.defaultFileIoProperties();
         LOG.infof(
-            "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s",
-            namespacePath, table, effectiveMetadata, resolvedLocation);
+            "Creating external connector namespace=%s table=%s metadata=%s resolvedLocation=%s"
+                + " ioProps=%s",
+            namespacePath,
+            table,
+            effectiveMetadata,
+            resolvedLocation,
+            connectorIoProps.isEmpty() ? "<none>" : connectorIoProps.keySet());
         connectorId =
             tableSupport.createExternalConnector(
                 prefix,
@@ -191,6 +204,7 @@ public class TableCommitSideEffectService {
                 tableRecord.getResourceId(),
                 effectiveMetadata,
                 resolvedLocation,
+                connectorIoProps,
                 idempotencyKey);
         if (connectorId != null) {
           tableSupport.updateTableUpstream(
@@ -211,21 +225,54 @@ public class TableCommitSideEffectService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    runConnectorSyncAttempt(tableSupport, connectorId, namespacePath, tableName);
+  }
+
+  public ConnectorSyncResult runConnectorSyncAttempt(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName) {
     if (!tableSupport.connectorIntegrationEnabled()) {
-      return;
+      return ConnectorSyncResult.skippedResult();
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
-      return;
+      return ConnectorSyncResult.skippedResult();
+    }
+    boolean captureOk = true;
+    boolean reconcileOk = true;
+    try {
+      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    } catch (Throwable e) {
+      captureOk = false;
+      LOG.warnf(
+          e,
+          "Connector sync metadata capture failed connectorId=%s namespace=%s table=%s",
+          connectorId.getId(),
+          namespacePath == null ? "<null>" : String.join(".", namespacePath),
+          tableName);
     }
     try {
       tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
     } catch (Throwable e) {
+      reconcileOk = false;
       LOG.warnf(
           e,
           "Connector reconcile trigger failed connectorId=%s namespace=%s table=%s",
           connectorId.getId(),
           namespacePath == null ? "<null>" : String.join(".", namespacePath),
           tableName);
+    }
+    return new ConnectorSyncResult(captureOk, reconcileOk, false);
+  }
+
+  public record ConnectorSyncResult(boolean captureOk, boolean reconcileOk, boolean skipped) {
+    static ConnectorSyncResult skippedResult() {
+      return new ConnectorSyncResult(true, true, true);
+    }
+
+    public boolean success() {
+      return skipped || (captureOk && reconcileOk);
     }
   }
 
@@ -304,6 +351,33 @@ public class TableCommitSideEffectService {
       return null;
     }
     return connectorId;
+  }
+
+  /**
+   * Derive an initial metadata-location directory hint from the table's location (upstream URI or
+   * {@code location} property). This is used to seed the first metadata materialization for tables
+   * that were registered without a metadata-location (e.g. gRPC connector-driven imports).
+   */
+  private String deriveMetadataLocation(Table tableRecord, TableMetadataView metadata) {
+    String location = tableLocation(tableRecord);
+    if (location == null && metadata != null) {
+      location = metadata.location();
+    }
+    if (location == null || location.isBlank()) {
+      return null;
+    }
+    String base = stripTrailingSlash(location);
+    if (base.toLowerCase(Locale.ROOT).endsWith("/metadata")) {
+      return base + "/";
+    }
+    return base + "/metadata/";
+  }
+
+  private String stripTrailingSlash(String value) {
+    if (value == null || value.length() <= 1) {
+      return value;
+    }
+    return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
   }
 
   private String tableLocation(Table tableRecord) {

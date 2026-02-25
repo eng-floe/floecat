@@ -26,16 +26,12 @@
 
   <artifactId>floecat-storage-aws</artifactId>
 
-  <properties>
-    <aws.sdk.version>2.39.5</aws.sdk.version>
-  </properties>
-
   <dependencyManagement>
     <dependencies>
       <dependency>
         <groupId>io.quarkus.platform</groupId>
         <artifactId>quarkus-bom</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -43,7 +39,7 @@
       <dependency>
         <groupId>software.amazon.awssdk</groupId>
         <artifactId>bom</artifactId>
-        <version>${aws.sdk.version}</version>
+        <version>${version.aws.sdk}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -78,13 +74,12 @@
 
     <dependency>
       <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-junit5</artifactId>
+      <artifactId>quarkus-junit</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
-      <version>3.27.7</version>
       <scope>test</scope>
     </dependency>
 
@@ -117,12 +112,16 @@
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>sts</artifactId>
     </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>secretsmanager</artifactId>
+    </dependency>
 
     <!-- Logging (AWS SDK uses slf4j) -->
     <dependency>
       <groupId>commons-logging</groupId>
       <artifactId>commons-logging</artifactId>
-      <version>1.3.5</version>
+      <version>${version.commons.logging}</version>
     </dependency>
 
   </dependencies>
@@ -132,7 +131,6 @@
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>3.5.2</version>
         <executions>
           <execution>
             <id>make-index</id>
@@ -145,7 +143,6 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${quarkus.platform.version}</version>
         <executions>
           <execution>
             <goals>

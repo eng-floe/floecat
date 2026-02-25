@@ -27,7 +27,6 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <iceberg.version>1.9.2</iceberg.version>
     <test.jvm.args.extra>--add-opens java.base/sun.nio.ch=ALL-UNNAMED -Djava.util.logging.manager=org.jboss.logmanager.LogManager</test.jvm.args.extra>
   </properties>
 
@@ -36,7 +35,7 @@
       <dependency>
         <groupId>io.quarkus.platform</groupId>
         <artifactId>quarkus-bom</artifactId>
-        <version>${quarkus.platform.version}</version>
+        <version>${version.quarkus}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
@@ -47,6 +46,11 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-scheduler</artifactId>
     </dependency>
 
     <dependency>
@@ -68,15 +72,6 @@
       <artifactId>quarkus-opentelemetry</artifactId>
     </dependency>
 
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-micrometer</artifactId>
-    </dependency>
-
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
-    </dependency>
 
     <dependency>
       <groupId>io.quarkus</groupId>
@@ -89,9 +84,15 @@
     </dependency>
 
     <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>flight-core</artifactId>
+      <version>${version.arrow}</version>
+    </dependency>
+
+    <dependency>
       <groupId>com.github.ben-manes.caffeine</groupId>
       <artifactId>caffeine</artifactId>
-      <version>3.2.3</version>
+      <version>${version.caffeine}</version>
     </dependency>
 
     <dependency>
@@ -101,13 +102,17 @@
 
     <dependency>
       <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-junit5</artifactId>
+      <artifactId>quarkus-junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.rest-assured</groupId>
+      <artifactId>rest-assured</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
-      <version>3.27.7</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -133,7 +138,13 @@
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-common</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-extension-floedb</artifactId>
@@ -159,6 +170,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-reconciler-spi</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -177,13 +194,56 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-scanner</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-flight</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-storage-aws</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
+
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-metagraph</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-core</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-quarkus</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-backend-micrometer</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-grpc</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-jvm</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>telemetry-hub-integration-profiling</artifactId>
       <version>${project.version}</version>
     </dependency>
 
@@ -201,19 +261,17 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-junit-jupiter</artifactId>
-      <version>${mockito.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>com.tngtech.archunit</groupId>
       <artifactId>archunit-junit5-engine</artifactId>
-      <version>1.1.0</version>
+      <version>${version.archunit}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -223,7 +281,6 @@
       <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
-        <version>${quarkus.platform.version}</version>
         <executions>
           <execution>
             <goals>
@@ -231,12 +288,38 @@
             </goals>
           </execution>
         </executions>
+    </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <executions>
+      <execution>
+        <id>telemetry-jar</id>
+        <phase>process-classes</phase>
+        <goals>
+          <goal>jar</goal>
+        </goals>
+          <configuration>
+            <classifier>telemetry</classifier>
+            <includes>
+              <include>ai/floedb/floecat/service/telemetry/**</include>
+              <include>META-INF/services/ai.floedb.floecat.telemetry.TelemetryContributor</include>
+            </includes>
+            <archive>
+              <manifest>
+                <addClasspath>false</addClasspath>
+              </manifest>
+            </archive>
+          </configuration>
+      </execution>
+        </executions>
       </plugin>
 
       <plugin>
         <groupId>io.smallrye</groupId>
         <artifactId>jandex-maven-plugin</artifactId>
-        <version>3.5.2</version>
         <executions>
           <execution>
             <id>make-index</id>
@@ -268,13 +351,14 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.4</version>
         <configuration>
           <includes>
             <include>**/*Test.java</include>
           </includes>
           <skipTests>${skipUTs}</skipTests>
           <useSystemClassLoader>false</useSystemClassLoader>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
           </configuration>
       </plugin>
@@ -282,7 +366,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>3.5.4</version>
         <executions>
           <execution>
             <goals>
@@ -301,6 +384,8 @@
           <failIfNoTests>false</failIfNoTests>
 
           <useSystemClassLoader>false</useSystemClassLoader>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
           <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>

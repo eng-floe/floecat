@@ -58,6 +58,10 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
 
     try {
       var bytes = blobs.get(p.get().getBlobUri());
+      if (bytes == null) {
+        throw new StorageAbortRetryableException(
+            "idempotency blob not yet visible: " + p.get().getBlobUri());
+      }
       return Optional.of(IdempotencyRecord.parseFrom(bytes));
     } catch (StorageNotFoundException nf) {
       throw new StorageAbortRetryableException(

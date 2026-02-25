@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.spi.decorator;
 
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 

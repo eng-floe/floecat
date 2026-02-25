@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi.decorator;
 
 import ai.floedb.floecat.query.rpc.SqlType;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import java.util.Objects;
 
 /** Mutable holder describing a type (SqlType) during bundle decoration. */

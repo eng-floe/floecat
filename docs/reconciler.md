@@ -14,7 +14,7 @@ creates jobs in the reconciler’s store.
   implementation (`InMemoryReconcileJobStore`) keeps jobs in-memory (separate stores can be added for
   persistent or distributed queues).
 - **`ReconcilerScheduler`** – Quarkus scheduled bean that polls the job store, leases a job,
-  transitions it to running, invokes `ReconcilerService`, and records success/failure stats.
+  transitions it to running, invokes `ReconcilerService` in phases, and records success/failure stats.
 - **`ReconcilerService`** – Core orchestration:
   1. Resolves connector metadata via the service’s `Connectors` RPC.
   2. Ensures destination catalogs/namespaces/tables exist (creating them if needed).
@@ -22,6 +22,9 @@ creates jobs in the reconciler’s store.
   4. Iterates upstream tables, ingests snapshots + stats, and updates connectors with resolved
      destination IDs.
   5. Handles incremental vs full-rescan logic.
+  6. Supports explicit capture modes:
+     - `METADATA_ONLY_CORE`: advances/creates table + snapshot core state (no stats write required).
+     - `STATS_ONLY_ASYNC`: writes stats only; does not advance existing table core state.
 - **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors).
 - **`NameParts`** – Utility for parsing namespace/table names.
@@ -41,11 +44,20 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   `ConnectorState` update or raises conflicts.
 - **Statistics ingestion** – Table stats plus column/file stats are streamed one request per item via
   `PutColumnStats` / `PutFileColumnStats`, keeping a single idempotency key per table/snapshot.
+- **Mode-aware behavior** – In `STATS_ONLY_ASYNC`, destination-table misses are treated as skip/no-op
+  rather than job-fatal errors.
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
   job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
   success.
 - **Job leasing** – `InMemoryReconcileJobStore` tracks leased IDs to avoid double processing and only
   transitions jobs to `JS_SUCCEEDED`/`JS_FAILED` after `ReconcilerScheduler` finishes the run.
+
+### Backend selection
+- `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
+  uses. Set it to `remote` when the reconciler runs as a separate process and must talk to the service
+  over gRPC. In remote mode the reconciler uses `floecat.reconciler.authorization.header`/`token` to send
+  an authorization header on every call. Per-request tokens supplied via `ReconcileContext` override the
+  static token, so the precedence is: request-scoped token → configured token → no header.
 
 ## Data Flow & Lifecycle
 ```
@@ -53,7 +65,8 @@ Connector TriggerReconcile → ReconcileJobStore.enqueue
   → ReconcilerScheduler.pollOnce
       → jobs.leaseNext (returns account + connector IDs)
       → markRunning
-      → ReconcilerService.reconcile
+      → ReconcilerService.reconcile (METADATA_ONLY_CORE)
+      → ReconcilerService.reconcile (STATS_ONLY_ASYNC)
           → Connectors.GetConnector → ConnectorConfig
           → Ensure destination catalog/namespace/table
           → ConnectorFactory.create + try-with-resources
@@ -76,9 +89,9 @@ uses an `AtomicBoolean` guard to prevent concurrent runs within the same instanc
 
 ## Examples & Scenarios
 - **Full rescan** – Operator triggers `connector trigger demo-glue --full`. The job store enqueues a
-  full scan, scheduler leases it, `ReconcilerService` calls `connector.listTables` to fetch every
-  table, updates dest namespace IDs, and ingests snapshots. The job transitions to `JS_SUCCEEDED`
-  once tables/stats are synced.
+  full scan, scheduler leases it, runs `METADATA_ONLY_CORE` to ensure table/snapshot state, then runs
+  `STATS_ONLY_ASYNC` for stats enrichment. The job transitions to `JS_SUCCEEDED` once both phases
+  complete.
 - **Incremental run** – Without `--full`, `ReconcilerService` restricts its work to the connector’s
   configured `source.table` (if set) and only ingests new snapshots (parents already known via
   `SnapshotRepository`).

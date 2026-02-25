@@ -39,25 +39,25 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 @ApplicationScoped
 public class AwsClients {
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.region", defaultValue = "us-east-1")
+  @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   Region region;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.access-key-id")
+  @ConfigProperty(name = "floecat.storage.aws.access-key-id")
   Optional<String> accessKey;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.secret-access-key")
+  @ConfigProperty(name = "floecat.storage.aws.secret-access-key")
   Optional<String> secretKey;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.session-token")
+  @ConfigProperty(name = "floecat.storage.aws.session-token")
   Optional<String> sessionToken;
 
-  @ConfigProperty(name = "floecat.fileio.override.aws.dynamodb.endpoint-override")
+  @ConfigProperty(name = "floecat.storage.aws.dynamodb.endpoint-override")
   Optional<URI> dynamoEndpoint;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.endpoint")
+  @ConfigProperty(name = "floecat.storage.aws.s3.endpoint")
   Optional<URI> s3Endpoint;
 
-  @ConfigProperty(name = "floecat.fileio.override.s3.path-style-access", defaultValue = "false")
+  @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "false")
   boolean forcePathStyle;
 
   @Produces

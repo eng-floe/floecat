@@ -18,9 +18,9 @@ package ai.floedb.floecat.extensions.floedb.validation;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.validation.Severity;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;

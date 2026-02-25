@@ -446,6 +446,19 @@ public class ConnectorIT {
 
       assertEquals(1, outTables.size(), "expected exactly one table in destination namespace");
       assertEquals("call_center", outTables.get(0).getDisplayName());
+
+      var outTableId = outTables.get(0).getResourceId();
+      assertTrue(snaps.getById(outTableId, 0L).isPresent(), "expected Delta snapshot_id=0");
+
+      var fileStats =
+          statsService.listFileColumnStats(
+              ListFileColumnStatsRequest.newBuilder()
+                  .setTableId(outTableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                  .setPage(PageRequest.newBuilder().setPageSize(10))
+                  .build());
+      assertFalse(
+          fileStats.getFileColumnsList().isEmpty(), "expected file stats at current snapshot");
     }
   }
 
@@ -757,6 +770,57 @@ public class ConnectorIT {
   }
 
   @Test
+  void connectorAuthIsMaskedOnResponses() {
+    TestSupport.createCatalog(catalogService, "cat-auth", "");
+    var auth =
+        AuthConfig.newBuilder()
+            .setScheme("oauth2")
+            .setCredentials(
+                AuthCredentials.newBuilder()
+                    .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("secret-token")))
+            .putProperties("client_secret", "super-secret")
+            .putProperties("scope", "all-apis")
+            .putProperties("token", "also-secret")
+            .putHeaderHints("Authorization", "Bearer secret-token")
+            .putHeaderHints("X-Test", "keep")
+            .build();
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("auth-mask")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://x")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-auth"))
+            .setAuth(auth)
+            .build();
+
+    var created =
+        connectors.createConnector(CreateConnectorRequest.newBuilder().setSpec(spec).build());
+    var returnedAuth = created.getConnector().getAuth();
+
+    assertFalse(returnedAuth.hasCredentials());
+    assertEquals("****", returnedAuth.getPropertiesMap().get("client_secret"));
+    assertEquals("****", returnedAuth.getPropertiesMap().get("token"));
+    assertEquals("all-apis", returnedAuth.getPropertiesMap().get("scope"));
+    assertEquals("****", returnedAuth.getHeaderHintsMap().get("Authorization"));
+    assertEquals("keep", returnedAuth.getHeaderHintsMap().get("X-Test"));
+
+    var fetched =
+        connectors.getConnector(
+            GetConnectorRequest.newBuilder()
+                .setConnectorId(created.getConnector().getResourceId())
+                .build());
+    var fetchedAuth = fetched.getConnector().getAuth();
+
+    assertFalse(fetchedAuth.hasCredentials());
+    assertEquals("****", fetchedAuth.getPropertiesMap().get("client_secret"));
+    assertEquals("****", fetchedAuth.getPropertiesMap().get("token"));
+    assertEquals("all-apis", fetchedAuth.getPropertiesMap().get("scope"));
+    assertEquals("****", fetchedAuth.getHeaderHintsMap().get("Authorization"));
+    assertEquals("keep", fetchedAuth.getHeaderHintsMap().get("X-Test"));
+  }
+
+  @Test
   void createConnectorIdempotencyMismatchOnUri() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-idem-2", "");
     var specA =
@@ -892,7 +956,7 @@ public class ConnectorIT {
                         .build()));
 
     TestSupport.assertGrpcAndMc(
-        ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Connector \"u-a1\" already exists");
+        ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "Connector \"u-a1\" already exists");
   }
 
   @Test

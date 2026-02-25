@@ -148,9 +148,34 @@ public class QueryInputResolverTest {
     assertTrue(call.asOfDefault().isEmpty());
   }
 
+  /** A snapshot_id override of zero is valid and must be preserved end-to-end. */
+  @Test
+  void snapshot_override_id_zero() {
+    NameRef n = name("c", "ns", "t2z");
+    ResourceId tableId = rid("T2Z");
+    metadataGraph.bind(n, tableId);
+
+    QueryInput qi =
+        QueryInput.newBuilder()
+            .setName(n)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(0))
+            .build();
+
+    SnapshotPin p =
+        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+
+    assertEquals("T2Z", p.getTableId().getId());
+    assertTrue(p.hasSnapshotId());
+    assertEquals(0, p.getSnapshotId());
+    FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
+    assertEquals(tableId, call.tableId());
+    assertTrue(call.override().hasSnapshotId());
+    assertEquals(0, call.override().getSnapshotId());
+  }
+
   /**
    * When a QueryInput specifies an explicit AS OF timestamp, the resolver must interpret it as a
-   * timestamp snapshot (snapshotId = 0, asOf set).
+   * timestamp pin (asOf set, without forcing an explicit snapshot_id pin).
    */
   @Test
   void snapshot_override_asof() {
@@ -168,7 +193,7 @@ public class QueryInputResolverTest {
     SnapshotPin p =
         resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
 
-    assertEquals(0L, p.getSnapshotId());
+    assertFalse(p.hasSnapshotId());
     assertEquals(ts, p.getAsOf());
     FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
     assertEquals(Optional.empty(), call.asOfDefault());
@@ -194,7 +219,7 @@ public class QueryInputResolverTest {
             .snapshotSet()
             .getPins(0);
 
-    assertEquals(0L, p.getSnapshotId());
+    assertFalse(p.hasSnapshotId());
     assertEquals(ts, p.getAsOf());
     FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
     assertEquals(Optional.of(ts), call.asOfDefault());

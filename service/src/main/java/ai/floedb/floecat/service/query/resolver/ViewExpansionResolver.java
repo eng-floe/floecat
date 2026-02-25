@@ -16,7 +16,8 @@
 
 package ai.floedb.floecat.service.query.resolver;
 
-import ai.floedb.floecat.common.rpc.QueryInput;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.ExpansionMap;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
@@ -30,8 +31,8 @@ import java.util.List;
 @ApplicationScoped
 public class ViewExpansionResolver {
 
-  public byte[] computeExpansion(String correlationId, List<QueryInput> inputs) {
+  public ExpansionMap computeExpansion(String correlationId, List<ResourceId> resolvedInputs) {
     // TODO: full view expansion logic for internal planner
-    return new byte[0];
+    return ExpansionMap.getDefaultInstance();
   }
 }

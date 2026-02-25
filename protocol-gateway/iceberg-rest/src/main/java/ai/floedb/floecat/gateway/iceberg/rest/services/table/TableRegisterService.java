@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
@@ -26,8 +27,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MetadataLocationSync;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -54,6 +57,7 @@ public class TableRegisterService {
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableMetadataImportService tableMetadataImportService;
   @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject SnapshotClient snapshotClient;
   @Inject TableCommitService tableCommitService;
 
   public Response register(
@@ -70,7 +74,8 @@ public class TableRegisterService {
     String metadataLocation = req.metadataLocation().trim();
     String tableName = req.name().trim();
 
-    Map<String, String> ioProperties = new LinkedHashMap<>();
+    Map<String, String> ioProperties =
+        tableSupport.resolveRegisterFileIoProperties(req.properties());
     ImportedMetadata importedMetadata;
     try {
       importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
@@ -102,6 +107,7 @@ public class TableRegisterService {
               tableName,
               metadataLocation,
               idempotencyKey,
+              req.properties(),
               importedMetadata,
               tableSupport);
         }
@@ -144,6 +150,7 @@ public class TableRegisterService {
             created.getResourceId(),
             metadataLocation,
             resolvedLocation,
+            ioProperties,
             null,
             idempotencyKey,
             tableSupport);
@@ -151,13 +158,16 @@ public class TableRegisterService {
         tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
+    List<Snapshot> snapshots =
+        SnapshotLister.fetchSnapshots(
+            snapshotClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
     Response.ResponseBuilder builder =
         Response.ok(
             TableResponseMapper.toLoadResult(
                 tableName,
                 created,
                 metadata,
-                List.of(),
+                snapshots,
                 tableSupport.defaultTableConfig(),
                 tableSupport.defaultCredentials()));
     String etagValue = metadataLocation(created, metadata);
@@ -172,8 +182,11 @@ public class TableRegisterService {
       String tableName,
       String metadataLocation,
       String idempotencyKey,
+      Map<String, String> registerProperties,
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
+    Map<String, String> ioProperties =
+        tableSupport.resolveRegisterFileIoProperties(registerProperties);
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
@@ -263,6 +276,7 @@ public class TableRegisterService {
               tableId,
               metadataLocation,
               resolvedLocation,
+              ioProperties,
               null,
               idempotencyKey,
               tableSupport);
@@ -284,13 +298,15 @@ public class TableRegisterService {
     }
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
+    List<Snapshot> snapshots =
+        SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
     Response.ResponseBuilder builder =
         Response.ok(
             TableResponseMapper.toLoadResult(
                 tableName,
                 updated,
                 metadata,
-                List.of(),
+                snapshots,
                 tableSupport.defaultTableConfig(),
                 tableSupport.defaultCredentials()));
     String etagValue = metadataLocation(updated, metadata);
@@ -306,6 +322,7 @@ public class TableRegisterService {
       ResourceId tableId,
       String metadataLocation,
       String resolvedTableLocation,
+      Map<String, String> ioProperties,
       String existingUpstreamUri,
       String idempotencyKey,
       TableGatewaySupport tableSupport) {
@@ -339,6 +356,7 @@ public class TableRegisterService {
               tableId,
               metadata,
               resolvedTableLocation,
+              ioProperties,
               idempotencyKey);
       upstreamUri = resolvedTableLocation;
     }

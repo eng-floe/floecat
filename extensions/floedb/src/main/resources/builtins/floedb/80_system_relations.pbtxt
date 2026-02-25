@@ -701,6 +701,182 @@ system_tables {
 system_tables {
   name {
     path: "sys"
+    name: "cluster"
+  }
+  display_name: "cluster"
+  columns {
+    name: "cluster_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_id"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "architecture"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "architecture"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "num_nodes"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "num_nodes"
+        atttypid: 23
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "active_nodes"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "active_nodes"
+        atttypid: 23
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "vcpu_cores"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "vcpu_cores"
+        atttypid: 23
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_total_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_total_bytes"
+        atttypid: 20
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "spill_total_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "spill_total_bytes"
+        atttypid: 20
+        attnum: 8
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_state"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_state"
+        atttypid: 1043
+        attnum: 9
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://cluster-manager"
+    endpoint_key: "cluster-manager"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 5197
+      relname: "cluster"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
     name: "const"
   }
   display_name: "const"
@@ -728,6 +904,2290 @@ system_tables {
       relnamespace: 3300
       relkind: "r"
       reltuples: 1.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "query"
+  }
+  display_name: "query"
+  columns {
+    name: "query_id"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "query_id"
+        atttypid: 20
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "session_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "session_id"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "plan_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "plan_id"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "state"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "state"
+        atttypid: 1043
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "error_code"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "error_code"
+        atttypid: 1043
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "error_message"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "error_message"
+        atttypid: 1043
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "username"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "username"
+        atttypid: 1043
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "user_id"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "user_id"
+        atttypid: 20
+        attnum: 8
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "application_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "application_name"
+        atttypid: 1043
+        attnum: 9
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "database_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 10
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "database_name"
+        atttypid: 1043
+        attnum: 10
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 11
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_name"
+        atttypid: 1043
+        attnum: 11
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "type"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 12
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "type"
+        atttypid: 1043
+        attnum: 12
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "tags"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 13
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "tags"
+        atttypid: 1043
+        attnum: 13
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "query_text"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 14
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "query_text"
+        atttypid: 1043
+        attnum: 14
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "pool_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 15
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "pool_id"
+        atttypid: 1043
+        attnum: 15
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "priority"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 16
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "priority"
+        atttypid: 1043
+        attnum: 16
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "slot"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 17
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "slot"
+        atttypid: 20
+        attnum: 17
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "num_workers"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 18
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "num_workers"
+        atttypid: 23
+        attnum: 18
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "longest_worker_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 19
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "longest_worker_id"
+        atttypid: 1043
+        attnum: 19
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "compile_percent"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 20
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "compile_percent"
+        atttypid: 23
+        attnum: 20
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cpu_percent"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 21
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cpu_percent"
+        atttypid: 23
+        attnum: 21
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cpu_percent_max"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 22
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cpu_percent_max"
+        atttypid: 23
+        attnum: 22
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "num_restart"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 23
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "num_restart"
+        atttypid: 23
+        attnum: 23
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "num_error"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 24
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "num_error"
+        atttypid: 23
+        attnum: 24
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_lock_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 25
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_lock_ms"
+        atttypid: 701
+        attnum: 25
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "hinting_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 26
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "hinting_ms"
+        atttypid: 701
+        attnum: 26
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_plan_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 27
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_plan_ms"
+        atttypid: 701
+        attnum: 27
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "plan_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 28
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "plan_ms"
+        atttypid: 701
+        attnum: 28
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_assemble_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 29
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_assemble_ms"
+        atttypid: 701
+        attnum: 29
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "assemble_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 30
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "assemble_ms"
+        atttypid: 701
+        attnum: 30
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_compile_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 31
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_compile_ms"
+        atttypid: 701
+        attnum: 31
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "compile_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 32
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "compile_ms"
+        atttypid: 701
+        attnum: 32
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "acquire_resources_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 33
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "acquire_resources_ms"
+        atttypid: 701
+        attnum: 33
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_run_cpu_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 34
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_run_cpu_ms"
+        atttypid: 701
+        attnum: 34
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "run_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 35
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "run_ms"
+        atttypid: 701
+        attnum: 35
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_run_io_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 36
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_run_io_ms"
+        atttypid: 701
+        attnum: 36
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_run_spool_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 37
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_run_spool_ms"
+        atttypid: 701
+        attnum: 37
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wait_client_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 38
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wait_client_ms"
+        atttypid: 701
+        attnum: 38
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "client_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 39
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "client_ms"
+        atttypid: 701
+        attnum: 39
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "total_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 40
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "total_ms"
+        atttypid: 701
+        attnum: 40
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "wlm_runtime_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 41
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "wlm_runtime_ms"
+        atttypid: 701
+        attnum: 41
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "spool_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 42
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "spool_ms"
+        atttypid: 701
+        attnum: 42
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cancel_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 43
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cancel_ms"
+        atttypid: 701
+        attnum: 43
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "restart_ms"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 44
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "restart_ms"
+        atttypid: 701
+        attnum: 44
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cache_efficiency"
+    type {
+      name: "DOUBLE"
+    }
+    nullable: true
+    ordinal: 45
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cache_efficiency"
+        atttypid: 701
+        attnum: 45
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "submit_time"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 46
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "submit_time"
+        atttypid: 1114
+        attnum: 46
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "execution_time"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 47
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "execution_time"
+        atttypid: 1114
+        attnum: 47
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "done_time"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 48
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "done_time"
+        atttypid: 1114
+        attnum: 48
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "state_time"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 49
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "state_time"
+        atttypid: 1114
+        attnum: 49
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "restart_time"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 50
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "restart_time"
+        atttypid: 1114
+        attnum: 50
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_read_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 51
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_read_bytes"
+        atttypid: 20
+        attnum: 51
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_write_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 52
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_write_bytes"
+        atttypid: 20
+        attnum: 52
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spill_read_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 53
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spill_read_bytes"
+        atttypid: 20
+        attnum: 53
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spill_write_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 54
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spill_write_bytes"
+        atttypid: 20
+        attnum: 54
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_network_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 55
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_network_bytes"
+        atttypid: 20
+        attnum: 55
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_client_read_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 56
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_client_read_bytes"
+        atttypid: 20
+        attnum: 56
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_client_write_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 57
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_client_write_bytes"
+        atttypid: 20
+        attnum: 57
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spool_write_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 58
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spool_write_bytes"
+        atttypid: 20
+        attnum: 58
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "rows_inserted"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 59
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "rows_inserted"
+        atttypid: 20
+        attnum: 59
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "rows_deleted"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 60
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "rows_deleted"
+        atttypid: 20
+        attnum: 60
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "rows_returned"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 61
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "rows_returned"
+        atttypid: 20
+        attnum: 61
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 62
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_bytes"
+        atttypid: 20
+        attnum: 62
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_bytes_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 63
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_bytes_max"
+        atttypid: 20
+        attnum: 63
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spill_space_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 64
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spill_space_bytes"
+        atttypid: 20
+        attnum: 64
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spill_space_bytes_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 65
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spill_space_bytes_max"
+        atttypid: 20
+        attnum: 65
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_spill_space_granted_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 66
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_spill_space_granted_bytes"
+        atttypid: 20
+        attnum: 66
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_estimated_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 67
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_estimated_bytes"
+        atttypid: 20
+        attnum: 67
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_required_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 68
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_required_bytes"
+        atttypid: 20
+        attnum: 68
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_granted_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 69
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_granted_bytes"
+        atttypid: 20
+        attnum: 69
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "memory_estimate_confidence"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 70
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "memory_estimate_confidence"
+        atttypid: 1043
+        attnum: 70
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "blocked"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 71
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "blocked"
+        atttypid: 1043
+        attnum: 71
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "cluster_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 72
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "cluster_id"
+        atttypid: 1043
+        attnum: 72
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_connect_count"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 73
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_connect_count"
+        atttypid: 20
+        attnum: 73
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_count"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 74
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_count"
+        atttypid: 20
+        attnum: 74
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_count"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 75
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_count"
+        atttypid: 20
+        attnum: 75
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 76
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_bytes"
+        atttypid: 20
+        attnum: 76
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_bytes"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 77
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_bytes"
+        atttypid: 20
+        attnum: 77
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_fail_count"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 78
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_fail_count"
+        atttypid: 20
+        attnum: 78
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_fail_count"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 79
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_fail_count"
+        atttypid: 20
+        attnum: 79
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_queue_depth_avg"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 80
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_queue_depth_avg"
+        atttypid: 20
+        attnum: 80
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_queue_depth_avg"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 81
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_queue_depth_avg"
+        atttypid: 20
+        attnum: 81
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_queue_depth_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 82
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_queue_depth_max"
+        atttypid: 20
+        attnum: 82
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_queue_depth_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 83
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_queue_depth_max"
+        atttypid: 20
+        attnum: 83
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_latency_ms_avg"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 84
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_latency_ms_avg"
+        atttypid: 20
+        attnum: 84
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_latency_ms_avg"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 85
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_latency_ms_avg"
+        atttypid: 20
+        attnum: 85
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_read_latency_ms_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 86
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_read_latency_ms_max"
+        atttypid: 20
+        attnum: 86
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "io_object_write_latency_ms_max"
+    type {
+      name: "BIGINT"
+    }
+    nullable: true
+    ordinal: 87
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "io_object_write_latency_ms_max"
+        atttypid: 20
+        attnum: 87
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://query/query"
+    endpoint_key: "query"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 5230
+      relname: "query"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "rowgenerator"
+  }
+  display_name: "rowgenerator"
+  columns {
+    name: "worker_id"
+    type {
+      name: "UUID"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "worker_id"
+        atttypid: 2950
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "worker_lid"
+    type {
+      name: "SMALLINT"
+    }
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "worker_lid"
+        atttypid: 21
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "node_id"
+    type {
+      name: "INT"
+    }
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "node_id"
+        atttypid: 23
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "thread_id"
+    type {
+      name: "SMALLINT"
+    }
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "thread_id"
+        atttypid: 21
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range"
+        atttypid: 20
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range_min"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range_min"
+        atttypid: 20
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "range_max"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "range_max"
+        atttypid: 20
+        attnum: 7
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "row_number"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "row_number"
+        atttypid: 20
+        attnum: 8
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "random_seed"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "random_seed"
+        atttypid: 20
+        attnum: 9
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "random"
+    type {
+      name: "BIGINT"
+    }
+    ordinal: 10
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "random"
+        atttypid: 20
+        attnum: 10
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_ENGINE
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 6033
+      relname: "rowgenerator"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "session"
+  }
+  display_name: "session"
+  columns {
+    name: "session_id"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "session_id"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "username"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "username"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "database"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "database"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "version"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "version"
+        atttypid: 1043
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "source"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "source"
+        atttypid: 1043
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "started_at"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "started_at"
+        atttypid: 1114
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "last_seen_at"
+    type {
+      name: "TIMESTAMP"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "last_seen_at"
+        atttypid: 1114
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://session"
+    endpoint_key: "session"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 5238
+      relname: "session"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "wlm_profile"
+  }
+  display_name: "wlm_profile"
+  columns {
+    name: "profile_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "profile_name"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "default_pool_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "default_pool_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "active"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "active"
+        atttypid: 16
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "system"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "system"
+        atttypid: 16
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://query/wlm_profile"
+    endpoint_key: "query"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 7000
+      relname: "wlm_profile"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "wlm_resource_pool"
+  }
+  display_name: "wlm_resource_pool"
+  columns {
+    name: "pool_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "pool_name"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "profile_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "profile_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "queue_size"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "queue_size"
+        atttypid: 23
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "min_concurrency"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "min_concurrency"
+        atttypid: 23
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "max_concurrency"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "max_concurrency"
+        atttypid: 23
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "requested_memory_mb"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "requested_memory_mb"
+        atttypid: 1043
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "max_spill_percent"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "max_spill_percent"
+        atttypid: 1043
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "maximum_row_limit"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 8
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "maximum_row_limit"
+        atttypid: 1043
+        attnum: 8
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "maximum_wait_time_limit"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 9
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "maximum_wait_time_limit"
+        atttypid: 1043
+        attnum: 9
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "maximum_exec_time_limit"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 10
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "maximum_exec_time_limit"
+        atttypid: 1043
+        attnum: 10
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "active"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 11
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "active"
+        atttypid: 16
+        attnum: 11
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "system"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 12
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "system"
+        atttypid: 16
+        attnum: 12
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://query/wlm_resource_pool"
+    endpoint_key: "query"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 7007
+      relname: "wlm_resource_pool"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "sys"
+    name: "wlm_rule"
+  }
+  display_name: "wlm_rule"
+  columns {
+    name: "profile_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "profile_name"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "rule_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "rule_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "query_state"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "query_state"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "priority"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "priority"
+        atttypid: 23
+        attnum: 4
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "active"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "active"
+        atttypid: 16
+        attnum: 5
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "system"
+    type {
+      name: "BOOLEAN"
+    }
+    nullable: true
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "system"
+        atttypid: 16
+        attnum: 6
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "source_code"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 7
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "source_code"
+        atttypid: 1043
+        attnum: 7
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  backend_kind: TABLE_BACKEND_KIND_STORAGE
+  storage {
+    path: "sys://query/wlm_rule"
+    endpoint_key: "query"
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 7003
+      relname: "wlm_rule"
+      relnamespace: 3300
+      relkind: "r"
+      reltuples: 0.0
     }
     payload_type: "floe.relation+proto"
   }

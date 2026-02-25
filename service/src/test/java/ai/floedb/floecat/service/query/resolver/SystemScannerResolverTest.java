@@ -22,17 +22,19 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Context;
 import java.time.Instant;
@@ -56,8 +58,8 @@ class SystemScannerResolverTest {
 
   @Test
   void resolvesEngineTableEvenWhenFallbackExists() {
-    ResourceId pgId = tableId("pg:foo");
-    ResourceId fallbackId = tableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":foo");
+    ResourceId pgId = systemTableId("pg", "foo");
+    ResourceId fallbackId = systemTableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "foo");
     SystemTableNode.FloeCatSystemTableNode pgNode = tableNode(pgId, "pg-scanner");
     SystemTableNode.FloeCatSystemTableNode fallbackNode = tableNode(fallbackId, "internal-scanner");
 
@@ -76,8 +78,8 @@ class SystemScannerResolverTest {
 
   @Test
   void fallsBackWhenEngineTableMissing() {
-    ResourceId pgId = tableId("pg:missing");
-    ResourceId fallbackId = tableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG + ":missing");
+    ResourceId pgId = systemTableId("pg", "missing");
+    ResourceId fallbackId = systemTableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "missing");
     SystemTableNode.FloeCatSystemTableNode fallbackNode = tableNode(fallbackId, "internal-scanner");
 
     SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
@@ -110,12 +112,9 @@ class SystemScannerResolverTest {
     }
   }
 
-  private static ResourceId tableId(String id) {
-    return ResourceId.newBuilder()
-        .setAccountId(ACCOUNT_ID)
-        .setKind(ResourceKind.RK_TABLE)
-        .setId(id)
-        .build();
+  private static ResourceId systemTableId(String engineKind, String... segments) {
+    return SystemNodeRegistry.resourceId(
+        engineKind, ResourceKind.RK_TABLE, NameRefUtil.name(segments));
   }
 
   private static SystemTableNode.FloeCatSystemTableNode tableNode(ResourceId id, String scannerId) {

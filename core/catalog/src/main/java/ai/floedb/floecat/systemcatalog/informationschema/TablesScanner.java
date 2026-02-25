@@ -16,20 +16,20 @@
 
 package ai.floedb.floecat.systemcatalog.informationschema;
 
+import ai.floedb.floecat.arrow.ArrowSchemaUtil;
+import ai.floedb.floecat.arrow.ArrowValueWriters;
+import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.systemcatalog.columnar.AbstractArrowBatchBuilder;
-import ai.floedb.floecat.systemcatalog.columnar.ArrowSchemaUtil;
-import ai.floedb.floecat.systemcatalog.columnar.ArrowValueWriters;
-import ai.floedb.floecat.systemcatalog.columnar.ColumnarBatch;
-import ai.floedb.floecat.systemcatalog.expr.Expr;
-import ai.floedb.floecat.systemcatalog.spi.scanner.ScanOutputFormat;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectRow;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanner;
+import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
+import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
+import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -129,7 +129,7 @@ public final class TablesScanner implements SystemObjectScanner {
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
             Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
           private final Iterator<NamespaceNode> namespaceIter = namespaceIterator;
-          private Iterator<GraphNode> relationIterator = Collections.emptyIterator();
+          private Iterator<RelationNode> relationIterator = Collections.emptyIterator();
           private NamespaceNode currentNamespace;
           private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
@@ -138,7 +138,7 @@ public final class TablesScanner implements SystemObjectScanner {
             TablesBatchBuilder builder = null;
             try {
               while (true) {
-                GraphNode relation = nextRelation(ctx);
+                RelationNode relation = nextRelation(ctx);
                 if (relation != null) {
                   if (builder == null) {
                     builder = new TablesBatchBuilder(allocator, requiredSet);
@@ -169,7 +169,7 @@ public final class TablesScanner implements SystemObjectScanner {
             }
           }
 
-          private GraphNode nextRelation(SystemObjectScanContext ctx) {
+          private RelationNode nextRelation(SystemObjectScanContext ctx) {
             while (!relationIterator.hasNext()) {
               if (!namespaceIter.hasNext()) {
                 return null;
@@ -186,7 +186,7 @@ public final class TablesScanner implements SystemObjectScanner {
   private static SystemObjectRow rowForRelation(
       SystemObjectScanContext ctx,
       NamespaceNode namespace,
-      GraphNode node,
+      RelationNode node,
       Map<ResourceId, String> schemaByNamespace,
       Map<ResourceId, String> catalogNames) {
 
@@ -205,7 +205,7 @@ public final class TablesScanner implements SystemObjectScanner {
         });
   }
 
-  private static String relationKind(GraphNode node) {
+  private static String relationKind(RelationNode node) {
     return switch (node.kind()) {
       case TABLE -> "BASE TABLE";
       case VIEW -> "VIEW";

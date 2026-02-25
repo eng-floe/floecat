@@ -20,28 +20,30 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitOperationTracker.OperationKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.FieldMask;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -53,6 +55,7 @@ public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
   @Inject GrpcWithHeaders grpc;
+  @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject StageMaterializationService stageMaterializationService;
@@ -61,8 +64,21 @@ public class TableCommitService {
   @Inject TableUpdatePlanner tableUpdatePlanner;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject TableFormatSupport tableFormatSupport;
+  @Inject AccountContext accountContext;
+  @Inject CommitOperationTracker commitOperationTracker;
+  @Inject PostCommitSyncOutboxService postCommitSyncOutboxService;
 
   public Response commit(CommitCommand command) {
+    OperationKey operationKey = operationKey(command);
+    if (operationKey == null || commitOperationTracker == null) {
+      return doCommit(command, null);
+    }
+    return commitOperationTracker.execute(
+        operationKey, command.request(), () -> doCommit(command, operationKey));
+  }
+
+  private Response doCommit(CommitCommand command, OperationKey operationKey) {
     String prefix = command.prefix();
     String namespace = command.namespace();
     List<String> namespacePath = command.namespacePath();
@@ -81,38 +97,36 @@ public class TableCommitService {
     }
     ResourceId tableId = stageResolution.tableId();
     Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
-    Supplier<Table> requirementTableSupplier = createPersistedTableSupplier(tableId);
-    TableRequests.Commit planningRequest =
-        normalizeCommitRequestForStage(
-            req,
-            stageResolution.stageCommitResult() != null
-                && stageResolution.stageCommitResult().tableCreated());
-    CommitCommand planningCommand =
-        planningRequest == req
-            ? command
-            : new CommitCommand(
-                command.prefix(),
-                command.namespace(),
-                command.namespacePath(),
-                command.table(),
-                command.catalogName(),
-                command.catalogId(),
-                command.namespaceId(),
-                command.idempotencyKey(),
-                command.stageId(),
-                command.transactionId(),
-                planningRequest,
-                command.tableSupport());
+    Table currentTable = tableSupplier.get();
+    if (isDeltaReadOnlyCommitBlocked(currentTable)) {
+      return IcebergErrorResponses.conflict(
+          "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
+    }
 
     TableUpdatePlanner.UpdatePlan updatePlan =
-        tableUpdatePlanner.planUpdates(
-            planningCommand, tableSupplier, requirementTableSupplier, tableId);
+        tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
     if (updatePlan.hasError()) {
       return updatePlan.error();
     }
+    markStep(operationKey, "PLAN_OK");
+
+    Response snapshotError =
+        snapshotMetadataService.applySnapshotUpdates(
+            tableSupport,
+            tableId,
+            namespacePath,
+            table,
+            tableSupplier,
+            req.updates(),
+            idempotencyKey);
+    if (snapshotError != null) {
+      return snapshotError;
+    }
+    markStep(operationKey, "SNAPSHOT_CORE_OK");
 
     Table committedTable =
         applyTableUpdates(tableSupplier, tableId, updatePlan.spec(), updatePlan.mask());
+    markStep(operationKey, "TABLE_CORE_OK");
     Map<String, String> ioProps =
         committedTable == null
             ? Map.of()
@@ -166,7 +180,8 @@ public class TableCommitService {
         idempotencyKey);
     syncSnapshotMetadataFromCommit(
         tableSupport, tableId, namespacePath, table, committedTable, responseDto, idempotencyKey);
-    runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    runConnectorSync(tableSupport, connectorId, namespacePath, table, operationKey);
+    markStep(operationKey, "METADATA_SYNC_TRIGGERED");
 
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
@@ -213,7 +228,36 @@ public class TableCommitService {
         namespace,
         table,
         finalResponse == null ? null : finalResponse.metadata());
+    markStep(operationKey, "RESPONSE_BUILT");
     return builder.build();
+  }
+
+  private void markStep(OperationKey key, String step) {
+    if (key == null || commitOperationTracker == null) {
+      return;
+    }
+    commitOperationTracker.markStep(key, step);
+  }
+
+  private OperationKey operationKey(CommitCommand command) {
+    String operationId = nonBlank(command.transactionId(), command.idempotencyKey());
+    if (operationId == null || operationId.isBlank()) {
+      return null;
+    }
+    String accountId = accountContext == null ? null : accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return null;
+    }
+    String scope =
+        "table:"
+            + command.prefix()
+            + ":"
+            + command.catalogName()
+            + ":"
+            + String.join(".", command.namespacePath())
+            + "."
+            + command.table();
+    return new OperationKey(accountId, scope, operationId.trim());
   }
 
   private void logStageCommit(
@@ -264,10 +308,7 @@ public class TableCommitService {
       return;
     }
     try {
-      Map<String, String> ioProps =
-          committedTable == null
-              ? Map.of()
-              : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+      Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
       var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
       snapshotMetadataService.syncSnapshotsFromImportedMetadata(
           tableSupport,
@@ -303,10 +344,7 @@ public class TableCommitService {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
-    Map<String, String> ioProps =
-        committedTable == null
-            ? Map.of()
-            : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
+    Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
     try {
       var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
       snapshotMetadataService.syncSnapshotsFromImportedMetadata(
@@ -339,6 +377,18 @@ public class TableCommitService {
     return uri != null && !uri.isBlank();
   }
 
+  private Map<String, String> resolveCommitIoProperties(
+      TableGatewaySupport tableSupport, Table committedTable) {
+    Map<String, String> merged = new LinkedHashMap<>();
+    if (tableSupport != null) {
+      merged.putAll(tableSupport.defaultFileIoProperties());
+    }
+    if (committedTable != null) {
+      merged.putAll(FileIoFactory.filterIoProperties(committedTable.getPropertiesMap()));
+    }
+    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+  }
+
   public MaterializeMetadataResult materializeMetadata(
       String namespace,
       ResourceId tableId,
@@ -355,6 +405,15 @@ public class TableCommitService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    runConnectorSync(tableSupport, connectorId, namespacePath, tableName, null);
+  }
+
+  private void runConnectorSync(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      OperationKey operationKey) {
     if (LOG.isDebugEnabled()) {
       String namespace =
           namespacePath == null
@@ -365,6 +424,20 @@ public class TableCommitService {
       LOG.debugf(
           "Connector sync request namespace=%s table=%s connectorId=%s",
           namespace, tableName == null ? "<missing>" : tableName, connector);
+    }
+    if (postCommitSyncOutboxService != null) {
+      String dedupe =
+          operationKey == null
+              ? null
+              : "commit-sync:"
+                  + operationKey.accountId()
+                  + ":"
+                  + operationKey.scope()
+                  + ":"
+                  + operationKey.operationId();
+      postCommitSyncOutboxService.enqueueConnectorSync(
+          dedupe, tableSupport, connectorId, namespacePath, tableName);
+      return;
     }
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
@@ -402,26 +475,11 @@ public class TableCommitService {
       @Override
       public Table get() {
         if (cached == null) {
-          cached = loadPersistedTableOrDefault(tableId);
+          cached = tableLifecycleService.getTable(tableId);
         }
         return cached;
       }
     };
-  }
-
-  private Supplier<Table> createPersistedTableSupplier(ResourceId tableId) {
-    return () -> loadPersistedTableOrDefault(tableId);
-  }
-
-  private Table loadPersistedTableOrDefault(ResourceId tableId) {
-    try {
-      return tableLifecycleService.getTable(tableId);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return Table.getDefaultInstance();
-      }
-      throw e;
-    }
   }
 
   private Table applyTableUpdates(
@@ -441,29 +499,16 @@ public class TableCommitService {
     return primary != null && !primary.isBlank() ? primary : fallback;
   }
 
-  private TableRequests.Commit normalizeCommitRequestForStage(
-      TableRequests.Commit request, boolean stageCreatedTable) {
-    if (!stageCreatedTable || request == null || request.requirements() == null) {
-      return request;
+  private boolean isDeltaReadOnlyCommitBlocked(Table table) {
+    if (table == null || tableFormatSupport == null || config == null) {
+      return false;
     }
-    List<Map<String, Object>> requirements = request.requirements();
-    if (requirements.isEmpty()) {
-      return request;
+    var deltaCompat = config.deltaCompat();
+    if (deltaCompat.isEmpty()) {
+      return false;
     }
-    List<Map<String, Object>> filtered = new ArrayList<>(requirements.size());
-    boolean removed = false;
-    for (Map<String, Object> requirement : requirements) {
-      String type =
-          requirement == null ? null : requirement.get("type") instanceof String s ? s : null;
-      if ("assert-create".equals(type)) {
-        removed = true;
-        continue;
-      }
-      filtered.add(requirement);
-    }
-    if (!removed) {
-      return request;
-    }
-    return new TableRequests.Commit(filtered, request.updates());
+    return deltaCompat.get().enabled()
+        && deltaCompat.get().readOnly()
+        && tableFormatSupport.isDelta(table);
   }
 }

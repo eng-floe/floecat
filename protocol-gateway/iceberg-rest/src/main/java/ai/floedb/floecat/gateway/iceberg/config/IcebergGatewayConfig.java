@@ -77,6 +77,19 @@ public interface IcebergGatewayConfig {
   @WithDefault("128")
   int planTaskFilesPerTask();
 
+  Optional<DeltaCompatConfig> deltaCompat();
+
+  interface DeltaCompatConfig {
+    @WithDefault("false")
+    boolean enabled();
+
+    @WithDefault("true")
+    boolean readOnly();
+
+    @WithDefault("PT30S")
+    Duration cacheTtl();
+  }
+
   @WithDefault("PT30M")
   Duration idempotencyKeyLifetime();
 
@@ -102,7 +115,5 @@ public interface IcebergGatewayConfig {
     Map<String, String> properties();
 
     Map<String, String> headerHints();
-
-    Optional<String> secretRef();
   }
 }

@@ -18,20 +18,18 @@
 #   make build-all               # build all modules only (skip tests)
 #   make proto                   # generate/install protobuf stubs
 #   make test                    # unit + IT (service, REST gateway, client-cli, in-memory)
-#   make test-localstack          # unit + IT (upstream + catalog LocalStack)
+#   make test-localstack          # unit + IT (fixtures + catalog LocalStack)
 #   make unit-test               # unit tests only (service, REST gateway, client-cli)
 #   make integration-test        # integration tests only (service, REST gateway, client-cli)
 #   make verify                  # full Maven verify lifecycle
 #
 # Dev – foreground & background:
-#   make run                     # quarkus:dev for service (foreground)
-#   make run-aws-aws              # upstream real AWS -> catalog real AWS
-#   make run-localstack-aws       # upstream Localstack -> catalog real AWS
-#   make run-aws-localstack       # upstream real AWS -> catalog Localstack
-#   make run-localstack-localstack # upstream Localstack -> catalog Localstack
+#   make run                     # quarkus:dev for service (foreground, always seeded fake data)
+#   make run-aws REAL_AWS_BUCKET=<bucket> REAL_AWS_TABLE=<table> [SEED_ENABLED=true SEED_SOURCE=aws|localstack] # catalog real AWS
+#   make run-localstack [SEED_ENABLED=true SEED_SOURCE=aws|localstack] # catalog LocalStack
 #   make run-rest                # quarkus:dev for REST gateway (foreground, in-memory)
-#   make run-rest-aws             # REST gateway upstream real AWS
-#   make run-rest-localstack      # REST gateway upstream LocalStack
+#   make run-rest-aws             # REST gateway with AWS-style storage credentials
+#   make run-rest-localstack      # REST gateway with LocalStack-style storage credentials
 #   make run-all                 # start REST (bg), then run service (fg)
 #   make start                   # start service in background
 #   make start-rest              # start REST gateway in background
@@ -42,6 +40,15 @@
 #   make localstack-down         # stop LocalStack container (if running)
 #   make keycloak-up            # start Keycloak container
 #   make keycloak-down          # stop Keycloak container (if running)
+#   make compose-up             # build images + start compose stack (default: COMPOSE_ENV_FILE=./env.inmem)
+#   make compose-down           # stop compose stack for COMPOSE_ENV_FILE/COMPOSE_PROFILES
+#   make quickstart-up          # pull + run GHCR main images with LocalStack profile
+#   make quickstart-down        # stop quickstart stack
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
+#   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
+#   make compose-smoke          # sequential docker smoke (localstack + localstack-oidc)
 #   make logs-rest               # tail -f REST gateway log
 #   make status                  # show background dev status
 #
@@ -62,7 +69,8 @@
 #   make clean                   # mvn clean + remove dev dirs
 #   make clean-java              # mvn clean only
 #   make clean-dev               # remove dev pids/logs/isolated repos
-#   make docker                  # build service container image
+#   make docker                  # build service container images
+#   make docker-clean-cache      # clear local Jib temp caches (fixes cache corruption errors)
 #   make fmt                     # format Java sources (google-java-format)
 #   make help                    # show target list from this Makefile
 #
@@ -70,7 +78,7 @@
 #   make MVN=./mvnw run
 #   make CLI_ISOLATED=0 cli-run
 #   make ARGS="catalog list" cli-run
-#   make QUARKUS_PROFILE=test run-service
+#   make QUARKUS_PROFILE=test run
 .SHELLFLAGS := -eo pipefail -c
 SHELL       := bash
 MAKEFLAGS  += --no-builtin-rules
@@ -85,12 +93,22 @@ DOCKER_COMPOSE ?= docker compose
 DOCKER_COMPOSE_MAIN ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml
 DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
 DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --profile keycloak
+COMPOSE_ENV_FILE ?= ./env.inmem
+COMPOSE_PROFILES ?=
 KEYCLOAK_PORT ?= 12221
 KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
 KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
 KEYCLOAK_TOKEN_URL_DOCKER ?= http://keycloak:8080/realms/floecat/protocol/openid-connect/token
 JIB_PLATFORMS ?=
 JIB_BASE_IMAGE ?= eclipse-temurin:25-jre
+JIB_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
+CONTAINER_REGISTRY ?= ghcr.io
+CONTAINER_OWNER ?=
+CONTAINER_TAG ?= main
+CONTAINER_EXTRA_TAGS ?=
+QUICKSTART_REGISTRY ?= ghcr.io
+QUICKSTART_OWNER ?= eng-floe
+QUICKSTART_TAG ?= main
 UNAME_M := $(shell uname -m)
 
 ifeq ($(strip $(JIB_PLATFORMS)),)
@@ -106,7 +124,7 @@ endif
 # ---------- Quarkus dev settings ----------
 QUARKUS_PROFILE  ?= dev
 QUARKUS_DEV_ARGS ?=
-QUARKUS_DEV_GOAL := io.quarkus:quarkus-maven-plugin:${quarkus.platform.version}:dev
+QUARKUS_DEV_GOAL := quarkus:dev
 
 # ---------- Dev dirs ----------
 PID_DIR := .devpids
@@ -172,15 +190,23 @@ LOCALSTACK_ENV := \
 
 REAL_AWS_BUCKET ?=
 REAL_AWS_TABLE ?=
-REAL_AWS_REGION ?= us-east-1
+DOCKER_SERVICE_STORAGE ?= localstack
 
-LOCALSTACK_S3_OVERRIDES := \
-	-Dfloecat.fileio.override.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
-	-Dfloecat.fileio.override.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
-	-Dfloecat.fileio.override.s3.region=$(LOCALSTACK_REGION) \
-	-Dfloecat.fileio.override.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
-	-Dfloecat.fileio.override.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
-	-Dfloecat.fileio.override.s3.path-style-access=true
+LOCALSTACK_STORAGE_AWS_PROPS := \
+	-Dfloecat.storage.aws.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.storage.aws.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.storage.aws.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.storage.aws.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.storage.aws.s3.path-style-access=true \
+	-Dfloecat.storage.aws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT)
+
+LOCALSTACK_FIXTURE_AWS_PROPS := \
+	-Dfloecat.fixture.aws.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+	-Dfloecat.fixture.aws.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.fixture.aws.s3.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.fixture.aws.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.fixture.aws.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.fixture.aws.s3.path-style-access=true
 
 CATALOG_LOCALSTACK_PROPS := \
 	-Dfloecat.kv=dynamodb \
@@ -189,13 +215,23 @@ CATALOG_LOCALSTACK_PROPS := \
 	-Dfloecat.kv.ttl-enabled=true \
 	-Dfloecat.blob=s3 \
 	-Dfloecat.blob.s3.bucket=$(LOCALSTACK_BUCKET) \
-	$(LOCALSTACK_S3_OVERRIDES) \
-	-Dfloecat.fileio.override.aws.dynamodb.endpoint-override=$(LOCALSTACK_ENDPOINT) \
-	-Dfloecat.fixtures.use-aws-s3=true \
+	$(LOCALSTACK_STORAGE_AWS_PROPS) \
 	-Daws.requestChecksumCalculation=when_required \
 	-Daws.responseChecksumValidation=when_required
 
-UPSTREAM_LOCALSTACK_PROPS := $(LOCALSTACK_S3_OVERRIDES)
+FIXTURE_LOCALSTACK_PROPS := \
+	-Dfloecat.fixtures.use-aws-s3=true \
+	$(LOCALSTACK_FIXTURE_AWS_PROPS)
+
+REST_LOCALSTACK_IO_PROPS := \
+	-Dfloecat.gateway.metadata-file-io=org.apache.iceberg.aws.s3.S3FileIO \
+	-Dfloecat.gateway.storage-credential.scope=* \
+	-Dfloecat.gateway.storage-credential.properties.type=s3 \
+	-Dfloecat.gateway.storage-credential.properties.s3.endpoint=$(LOCALSTACK_ENDPOINT) \
+	-Dfloecat.gateway.storage-credential.properties.s3.region=$(LOCALSTACK_REGION) \
+	-Dfloecat.gateway.storage-credential.properties.s3.access-key-id=$(LOCALSTACK_ACCESS_KEY) \
+	-Dfloecat.gateway.storage-credential.properties.s3.secret-access-key=$(LOCALSTACK_SECRET_KEY) \
+	-Dfloecat.gateway.storage-credential.properties.s3.path-style-access=true
 
 CATALOG_REAL_AWS_PROPS := \
 	-Dfloecat.kv=dynamodb \
@@ -203,12 +239,39 @@ CATALOG_REAL_AWS_PROPS := \
 	-Dfloecat.kv.auto-create=true \
 	-Dfloecat.kv.ttl-enabled=true \
 	-Dfloecat.blob=s3 \
-	-Dfloecat.blob.s3.bucket=$(REAL_AWS_BUCKET) \
-	-Dfloecat.fixtures.use-aws-s3=true
+	-Dfloecat.blob.s3.bucket=$(REAL_AWS_BUCKET)
 
-UPSTREAM_REAL_AWS_PROPS :=
+DOCKER_SERVICE_STORAGE_PROPS :=
+ifeq ($(DOCKER_SERVICE_STORAGE),localstack)
+DOCKER_SERVICE_STORAGE_PROPS += $(CATALOG_LOCALSTACK_PROPS)
+DOCKER_SERVICE_STORAGE_PROPS += $(FIXTURE_LOCALSTACK_PROPS)
+endif
+ifeq ($(DOCKER_SERVICE_STORAGE),aws)
+DOCKER_SERVICE_STORAGE_PROPS += $(CATALOG_REAL_AWS_PROPS)
+endif
 
-AWS_STORE_PROPS := $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS)
+FIXTURE_REAL_AWS_PROPS := -Dfloecat.fixtures.use-aws-s3=true
+
+SEED_ENABLED ?= false
+SEED_MODE ?= iceberg
+SEED_SOURCE ?= aws
+
+ifeq ($(SEED_ENABLED),true)
+SEED_PROPS := \
+	-Dfloecat.seed.enabled=true \
+	-Dfloecat.seed.mode=$(SEED_MODE)
+ifeq ($(SEED_SOURCE),localstack)
+SEED_PROPS += $(FIXTURE_LOCALSTACK_PROPS)
+else ifeq ($(SEED_SOURCE),aws)
+SEED_PROPS += $(FIXTURE_REAL_AWS_PROPS)
+else
+$(error SEED_SOURCE must be one of: aws, localstack)
+endif
+else
+SEED_PROPS := \
+	-Dfloecat.seed.enabled=false \
+	-Dfloecat.fixtures.use-aws-s3=false
+endif
 
 # ===================================================
 # Aggregates
@@ -251,7 +314,7 @@ $(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.jav
 # ===================================================
 # Tests
 # - test: in-memory stores (fast default)
-# - test-localstack: upstream + catalog LocalStack
+# - test-localstack: fixtures + catalog LocalStack
 # ===================================================
 .PHONY: test test-localstack unit-test integration-test verify
 
@@ -260,6 +323,7 @@ test: $(PROTO_JAR) keycloak-up
 	$(MVN) $(MVN_TESTALL) install -N
 	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"
 	$(MVN) $(MVN_TESTALL) \
+	  -Dfloecat.fixtures.use-aws-s3=false \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
@@ -267,9 +331,9 @@ test: $(PROTO_JAR) keycloak-up
 test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	@echo "==> [BUILD] installing parent POM to local repo"
 	$(MVN) $(MVN_TESTALL) install -N
-	@echo "==> [TEST] full suite (service + REST + CLI) upstream LocalStack -> catalog LocalStack"
+	@echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"
 	$(LOCALSTACK_ENV) \
-	$(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	$(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
@@ -303,6 +367,7 @@ keycloak-restart: keycloak-down keycloak-up
 unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
+	  -Dfloecat.fixtures.use-aws-s3=false \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  -DskipITs=true \
 	  test
@@ -310,6 +375,7 @@ unit-test:
 integration-test: keycloak-up
 	@echo "==> [TEST] integration tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
+	  -Dfloecat.fixtures.use-aws-s3=false \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  -DskipUTs=true -DfailIfNoTests=false \
 	  verify
@@ -317,6 +383,7 @@ integration-test: keycloak-up
 verify: keycloak-up
 	@echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
+	  -Dfloecat.fixtures.use-aws-s3=false \
 	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	  verify
 
@@ -355,86 +422,61 @@ clean-dev:
 run: run-service
 
 run-service: jar-dependencies
-	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE))"
+	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE), seeded fake data)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
 	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
+	  -Dfloecat.seed.mode=fake \
+	  -Dfloecat.fixtures.use-aws-s3=false \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
 
-.PHONY: run-aws-aws
-run-aws-aws: jar-dependencies
+.PHONY: run-aws
+run-aws: jar-dependencies
 	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
 	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
+	  echo "Example: make run-aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table"; \
+	  echo "Seeded example: make run-aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table SEED_ENABLED=true SEED_SOURCE=localstack"; \
 	  exit 1; \
 	fi
-	@echo "==> [DEV] quarkus:dev upstream real AWS -> catalog real AWS"
-	$(MVN) -f ./pom.xml \
-	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
-	  $(CATALOG_REAL_AWS_PROPS) $(UPSTREAM_REAL_AWS_PROPS) \
-	  $(QUARKUS_DEV_ARGS) \
-	  $(REACTOR_SERVICE) \
-	  $(QUARKUS_DEV_GOAL)
-
-.PHONY: run-localstack-aws
-run-localstack-aws: localstack-up jar-dependencies
-	@if [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; then \
-	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set"; \
-	  exit 1; \
+	@if [ "$(SEED_ENABLED)" = "true" ] && [ "$(SEED_SOURCE)" = "localstack" ]; then \
+	  $(MAKE) localstack-up; \
 	fi
-	@echo "==> [DEV] quarkus:dev upstream LocalStack -> catalog real AWS"
-	$(LOCALSTACK_ENV) \
+	@echo "==> [DEV] quarkus:dev catalog real AWS (seed enabled=$(SEED_ENABLED), source=$(SEED_SOURCE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
-	  $(CATALOG_REAL_AWS_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(SEED_PROPS) \
+	  $(CATALOG_REAL_AWS_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
 
-.PHONY: run-aws-localstack
-run-aws-localstack: localstack-up jar-dependencies
-	@echo "==> [DEV] quarkus:dev upstream real AWS -> catalog LocalStack"
+.PHONY: run-localstack
+run-localstack: localstack-up jar-dependencies
+	@echo "==> [DEV] quarkus:dev catalog LocalStack (seed enabled=$(SEED_ENABLED), source=$(SEED_SOURCE))"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.connector.fileio.overrides=false \
-	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
-	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_REAL_AWS_PROPS) \
+	  $(SEED_PROPS) \
+	  $(CATALOG_LOCALSTACK_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_SERVICE) \
 	  $(QUARKUS_DEV_GOAL)
 
-.PHONY: run-localstack-localstack
-run-localstack-localstack: localstack-up jar-dependencies
-	@echo "==> [DEV] quarkus:dev upstream LocalStack -> catalog LocalStack"
-	$(LOCALSTACK_ENV) \
-	$(MVN) -f ./pom.xml \
-	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
-	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
-	  $(QUARKUS_DEV_ARGS) \
-	  $(REACTOR_SERVICE) \
-	  $(QUARKUS_DEV_GOAL)
+.PHONY: run-service-aws run-service-localstack
+run-service-aws: run-aws
+run-service-localstack: run-localstack
 
 .PHONY: run-all
 run-all: start-rest run-service
 
 .PHONY: dev-start dev-stop stop-service
 dev-start: localstack-up jar-dependencies
-	$(LOCALSTACK_ENV) \
 	$(MVN) -f ./pom.xml \
 	  -Dapplication.name=$(APP_NAME) \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  -Dfloecat.seed.enabled=true \
-	  -Dfloecat.seed.mode=iceberg \
-	  $(CATALOG_LOCALSTACK_PROPS) $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(SEED_PROPS) \
+	  $(CATALOG_LOCALSTACK_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  --projects service \
 	  $(QUARKUS_DEV_GOAL) &
@@ -471,21 +513,19 @@ run-rest:
 
 .PHONY: run-rest-localstack
 run-rest-localstack: localstack-up $(PROTO_JAR)
-	@echo "==> [DEV] quarkus:dev REST gateway upstream LocalStack"
-	$(LOCALSTACK_ENV) \
+	@echo "==> [DEV] quarkus:dev REST gateway (LocalStack-style storage credentials)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  $(UPSTREAM_LOCALSTACK_PROPS) \
+	  $(REST_LOCALSTACK_IO_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_REST) \
 	  $(QUARKUS_DEV_GOAL)
 
 .PHONY: run-rest-aws
 run-rest-aws: $(PROTO_JAR)
-	@echo "==> [DEV] quarkus:dev REST gateway upstream real AWS"
+	@echo "==> [DEV] quarkus:dev REST gateway (AWS-style storage credentials)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
-	  $(UPSTREAM_REAL_AWS_PROPS) \
 	  $(QUARKUS_DEV_ARGS) \
 	  $(REACTOR_REST) \
 	  $(QUARKUS_DEV_GOAL)
@@ -655,29 +695,23 @@ cli-docker-token:
 
 .PHONY: cli-docker
 cli-docker:
-	@echo "==> [RUN] client CLI (docker)"
-	@TOKEN=$$(docker run --rm --network docker_floecat curlimages/curl:8.11.1 -s \
-	  -d "client_id=floecat-client" \
-	  -d "client_secret=floecat-secret" \
-	  -d "grant_type=client_credentials" \
-	  $(KEYCLOAK_TOKEN_URL_DOCKER) | jq -r .access_token); \
-	FLOECAT_ENV_FILE=./env.localstack \
+	@echo "==> [RUN] client CLI (docker, OIDC auto-refresh)"
+	FLOECAT_ENV_FILE=./env.localstack-oidc \
 	$(DOCKER_COMPOSE_MAIN) run --rm \
-	  -e FLOECAT_TOKEN=$$TOKEN \
 	  -e FLOECAT_ACCOUNT=$$FLOECAT_ACCOUNT \
 	  cli
 
 .PHONY: oidc-up
 oidc-up:
 	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack up -d
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc up -d
 
 .PHONY: oidc-down
 oidc-down:
 	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
-	@FLOECAT_ENV_FILE=./env.localstack \
-	  $(DOCKER_COMPOSE_MAIN) --profile keycloak --profile localstack down --remove-orphans
+	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc down --remove-orphans
 
 .PHONY: cli-test
 cli-test: $(PROTO_JAR)
@@ -686,22 +720,40 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli compose-up compose-down compose-shell
+.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke quickstart-up quickstart-down
+
+docker-clean-cache:
+	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
+	BASE_CACHE="$${TMPDIR%/}/jib-core-base-image-cache"; \
+	echo "==> [DOCKER] removing Jib caches"; \
+	echo "    $$APP_CACHE"; \
+	echo "    $$BASE_CACHE"; \
+	rm -rf "$$APP_CACHE" "$$BASE_CACHE"
+
 docker: docker-service docker-iceberg-rest docker-cli
 
+guard-container-owner:
+	@test -n "$(CONTAINER_OWNER)" || (echo "CONTAINER_OWNER is required (example: CONTAINER_OWNER=eng-floe)"; exit 1)
+
 docker-service:
+	@if [ "$(DOCKER_SERVICE_STORAGE)" = "aws" ] && { [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; }; then \
+	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set when DOCKER_SERVICE_STORAGE=aws"; \
+	  echo "Example: make docker DOCKER_SERVICE_STORAGE=aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table"; \
+	  exit 1; \
+	fi
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl service -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
 	  -Dquarkus.container-image.image=floecat-service:local \
+	  $(DOCKER_SERVICE_STORAGE_PROPS) \
 	  package
 
 docker-iceberg-rest:
 	@echo "==> [DOCKER] iceberg-rest (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -711,7 +763,7 @@ docker-iceberg-rest:
 
 docker-cli:
 	@echo "==> [DOCKER] cli (jib -> docker daemon)"
-	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests -Dmaven.test.skip=true \
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -719,17 +771,87 @@ docker-cli:
 	  -Dquarkus.container-image.image=floecat-cli:local \
 	  package
 
+docker-publish: guard-container-owner docker-publish-service docker-publish-iceberg-rest docker-publish-cli
+
+docker-publish-service:
+	@if [ "$(DOCKER_SERVICE_STORAGE)" = "aws" ] && { [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; }; then \
+	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set when DOCKER_SERVICE_STORAGE=aws"; \
+	  echo "Example: make docker-publish DOCKER_SERVICE_STORAGE=aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table CONTAINER_OWNER=eng-floe"; \
+	  exit 1; \
+	fi
+	@echo "==> [DOCKER] publish service (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-service:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
+	  $(DOCKER_SERVICE_STORAGE_PROPS) \
+	  package
+
+docker-publish-iceberg-rest:
+	@echo "==> [DOCKER] publish iceberg-rest (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-iceberg-rest:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
+	  package
+
+docker-publish-cli:
+	@echo "==> [DOCKER] publish cli (jib -> registry)"
+	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.container-image.push=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
+	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-cli:$(CONTAINER_TAG) \
+	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
+	  package
+
 compose-up: docker
 	@echo "==> [COMPOSE] up"
-	$(DOCKER_COMPOSE_MAIN) up -d
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) up -d
 
 compose-down:
 	@echo "==> [COMPOSE] down"
-	$(DOCKER_COMPOSE_MAIN) down
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=$(COMPOSE_PROFILES) $(DOCKER_COMPOSE_MAIN) down --remove-orphans
 
 compose-shell:
 	@echo "==> [COMPOSE] shell"
-	COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm cli
+	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
+
+compose-smoke: docker
+	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
+	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
+	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
+	  ./tools/compose-smoke.sh
+
+quickstart-up:
+	@echo "==> [COMPOSE] quickstart up (GHCR $(QUICKSTART_OWNER), tag $(QUICKSTART_TAG))"
+	FLOECAT_SERVICE_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-service:$(QUICKSTART_TAG) \
+	FLOECAT_ICEBERG_REST_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-iceberg-rest:$(QUICKSTART_TAG) \
+	FLOECAT_CLI_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-cli:$(QUICKSTART_TAG) \
+	FLOECAT_PULL_POLICY=always \
+	FLOECAT_ENV_FILE=./env.localstack \
+	COMPOSE_PROFILES=localstack \
+	$(DOCKER_COMPOSE_MAIN) up -d
+
+quickstart-down:
+	@echo "==> [COMPOSE] quickstart down"
+	FLOECAT_SERVICE_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-service:$(QUICKSTART_TAG) \
+	FLOECAT_ICEBERG_REST_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-iceberg-rest:$(QUICKSTART_TAG) \
+	FLOECAT_CLI_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-cli:$(QUICKSTART_TAG) \
+	FLOECAT_PULL_POLICY=always \
+	FLOECAT_ENV_FILE=./env.localstack \
+	COMPOSE_PROFILES=localstack \
+	$(DOCKER_COMPOSE_MAIN) down --remove-orphans
 
 # ===================================================
 # Lint/format

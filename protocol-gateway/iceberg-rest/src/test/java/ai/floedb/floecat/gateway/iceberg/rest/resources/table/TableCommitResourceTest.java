@@ -72,6 +72,19 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
       Objects.requireNonNull(
           FIXTURE.table().getPropertiesMap().get("location"), "fixture location is required");
 
+  @Test
+  void commitTransactionRequiresTableChanges() {
+    given()
+        .body("{\"table-changes\":[]}")
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/transactions/commit")
+        .then()
+        .statusCode(400)
+        .body("error.type", equalTo("ValidationException"))
+        .body("error.message", equalTo("table-changes are required"));
+  }
+
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
     return Table.newBuilder()
         .setResourceId(tableId)

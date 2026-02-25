@@ -20,6 +20,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.fir
 
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -32,13 +33,16 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -63,6 +67,7 @@ public class TableCreateService {
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
+  @Inject SnapshotClient snapshotClient;
   @Inject ObjectMapper mapper;
 
   public Response create(
@@ -117,9 +122,13 @@ public class TableCreateService {
     }
     LoadTableResultDto loadResult;
     try {
+      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
+      List<Snapshot> snapshots =
+          SnapshotLister.fetchSnapshots(
+              snapshotClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
       loadResult =
-          TableResponseMapper.toLoadResultFromCreate(
-              tableName, created, effectiveReq, tableConfig, credentials);
+          TableResponseMapper.toLoadResult(
+              tableName, created, metadata, snapshots, tableConfig, credentials);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }

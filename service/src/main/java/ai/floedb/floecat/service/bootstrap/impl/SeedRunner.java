@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
@@ -46,7 +47,6 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.util.Timestamps;
-import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.runtime.StartupEvent;
@@ -82,7 +82,6 @@ public class SeedRunner {
   private static final int SEED_TOKEN_MAX_ATTEMPTS = 6;
   private static final long SEED_TOKEN_INITIAL_BACKOFF_MS = 250L;
   private static final long SEED_TOKEN_MAX_BACKOFF_MS = 5_000L;
-
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
@@ -551,17 +550,34 @@ public class SeedRunner {
   private void seedDeltaFixtureTables(ResourceId accountId, ResourceId catalogId, long now) {
     TestDeltaFixtures.seedFixturesOnce();
 
-    var fixture =
-        new DeltaFixtureConfig(
-            "fixture-delta-call-center",
-            "Delta call_center fixture table",
-            TestDeltaFixtures.tableUri(),
-            "examples.delta",
-            "call_center",
-            DELTA_NAMESPACE);
+    List<DeltaFixtureConfig> fixtures =
+        List.of(
+            new DeltaFixtureConfig(
+                "fixture-delta-call-center",
+                "Delta call_center fixture table",
+                TestDeltaFixtures.tableUri("call_center"),
+                "examples.delta",
+                "call_center",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-my-local-delta-table",
+                "Delta my_local_delta_table fixture table",
+                TestDeltaFixtures.tableUri("my_local_delta_table"),
+                "examples.delta",
+                "my_local_delta_table",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-dv-demo-delta",
+                "Delta dv_demo_delta fixture table",
+                TestDeltaFixtures.tableUri("dv_demo_delta"),
+                "examples.delta",
+                "dv_demo_delta",
+                DELTA_NAMESPACE));
 
-    ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
-    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    for (DeltaFixtureConfig fixture : fixtures) {
+      ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
+      syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    }
   }
 
   private ResourceId seedDeltaConnector(
@@ -616,7 +632,14 @@ public class SeedRunner {
     props.put("external.namespace", fixture.sourceNamespace());
     props.put("external.table-name", fixture.tableName());
     props.put("stats.ndv.enabled", "false");
-    props.putAll(TestDeltaFixtures.s3Options());
+    if (TestDeltaFixtures.useAwsFixtures()) {
+      props.putAll(TestDeltaFixtures.s3Options());
+    } else {
+      String fixtureRoot = System.getProperty("fs.floecat.test-root", "");
+      if (!fixtureRoot.isBlank()) {
+        props.put("fs.floecat.test-root", fixtureRoot);
+      }
+    }
     return props;
   }
 
@@ -630,8 +653,20 @@ public class SeedRunner {
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
-        var result = reconcileWithSeedAuth(connectorId, scope);
+        var result =
+            reconcileWithSeedAuth(
+                connectorId, scope, ReconcilerService.CaptureMode.METADATA_ONLY_CORE);
         if (result.ok()) {
+          var statsResult =
+              reconcileWithSeedAuth(
+                  connectorId, scope, ReconcilerService.CaptureMode.STATS_ONLY_ASYNC);
+          if (!statsResult.ok()) {
+            LOG.warnf(
+                statsResult.error,
+                "Stats capture pass failed for fixture table %s: %s",
+                tableName,
+                statsResult.message());
+          }
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",
               tableName, result.scanned, result.changed);
@@ -712,25 +747,15 @@ public class SeedRunner {
   }
 
   private ReconcilerService.Result reconcileWithSeedAuth(
-      ResourceId connectorId, ReconcileScope scope) {
+      ResourceId connectorId, ReconcileScope scope, ReconcilerService.CaptureMode mode) {
     var header = seedAuthorizationHeader();
-    if (header.isEmpty()) {
-      return reconciler.reconcile(
-          connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
-    }
-    var ctx =
-        Context.current()
-            .withValue(
-                ai.floedb.floecat.reconciler.impl.ReconcilerAuthContext
-                    .AUTHORIZATION_HEADER_VALUE_KEY,
-                header.get());
-    final ReconcilerService.Result[] result = new ReconcilerService.Result[1];
-    ctx.run(
-        () ->
-            result[0] =
-                reconciler.reconcile(
-                    connectorId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS));
-    return result[0];
+    var principal =
+        PrincipalContext.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setSubject("seed-runner")
+            .setCorrelationId("seed-sync-" + connectorId.getId())
+            .build();
+    return reconciler.reconcile(principal, connectorId, true, scope, mode, header.orElse(null));
   }
 
   private java.util.Optional<String> seedAuthorizationHeader() {
@@ -746,7 +771,6 @@ public class SeedRunner {
         seedAuthorizationHeader = built;
         return seedAuthorizationHeader;
       }
-      // Do not cache failures; allow retry on next fixture sync attempt.
       return built;
     }
   }

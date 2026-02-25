@@ -34,6 +34,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -50,7 +51,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.systemcatalog.spi.scanner.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -92,13 +93,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       return;
     }
 
-    boolean isSystem =
-        overlay
-            .resolve(namespaceId)
-            .filter(NamespaceNode.class::isInstance)
-            .map(NamespaceNode.class::cast)
-            .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
-            .isPresent();
+    boolean isSystem = SystemResourceIdGenerator.isSystemId(namespaceId);
 
     if (isSystem) {
       throw GrpcErrors.permissionDenied(
@@ -659,7 +654,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       systemNamespacePathMatch(spec.getCatalogId(), fullPath, sysNamespaces);
                   if (sysMatch == SystemPathMatch.EXACT) {
                     // Exact collision with an existing SYSTEM namespace.
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                         Map.of(
@@ -683,7 +678,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     var existing =
                         namespaceRepo.getByPath(accountId, spec.getCatalogId().getId(), fullPath);
                     if (existing.isPresent()) {
-                      throw GrpcErrors.conflict(
+                      throw GrpcErrors.alreadyExists(
                           correlationId,
                           GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                           Map.of("catalog", catalogName, "path", String.join(".", fullPath)));
@@ -753,7 +748,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                               existing, existing.getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.conflict(
+                                      throw GrpcErrors.alreadyExists(
                                           correlationId,
                                           GeneratedErrorMessages.MessageKey
                                               .NAMESPACE_ALREADY_EXISTS,
@@ -914,7 +909,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.conflict(
+                    throw GrpcErrors.alreadyExists(
                         corr,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
                         conflictInfo);

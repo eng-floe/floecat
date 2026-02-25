@@ -23,6 +23,7 @@ import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint;
@@ -30,13 +31,13 @@ import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
-import ai.floedb.floecat.systemcatalog.spi.scanner.MetadataResolutionContext;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -94,8 +95,10 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
       bufferColumnHint(
           relation, relation.relationId(), column.id(), COLUMN.type(), attribute.toByteArray());
+    } catch (MissingSystemOidException e) {
+      throw e;
     } catch (RuntimeException e) {
-      LOG.debugf(
+      LOG.warnf(
           e,
           "Failed to decorate column %s.%s for engine %s@%s",
           relation.relationId(),
@@ -120,8 +123,10 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
           FloeHintResolver.relationSpecific(relation.resolutionContext(), relation.node());
       builder.addEngineSpecific(toEngineSpecific(normalizedKind, relationSpecific));
       persistRelationHint(engineContext, relation.relationId(), relationSpecific, RELATION.type());
+    } catch (MissingSystemOidException e) {
+      throw e; // SYSTEM objects must not silently degrade
     } catch (RuntimeException e) {
-      LOG.debugf(
+      LOG.warnf(
           e,
           "Failed to decorate relation %s for engine %s@%s",
           relation.relationId(),
@@ -137,15 +142,32 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     if (cached != null) {
       return cached;
     }
+
     MetadataResolutionContext context = relation.resolutionContext();
+    if (context == null) {
+      throw new IllegalStateException(
+          "Missing resolution context for relation=" + relation.relationId());
+    }
+
+    var node = relation.node();
+    if (node == null) {
+      throw new IllegalStateException(
+          "Missing resolved node for relation=" + relation.relationId());
+    }
+
+    // Policy is based on the relation's origin: SYSTEM must have a persisted hint; USER may fall
+    // back.
+    ScannerUtils.OidPolicy policy = ScannerUtils.oidPolicy(node.origin());
     int oid =
         ScannerUtils.oid(
             context.overlay(),
-            relation.node().id(),
+            node.id(),
             RELATION,
             FloeRelationSpecific.class,
             FloeRelationSpecific::getOid,
-            context.engineContext());
+            context.engineContext(),
+            policy);
+
     relation.attribute(RELATION_OID_KEY, oid);
     return oid;
   }

@@ -22,9 +22,10 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.spi.scanner.SystemObjectScanContext;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -86,11 +87,7 @@ final class TypeResolverTest {
   }
 
   private static ResourceId catalogId() {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId("pg")
-        .build();
+    return SystemNodeRegistry.systemCatalogContainerId("floedb");
   }
 
   private static TypeNode type(String displayName) {
@@ -107,10 +104,14 @@ final class TypeResolverTest {
   }
 
   private static ResourceId typeId(String displayName) {
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_TYPE)
-        .setId("test:" + displayName)
-        .build();
+    return SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TYPE, asNameRef(displayName));
+  }
+
+  private static NameRef asNameRef(String qualified) {
+    if (qualified == null || qualified.isBlank()) {
+      return NameRef.getDefaultInstance();
+    }
+    String[] parts = qualified.split("\\.");
+    return NameRefUtil.name(parts);
   }
 }

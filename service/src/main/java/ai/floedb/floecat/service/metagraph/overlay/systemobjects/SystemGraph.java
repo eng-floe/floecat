@@ -18,18 +18,18 @@ package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
-import ai.floedb.floecat.systemcatalog.util.EngineCatalogNames;
-import ai.floedb.floecat.systemcatalog.util.EngineContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -102,7 +102,7 @@ public final class SystemGraph {
    * <p>The snapshot already groups namespace→relations so we can return the bucket without
    * recalculating it on every invocation.
    */
-  public List<GraphNode> listRelations(ResourceId catalogId, EngineContext ctx) {
+  public List<RelationNode> listRelations(ResourceId catalogId, EngineContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return snapshot.namespaces().stream()
@@ -111,11 +111,11 @@ public final class SystemGraph {
                 Stream.concat(
                     snapshot.tablesInNamespace(ns.id()).stream(),
                     snapshot.viewsInNamespace(ns.id()).stream()))
-        .map(GraphNode.class::cast)
+        .map(RelationNode.class::cast)
         .toList();
   }
 
-  public List<GraphNode> listRelations(
+  public List<RelationNode> listRelations(
       ResourceId catalogId, String engineKind, String engineVersion) {
     return listRelations(catalogId, EngineContext.of(engineKind, engineVersion));
   }
@@ -126,18 +126,18 @@ public final class SystemGraph {
    *
    * @param catalogId is ignored as system objects have their own semantics for catalog
    */
-  public List<GraphNode> listRelationsInNamespace(
+  public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, EngineContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return Stream.concat(
             snapshot.tablesInNamespace(namespaceId).stream(),
             snapshot.viewsInNamespace(namespaceId).stream())
-        .map(GraphNode.class::cast)
+        .map(RelationNode.class::cast)
         .toList();
   }
 
-  public List<GraphNode> listRelationsInNamespace(
+  public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
     return listRelationsInNamespace(
         catalogId, namespaceId, EngineContext.of(engineKind, engineVersion));
@@ -493,15 +493,7 @@ public final class SystemGraph {
   }
 
   private static ResourceId systemCatalogId(String engineKind) {
-    String id =
-        (engineKind == null || engineKind.isBlank())
-            ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG
-            : engineKind;
-    return ResourceId.newBuilder()
-        .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-        .setKind(ResourceKind.RK_CATALOG)
-        .setId(id)
-        .build();
+    return SystemNodeRegistry.systemCatalogContainerId(engineKind);
   }
 
   private static long versionFromFingerprint(String fingerprint) {

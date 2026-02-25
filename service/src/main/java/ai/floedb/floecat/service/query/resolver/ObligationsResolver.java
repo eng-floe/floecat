@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.resolver;
 
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TableObligations;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
@@ -27,8 +28,14 @@ import java.util.List;
 @ApplicationScoped
 public class ObligationsResolver {
 
-  public byte[] resolveObligations(String correlationId, List<SnapshotPin> pins) {
+  /**
+   * Result includes both the decoded obligations and the exact bytes stored on the {@link
+   * QueryContext}.
+   */
+  public record Result(List<TableObligations> obligations, byte[] bytes) {}
+
+  public Result resolveObligations(String correlationId, List<SnapshotPin> pins) {
     // TODO: load obligations from governance service
-    return new byte[0];
+    return new Result(List.of(), new byte[0]);
   }
 }

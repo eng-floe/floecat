@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.extensions.floedb.validation;
 
+import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
-import ai.floedb.floecat.systemcatalog.util.EngineContextNormalizer;
 
 public record ValidationScope(String engineKind) {
   public ValidationScope {

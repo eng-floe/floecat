@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -33,7 +32,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -46,9 +44,13 @@ import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -62,9 +64,9 @@ class UserGraphTest {
   SnapshotTestSupport.FakeSnapshotRepository snapshotRepository;
   FakeTableRepository tableRepository;
   FakeViewRepository viewRepository;
-  SnapshotTestSupport.FakeSnapshotClient snapshotClient;
   FakePrincipalProvider principalProvider;
   UserGraph graph;
+  TestObservability observability;
 
   @BeforeEach
   void setUp() {
@@ -75,19 +77,17 @@ class UserGraphTest {
     viewRepository = new FakeViewRepository();
 
     // Use the lightweight test-only constructor; it wires up a minimal graph
+    observability = new TestObservability();
     graph =
         new UserGraph(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
             tableRepository,
-            viewRepository);
+            viewRepository,
+            observability);
 
-    // Configure fakes that tests rely on
-    snapshotClient = new SnapshotTestSupport.FakeSnapshotClient();
-    SnapshotHelper helper = new SnapshotHelper(snapshotRepository, null);
-    helper.setSnapshotClient(snapshotClient);
-    graph.setSnapshotHelper(helper);
+    graph.setSnapshotHelper(new SnapshotHelper(snapshotRepository));
 
     principalProvider = new FakePrincipalProvider("account");
     graph.setPrincipalProvider(principalProvider);
@@ -114,7 +114,7 @@ class UserGraphTest {
             .setSchemaJson("{\"fields\":[{\"name\":\"snap\"}]}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-01-01T00:00:00Z")))
             .build();
-    snapshotRepository.put(snapshot);
+    snapshotRepository.put(ids.tableId(), snapshot);
 
     String schema =
         graph.schemaJsonFor("corr", node, SnapshotRef.newBuilder().setSnapshotId(10L).build());
@@ -139,8 +139,8 @@ class UserGraphTest {
             .setSchemaJson("{\"new\":true}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-03-01T00:00:00Z")))
             .build();
-    snapshotRepository.put(oldSnapshot);
-    snapshotRepository.put(newSnapshot);
+    snapshotRepository.put(ids.tableId(), oldSnapshot);
+    snapshotRepository.put(ids.tableId(), newSnapshot);
 
     SnapshotRef ref =
         SnapshotRef.newBuilder().setAsOf(ts(Instant.parse("2024-02-15T00:00:00Z"))).build();
@@ -236,54 +236,69 @@ class UserGraphTest {
   }
 
   @Test
-  void registersCacheGaugesWhenEnabled() {
-    var registry = new SimpleMeterRegistry();
-    UserGraph instrumentedGraph =
+  void recordsCacheLoadLatencyWhenEnabled() {
+    var instrumentedGraph =
         new UserGraph(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null, // snapshotStub
-            registry,
+            observability,
             principalProvider,
             42L, // cache size
-            null // engineHintManager
-            );
-    SnapshotHelper helperEnabled = new SnapshotHelper(snapshotRepository, null);
-    helperEnabled.setSnapshotClient(snapshotClient);
-    instrumentedGraph.setSnapshotHelper(helperEnabled);
+            null); // engineHintManager
 
-    assertThat(registry.get("floecat.metadata.graph.cache.enabled").gauge().value()).isEqualTo(1.0);
-    assertThat(registry.get("floecat.metadata.graph.cache.max_size").gauge().value())
-        .isEqualTo(42.0);
-    registry.close();
+    var ids = seedTable("enabled-cache", "{}");
+    instrumentedGraph.table(ids.tableId());
+    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isNotEmpty();
+    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
+        .anySatisfy(
+            tags ->
+                assertThat(tags)
+                    .anyMatch(
+                        tag ->
+                            TagKey.CACHE_NAME.equals(tag.key())
+                                && "graph-cache".equals(tag.value())));
   }
 
   @Test
-  void registersCacheGaugesWhenDisabled() {
-    var registry = new SimpleMeterRegistry();
-    UserGraph instrumentedGraph =
+  void recordsCacheLoadLatencyWhenDisabled() {
+    var instrumentedGraph =
         new UserGraph(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
             tableRepository,
             viewRepository,
-            null, // snapshotStub
-            registry,
+            observability,
             principalProvider,
             0L, // cache size (disabled)
-            null // engineHintManager
-            );
-    SnapshotHelper helperDisabled = new SnapshotHelper(snapshotRepository, null);
-    helperDisabled.setSnapshotClient(snapshotClient);
-    instrumentedGraph.setSnapshotHelper(helperDisabled);
+            null); // engineHintManager
 
-    assertThat(registry.get("floecat.metadata.graph.cache.enabled").gauge().value()).isZero();
-    assertThat(registry.get("floecat.metadata.graph.cache.max_size").gauge().value()).isZero();
-    registry.close();
+    var ids = seedTable("disabled-cache", "{}");
+    instrumentedGraph.table(ids.tableId());
+    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isEmpty();
+  }
+
+  @Test
+  void graphLoadRecordsLatency() {
+    var ids = seedTable("load-metric", "{}");
+    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
+
+    assertThat(node).isNotNull();
+    List<Duration> latencies = observability.timerValues(Telemetry.Metrics.CACHE_LATENCY);
+    assertThat(latencies).isNotEmpty();
+    assertThat(latencies.get(0)).isGreaterThan(Duration.ZERO);
+    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
+        .anySatisfy(
+            tags ->
+                assertThat(tags.stream().map(Tag::key))
+                    .contains(
+                        Telemetry.TagKey.COMPONENT,
+                        Telemetry.TagKey.OPERATION,
+                        Telemetry.TagKey.CACHE_NAME,
+                        Telemetry.TagKey.RESULT));
   }
 
   @Test
@@ -491,15 +506,16 @@ class UserGraphTest {
     assertThat(defaultPin.hasAsOf()).isTrue();
     assertThat(defaultPin.getAsOf()).isEqualTo(defaultTs);
 
-    snapshotClient.nextResponse =
-        GetSnapshotResponse.newBuilder()
-            .setSnapshot(Snapshot.newBuilder().setSnapshotId(9999))
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(9999)
+            .setSchemaJson("{}")
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123))
             .build();
+    snapshotRepository.put(tableId, snapshot);
 
     SnapshotPin current = graph.snapshotPinFor("corr", tableId, null, Optional.empty());
     assertThat(current.getSnapshotId()).isEqualTo(9999);
-    assertThat(snapshotClient.lastRequest.getSnapshot().getSpecial())
-        .isEqualTo(SpecialSnapshot.SS_CURRENT);
   }
 
   @Test
@@ -877,24 +893,6 @@ class UserGraphTest {
         mutationMeta(1L, Instant.now()));
 
     return viewId;
-  }
-
-  private ResourceId seedNamespace(String name) {
-    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
-    ResourceId namespaceId = rid("account", "ns-" + name, ResourceKind.RK_NAMESPACE);
-
-    catalogRepository.put(
-        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
-        mutationMeta(1L, Instant.now()));
-    namespaceRepository.put(
-        Namespace.newBuilder()
-            .setResourceId(namespaceId)
-            .setCatalogId(catalogId)
-            .setDisplayName(name)
-            .build(),
-        mutationMeta(1L, Instant.now()));
-
-    return namespaceId;
   }
 
   record TableIds(ResourceId catalogId, ResourceId namespaceId, ResourceId tableId) {}

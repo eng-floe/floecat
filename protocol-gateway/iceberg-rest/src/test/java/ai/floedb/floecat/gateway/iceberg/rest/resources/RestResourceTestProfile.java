@@ -36,9 +36,37 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
     overrides.put(
         "floecat.gateway.storage-credential.properties.s3.secret-access-key", "test-secret");
     overrides.put("floecat.gateway.storage-credential.properties.s3.region", "us-east-1");
+    overrides.put(
+        "floecat.gateway.storage-credential.properties.s3.endpoint", "http://localhost:4566");
+    overrides.put("floecat.gateway.delta-compat.enabled", "true");
+    overrides.put("floecat.gateway.delta-compat.read-only", "true");
 
     if (useAwsFixtures()) {
       overrides.put("floecat.gateway.metadata-file-io", "org.apache.iceberg.aws.s3.S3FileIO");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.endpoint",
+          "floecat.fixture.aws.s3.endpoint");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.region",
+          "floecat.fixture.aws.s3.region");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.access-key-id",
+          "floecat.fixture.aws.s3.access-key-id");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.secret-access-key",
+          "floecat.fixture.aws.s3.secret-access-key");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.session-token",
+          "floecat.fixture.aws.s3.session-token");
+      copyIfPresent(
+          overrides,
+          "floecat.gateway.storage-credential.properties.s3.path-style-access",
+          "floecat.fixture.aws.s3.path-style-access");
     } else {
       overrides.put("floecat.gateway.metadata-file-io", InMemoryS3FileIO.class.getName());
       overrides.put("floecat.gateway.metadata-file-io-root", "target/test-fake-s3");
@@ -49,5 +77,13 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
 
   private boolean useAwsFixtures() {
     return Boolean.parseBoolean(System.getProperty("floecat.fixtures.use-aws-s3", "false"));
+  }
+
+  private static void copyIfPresent(
+      Map<String, String> overrides, String targetKey, String sourceSystemProperty) {
+    String value = System.getProperty(sourceSystemProperty);
+    if (value != null && !value.isBlank()) {
+      overrides.put(targetKey, value);
+    }
   }
 }

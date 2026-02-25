@@ -59,6 +59,9 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     "floecat.fixtures.use-aws-s3",
     "floecat.interceptor.validate.account"
   };
+  private static final String[] FORWARDED_PROP_PREFIXES = {
+    "floecat.fixture.aws.", "floecat.storage.aws."
+  };
   private static final String[] FORWARDED_ENVS = {
     "AWS_REQUEST_CHECKSUM_CALCULATION",
     "AWS_RESPONSE_CHECKSUM_VALIDATION",
@@ -135,6 +138,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add("-Dquarkus.profile=test");
       command.add("--add-opens");
       command.add("java.base/java.lang=ALL-UNNAMED");
+      command.add("--add-opens");
+      command.add("java.base/java.nio=ALL-UNNAMED");
       addForwardedProperties(command);
       addChecksumProperties(command);
       command.add("-cp");
@@ -167,6 +172,11 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     Map<String, String> testConfig = new LinkedHashMap<>();
     testConfig.put("floecat.gateway.upstream-target", LOOPBACK_HOST + ":" + httpPort);
     testConfig.put("floecat.gateway.upstream-plaintext", "true");
+    String configuredEndpoint = System.getProperty("floecat.fixture.aws.s3.endpoint");
+    if (configuredEndpoint == null || configuredEndpoint.isBlank()) {
+      configuredEndpoint = "http://localhost:4566";
+    }
+    testConfig.put("floecat.gateway.storage-credential.properties.s3.endpoint", configuredEndpoint);
     String connectorIntegration =
         System.getProperty("floecat.gateway.connector-integration-enabled");
     if (connectorIntegration != null && !connectorIntegration.isBlank()) {
@@ -184,8 +194,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
     if (TestS3Fixtures.useAwsFixtures()) {
       return;
     }
-    System.setProperty("floecat.fileio.override.io-impl", InMemoryS3FileIO.class.getName());
-    System.setProperty("floecat.fileio.override.fs.floecat.test-root", TEST_S3_ROOT);
+    System.setProperty("floecat.fixture.aws.io-impl", InMemoryS3FileIO.class.getName());
+    System.setProperty("floecat.fixture.aws.fs.floecat.test-root", TEST_S3_ROOT);
   }
 
   private static void addForwardedProperties(List<String> command) {
@@ -196,7 +206,7 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       }
     }
     System.getProperties().stringPropertyNames().stream()
-        .filter(name -> name.startsWith("floecat.fileio.override."))
+        .filter(RealServiceTestResource::hasForwardedPrefix)
         .forEach(
             name -> {
               String value = System.getProperty(name);
@@ -204,6 +214,15 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
                 command.add("-D" + name + "=" + value);
               }
             });
+  }
+
+  private static boolean hasForwardedPrefix(String propertyName) {
+    for (String prefix : FORWARDED_PROP_PREFIXES) {
+      if (propertyName.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static void addForwardedEnv(Map<String, String> env) {

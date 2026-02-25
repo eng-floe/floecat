@@ -3,11 +3,11 @@
 ## Overview
 `storage/aws/` contains production-grade implementations of the storage SPI backed by Amazon
 DynamoDB (pointer store) and Amazon S3 (blob store). It also includes bootstrapping helpers to ensure
-DynamoDB tables exist before the service starts.
+DynamoDB tables exist before the service starts, plus a Secrets Manager-backed secrets store.
 
 ## Architecture & Responsibilities
 - **`AwsClients`** – Centralises AWS SDK v2 clients (DynamoDB, S3) configured via Quarkus properties
-  (`floecat.fileio.override.*`, credentials providers). Injected into both stores.
+  (`floecat.storage.aws.*`, credentials providers). Injected into both stores.
 - **`DynamoPointerStore`** – Stores pointer entries in DynamoDB tables (partition key = pointer key).
   Implements compare-and-set using conditional expressions, handles pagination via DynamoDB queries,
   and supports TTL fields using native DynamoDB TTL attributes.
@@ -16,6 +16,7 @@ DynamoDB tables exist before the service starts.
 - **`S3BlobStore`** – Stores protobuf blobs inside an S3 bucket. `put` writes objects with
   server-side encryption (if configured) and stores metadata (ETag, content-type). `head` uses
   `HeadObject` to fetch metadata and returns `BlobHeader`.
+- **`ProdSecretsManager`** – Stores secret payloads in AWS Secrets Manager with ABAC-friendly tags.
 
 ## Public API / Surface Area
 Implements `PointerStore` and `BlobStore` exactly as defined in the SPI. Additional behaviours:
@@ -48,7 +49,7 @@ Key properties (see `service/application.properties` for defaults):
 - `floecat.kv=dynamodb`, `floecat.kv.table=<tableName>`, `floecat.kv.auto-create=true|false`,
   `floecat.kv.ttl-enabled=true|false`.
 - `floecat.blob=s3`, `floecat.blob.s3.bucket=<bucket>`,
-  `floecat.fileio.override.s3.region=<region>`.
+  `floecat.storage.aws.region=<region>`.
 - Provide AWS credentials via the default SDK provider chain (env vars, profiles, IAM roles) or
   override the client builders inside `AwsClients`.
 
@@ -68,10 +69,12 @@ Extensibility:
 
 ## Local Testing with LocalStack
 - `make localstack-up` – Starts a LocalStack container (DynamoDB + S3) and provisions buckets/tables.
-- `make run-localstack-localstack` – Runs `quarkus:dev` with both upstream and catalog pointing at
-  LocalStack. Uses `floecat.kv=dynamodb` / `floecat.blob=s3` and path-style S3 access.
-- `make run-localstack-aws` – Upstream LocalStack, catalog real AWS.
-- `make run-aws-localstack` – Upstream real AWS, catalog LocalStack.
+- `make run-localstack` – Runs `quarkus:dev` with catalog storage on LocalStack.
+- `make run-aws` – Runs `quarkus:dev` with catalog storage on real AWS.
+- Seeding is disabled by default. Enable it only when needed:
+  `make run-localstack SEED_ENABLED=true SEED_SOURCE=localstack`
+  or
+  `make run-aws REAL_AWS_BUCKET=<bucket> REAL_AWS_TABLE=<table> SEED_ENABLED=true SEED_SOURCE=aws`
 - `make test-localstack` – Runs unit + IT suites against LocalStack backends.
 - `make localstack-down` – Stops the LocalStack container started by the Make targets.
 
@@ -82,3 +85,4 @@ DynamoDB table, and TTL attribute using the bundled `awslocal` CLI.
 ## Cross-References
 - SPI contract: [`docs/storage-spi.md`](storage-spi.md)
 - Repository usage: [`docs/service.md`](service.md)
+- Secrets Manager integration: [`docs/secrets-manager.md`](secrets-manager.md)
