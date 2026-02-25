@@ -10,6 +10,16 @@ make docker
 
 The stack runs in four modes by selecting an env file and compose profiles as needed.
 
+Quickstart from published GHCR images (LocalStack + `:main` tags):
+
+```bash
+make quickstart-up
+```
+
+```bash
+make quickstart-down
+```
+
 In-memory (default storage, no AWS dependencies):
 
 ```bash

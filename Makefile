@@ -42,6 +42,8 @@
 #   make keycloak-down          # stop Keycloak container (if running)
 #   make compose-up             # build images + start compose stack (default: COMPOSE_ENV_FILE=./env.inmem)
 #   make compose-down           # stop compose stack for COMPOSE_ENV_FILE/COMPOSE_PROFILES
+#   make quickstart-up          # pull + run GHCR main images with LocalStack profile
+#   make quickstart-down        # stop quickstart stack
 #   make compose-up COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
 #   make compose-down COMPOSE_ENV_FILE=./env.localstack COMPOSE_PROFILES=localstack
 #   make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
@@ -104,6 +106,9 @@ CONTAINER_REGISTRY ?= ghcr.io
 CONTAINER_OWNER ?=
 CONTAINER_TAG ?= main
 CONTAINER_EXTRA_TAGS ?=
+QUICKSTART_REGISTRY ?= ghcr.io
+QUICKSTART_OWNER ?= eng-floe
+QUICKSTART_TAG ?= main
 UNAME_M := $(shell uname -m)
 
 ifeq ($(strip $(JIB_PLATFORMS)),)
@@ -715,7 +720,7 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke
+.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke quickstart-up quickstart-down
 
 docker-clean-cache:
 	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
@@ -827,6 +832,26 @@ compose-smoke: docker
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
 	  ./tools/compose-smoke.sh
+
+quickstart-up:
+	@echo "==> [COMPOSE] quickstart up (GHCR $(QUICKSTART_OWNER), tag $(QUICKSTART_TAG))"
+	FLOECAT_SERVICE_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-service:$(QUICKSTART_TAG) \
+	FLOECAT_ICEBERG_REST_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-iceberg-rest:$(QUICKSTART_TAG) \
+	FLOECAT_CLI_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-cli:$(QUICKSTART_TAG) \
+	FLOECAT_PULL_POLICY=always \
+	FLOECAT_ENV_FILE=./env.localstack \
+	COMPOSE_PROFILES=localstack \
+	$(DOCKER_COMPOSE_MAIN) up -d
+
+quickstart-down:
+	@echo "==> [COMPOSE] quickstart down"
+	FLOECAT_SERVICE_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-service:$(QUICKSTART_TAG) \
+	FLOECAT_ICEBERG_REST_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-iceberg-rest:$(QUICKSTART_TAG) \
+	FLOECAT_CLI_IMAGE=$(QUICKSTART_REGISTRY)/$(QUICKSTART_OWNER)/floecat-cli:$(QUICKSTART_TAG) \
+	FLOECAT_PULL_POLICY=always \
+	FLOECAT_ENV_FILE=./env.localstack \
+	COMPOSE_PROFILES=localstack \
+	$(DOCKER_COMPOSE_MAIN) down --remove-orphans
 
 # ===================================================
 # Lint/format
