@@ -225,21 +225,54 @@ public class TableCommitSideEffectService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    runConnectorSyncAttempt(tableSupport, connectorId, namespacePath, tableName);
+  }
+
+  public ConnectorSyncResult runConnectorSyncAttempt(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName) {
     if (!tableSupport.connectorIntegrationEnabled()) {
-      return;
+      return ConnectorSyncResult.skippedResult();
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
-      return;
+      return ConnectorSyncResult.skippedResult();
+    }
+    boolean captureOk = true;
+    boolean reconcileOk = true;
+    try {
+      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
+    } catch (Throwable e) {
+      captureOk = false;
+      LOG.warnf(
+          e,
+          "Connector sync metadata capture failed connectorId=%s namespace=%s table=%s",
+          connectorId.getId(),
+          namespacePath == null ? "<null>" : String.join(".", namespacePath),
+          tableName);
     }
     try {
       tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
     } catch (Throwable e) {
+      reconcileOk = false;
       LOG.warnf(
           e,
           "Connector reconcile trigger failed connectorId=%s namespace=%s table=%s",
           connectorId.getId(),
           namespacePath == null ? "<null>" : String.join(".", namespacePath),
           tableName);
+    }
+    return new ConnectorSyncResult(captureOk, reconcileOk, false);
+  }
+
+  public record ConnectorSyncResult(boolean captureOk, boolean reconcileOk, boolean skipped) {
+    static ConnectorSyncResult skippedResult() {
+      return new ConnectorSyncResult(true, true, true);
+    }
+
+    public boolean success() {
+      return skipped || (captureOk && reconcileOk);
     }
   }
 

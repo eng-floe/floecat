@@ -26,6 +26,8 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,6 +37,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -54,6 +57,7 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 public final class TestS3Fixtures {
+  private static final Logger LOG = Logger.getLogger(TestS3Fixtures.class.getName());
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "common-test");
   private static final Path FIXTURE_ROOT = resolveFixtureRoot("iceberg-fixtures");
   private static final Path SIMPLE_ROOT = FIXTURE_ROOT.resolve("simple");
@@ -62,7 +66,14 @@ public final class TestS3Fixtures {
   private static final String BUCKET = "yb-iceberg-tpcds";
   private static final String PREFIX = "trino_test";
   private static final String USE_AWS_FIXTURES_PROP = "floecat.fixtures.use-aws-s3";
+  private static final String FORCE_RESEED_PROP = "floecat.fixtures.force-reseed";
+  private static final String SEEDED_MARKER_PROP = "floecat.fixtures.iceberg.seeded";
   private static final String STAGE_BUCKET = "staged-fixtures";
+  private static final int MAX_DELETE_PREFIX_PAGES = 10_000;
+  private static final Duration S3_VERIFY_TIMEOUT = Duration.ofSeconds(90);
+  private static final Duration S3_VERIFY_POLL_INTERVAL = Duration.ofMillis(500);
+  private static volatile boolean seeded;
+  private static final Object SEED_LOCK = new Object();
 
   private record FixtureSet(String name, Path sourceRoot, String bucket, String prefix) {}
 
@@ -75,7 +86,8 @@ public final class TestS3Fixtures {
   private TestS3Fixtures() {}
 
   public static boolean useAwsFixtures() {
-    return Boolean.parseBoolean(System.getProperty(USE_AWS_FIXTURES_PROP, "false"));
+    return Boolean.parseBoolean(
+        resolveProperty(USE_AWS_FIXTURES_PROP, "FLOECAT_FIXTURES_USE_AWS_S3", "false"));
   }
 
   public static String bucketUri(String relativePath) {
@@ -108,18 +120,34 @@ public final class TestS3Fixtures {
   }
 
   public static void seedFixturesOnce() {
-    if (useAwsFixtures()) {
-      seedFixturesToS3();
+    if (!Boolean.getBoolean(FORCE_RESEED_PROP)
+        && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
       return;
     }
-    System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
-    try {
-      if (!needsReseed()) {
+    synchronized (SEED_LOCK) {
+      if (!Boolean.getBoolean(FORCE_RESEED_PROP)
+          && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
         return;
       }
-      seedFixturesLocal();
-    } catch (IOException e) {
-      throw new RuntimeException("Failed to seed fixture bucket", e);
+      LOG.info("Seeding Iceberg test fixtures");
+      if (useAwsFixtures()) {
+        seedFixturesToS3();
+        verifyS3FixturesReady();
+      } else {
+        System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
+        try {
+          if (!needsReseed() && !Boolean.getBoolean(FORCE_RESEED_PROP)) {
+            seeded = true;
+            return;
+          }
+          seedFixturesLocal();
+        } catch (IOException e) {
+          throw new RuntimeException("Failed to seed fixture bucket", e);
+        }
+      }
+      seeded = true;
+      System.setProperty(SEEDED_MARKER_PROP, Boolean.TRUE.toString());
+      LOG.info("Iceberg test fixture seeding completed");
     }
   }
 
@@ -356,10 +384,17 @@ public final class TestS3Fixtures {
 
   private static void deletePrefix(S3Client s3, String bucket, String prefix) {
     String normalized = prefix == null ? "" : prefix;
-    ListObjectsV2Request request =
-        ListObjectsV2Request.builder().bucket(bucket).prefix(normalized).build();
-    ListObjectsV2Response response = s3.listObjectsV2(request);
-    while (true) {
+    String continuationToken = null;
+    String previousContinuationToken = null;
+    int pages = 0;
+    while (pages < MAX_DELETE_PREFIX_PAGES) {
+      ListObjectsV2Response response =
+          s3.listObjectsV2(
+              ListObjectsV2Request.builder()
+                  .bucket(bucket)
+                  .prefix(normalized)
+                  .continuationToken(continuationToken)
+                  .build());
       response
           .contents()
           .forEach(
@@ -367,16 +402,37 @@ public final class TestS3Fixtures {
                   s3.deleteObject(
                       DeleteObjectRequest.builder().bucket(bucket).key(object.key()).build()));
       if (!response.isTruncated()) {
-        break;
+        return;
       }
-      response =
-          s3.listObjectsV2(
-              ListObjectsV2Request.builder()
-                  .bucket(bucket)
-                  .prefix(normalized)
-                  .continuationToken(response.nextContinuationToken())
-                  .build());
+      previousContinuationToken = continuationToken;
+      continuationToken = response.nextContinuationToken();
+      if (continuationToken == null || continuationToken.equals(previousContinuationToken)) {
+        throw new IllegalStateException(
+            "S3 pagination stalled while deleting prefix "
+                + bucket
+                + "/"
+                + normalized
+                + " token="
+                + continuationToken);
+      }
+      pages++;
+      if (pages % 100 == 0) {
+        LOG.info(
+            "Deleting fixture prefix still in progress for "
+                + bucket
+                + "/"
+                + normalized
+                + " pages="
+                + pages);
+      }
     }
+    throw new IllegalStateException(
+        "Exceeded max pagination pages while deleting prefix "
+            + bucket
+            + "/"
+            + normalized
+            + " pages="
+            + pages);
   }
 
   private static void ensureBucketExists(S3Client s3, String bucket) {
@@ -423,9 +479,42 @@ public final class TestS3Fixtures {
   }
 
   private static String resolveFileIoProperty(String overrideKey, String defaultValue) {
-    String override = System.getProperty("floecat.fixture.aws." + overrideKey);
+    String override = resolveAwsOverride(overrideKey, null);
     if (override != null && !override.isBlank()) {
       return override;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveProperty(String propertyKey, String envKey, String defaultValue) {
+    String fromProperty = System.getProperty(propertyKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String fromEnv = System.getenv(envKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
+    }
+    return defaultValue;
+  }
+
+  private static String resolveAwsOverride(String overrideKey, String defaultValue) {
+    String fromProperty = System.getProperty("floecat.fixture.aws." + overrideKey);
+    if (fromProperty != null && !fromProperty.isBlank()) {
+      return fromProperty;
+    }
+    String normalizedKey =
+        overrideKey.replace('.', '_').replace('-', '_').toUpperCase(java.util.Locale.ROOT);
+    String fromEnv = System.getenv("FLOECAT_FIXTURE_AWS_" + normalizedKey);
+    if (fromEnv != null && !fromEnv.isBlank()) {
+      return fromEnv;
+    }
+    // Backward-compatible env alias used in docker/env.localstack
+    if ("s3.path-style-access".equals(overrideKey)) {
+      String alias = System.getenv("FLOECAT_FIXTURE_AWS_S3_PATH_STYLE");
+      if (alias != null && !alias.isBlank()) {
+        return alias;
+      }
     }
     return defaultValue;
   }
@@ -490,6 +579,44 @@ public final class TestS3Fixtures {
   }
 
   private record S3Location(String bucket, String key) {}
+
+  private static void verifyS3FixturesReady() {
+    Instant deadline = Instant.now().plus(S3_VERIFY_TIMEOUT);
+    try (S3Client s3 = buildS3Client()) {
+      while (Instant.now().isBefore(deadline)) {
+        if (allFixtureMarkersExist(s3)) {
+          return;
+        }
+        try {
+          Thread.sleep(S3_VERIFY_POLL_INTERVAL.toMillis());
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("Interrupted while waiting for fixture readiness", e);
+        }
+      }
+    }
+    throw new IllegalStateException(
+        "Timed out waiting for S3 fixture readiness after " + S3_VERIFY_TIMEOUT.toSeconds() + "s");
+  }
+
+  private static boolean allFixtureMarkersExist(S3Client s3) {
+    for (FixtureSet set : FIXTURE_SETS) {
+      String markerPrefix = normalizeKey(set.prefix) + "metadata/";
+      ListObjectsV2Response response =
+          s3.listObjectsV2(
+              ListObjectsV2Request.builder()
+                  .bucket(set.bucket)
+                  .prefix(markerPrefix)
+                  .maxKeys(1)
+                  .build());
+      if (response.contents().isEmpty()) {
+        return false;
+      }
+    }
+    // Ensure stage bucket API is responsive and bucket exists.
+    s3.listObjectsV2(ListObjectsV2Request.builder().bucket(STAGE_BUCKET).maxKeys(1).build());
+    return true;
+  }
 
   private static Optional<Path> findModuleRoot() {
     Path cwd = Path.of("").toAbsolutePath();

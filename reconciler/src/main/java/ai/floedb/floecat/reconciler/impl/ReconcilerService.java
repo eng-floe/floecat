@@ -75,8 +75,8 @@ public class ReconcilerService {
   private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
 
   public enum CaptureMode {
-    METADATA_ONLY,
-    METADATA_AND_STATS
+    METADATA_ONLY_CORE,
+    STATS_ONLY_ASYNC
   }
 
   @Inject ReconcilerBackend backend;
@@ -89,7 +89,7 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn) {
     return reconcile(
-        principal, connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS, null);
+        principal, connectorId, fullRescan, scopeIn, CaptureMode.STATS_ONLY_ASYNC, null);
   }
 
   public Result reconcile(
@@ -227,17 +227,26 @@ public class ReconcilerService {
 
           var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
 
-          var destTableId =
-              ensureTable(
+          var destTableIdOpt =
+              resolveDestinationTableId(
                   ctx,
+                  captureMode,
                   destCatalogId,
                   destNamespaceId,
+                  dest,
                   effective,
                   connector.format(),
                   stored.getResourceId(),
                   cfg.uri(),
                   sourceNsFq,
                   srcTable);
+          if (destTableIdOpt.isEmpty()) {
+            LOG.debugf(
+                "Skipping stats-only reconcile for %s.%s because destination table was not found",
+                sourceNsFq, srcTable);
+            continue;
+          }
+          var destTableId = destTableIdOpt.get();
 
           if (singleTableMode && !destB.hasTableId()) {
             destB.setTableId(destTableId);
@@ -245,13 +254,21 @@ public class ReconcilerService {
             dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
-          boolean includeStats = captureMode == CaptureMode.METADATA_AND_STATS;
+          boolean includeCoreMetadata = captureMode == CaptureMode.METADATA_ONLY_CORE;
+          boolean includeStats = captureMode == CaptureMode.STATS_ONLY_ASYNC;
           var bundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
 
           ingestAllSnapshotsAndStatsFiltered(
-              ctx, destTableId, connector, effective, bundles, includeSelectors, includeStats);
+              ctx,
+              destTableId,
+              connector,
+              effective,
+              bundles,
+              includeSelectors,
+              includeCoreMetadata,
+              includeStats);
           changed++;
         } catch (Exception e) {
           errors++;
@@ -351,6 +368,52 @@ public class ReconcilerService {
             .build();
     return backend.ensureTable(
         ctx, destNamespaceId, NameRefNormalizer.normalize(tableRef), descriptor);
+  }
+
+  private Optional<ResourceId> resolveDestinationTableId(
+      ReconcileContext ctx,
+      CaptureMode captureMode,
+      ResourceId catalogId,
+      ResourceId destNamespaceId,
+      DestinationTarget destination,
+      FloecatConnector.TableDescriptor landingView,
+      ConnectorFormat format,
+      ResourceId connectorRid,
+      String connectorUri,
+      String sourceNsFq,
+      String sourceTable) {
+    if (captureMode == CaptureMode.METADATA_ONLY_CORE) {
+      return Optional.of(
+          ensureTable(
+              ctx,
+              catalogId,
+              destNamespaceId,
+              landingView,
+              format,
+              connectorRid,
+              connectorUri,
+              sourceNsFq,
+              sourceTable));
+    }
+    if (destination != null && destination.hasTableId()) {
+      return Optional.of(destination.getTableId());
+    }
+    String tableDisplay = landingView == null ? null : landingView.tableName();
+    String namespaceFq = landingView == null ? null : landingView.namespaceFq();
+    if (tableDisplay == null
+        || tableDisplay.isBlank()
+        || namespaceFq == null
+        || namespaceFq.isBlank()) {
+      return Optional.empty();
+    }
+    String catalogName = backend.lookupCatalogName(ctx, catalogId);
+    NameRef tableRef =
+        NameRef.newBuilder()
+            .setCatalog(catalogName)
+            .addAllPath(List.of(namespaceFq.split("\\.")))
+            .setName(tableDisplay)
+            .build();
+    return backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
   }
 
   private void ensureSnapshot(
@@ -487,6 +550,7 @@ public class ReconcilerService {
       FloecatConnector.TableDescriptor tableDesc,
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<String> includeSelectors,
+      boolean includeCoreMetadata,
       boolean includeStats) {
 
     var seen = new HashSet<Long>();
@@ -510,7 +574,9 @@ public class ReconcilerService {
         continue;
       }
 
-      ensureSnapshot(ctx, tableId, snapshotBundle);
+      if (includeCoreMetadata) {
+        ensureSnapshot(ctx, tableId, snapshotBundle);
+      }
 
       if (!includeStats) {
         continue;

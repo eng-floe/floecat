@@ -548,17 +548,34 @@ public class SeedRunner {
   private void seedDeltaFixtureTables(ResourceId accountId, ResourceId catalogId, long now) {
     TestDeltaFixtures.seedFixturesOnce();
 
-    var fixture =
-        new DeltaFixtureConfig(
-            "fixture-delta-call-center",
-            "Delta call_center fixture table",
-            TestDeltaFixtures.tableUri(),
-            "examples.delta",
-            "call_center",
-            DELTA_NAMESPACE);
+    List<DeltaFixtureConfig> fixtures =
+        List.of(
+            new DeltaFixtureConfig(
+                "fixture-delta-call-center",
+                "Delta call_center fixture table",
+                TestDeltaFixtures.tableUri("call_center"),
+                "examples.delta",
+                "call_center",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-my-local-delta-table",
+                "Delta my_local_delta_table fixture table",
+                TestDeltaFixtures.tableUri("my_local_delta_table"),
+                "examples.delta",
+                "my_local_delta_table",
+                DELTA_NAMESPACE),
+            new DeltaFixtureConfig(
+                "fixture-delta-dv-demo-delta",
+                "Delta dv_demo_delta fixture table",
+                TestDeltaFixtures.tableUri("dv_demo_delta"),
+                "examples.delta",
+                "dv_demo_delta",
+                DELTA_NAMESPACE));
 
-    ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
-    syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    for (DeltaFixtureConfig fixture : fixtures) {
+      ResourceId connectorId = seedDeltaConnector(accountId, catalogId, fixture, now);
+      syncConnector(connectorId, fixture.tableName(), fixture.destinationNamespace());
+    }
   }
 
   private ResourceId seedDeltaConnector(
@@ -634,8 +651,20 @@ public class SeedRunner {
     long backoffMs = SEED_SYNC_INITIAL_BACKOFF_MS;
     for (int attempt = 1; attempt <= SEED_SYNC_MAX_ATTEMPTS; attempt++) {
       try {
-        var result = reconcileWithSeedAuth(connectorId, scope);
+        var result =
+            reconcileWithSeedAuth(
+                connectorId, scope, ReconcilerService.CaptureMode.METADATA_ONLY_CORE);
         if (result.ok()) {
+          var statsResult =
+              reconcileWithSeedAuth(
+                  connectorId, scope, ReconcilerService.CaptureMode.STATS_ONLY_ASYNC);
+          if (!statsResult.ok()) {
+            LOG.warnf(
+                statsResult.error,
+                "Stats capture pass failed for fixture table %s: %s",
+                tableName,
+                statsResult.message());
+          }
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",
               tableName, result.scanned, result.changed);
@@ -716,7 +745,7 @@ public class SeedRunner {
   }
 
   private ReconcilerService.Result reconcileWithSeedAuth(
-      ResourceId connectorId, ReconcileScope scope) {
+      ResourceId connectorId, ReconcileScope scope, ReconcilerService.CaptureMode mode) {
     var header = seedAuthorizationHeader();
     var principal =
         PrincipalContext.newBuilder()
@@ -724,13 +753,7 @@ public class SeedRunner {
             .setSubject("seed-runner")
             .setCorrelationId("seed-sync-" + connectorId.getId())
             .build();
-    return reconciler.reconcile(
-        principal,
-        connectorId,
-        true,
-        scope,
-        ReconcilerService.CaptureMode.METADATA_AND_STATS,
-        header.orElse(null));
+    return reconciler.reconcile(principal, connectorId, true, scope, mode, header.orElse(null));
   }
 
   private java.util.Optional<String> seedAuthorizationHeader() {

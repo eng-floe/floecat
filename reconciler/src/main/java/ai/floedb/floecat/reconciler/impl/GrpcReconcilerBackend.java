@@ -44,7 +44,6 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -207,41 +206,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       ResourceId tableId,
       ResourceId namespaceId,
       TableSpecDescriptor descriptor) {
-    Namespace ns =
-        namespace(ctx)
-            .getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(namespaceId).build())
-            .getNamespace();
-    ResourceId catalogId = ns.getCatalogId();
-
-    var spec =
-        TableSpec.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setSchemaJson(descriptor.schemaJson())
-            .setUpstream(buildUpstream(descriptor))
-            .putAllProperties(safeProperties(descriptor))
-            .build();
-
-    var mask =
-        FieldMask.newBuilder()
-            .addPaths("schema_json")
-            .addPaths("upstream")
-            .addPaths("properties")
-            .build();
-
-    var request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(spec)
-            .setUpdateMask(mask)
-            .build();
-    try {
-      table(ctx).updateTable(request);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION) {
-        throw e;
-      }
-    }
+    // Reconciler must not advance table core OCC version for existing tables.
+    // Existing table shape updates are intentionally skipped here; only creation-on-miss
+    // is allowed through ensureTable().
   }
 
   @Override

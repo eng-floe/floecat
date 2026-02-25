@@ -27,6 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFac
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitOperationTracker.OperationKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -40,6 +41,7 @@ public class TransactionCommitService {
   @Inject TableCommitService tableCommitService;
   @Inject IcebergGatewayConfig config;
   @Inject GrpcWithHeaders grpc;
+  @Inject CommitOperationTracker commitOperationTracker;
 
   public Response commit(
       String prefix,
@@ -56,9 +58,42 @@ public class TransactionCommitService {
     if (changes.isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
+    String operationId =
+        transactionId != null && !transactionId.isBlank()
+            ? transactionId.trim()
+            : (idempotencyKey == null ? null : idempotencyKey.trim());
+    if (operationId == null || operationId.isBlank() || commitOperationTracker == null) {
+      return doCommit(prefix, idempotencyKey, transactionId, request, tableSupport);
+    }
+    OperationKey key = new OperationKey(accountId, "transaction:" + prefix, operationId);
+    return commitOperationTracker.execute(
+        key,
+        request,
+        () -> doCommit(prefix, idempotencyKey, transactionId, request, tableSupport, key));
+  }
+
+  private Response doCommit(
+      String prefix,
+      String idempotencyKey,
+      String transactionId,
+      TransactionCommitRequest request,
+      TableGatewaySupport tableSupport) {
+    return doCommit(prefix, idempotencyKey, transactionId, request, tableSupport, null);
+  }
+
+  private Response doCommit(
+      String prefix,
+      String idempotencyKey,
+      String transactionId,
+      TransactionCommitRequest request,
+      TableGatewaySupport tableSupport,
+      OperationKey operationKey) {
+    List<TransactionCommitRequest.TableChange> changes =
+        request == null || request.tableChanges() == null ? List.of() : request.tableChanges();
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);
     String catalogName = catalogContext.catalogName();
     ResourceId catalogId = catalogContext.catalogId();
+    int index = 0;
     for (TransactionCommitRequest.TableChange change : changes) {
       var identifier = change.identifier();
       List<String> namespacePath =
@@ -85,6 +120,10 @@ public class TransactionCommitService {
       if (tableResponse.getStatus() >= 400) {
         return tableResponse;
       }
+      if (commitOperationTracker != null && operationKey != null) {
+        commitOperationTracker.markStep(operationKey, "TABLE_" + index + "_OK");
+      }
+      index++;
     }
     return Response.noContent().build();
   }

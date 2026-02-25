@@ -26,6 +26,14 @@ public class OidcGatewayProfile implements QuarkusTestProfile {
     return Map.ofEntries(
         Map.entry("floecat.gateway.auth-mode", "oidc"),
         Map.entry("floecat.gateway.account-claim", "account_id"),
+        Map.entry("floecat.gateway.storage-credential.scope", "*"),
+        Map.entry("floecat.gateway.storage-credential.properties.type", "s3"),
+        Map.entry("floecat.gateway.storage-credential.properties.s3.access-key-id", "test-key"),
+        Map.entry(
+            "floecat.gateway.storage-credential.properties.s3.secret-access-key", "test-secret"),
+        Map.entry("floecat.gateway.storage-credential.properties.s3.region", "us-east-1"),
+        Map.entry(
+            "floecat.gateway.storage-credential.properties.s3.endpoint", "http://localhost:4566"),
         Map.entry("quarkus.oidc.enabled", "true"),
         Map.entry("quarkus.oidc.tenant-enabled", "true"),
         Map.entry("quarkus.oidc.discovery-enabled", "false"),

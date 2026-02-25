@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -45,6 +46,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import java.io.OutputStream;
@@ -170,6 +173,52 @@ class ViewResourceTest extends AbstractRestResourceTest {
     given().when().delete("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
 
     verify(viewStub).deleteView(any(DeleteViewRequest.class));
+  }
+
+  @Test
+  void getsViewContract() throws Exception {
+    ObjectMapper json = new ObjectMapper();
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    ViewRequests.ViewRepresentation rep =
+        new ViewRequests.ViewRepresentation("sql", "select 1", "ansi");
+    ViewRequests.ViewVersion version =
+        new ViewRequests.ViewVersion(
+            1, 1700000000L, 1, Map.of("operation", "create"), List.of(rep), List.of("db"), null);
+    ViewRequests.Create createReq =
+        new ViewRequests.Create(
+            "reports",
+            "s3://warehouse/views/db/reports/metadata.json",
+            json.readTree("{\"schema-id\":1,\"type\":\"struct\",\"fields\":[]}"),
+            version,
+            Map.of("comment", "demo"));
+    MetadataContext context = viewMetadataService.fromCreate(List.of("db"), "reports", createReq);
+    Map<String, String> props = viewMetadataService.buildPropertyMap(context);
+    View view =
+        View.newBuilder()
+            .setResourceId(viewId)
+            .setDisplayName("reports")
+            .setSql(context.sql())
+            .putAllProperties(props)
+            .build();
+    when(viewStub.getView(any())).thenReturn(GetViewResponse.newBuilder().setView(view).build());
+
+    given()
+        .when()
+        .get("/v1/foo/namespaces/db/views/reports")
+        .then()
+        .statusCode(200)
+        .body("metadata-location", equalTo("s3://warehouse/views/db/reports/metadata.json"))
+        .body("metadata.current-version-id", equalTo(1));
+  }
+
+  @Test
+  void getsViewMissingContract() {
+    when(directoryStub.resolveView(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().get("/v1/foo/namespaces/db/views/missing").then().statusCode(404);
   }
 
   @Test
@@ -320,6 +369,124 @@ class ViewResourceTest extends AbstractRestResourceTest {
             createdSpec
                 .getPropertiesMap()
                 .get(ViewMetadataService.METADATA_LOCATION_PROPERTY_KEY)));
+  }
+
+  @Test
+  void renameViewUpdatesNamespaceAndName() {
+    ResourceId sourceViewId = ResourceId.newBuilder().setId("cat:db:old_view").build();
+    ResourceId destinationNamespaceId = ResourceId.newBuilder().setId("cat:analytics").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(sourceViewId).build());
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(
+            ResolveNamespaceResponse.newBuilder().setResourceId(destinationNamespaceId).build());
+    when(viewStub.updateView(any())).thenReturn(UpdateViewResponse.newBuilder().build());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"old_view"},
+              "destination":{"namespace":["analytics"],"name":"new_view"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/views/rename")
+        .then()
+        .statusCode(204);
+
+    ArgumentCaptor<UpdateViewRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateViewRequest.class);
+    verify(viewStub).updateView(updateCaptor.capture());
+    UpdateViewRequest sent = updateCaptor.getValue();
+    assertEquals(sourceViewId, sent.getViewId());
+    assertEquals(destinationNamespaceId, sent.getSpec().getNamespaceId());
+    assertEquals("new_view", sent.getSpec().getDisplayName());
+    assertTrue(sent.getUpdateMask().getPathsList().contains("namespace_id"));
+    assertTrue(sent.getUpdateMask().getPathsList().contains("display_name"));
+  }
+
+  @Test
+  void renameViewReturnsNoSuchViewWhenSourceMissing() {
+    when(directoryStub.resolveView(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"missing_view"},
+              "destination":{"namespace":["analytics"],"name":"new_view"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/views/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchViewException"))
+        .body("error.message", equalTo("View db.missing_view not found"));
+  }
+
+  @Test
+  void renameViewReturnsNoSuchNamespaceWhenDestinationMissing() {
+    when(directoryStub.resolveView(any()))
+        .thenReturn(
+            ResolveViewResponse.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db:old_view").build())
+                .build());
+    when(directoryStub.resolveNamespace(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"old_view"},
+              "destination":{"namespace":["missing"],"name":"new_view"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/views/rename")
+        .then()
+        .statusCode(404)
+        .body("error.type", equalTo("NoSuchNamespaceException"))
+        .body("error.message", equalTo("Namespace missing not found"));
+  }
+
+  @Test
+  void renameViewPropagatesUnexpectedGrpcError() {
+    when(directoryStub.resolveView(any())).thenThrow(Status.INTERNAL.asRuntimeException());
+
+    given()
+        .body(
+            """
+            {
+              "source":{"namespace":["db"],"name":"old_view"},
+              "destination":{"namespace":["analytics"],"name":"new_view"}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/views/rename")
+        .then()
+        .statusCode(500);
+  }
+
+  @Test
+  void viewExistsHeadContract() {
+    ResourceId viewId = ResourceId.newBuilder().setId("cat:db:reports").build();
+    when(directoryStub.resolveView(any()))
+        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+
+    given().when().head("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
+  }
+
+  @Test
+  void viewExistsHeadNotFoundContract() {
+    when(directoryStub.resolveView(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    given().when().head("/v1/foo/namespaces/db/views/missing").then().statusCode(404);
   }
 
   private void writeMetadataFile(Path root, String location, ViewMetadataView metadata)

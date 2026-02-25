@@ -20,19 +20,23 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitOperationTracker.OperationKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.FieldMask;
@@ -51,6 +55,7 @@ public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
   @Inject GrpcWithHeaders grpc;
+  @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
   @Inject StageMaterializationService stageMaterializationService;
@@ -59,8 +64,21 @@ public class TableCommitService {
   @Inject TableUpdatePlanner tableUpdatePlanner;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject TableFormatSupport tableFormatSupport;
+  @Inject AccountContext accountContext;
+  @Inject CommitOperationTracker commitOperationTracker;
+  @Inject PostCommitSyncOutboxService postCommitSyncOutboxService;
 
   public Response commit(CommitCommand command) {
+    OperationKey operationKey = operationKey(command);
+    if (operationKey == null || commitOperationTracker == null) {
+      return doCommit(command, null);
+    }
+    return commitOperationTracker.execute(
+        operationKey, command.request(), () -> doCommit(command, operationKey));
+  }
+
+  private Response doCommit(CommitCommand command, OperationKey operationKey) {
     String prefix = command.prefix();
     String namespace = command.namespace();
     List<String> namespacePath = command.namespacePath();
@@ -79,15 +97,36 @@ public class TableCommitService {
     }
     ResourceId tableId = stageResolution.tableId();
     Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
+    Table currentTable = tableSupplier.get();
+    if (isDeltaReadOnlyCommitBlocked(currentTable)) {
+      return IcebergErrorResponses.conflict(
+          "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
+    }
 
     TableUpdatePlanner.UpdatePlan updatePlan =
         tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
     if (updatePlan.hasError()) {
       return updatePlan.error();
     }
+    markStep(operationKey, "PLAN_OK");
+
+    Response snapshotError =
+        snapshotMetadataService.applySnapshotUpdates(
+            tableSupport,
+            tableId,
+            namespacePath,
+            table,
+            tableSupplier,
+            req.updates(),
+            idempotencyKey);
+    if (snapshotError != null) {
+      return snapshotError;
+    }
+    markStep(operationKey, "SNAPSHOT_CORE_OK");
 
     Table committedTable =
         applyTableUpdates(tableSupplier, tableId, updatePlan.spec(), updatePlan.mask());
+    markStep(operationKey, "TABLE_CORE_OK");
     Map<String, String> ioProps =
         committedTable == null
             ? Map.of()
@@ -141,7 +180,8 @@ public class TableCommitService {
         idempotencyKey);
     syncSnapshotMetadataFromCommit(
         tableSupport, tableId, namespacePath, table, committedTable, responseDto, idempotencyKey);
-    runConnectorSync(tableSupport, connectorId, namespacePath, table);
+    runConnectorSync(tableSupport, connectorId, namespacePath, table, operationKey);
+    markStep(operationKey, "METADATA_SYNC_TRIGGERED");
 
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
@@ -188,7 +228,36 @@ public class TableCommitService {
         namespace,
         table,
         finalResponse == null ? null : finalResponse.metadata());
+    markStep(operationKey, "RESPONSE_BUILT");
     return builder.build();
+  }
+
+  private void markStep(OperationKey key, String step) {
+    if (key == null || commitOperationTracker == null) {
+      return;
+    }
+    commitOperationTracker.markStep(key, step);
+  }
+
+  private OperationKey operationKey(CommitCommand command) {
+    String operationId = nonBlank(command.transactionId(), command.idempotencyKey());
+    if (operationId == null || operationId.isBlank()) {
+      return null;
+    }
+    String accountId = accountContext == null ? null : accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return null;
+    }
+    String scope =
+        "table:"
+            + command.prefix()
+            + ":"
+            + command.catalogName()
+            + ":"
+            + String.join(".", command.namespacePath())
+            + "."
+            + command.table();
+    return new OperationKey(accountId, scope, operationId.trim());
   }
 
   private void logStageCommit(
@@ -336,6 +405,15 @@ public class TableCommitService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
+    runConnectorSync(tableSupport, connectorId, namespacePath, tableName, null);
+  }
+
+  private void runConnectorSync(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      OperationKey operationKey) {
     if (LOG.isDebugEnabled()) {
       String namespace =
           namespacePath == null
@@ -346,6 +424,20 @@ public class TableCommitService {
       LOG.debugf(
           "Connector sync request namespace=%s table=%s connectorId=%s",
           namespace, tableName == null ? "<missing>" : tableName, connector);
+    }
+    if (postCommitSyncOutboxService != null) {
+      String dedupe =
+          operationKey == null
+              ? null
+              : "commit-sync:"
+                  + operationKey.accountId()
+                  + ":"
+                  + operationKey.scope()
+                  + ":"
+                  + operationKey.operationId();
+      postCommitSyncOutboxService.enqueueConnectorSync(
+          dedupe, tableSupport, connectorId, namespacePath, tableName);
+      return;
     }
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
@@ -405,5 +497,18 @@ public class TableCommitService {
 
   private static String nonBlank(String primary, String fallback) {
     return primary != null && !primary.isBlank() ? primary : fallback;
+  }
+
+  private boolean isDeltaReadOnlyCommitBlocked(Table table) {
+    if (table == null || tableFormatSupport == null || config == null) {
+      return false;
+    }
+    var deltaCompat = config.deltaCompat();
+    if (deltaCompat.isEmpty()) {
+      return false;
+    }
+    return deltaCompat.get().enabled()
+        && deltaCompat.get().readOnly()
+        && tableFormatSupport.isDelta(table);
   }
 }

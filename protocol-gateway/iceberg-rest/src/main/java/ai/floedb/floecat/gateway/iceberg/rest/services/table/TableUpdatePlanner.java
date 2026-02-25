@@ -30,7 +30,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -46,7 +45,6 @@ public class TableUpdatePlanner {
 
   @Inject CommitRequirementService commitRequirementService;
   @Inject TablePropertyService tablePropertyService;
-  @Inject SnapshotMetadataService snapshotMetadataService;
 
   public UpdatePlan planUpdates(
       TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
@@ -91,18 +89,6 @@ public class TableUpdatePlanner {
     if (unsupported != null) {
       return UpdatePlan.failure(
           spec, mask, validationError("unsupported commit update action: " + unsupported));
-    }
-    Response snapshotError =
-        snapshotMetadataService.applySnapshotUpdates(
-            command.tableSupport(),
-            tableId,
-            command.namespacePath(),
-            command.table(),
-            tableSupplier,
-            req.updates(),
-            command.idempotencyKey());
-    if (snapshotError != null) {
-      return UpdatePlan.failure(spec, mask, snapshotError);
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());

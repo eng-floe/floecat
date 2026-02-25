@@ -244,6 +244,13 @@ public class TableGatewaySupport {
     config
         .metadataFileIoRoot()
         .ifPresent(root -> computed.putIfAbsent("fs.floecat.test-root", root));
+    // Expose non-secret S3 endpoint/path-style settings so clients (e.g. DuckDB) can
+    // consistently resolve object storage during both read and write paths.
+    config
+        .storageCredential()
+        .ifPresent(cfg -> cfg.properties().forEach((k, v) -> addClientSafeConfig(computed, k, v)));
+    readPrefixedConfig("floecat.gateway.storage-credential.properties.")
+        .forEach((k, v) -> addClientSafeConfig(computed, k, v));
     config
         .defaultRegion()
         .filter(region -> region != null && !region.isBlank())
@@ -256,6 +263,26 @@ public class TableGatewaySupport {
     Map<String, String> normalized = computed.isEmpty() ? Map.of() : Map.copyOf(computed);
     tableConfigCache = normalized;
     return normalized;
+  }
+
+  private void addClientSafeConfig(Map<String, String> target, String key, String value) {
+    if (!isUsableIoValue(value) || key == null || key.isBlank()) {
+      return;
+    }
+    String normalized = key.toLowerCase();
+    if (normalized.contains("secret")
+        || normalized.contains("access-key")
+        || normalized.contains("session-token")
+        || normalized.contains("token")) {
+      return;
+    }
+    if ("s3.endpoint".equals(normalized)
+        || "s3.path-style-access".equals(normalized)
+        || "s3.region".equals(normalized)
+        || "region".equals(normalized)
+        || "client.region".equals(normalized)) {
+      target.putIfAbsent(key, value.trim());
+    }
   }
 
   public Map<String, String> resolveRegisterFileIoProperties(

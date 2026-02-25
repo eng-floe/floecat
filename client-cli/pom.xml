@@ -131,6 +131,8 @@
         <configuration>
           <reuseForks>true</reuseForks>
           <forkCount>1</forkCount>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
           <includes>
             <include>**/*Test.java</include>
           </includes>

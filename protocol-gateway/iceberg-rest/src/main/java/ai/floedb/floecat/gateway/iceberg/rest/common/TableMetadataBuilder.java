@@ -35,6 +35,8 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.snaps
 import static ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMapper.statistics;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -42,14 +44,24 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public final class TableMetadataBuilder {
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final String DATA_SOURCE_FORMAT = "data_source_format";
+  private static final String DELTA_SOURCE = "DELTA";
+  private static final String NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
+
   private TableMetadataBuilder() {}
 
   public static TableMetadataView fromCatalog(
@@ -84,7 +96,7 @@ public final class TableMetadataBuilder {
             ? Long.valueOf(metadata.getLastUpdatedMs())
             : null;
     Long currentSnapshotId =
-        metadata != null && metadata.getCurrentSnapshotId() > 0
+        metadata != null && metadata.getCurrentSnapshotId() >= 0
             ? Long.valueOf(metadata.getCurrentSnapshotId())
             : null;
     Long lastSequenceNumber =
@@ -207,6 +219,7 @@ public final class TableMetadataBuilder {
     if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
+    ensureDeltaNameMappingProperty(props, schemaList, currentSchemaId);
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
@@ -218,16 +231,33 @@ public final class TableMetadataBuilder {
                     Comparator.comparingLong(Snapshot::getSequenceNumber)
                         .thenComparingLong(Snapshot::getSnapshotId))
                 .toList();
+    List<Map<String, Object>> snapshotList = snapshots(orderedSnapshots);
+    Set<Long> snapshotIds = snapshotIds(snapshotList);
+    if (currentSnapshotId == null
+        || currentSnapshotId < 0
+        || !snapshotIds.contains(currentSnapshotId)) {
+      currentSnapshotId = null;
+    }
     Long maxSnapshotSequence = maxSnapshotSequence(orderedSnapshots);
     if (maxSnapshotSequence != null
         && (lastSequenceNumber == null || lastSequenceNumber < maxSnapshotSequence)) {
       lastSequenceNumber = maxSnapshotSequence;
     }
+    if (lastSequenceNumber == null || lastSequenceNumber < 0) {
+      lastSequenceNumber = 0L;
+    }
+    if (maxSnapshotSequence != null
+        && maxSnapshotSequence > 0
+        && (formatVersion == null || formatVersion < 2)) {
+      formatVersion = 2;
+    }
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
+    refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
     syncProperty(props, "table-uuid", tableUuid);
-    syncProperty(props, "current-snapshot-id", currentSnapshotId);
+    syncOrRemove(props, "current-snapshot-id", currentSnapshotId);
     syncProperty(props, "last-sequence-number", lastSequenceNumber);
+    syncProperty(props, "format-version", formatVersion);
     syncProperty(props, "current-schema-id", currentSchemaId);
     syncProperty(props, "last-column-id", lastColumnId);
     syncProperty(props, "default-spec-id", defaultSpecId);
@@ -256,7 +286,7 @@ public final class TableMetadataBuilder {
         metadataLog(metadata),
         statisticsList,
         partitionStatisticsList,
-        snapshots(orderedSnapshots));
+        snapshotList);
   }
 
   private static TableMetadataView initialMetadata(
@@ -371,6 +401,120 @@ public final class TableMetadataBuilder {
     return order;
   }
 
+  private static void ensureDeltaNameMappingProperty(
+      Map<String, String> props, List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    if (props == null || props.isEmpty()) {
+      return;
+    }
+    String source = props.get(DATA_SOURCE_FORMAT);
+    if (source == null || !DELTA_SOURCE.equalsIgnoreCase(source)) {
+      return;
+    }
+    String existing = props.get(NAME_MAPPING_PROPERTY);
+    if (existing != null && !existing.isBlank()) {
+      return;
+    }
+    String mappingJson = buildNameMappingJson(schemaList, currentSchemaId);
+    if (mappingJson != null && !mappingJson.isBlank()) {
+      props.put(NAME_MAPPING_PROPERTY, mappingJson);
+    }
+  }
+
+  private static String buildNameMappingJson(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    Map<String, Object> schema = findSchema(schemaList, currentSchemaId);
+    if (schema == null) {
+      return null;
+    }
+    List<Map<String, Object>> fields = asFieldMapList(schema.get("fields"));
+    if (fields.isEmpty()) {
+      return null;
+    }
+    List<Map<String, Object>> mapping = buildNameMappingFields(fields);
+    if (mapping.isEmpty()) {
+      return null;
+    }
+    try {
+      // Iceberg expects schema.name-mapping.default as a top-level JSON array of mapped fields.
+      return JSON.writeValueAsString(mapping);
+    } catch (JsonProcessingException ignored) {
+      return null;
+    }
+  }
+
+  private static Map<String, Object> findSchema(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    if (schemaList == null || schemaList.isEmpty()) {
+      return null;
+    }
+    if (currentSchemaId != null) {
+      for (Map<String, Object> schema : schemaList) {
+        Integer schemaId = asInteger(schema == null ? null : schema.get("schema-id"));
+        if (schemaId != null && schemaId.equals(currentSchemaId)) {
+          return schema;
+        }
+      }
+    }
+    return schemaList.get(0);
+  }
+
+  private static List<Map<String, Object>> buildNameMappingFields(
+      List<Map<String, Object>> fields) {
+    if (fields == null || fields.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(fields.size());
+    for (Map<String, Object> field : fields) {
+      Map<String, Object> mapped = buildNameMappingField(field);
+      if (mapped != null) {
+        out.add(mapped);
+      }
+    }
+    return out;
+  }
+
+  private static Map<String, Object> buildNameMappingField(Map<String, Object> field) {
+    if (field == null || field.isEmpty()) {
+      return null;
+    }
+    Integer fieldId = asInteger(field.get("id"));
+    String name = asString(field.get("name"));
+    if (fieldId == null || fieldId <= 0 || name == null || name.isBlank()) {
+      return null;
+    }
+
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", fieldId);
+    mapped.put("names", List.of(name));
+
+    Map<String, Object> type = asObjectMap(field.get("type"));
+    if (type != null) {
+      String typeName = asString(type.get("type"));
+      if ("struct".equalsIgnoreCase(typeName)) {
+        List<Map<String, Object>> nested =
+            buildNameMappingFields(asFieldMapList(type.get("fields")));
+        if (!nested.isEmpty()) {
+          mapped.put("fields", nested);
+        }
+      }
+    }
+    return mapped;
+  }
+
+  private static List<Map<String, Object>> asFieldMapList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(list.size());
+    for (Object entry : list) {
+      Map<String, Object> mapped = asObjectMap(entry);
+      if (mapped != null && !mapped.isEmpty()) {
+        out.add(mapped);
+      }
+    }
+    return out;
+  }
+
   private static String resolveMetadataLocation(IcebergMetadata metadata) {
     return metadataLocationFromField(metadata);
   }
@@ -425,6 +569,17 @@ public final class TableMetadataBuilder {
     props.put(key, value.toString());
   }
 
+  private static void syncOrRemove(Map<String, String> props, String key, Object value) {
+    if (props == null || key == null || key.isBlank()) {
+      return;
+    }
+    if (value == null) {
+      props.remove(key);
+      return;
+    }
+    props.put(key, value.toString());
+  }
+
   private static void syncWriteMetadataPath(Map<String, String> props, String metadataLocation) {
     String directory = MetadataLocationUtil.canonicalMetadataDirectory(metadataLocation);
     if (directory == null || directory.isBlank()) {
@@ -455,6 +610,60 @@ public final class TableMetadataBuilder {
       }
     }
     return max > 0 ? max : null;
+  }
+
+  private static Set<Long> snapshotIds(List<Map<String, Object>> snapshots) {
+    Set<Long> ids = new HashSet<>();
+    if (snapshots == null) {
+      return ids;
+    }
+    for (Map<String, Object> snapshot : snapshots) {
+      Long id = asLong(snapshot == null ? null : snapshot.get("snapshot-id"));
+      if (id != null && id >= 0) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  private static Map<String, Object> sanitizeRefs(
+      Map<String, Object> refs, Set<Long> snapshotIds, Long currentSnapshotId) {
+    Map<String, Object> out = new LinkedHashMap<>();
+    if (refs != null && !refs.isEmpty()) {
+      refs.forEach(
+          (name, rawRef) -> {
+            if (name == null || name.isBlank() || !(rawRef instanceof Map<?, ?> rawMap)) {
+              return;
+            }
+            Map<String, Object> ref = new LinkedHashMap<>();
+            rawMap.forEach(
+                (k, v) -> {
+                  if (k instanceof String key && v != null) {
+                    ref.put(key, v);
+                  }
+                });
+            Long refSnapshotId = asLong(ref.get("snapshot-id"));
+            if (refSnapshotId == null
+                || refSnapshotId < 0
+                || !snapshotIds.contains(refSnapshotId)) {
+              return;
+            }
+            ref.put("snapshot-id", refSnapshotId);
+            String type = asString(ref.get("type"));
+            ref.put("type", (type == null || type.isBlank()) ? "branch" : type.toLowerCase());
+            if (ref.containsKey("max-reference-age-ms")) {
+              Object legacyValue = ref.remove("max-reference-age-ms");
+              ref.putIfAbsent("max-ref-age-ms", legacyValue);
+            }
+            out.put(name, Map.copyOf(ref));
+          });
+    }
+    if (currentSnapshotId == null || currentSnapshotId < 0) {
+      out.remove("main");
+      return out;
+    }
+    out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
+    return out;
   }
 
   private static String nextMetadataFileName() {

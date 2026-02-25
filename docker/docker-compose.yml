@@ -14,12 +14,12 @@
 
 services:
   service:
-    image: floecat-service:local
-    pull_policy: never
+    image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
-      - "9100:9100"
+      - "${FLOECAT_SERVICE_PORT:-9100}:9100"
     environment:
       FLOECAT_HTTP_HOST: "0.0.0.0"
       FLOECAT_HTTP_PORT: "9100"
@@ -28,14 +28,15 @@ services:
       - floecat
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
+      - ${HOME}/.aws:/home/jboss/.aws:ro
 
   iceberg-rest:
-    image: floecat-iceberg-rest:local
-    pull_policy: never
+    image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     ports:
-      - "9200:9200"
+      - "${FLOECAT_REST_HOST_PORT:-9200}:9200"
     environment:
       FLOECAT_REST_HOST: "0.0.0.0"
       FLOECAT_REST_PORT: "9200"
@@ -51,10 +52,10 @@ services:
       FLOECAT_GATEWAY_METADATA_FILE_IO: ${FLOECAT_GATEWAY_METADATA_FILE_IO:-org.apache.iceberg.aws.s3.S3FileIO}
       AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-test}
+      AWS_SESSION_TOKEN: ${FLOECAT_STORAGE_AWS_SESSION_TOKEN:-}
+      AWS_PROFILE: ""
       AWS_SDK_LOAD_CONFIG: "1"
     depends_on:
       - service
@@ -62,10 +63,11 @@ services:
       - floecat
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
+      - ${HOME}/.aws:/home/jboss/.aws:ro
 
   cli:
-    image: floecat-cli:local
-    pull_policy: never
+    image: ${FLOECAT_CLI_IMAGE:-floecat-cli:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
     env_file:
       - ${FLOECAT_ENV_FILE:-./env.localstack}
     environment:
@@ -83,7 +85,7 @@ services:
     image: localstack/localstack:3.8
     pull_policy: if_not_present
     ports:
-      - "4566:4566"
+      - "${FLOECAT_LOCALSTACK_PORT:-4566}:4566"
     environment:
       SERVICES: "s3,dynamodb"
       DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}

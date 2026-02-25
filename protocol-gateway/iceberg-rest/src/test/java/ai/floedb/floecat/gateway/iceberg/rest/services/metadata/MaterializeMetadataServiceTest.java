@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -29,8 +29,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.TableMetadata;
-import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -113,7 +111,7 @@ class MaterializeMetadataServiceTest {
   }
 
   @Test
-  void materializeUpdatesLastSequenceNumberFromSnapshots() throws Exception {
+  void materializeRejectsInconsistentSequenceMetadata() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
     service.setMapper(MAPPER);
 
@@ -161,17 +159,52 @@ class MaterializeMetadataServiceTest {
             List.of(),
             List.of(snapshot));
 
-    MaterializeResult result =
-        service.materialize("sales.us", "orders", withSnapshot, withSnapshot.metadataLocation());
-    String payload = readFile(service.fileIo(), result.metadataLocation());
-    TableMetadata parsed =
-        TableMetadataParser.fromJson(result.metadataLocation(), MAPPER.readTree(payload));
-    long maxSnapshotSeq =
-        parsed.snapshots().stream().mapToLong(snap -> snap.sequenceNumber()).max().orElse(0L);
-    assertEquals(1L, maxSnapshotSeq, "Expected snapshot sequence to be 1");
-    assertTrue(
-        parsed.lastSequenceNumber() >= maxSnapshotSeq,
-        "Expected last-sequence-number to be >= snapshot sequence");
+    assertThrows(
+        MaterializeMetadataException.class,
+        () ->
+            service.materialize(
+                "sales.us", "orders", withSnapshot, withSnapshot.metadataLocation()));
+  }
+
+  @Test
+  void materializeRejectsMainRefWhenCurrentSnapshotMissing() {
+    TestMaterializeMetadataService service = new TestMaterializeMetadataService();
+    service.setMapper(MAPPER);
+
+    TableMetadataView base = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
+    Map<String, String> props = new LinkedHashMap<>(base.properties());
+    props.remove("current-snapshot-id");
+
+    TableMetadataView withoutCurrent =
+        new TableMetadataView(
+            base.formatVersion(),
+            base.tableUuid(),
+            base.location(),
+            base.metadataLocation(),
+            base.lastUpdatedMs(),
+            props,
+            base.lastColumnId(),
+            base.currentSchemaId(),
+            base.defaultSpecId(),
+            base.lastPartitionId(),
+            base.defaultSortOrderId(),
+            null,
+            base.lastSequenceNumber(),
+            base.schemas(),
+            base.partitionSpecs(),
+            base.sortOrders(),
+            base.refs(),
+            base.snapshotLog(),
+            base.metadataLog(),
+            base.statistics(),
+            base.partitionStatistics(),
+            base.snapshots());
+
+    assertThrows(
+        MaterializeMetadataException.class,
+        () ->
+            service.materialize(
+                "sales.us", "orders", withoutCurrent, withoutCurrent.metadataLocation()));
   }
 
   private TableMetadataView fixtureMetadata(String location) {
