@@ -116,10 +116,14 @@ class SystemTableFlightProducerBaseTest {
   }
 
   @AfterEach
-  void tearDown() {
+  void tearDown() throws InterruptedException {
+    executor.executor().shutdown();
+    if (!executor.executor().awaitTermination(5, TimeUnit.SECONDS)) {
+      executor.executor().shutdownNow();
+      executor.executor().awaitTermination(5, TimeUnit.SECONDS);
+    }
     allocator.close();
     allocatorHolder.clear();
-    executor.executor().shutdownNow();
   }
 
   @Test
