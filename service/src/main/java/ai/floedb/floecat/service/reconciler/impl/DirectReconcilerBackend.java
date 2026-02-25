@@ -185,40 +185,9 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
   private void maybeUpdateTable(
       ReconcileContext ctx, Table existing, TableSpecDescriptor descriptor) {
-    String corrId = ctx.correlationId();
-    ResourceId tableId = existing.getResourceId();
-
-    Table.Builder updated = existing.toBuilder();
-    boolean changed = false;
-
-    String desiredSchema = mustNonEmpty(descriptor.schemaJson(), "schema_json", corrId);
-    Map<String, String> properties =
-        descriptor.properties() != null ? descriptor.properties() : Map.of();
-    List<String> partitionKeys =
-        descriptor.partitionKeys() != null ? descriptor.partitionKeys() : List.of();
-
-    if (!existing.getSchemaJson().equals(desiredSchema)) {
-      updated.setSchemaJson(desiredSchema);
-      changed = true;
-    }
-
-    var desiredUpstream = buildUpstream(descriptor, partitionKeys);
-    if (!existing.hasUpstream() || !existing.getUpstream().equals(desiredUpstream)) {
-      updated.setUpstream(desiredUpstream);
-      changed = true;
-    }
-
-    if (!existing.getPropertiesMap().equals(properties)) {
-      updated.clearProperties().putAllProperties(properties);
-      changed = true;
-    }
-
-    if (!changed) {
-      return;
-    }
-
-    long version = tableRepo.metaForSafe(tableId).getPointerVersion();
-    tableRepo.update(updated.build(), version);
+    // Reconciler must not advance table core OCC version for existing tables.
+    // Existing table shape updates are intentionally skipped here; only creation-on-miss
+    // is allowed through ensureTable().
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor, List<String> partitionKeys) {

@@ -774,8 +774,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   CaptureMode mode =
                       request.getIncludeStatistics()
-                          ? CaptureMode.METADATA_AND_STATS
-                          : CaptureMode.METADATA_ONLY;
+                          ? CaptureMode.STATS_ONLY_ASYNC
+                          : CaptureMode.METADATA_ONLY_CORE;
 
                   var result = reconcilerService.reconcile(pc, connectorId, false, scope, mode);
                   if (!result.ok()) {

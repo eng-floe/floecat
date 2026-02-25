@@ -219,8 +219,9 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
-  void ensureTableUpdatesSchemaUpstreamAndProperties() {
+  void ensureTableDoesNotMutateExistingCoreState() {
     NameRef tableRef = referenceNameRef();
+    Table before = tableRepo.getById(tableId).orElseThrow();
     TableSpecDescriptor updatedDescriptor =
         new TableSpecDescriptor(
             "parent",
@@ -237,10 +238,8 @@ class DirectReconcilerBackendTest {
 
     backend.ensureTable(ctx, namespaceId, tableRef, updatedDescriptor);
 
-    Table updated = tableRepo.getById(tableId).get();
-    assertThat(updated.getSchemaJson()).isEqualTo(updatedDescriptor.schemaJson());
-    assertThat(updated.getPropertiesMap()).containsEntry("baz", "qux");
-    assertThat(updated.getUpstream().getTableDisplayName()).isEqualTo("new-table");
+    Table updated = tableRepo.getById(tableId).orElseThrow();
+    assertThat(updated).isEqualTo(before);
   }
 
   @Test

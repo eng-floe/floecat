@@ -34,7 +34,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -49,14 +48,12 @@ class TableUpdatePlannerTest {
   private final TableUpdatePlanner planner = new TableUpdatePlanner();
   private final CommitRequirementService requirements = mock(CommitRequirementService.class);
   private final TablePropertyService propertyService = mock(TablePropertyService.class);
-  private final SnapshotMetadataService snapshotService = mock(SnapshotMetadataService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
   @BeforeEach
   void setUp() {
     planner.commitRequirementService = requirements;
     planner.tablePropertyService = propertyService;
-    planner.snapshotMetadataService = snapshotService;
   }
 
   @Test
@@ -104,8 +101,6 @@ class TableUpdatePlannerTest {
         .applyPropertyUpdates(any(), any());
     when(propertyService.ensurePropertyMap(any(), any())).thenAnswer(inv -> new LinkedHashMap<>());
     when(propertyService.applyLocationUpdate(any(), any(), any(), any())).thenReturn(null);
-    when(snapshotService.applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(null);
     TableRequests.Commit request =
         new TableRequests.Commit(
             List.of(),
@@ -144,8 +139,6 @@ class TableUpdatePlannerTest {
     assertNotNull(error);
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), error.getStatus());
     assertTrue(error.getEntity().toString().contains("unsupported commit update action"));
-    verify(snapshotService, never())
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
