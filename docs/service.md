@@ -70,6 +70,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
   wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
+  `SyncCapture` maps to reconciler capture modes:
+  - `include_statistics=false` -> `METADATA_ONLY_CORE`
+  - `include_statistics=true` -> `STATS_ONLY_ASYNC`
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
   demand.
@@ -127,6 +130,13 @@ configured location, caches them by engine kind, and exposes them through
 idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob prefixes and removes
 CAS blobs with no remaining pointers once they exceed the configured min-age. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
+
+For connector-backed fixture tables, seeding now runs two reconcile passes per fixture scope:
+- core metadata pass (`METADATA_ONLY_CORE`)
+- stats capture pass (`STATS_ONLY_ASYNC`)
+
+This ensures query scan bundles and Delta-compat manifest materialization have required file stats
+available immediately after startup.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
