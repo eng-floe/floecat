@@ -25,7 +25,6 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.UUID;
@@ -36,10 +35,6 @@ public final class ValueEncoders {
   private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ISO_LOCAL_TIME;
   private static final DateTimeFormatter LOCAL_TS_FMT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
   private static final DateTimeFormatter INSTANT_FMT = DateTimeFormatter.ISO_INSTANT;
-  private static final long NANOS_PER_DAY = 86_400_000_000_000L;
-  private static final long TIME_SECONDS_THRESHOLD = 86_400L;
-  private static final long TIME_MILLIS_THRESHOLD = 86_400_000L;
-  private static final long TIME_MICROS_THRESHOLD = 86_400_000_000L;
 
   /**
    * Encode {@code value} to the canonical string used by ColumnStats min/max. Each {@link
@@ -130,20 +125,7 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            long v = n.longValue();
-            long abs = Math.abs(v);
-            long nanos;
-            if (abs < TIME_SECONDS_THRESHOLD) {
-              nanos = v * 1_000_000_000L;
-            } else if (abs < TIME_MILLIS_THRESHOLD) {
-              nanos = v * 1_000_000L;
-            } else if (abs < TIME_MICROS_THRESHOLD) {
-              nanos = v * 1_000L;
-            } else {
-              nanos = v;
-            }
-
-            long dayNanos = Math.floorMod(nanos, NANOS_PER_DAY);
+            long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
             return TIME_FMT.format(LocalTime.ofNanoOfDay(dayNanos));
           }
           if (value instanceof CharSequence s) {
@@ -167,11 +149,11 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return LOCAL_TS_FMT.format(localDateTimeFromNumber(n.longValue()));
+            return LOCAL_TS_FMT.format(TemporalCoercions.localDateTimeFromNumber(n.longValue()));
           }
 
           if (value instanceof CharSequence s) {
-            return LOCAL_TS_FMT.format(parseTimestampNoTz(s.toString()));
+            return LOCAL_TS_FMT.format(TemporalCoercions.parseTimestampNoTz(s.toString()));
           }
 
           throw new IllegalArgumentException(
@@ -189,7 +171,7 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return INSTANT_FMT.format(instantFromNumber(n.longValue()));
+            return INSTANT_FMT.format(TemporalCoercions.instantFromNumber(n.longValue()));
           }
 
           if (value instanceof CharSequence s) {
@@ -251,7 +233,7 @@ public final class ValueEncoders {
       case TIME:
         return LocalTime.parse(encoded, TIME_FMT);
       case TIMESTAMP:
-        return parseTimestampNoTz(encoded);
+        return TemporalCoercions.parseTimestampNoTz(encoded);
       case TIMESTAMPTZ:
         // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
         return Instant.parse(encoded);
@@ -284,39 +266,6 @@ public final class ValueEncoders {
     }
 
     return Base64.getDecoder().decode(encoded);
-  }
-
-  private static final long NANOS_THRESHOLD = 1_000_000_000_000_000_000L;
-  private static final long MICROS_THRESHOLD = 1_000_000_000_000_000L;
-  private static final long MILLIS_THRESHOLD = 1_000_000_000_000L;
-
-  private static Instant instantFromNumber(long v) {
-    long av = Math.abs(v);
-    if (av >= NANOS_THRESHOLD) {
-      long secs = Math.floorDiv(v, 1_000_000_000L);
-      int nanos = (int) Math.floorMod(v, 1_000_000_000L);
-      return Instant.ofEpochSecond(secs, nanos);
-    } else if (av >= MICROS_THRESHOLD) {
-      long secs = Math.floorDiv(v, 1_000_000L);
-      long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, (int) (micros * 1_000L));
-    } else if (av >= MILLIS_THRESHOLD) {
-      return Instant.ofEpochMilli(v);
-    } else {
-      return Instant.ofEpochSecond(v);
-    }
-  }
-
-  private static LocalDateTime localDateTimeFromNumber(long v) {
-    return LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC);
-  }
-
-  private static LocalDateTime parseTimestampNoTz(String raw) {
-    try {
-      return LocalDateTime.parse(raw, LOCAL_TS_FMT);
-    } catch (DateTimeParseException ignore) {
-      return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
-    }
   }
 
   private static String canonicalFloat(float v) {

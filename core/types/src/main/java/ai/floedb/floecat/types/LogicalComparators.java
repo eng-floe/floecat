@@ -23,7 +23,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
@@ -57,22 +56,7 @@ public final class LogicalComparators {
     if (t == null) {
       return false;
     }
-    return switch (t.kind()) {
-      case BOOLEAN,
-          INT,
-          FLOAT,
-          DOUBLE,
-          DECIMAL,
-          STRING,
-          UUID,
-          BINARY,
-          DATE,
-          TIME,
-          TIMESTAMP,
-          TIMESTAMPTZ ->
-          true;
-      case INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT -> false;
-    };
+    return t.kind().isOrderable();
   }
 
   /**
@@ -223,10 +207,8 @@ public final class LogicalComparators {
           }
 
           if (v instanceof Number n) {
-            long nanos = toTimeNanos(n.longValue());
-            long day = 86_400_000_000_000L;
-            long norm = Math.floorMod(nanos, day);
-            return LocalTime.ofNanoOfDay(norm);
+            long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
+            return LocalTime.ofNanoOfDay(dayNanos);
           }
           throw typeErr("TIME", v);
         }
@@ -242,11 +224,11 @@ public final class LogicalComparators {
           }
 
           if (v instanceof CharSequence s) {
-            return parseTimestampNoTz(s.toString());
+            return TemporalCoercions.parseTimestampNoTz(s.toString());
           }
 
           if (v instanceof Number n) {
-            return localDateTimeFromNumber(n.longValue());
+            return TemporalCoercions.localDateTimeFromNumber(n.longValue());
           }
 
           throw typeErr("TIMESTAMP", v);
@@ -264,7 +246,7 @@ public final class LogicalComparators {
           }
 
           if (v instanceof Number n) {
-            return instantFromNumber(n.longValue());
+            return TemporalCoercions.instantFromNumber(n.longValue());
           }
 
           throw typeErr("TIMESTAMPTZ", v);
@@ -279,52 +261,6 @@ public final class LogicalComparators {
   private static IllegalArgumentException typeErr(String kind, Object v) {
     return new IllegalArgumentException(
         kind + " compare expects canonical types, got: " + v.getClass().getName());
-  }
-
-  private static long toTimeNanos(long v) {
-    long abs = Math.abs(v);
-    if (abs < 86_400L) {
-      return v * 1_000_000_000L;
-    }
-
-    if (abs < 86_400_000L) {
-      return v * 1_000_000L;
-    }
-
-    if (abs < 86_400_000_000L) {
-      return v * 1_000L;
-    }
-
-    return v;
-  }
-
-  private static Instant instantFromNumber(long v) {
-    long av = Math.abs(v);
-    if (av >= 1_000_000_000_000_000_000L) {
-      long secs = Math.floorDiv(v, 1_000_000_000L);
-      long nanos = Math.floorMod(v, 1_000_000_000L);
-      return Instant.ofEpochSecond(secs, nanos);
-    } else if (av >= 1_000_000_000_000_000L) {
-      long secs = Math.floorDiv(v, 1_000_000L);
-      long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, micros * 1_000L);
-    } else if (av >= 1_000_000_000_000L) {
-      return Instant.ofEpochMilli(v);
-    } else {
-      return Instant.ofEpochSecond(v);
-    }
-  }
-
-  private static LocalDateTime localDateTimeFromNumber(long v) {
-    return LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC);
-  }
-
-  private static LocalDateTime parseTimestampNoTz(String raw) {
-    try {
-      return LocalDateTime.parse(raw);
-    } catch (DateTimeParseException ignore) {
-      return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
-    }
   }
 
   public static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {

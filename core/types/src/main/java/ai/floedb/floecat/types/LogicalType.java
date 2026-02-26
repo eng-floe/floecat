@@ -112,32 +112,22 @@ public final class LogicalType {
 
   /** Returns true iff this is a numeric type: INT, FLOAT, DOUBLE, or DECIMAL. */
   public boolean isNumeric() {
-    return kind == LogicalKind.INT
-        || kind == LogicalKind.FLOAT
-        || kind == LogicalKind.DOUBLE
-        || kind == LogicalKind.DECIMAL;
+    return kind.isNumeric();
   }
 
   /** Returns true iff this is a temporal type: DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or INTERVAL. */
   public boolean isTemporal() {
-    return kind == LogicalKind.DATE
-        || kind == LogicalKind.TIME
-        || kind == LogicalKind.TIMESTAMP
-        || kind == LogicalKind.TIMESTAMPTZ
-        || kind == LogicalKind.INTERVAL;
+    return kind.isTemporal();
   }
 
   /** Returns true iff this is a complex/container type: ARRAY, MAP, STRUCT, or VARIANT. */
   public boolean isComplex() {
-    return kind == LogicalKind.ARRAY
-        || kind == LogicalKind.MAP
-        || kind == LogicalKind.STRUCT
-        || kind == LogicalKind.VARIANT;
+    return kind.isComplex();
   }
 
   /** Returns true iff this is not a complex type (i.e., a scalar or semi-structured type). */
   public boolean isScalar() {
-    return !isComplex();
+    return kind.isScalar();
   }
 
   @Override

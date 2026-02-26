@@ -55,12 +55,7 @@ public final class LogicalTypeProtoAdapter {
    */
   public static String encodeLogicalType(LogicalType t) {
     Objects.requireNonNull(t, "logical type");
-    if (t.kind == LogicalKind.DECIMAL) {
-      int p = t.precision != null ? t.precision : 38;
-      int s = t.scale != null ? t.scale : 0;
-      return "DECIMAL(" + p + "," + s + ")";
-    }
-    return t.kind.name();
+    return LogicalTypeFormat.format(t);
   }
 
   /**

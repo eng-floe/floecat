@@ -23,7 +23,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.UUID;
@@ -46,7 +45,6 @@ import java.util.UUID;
  * @see ValueEncoders for encoding values into canonical strings/bytes
  */
 public final class LogicalCoercions {
-  private static final long NANOS_PER_DAY = 86_400_000_000_000L;
 
   /**
    * Coerces a raw stat value to the canonical Java type for the given logical type.
@@ -169,18 +167,18 @@ public final class LogicalCoercions {
           return t0;
         }
         if (v instanceof Number n) {
-          long nanos = toTimeNanos(n.longValue());
-          long norm = Math.floorMod(nanos, NANOS_PER_DAY);
-          return LocalTime.ofNanoOfDay(norm);
+          long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
+          return LocalTime.ofNanoOfDay(dayNanos);
         }
         String s = v.toString();
         try {
           return LocalTime.parse(s);
         } catch (Exception ignore) {
+          // fall through
         }
         long nv = Long.parseLong(s);
-        long norm = Math.floorMod(toTimeNanos(nv), NANOS_PER_DAY);
-        return LocalTime.ofNanoOfDay(norm);
+        long dayNanos = TemporalCoercions.timeNanosOfDay(nv);
+        return LocalTime.ofNanoOfDay(dayNanos);
       }
       case TIMESTAMP -> {
         if (v instanceof LocalDateTime ts) {
@@ -191,15 +189,11 @@ public final class LogicalCoercions {
         }
         String s = v.toString();
         try {
-          return LocalDateTime.parse(s);
-        } catch (DateTimeParseException ignore) {
+          return TemporalCoercions.parseTimestampNoTz(s);
+        } catch (Exception ignore) {
+          // fall through
         }
-        try {
-          return LocalDateTime.ofInstant(Instant.parse(s), ZoneOffset.UTC);
-        } catch (DateTimeParseException ignore) {
-        }
-        long x = Long.parseLong(s);
-        return LocalDateTime.ofInstant(instantFromNumber(x), ZoneOffset.UTC);
+        return TemporalCoercions.localDateTimeFromNumber(Long.parseLong(s));
       }
       case TIMESTAMPTZ -> {
         // TIMESTAMPTZ is always UTC-normalised and coerced as Instant.
@@ -210,9 +204,9 @@ public final class LogicalCoercions {
         try {
           return Instant.parse(s);
         } catch (Exception ignore) {
+          // fall through
         }
-        long x = Long.parseLong(s);
-        return instantFromNumber(x);
+        return TemporalCoercions.instantFromNumber(Long.parseLong(s));
       }
       case UUID -> {
         if (v instanceof UUID u) {
@@ -224,38 +218,6 @@ public final class LogicalCoercions {
         // coercion; return the value unchanged.
     }
     return v;
-  }
-
-  private static Instant instantFromNumber(long v) {
-    long av = Math.abs(v);
-    if (av >= 1_000_000_000_000_000_000L) {
-      long secs = Math.floorDiv(v, 1_000_000_000L);
-      long nanos = Math.floorMod(v, 1_000_000_000L);
-      return Instant.ofEpochSecond(secs, nanos);
-    }
-    if (av >= 1_000_000_000_000_000L) {
-      long secs = Math.floorDiv(v, 1_000_000L);
-      long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, micros * 1_000L);
-    }
-    if (av >= 1_000_000_000_000L) {
-      return Instant.ofEpochMilli(v);
-    }
-    return Instant.ofEpochSecond(v);
-  }
-
-  private static long toTimeNanos(long v) {
-    long abs = Math.abs(v);
-    if (abs < 86_400L) {
-      return v * 1_000_000_000L; // seconds
-    }
-    if (abs < 86_400_000L) {
-      return v * 1_000_000L; // milliseconds
-    }
-    if (abs < 86_400_000_000L) {
-      return v * 1_000L; // microseconds
-    }
-    return v; // nanoseconds
   }
 
   private static boolean parseBooleanStrict(Object v) {

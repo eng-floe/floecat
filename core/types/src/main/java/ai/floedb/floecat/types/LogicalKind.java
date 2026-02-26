@@ -61,6 +61,55 @@ public enum LogicalKind {
   STRUCT,
   VARIANT;
 
+  /** Returns true iff this is a numeric type: INT, FLOAT, DOUBLE, or DECIMAL. */
+  public boolean isNumeric() {
+    return switch (this) {
+      case INT, FLOAT, DOUBLE, DECIMAL -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a temporal type: DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or INTERVAL. */
+  public boolean isTemporal() {
+    return switch (this) {
+      case DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a complex/container type: ARRAY, MAP, STRUCT, or VARIANT. */
+  public boolean isComplex() {
+    return switch (this) {
+      case ARRAY, MAP, STRUCT, VARIANT -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a non-complex (scalar or semi-structured) type. */
+  public boolean isScalar() {
+    return !isComplex();
+  }
+
+  /** Returns true iff values of this kind can be meaningfully ordered. */
+  public boolean isOrderable() {
+    return switch (this) {
+      case BOOLEAN,
+          INT,
+          FLOAT,
+          DOUBLE,
+          DECIMAL,
+          STRING,
+          UUID,
+          BINARY,
+          DATE,
+          TIME,
+          TIMESTAMP,
+          TIMESTAMPTZ ->
+          true;
+      case INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT -> false;
+    };
+  }
+
   private static final Map<String, LogicalKind> ALIASES;
 
   static {

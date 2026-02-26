@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import ai.floedb.floecat.types.LogicalType;
 import java.util.Set;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
@@ -100,7 +99,7 @@ public final class IcebergSchemaMapper {
             cid_algo,
             SchemaColumn.newBuilder()
                 .setName(field.name())
-                .setLogicalType(toCanonical(field.type()))
+                .setLogicalType(IcebergTypeMappings.toCanonical(field.type()))
                 .setSourceType(icebergSourceType(field.type()))
                 .setFieldId(field.fieldId())
                 .setNullable(!field.isRequired())
@@ -137,52 +136,6 @@ public final class IcebergSchemaMapper {
         addIcebergField(cid_algo, sb, child, childPrefix, partitionKeys, childOrdinal++);
       }
     }
-  }
-
-  /**
-   * Convert an Iceberg {@link Type} to its canonical logical-type string.
-   *
-   * <p>This method is intentionally inlined here rather than delegating to {@code
-   * IcebergTypeMapper} in the iceberg-connector module, because the module dependency runs the
-   * other way (common cannot depend on iceberg-connector).
-   *
-   * <p>Timestamp semantics: Iceberg {@code TimestampType.withZone()} stores microseconds since
-   * epoch UTC → mapped to canonical {@code "TIMESTAMPTZ"}. {@code TimestampType.withoutZone()} is
-   * timezone-naive → mapped to canonical {@code "TIMESTAMP"}.
-   *
-   * <p>For {@code DECIMAL}, the canonical form includes precision and scale: {@code
-   * "DECIMAL(p,s)"}, which is parseable by {@link
-   * ai.floedb.floecat.types.LogicalKind#fromName(String)}.
-   *
-   * @param t Iceberg type to convert
-   * @return canonical logical-type string (never null)
-   */
-  private static String toCanonical(Type t) {
-    return switch (t.typeId()) {
-      case BOOLEAN -> "BOOLEAN";
-      case INTEGER, LONG -> "INT";
-      case FLOAT -> "FLOAT";
-      case DOUBLE -> "DOUBLE";
-      case DATE -> "DATE";
-      case TIME -> "TIME";
-      case TIMESTAMP -> {
-        var ts = (Types.TimestampType) t;
-        yield ts.shouldAdjustToUTC() ? "TIMESTAMPTZ" : "TIMESTAMP";
-      }
-      case STRING -> "STRING";
-      case FIXED, BINARY -> "BINARY";
-      case UUID -> "UUID";
-      case LIST -> "ARRAY";
-      case MAP -> "MAP";
-      case STRUCT -> "STRUCT";
-      case DECIMAL -> {
-        var d = (Types.DecimalType) t;
-        ConnectorTypeConstraints.validateDecimalPrecision(
-            LogicalType.decimal(d.precision(), d.scale()), "Iceberg", d.toString());
-        yield "DECIMAL(" + d.precision() + "," + d.scale() + ")";
-      }
-      default -> throw new IllegalArgumentException("Unrecognized Iceberg type: " + t.typeId());
-    };
   }
 
   private static SourceType icebergSourceType(Type t) {
