@@ -20,7 +20,6 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -40,7 +39,6 @@ public class TransactionRepository {
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
-            PointerOverlay.NOOP,
             Schemas.TRANSACTION,
             Transaction::parseFrom,
             Transaction::toByteArray,

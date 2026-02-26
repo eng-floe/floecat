@@ -745,7 +745,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("metadata.'format-version'", equalTo(1))
+        .body("metadata.'format-version'", equalTo(2))
         .body("metadata.'partition-specs'[0].'spec-id'", equalTo(0))
         .body("metadata.'sort-orders'[0].'order-id'", equalTo(0));
   }
@@ -782,7 +782,9 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.'format-version'", equalTo(2))
-        .body("'metadata-location'", equalTo(differentMetadata.getMetadataLocation()));
+        .body(
+            "'metadata-location'",
+            equalTo(created.getPropertiesOrDefault("metadata-location", null)));
   }
 
   @Test

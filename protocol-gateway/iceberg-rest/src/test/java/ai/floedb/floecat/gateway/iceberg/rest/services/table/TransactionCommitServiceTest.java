@@ -25,23 +25,27 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
@@ -51,6 +55,8 @@ import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.Any;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -70,12 +76,13 @@ class TransactionCommitServiceTest {
       Mockito.mock(RequestContextFactory.class);
   private final TableLifecycleService tableLifecycleService =
       Mockito.mock(TableLifecycleService.class);
-  private final CommitStageResolver stageResolver = Mockito.mock(CommitStageResolver.class);
   private final TableCommitPlanner tableCommitPlanner = Mockito.mock(TableCommitPlanner.class);
   private final TableCommitSideEffectService sideEffectService =
       Mockito.mock(TableCommitSideEffectService.class);
-  private final SnapshotMetadataService snapshotMetadataService =
-      Mockito.mock(SnapshotMetadataService.class);
+  private final TableCommitMaterializationService materializationService =
+      Mockito.mock(TableCommitMaterializationService.class);
+  private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
+  private final SnapshotClient snapshotClient = Mockito.mock(SnapshotClient.class);
   private final TransactionClient transactionClient = Mockito.mock(TransactionClient.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
 
@@ -84,10 +91,11 @@ class TransactionCommitServiceTest {
     service.accountContext = accountContext;
     service.requestContextFactory = requestContextFactory;
     service.tableLifecycleService = tableLifecycleService;
-    service.stageResolver = stageResolver;
     service.tableCommitPlanner = tableCommitPlanner;
     service.sideEffectService = sideEffectService;
-    service.snapshotMetadataService = snapshotMetadataService;
+    service.materializationService = materializationService;
+    service.responseBuilder = responseBuilder;
+    service.snapshotClient = snapshotClient;
     service.transactionClient = transactionClient;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
@@ -103,8 +111,6 @@ class TransactionCommitServiceTest {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenReturn(tableId);
-    when(stageResolver.resolve(any()))
-        .thenReturn(new CommitStageResolver.StageResolution(tableId, null, null, null));
 
     Table table = Table.newBuilder().setResourceId(tableId).build();
     when(tableLifecycleService.getTableResponse(any()))
@@ -115,7 +121,38 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(defaultCommitResponse());
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+  }
+
+  private CommitTableResponseDto defaultCommitResponse() {
+    return new CommitTableResponseDto(
+        "s3://meta/default/00001.metadata.json",
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://meta/default/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of()));
   }
 
   @Test
@@ -132,13 +169,11 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
-    verify(snapshotMetadataService)
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -158,7 +193,7 @@ class TransactionCommitServiceTest {
                         .putProperties("iceberg.commit.request-hash", "different-hash"))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -194,7 +229,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient)
@@ -205,6 +240,313 @@ class TransactionCommitServiceTest {
                         && prepare.getChangesCount() == 1
                         && prepare.getChanges(0).hasPrecondition()
                         && prepare.getChanges(0).getPrecondition().getExpectedVersion() == 7L));
+  }
+
+  @Test
+  void commitPreMaterializesAndPublishesMetadataLocationAtomically() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("metadata-location", "s3://meta/old/00001.metadata.json")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTable()
+                                    && "s3://meta/new/00002.metadata.json"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("metadata-location")))));
+  }
+
+  @Test
+  void commitWithSnapshotUpdatesPreMaterializesWhenMetadataLocationMissing() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTable()
+                                    && "s3://meta/new/00002.metadata.json"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("metadata-location")))));
+  }
+
+  @Test
+  void commitPreMaterializesWhenCurrentMetadataCannotBeLoaded() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenThrow(new RuntimeException("missing pointer"));
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTable()
+                                    && "s3://meta/new/00002.metadata.json"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("metadata-location")))));
+  }
+
+  @Test
+  void commitWithConnectorRunsPostCommitStatsSyncWithoutConnectorTxChanges() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build();
+    Table tableWithConnector =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .putProperties("metadata-location", "s3://meta/new")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(tableWithConnector)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesCount() == 1
+                        && prepare.getChangesList().stream()
+                            .anyMatch(change -> change.hasTableId() && change.hasTable())
+                        && prepare.getChangesList().stream()
+                            .noneMatch(change -> change.hasTargetPointerKey())));
+    verify(sideEffectService)
+        .runPostCommitStatsSyncAttempt(tableSupport, List.of("db"), "orders", tableWithConnector);
+  }
+
+  @Test
+  void commitCreateFlowSkipsAtomicConnectorCreateWhenTableHasNoConnector() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table tableWithoutConnector =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build())
+            .putProperties("metadata-location", "s3://meta/new")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(tableWithoutConnector)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(tableWithoutConnector, null));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesCount() == 1
+                        && prepare.getChangesList().stream()
+                            .noneMatch(change -> change.hasTargetPointerKey())
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTable()
+                                        && !change.getTable().hasUpstream()
+                                        && "s3://meta/new"
+                                            .equals(
+                                                change
+                                                    .getTable()
+                                                    .getPropertiesMap()
+                                                    .get("metadata-location")))));
   }
 
   @Test
@@ -235,7 +577,7 @@ class TransactionCommitServiceTest {
                         .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -270,7 +612,7 @@ class TransactionCommitServiceTest {
                         .setState(TransactionState.TS_APPLY_FAILED_CONFLICT))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -310,7 +652,7 @@ class TransactionCommitServiceTest {
                         .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
   }
@@ -337,7 +679,7 @@ class TransactionCommitServiceTest {
     when(transactionClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.ABORTED.withDescription("conflict")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -365,14 +707,11 @@ class TransactionCommitServiceTest {
                 .build());
     when(transactionClient.commitTransaction(any())).thenThrow(retryableAbortedException());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitStateUnknownException", error.error().type());
-    verify(snapshotMetadataService, never()).deleteSnapshots(any(), any());
-    verify(snapshotMetadataService, never()).restoreSnapshots(any(), any());
   }
 
   @Test
@@ -401,12 +740,9 @@ class TransactionCommitServiceTest {
                 .build());
     when(transactionClient.commitTransaction(any())).thenThrow(retryableAbortedException());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(snapshotMetadataService, never()).deleteSnapshots(any(), any());
-    verify(snapshotMetadataService, never()).restoreSnapshots(any(), any());
   }
 
   @Test
@@ -431,7 +767,7 @@ class TransactionCommitServiceTest {
     when(transactionClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE.withDescription("transient")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -460,7 +796,7 @@ class TransactionCommitServiceTest {
     when(transactionClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNKNOWN.withDescription("bad upstream")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.BAD_GATEWAY.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -488,7 +824,7 @@ class TransactionCommitServiceTest {
                 .build());
     when(transactionClient.commitTransaction(any())).thenThrow(new RuntimeException("boom"));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -517,7 +853,7 @@ class TransactionCommitServiceTest {
     when(transactionClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.DEADLINE_EXCEEDED.withDescription("timeout")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.GATEWAY_TIMEOUT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -547,7 +883,7 @@ class TransactionCommitServiceTest {
         .thenThrow(
             new StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("bad input")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -561,7 +897,7 @@ class TransactionCommitServiceTest {
             new StatusRuntimeException(
                 Status.UNAVAILABLE.withDescription("downstream unavailable")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -588,7 +924,7 @@ class TransactionCommitServiceTest {
             new StatusRuntimeException(
                 Status.UNAVAILABLE.withDescription("downstream unavailable")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -619,12 +955,9 @@ class TransactionCommitServiceTest {
     when(transactionClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE.withDescription("transient")));
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
-    verify(snapshotMetadataService, never()).deleteSnapshots(any(), any());
-    verify(snapshotMetadataService, never()).restoreSnapshots(any(), any());
   }
 
   @Test
@@ -649,7 +982,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response = service.commit("pref", "idem", "txn-hdr", request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
@@ -670,24 +1003,20 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(stageResolver.resolve(any()))
-        .thenReturn(
-            new CommitStageResolver.StageResolution(
-                null, null, null, Response.status(Response.Status.NOT_FOUND).build()));
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException());
     when(transactionClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
     verify(transactionClient, never()).abortTransaction(any());
-    verify(snapshotMetadataService, never())
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -704,27 +1033,15 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithPostCommitUpdate(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithPostCommitUpdate(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
-    verify(snapshotMetadataService)
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
   void alreadyAppliedReplaysPreCommitSnapshotUpdatesWhenPresent() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table = Table.newBuilder().setResourceId(tableId).build();
-    when(stageResolver.resolve(any()))
-        .thenReturn(
-            new CommitStageResolver.StageResolution(
-                tableId,
-                new StageCommitProcessor.StageCommitResult(table, null, true),
-                null,
-                null));
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -737,31 +1054,16 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
-    verify(tableCommitPlanner).plan(any(), any(), any(), any());
-    verify(snapshotMetadataService)
-        .applySnapshotUpdates(
-            any(),
-            any(),
-            any(),
-            any(),
-            any(),
-            argThat(
-                updates ->
-                    updates != null
-                        && updates.stream()
-                            .anyMatch(
-                                u -> "add-snapshot".equals(u == null ? null : u.get("action")))),
-            argThat("idem"::equals));
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
-  void assertCreateFailsWhenTableAlreadyExistsWithoutStageCreate() {
+  void assertCreateConflictsWhenTableAlreadyExists() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -774,14 +1076,74 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAssertCreate(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitFailedException", error.error().type());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
+  }
+
+  @Test
+  void assertCreateMissingTablePlansAtomicCreate() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-create"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-create")
+                        .setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-create")
+                        .setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-create")
+                        .setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.function.Supplier<Table> supplier = invocation.getArgument(1);
+              return new TableCommitPlanner.PlanResult(supplier.get(), null);
+            });
+
+    Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesCount() == 1
+                        && prepare.getChanges(0).hasTableId()
+                        && prepare.getChanges(0).hasTable()
+                        && prepare.getChanges(0).getTable().hasResourceId()
+                        && prepare
+                            .getChanges(0)
+                            .getTableId()
+                            .getId()
+                            .equals(prepare.getChanges(0).getTable().getResourceId().getId())
+                        && prepare.getChanges(0).getPrecondition().getExpectedVersion() == 0L));
+    verify(transactionClient).commitTransaction(any());
   }
 
   @Test
@@ -800,14 +1162,52 @@ class TransactionCommitServiceTest {
                         .setState(TransactionState.TS_APPLY_FAILED_CONFLICT))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
-    verify(snapshotMetadataService, never())
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void assertRefSnapshotIdNullConflictsWhenRefExists() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenReturn(
+            IcebergMetadata.newBuilder()
+                .setCurrentSnapshotId(123L)
+                .putRefs(
+                    "main", IcebergRef.newBuilder().setSnapshotId(123L).setType("branch").build())
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    verify(transactionClient, never()).prepareTransaction(any());
+    verify(transactionClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -824,8 +1224,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient)
@@ -853,8 +1252,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", null, null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", null, requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient)
@@ -864,26 +1262,6 @@ class TransactionCommitServiceTest {
                     req != null
                         && req.hasIdempotency()
                         && req.getIdempotency().getKey().startsWith("req:cat:")));
-  }
-
-  @Test
-  void transactionCommitRejectsStageId() {
-    when(transactionClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(transactionClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-
-    Response response =
-        service.commit("pref", "idem", null, requestWithStageId("stage-1"), tableSupport);
-
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
   }
 
   @Test
@@ -912,28 +1290,13 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", null, null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", null, requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(snapshotMetadataService)
-        .applySnapshotUpdates(
-            any(),
-            any(),
-            any(),
-            any(),
-            any(),
-            argThat(
-                updates ->
-                    updates != null
-                        && updates.stream()
-                            .anyMatch(
-                                u -> "add-snapshot".equals(u == null ? null : u.get("action")))),
-            argThat("tx-1"::equals));
   }
 
   @Test
-  void connectorSyncUsesTxIdFallbackForIdempotency() {
+  void addSnapshotAddsAtomicSnapshotPointerChanges() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -957,17 +1320,79 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(sideEffectService.synchronizeConnector(
-            any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build());
 
-    Response response =
-        service.commit("pref", null, null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(sideEffectService)
-        .synchronizeConnector(
-            any(), any(), any(), any(), any(), any(), any(), any(), any(), argThat("tx-1"::equals));
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/snapshots/by-id/")
+                                        && change.getPayload().size() > 0)
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/snapshots/by-time/")
+                                        && change.getPayload().size() > 0)));
+  }
+
+  @Test
+  void addSnapshotPreservesSchemaIdZeroInAtomicPayload() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", requestWithAddSnapshotAndSchemaId(123L, 0), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesList().stream()
+                            .filter(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/snapshots/by-id/")
+                                        && change.getPayload().size() > 0)
+                            .map(change -> parseSnapshot(change.getPayload()))
+                            .anyMatch(
+                                snapshot -> snapshot != null && snapshot.getSchemaId() == 0)));
   }
 
   @Test
@@ -983,12 +1408,8 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(snapshotMetadataService.applySnapshotUpdates(
-            any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(Response.status(Response.Status.BAD_REQUEST).build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithPostCommitUpdate(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithPostCommitUpdate(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
@@ -1000,7 +1421,7 @@ class TransactionCommitServiceTest {
     when(transactionClient.beginTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("no token")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.UNAUTHORIZED.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1030,7 +1451,7 @@ class TransactionCommitServiceTest {
         .thenThrow(
             new StatusRuntimeException(Status.PERMISSION_DENIED.withDescription("forbidden")));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.FORBIDDEN.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1051,18 +1472,15 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithUnknownUpdate(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithUnknownUpdate(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(snapshotMetadataService, never())
-        .applySnapshotUpdates(any(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
-  void preCommitSnapshotAbortFailureDoesNotMaskSnapshotError() {
+  void preCommitSnapshotFailureReturnsCommitStateUnknown() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
@@ -1080,17 +1498,15 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(snapshotMetadataService.applySnapshotUpdates(
-            any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(Response.status(Response.Status.BAD_REQUEST).build());
     when(transactionClient.abortTransaction(any())).thenThrow(new RuntimeException("abort failed"));
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithAddSnapshot(123L), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
-    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    verify(transactionClient).abortTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
+    IcebergErrorResponse error = response.readEntity(IcebergErrorResponse.class);
+    assertEquals("CommitStateUnknownException", error.error().type());
+    verify(transactionClient, never()).abortTransaction(any());
+    verify(transactionClient).commitTransaction(any());
   }
 
   @Test
@@ -1107,8 +1523,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithNullRequirements(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithNullRequirements(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1131,8 +1546,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
 
-    Response response =
-        service.commit("pref", "idem", null, requestWithNullUpdates(), tableSupport);
+    Response response = service.commit("pref", "idem", requestWithNullUpdates(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1166,7 +1580,7 @@ class TransactionCommitServiceTest {
                                 "unsupported commit requirement", "ValidationException", 400)))
                     .build()));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1200,7 +1614,7 @@ class TransactionCommitServiceTest {
                                 "unsupported commit update action", "ValidationException", 400)))
                     .build()));
 
-    Response response = service.commit("pref", "idem", null, request(), tableSupport);
+    Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
@@ -1235,7 +1649,7 @@ class TransactionCommitServiceTest {
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
 
-    Response response = service.commit("pref", "idem", null, multiTableRequest(), tableSupport);
+    Response response = service.commit("pref", "idem", multiTableRequest(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient)
@@ -1255,96 +1669,33 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(stageResolver.resolve(any()))
-        .thenReturn(
-            new CommitStageResolver.StageResolution(
-                ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build(),
-                null,
-                null,
-                null))
-        .thenReturn(
-            new CommitStageResolver.StageResolution(
-                null, null, null, Response.status(Response.Status.NOT_FOUND).build()));
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenReturn(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
+        .thenThrow(Status.NOT_FOUND.asRuntimeException());
 
-    Response response = service.commit("pref", "idem", null, multiTableRequest(), tableSupport);
+    Response response = service.commit("pref", "idem", multiTableRequest(), tableSupport);
 
     assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
   }
 
-  @Test
-  void rollbackPlanUsesPersistedTableMetadata() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table persisted =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("metadata-location", "s3://meta/original")
-            .build();
-    Table updated =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("metadata-location", "s3://meta/updated")
-            .build();
-
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(persisted)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(updated, null));
-    when(tableSupport.loadCurrentMetadata(persisted))
-        .thenReturn(
-            IcebergMetadata.newBuilder()
-                .putRefs(
-                    "main", IcebergRef.newBuilder().setSnapshotId(11L).setType("branch").build())
-                .build());
-
-    when(transactionClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(transactionClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(transactionClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(transactionClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response =
-        service.commit("pref", "idem", null, requestWithSetSnapshotRef("main", 12L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(tableSupport).loadCurrentMetadata(persisted);
-    verify(tableSupport, never()).loadCurrentMetadata(updated);
-  }
-
   private TransactionCommitRequest request() {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), null, List.of(), List.of())));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of())));
   }
 
   private TransactionCommitRequest requestWithAddSnapshot(long snapshotId) {
+    return requestWithAddSnapshotAndSchemaId(snapshotId, 1);
+  }
+
+  private TransactionCommitRequest requestWithAddSnapshotAndSchemaId(
+      long snapshotId, int schemaId) {
     Map<String, Object> snapshot = new LinkedHashMap<>();
     snapshot.put("snapshot-id", snapshotId);
-    snapshot.put("schema-id", 1);
+    snapshot.put("schema-id", schemaId);
     snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
     Map<String, Object> addUpdate = new LinkedHashMap<>();
     addUpdate.put("action", "add-snapshot");
@@ -1352,10 +1703,15 @@ class TransactionCommitServiceTest {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"),
-                null,
-                List.of(),
-                List.of(addUpdate))));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(addUpdate))));
+  }
+
+  private Snapshot parseSnapshot(ByteString payload) {
+    try {
+      return Snapshot.parseFrom(payload);
+    } catch (InvalidProtocolBufferException e) {
+      return null;
+    }
   }
 
   private TransactionCommitRequest requestWithPostCommitUpdate() {
@@ -1365,10 +1721,7 @@ class TransactionCommitServiceTest {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"),
-                null,
-                List.of(),
-                List.of(assignUuid))));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(assignUuid))));
   }
 
   private TransactionCommitRequest requestWithUnknownUpdate() {
@@ -1377,17 +1730,7 @@ class TransactionCommitServiceTest {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"),
-                null,
-                List.of(),
-                List.of(unknown))));
-  }
-
-  private TransactionCommitRequest requestWithStageId(String stageId) {
-    return new TransactionCommitRequest(
-        List.of(
-            new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), stageId, List.of(), List.of())));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(unknown))));
   }
 
   private TransactionCommitRequest requestWithSetSnapshotRef(String refName, long snapshotId) {
@@ -1399,17 +1742,14 @@ class TransactionCommitServiceTest {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"),
-                null,
-                List.of(),
-                List.of(update))));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(update))));
   }
 
   private TransactionCommitRequest requestWithNullRequirements() {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), null, null, List.of())));
+                new TableIdentifierDto(List.of("db"), "orders"), null, List.of())));
   }
 
   private TransactionCommitRequest requestWithAssertCreate() {
@@ -1417,25 +1757,35 @@ class TransactionCommitServiceTest {
         List.of(
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(List.of("db"), "orders"),
-                null,
                 List.of(Map.of("type", "assert-create")),
                 List.of())));
+  }
+
+  private TransactionCommitRequest requestWithAssertRefSnapshotIdNull(String refName) {
+    Map<String, Object> requirement = new LinkedHashMap<>();
+    requirement.put("type", "assert-ref-snapshot-id");
+    requirement.put("ref", refName);
+    requirement.put("snapshot-id", null);
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(requirement), List.of())));
   }
 
   private TransactionCommitRequest requestWithNullUpdates() {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), null, List.of(), null)));
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), null)));
   }
 
   private TransactionCommitRequest multiTableRequest() {
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders"), null, List.of(), List.of()),
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of()),
             new TransactionCommitRequest.TableChange(
-                new TableIdentifierDto(List.of("db"), "orders2"), null, List.of(), List.of())));
+                new TableIdentifierDto(List.of("db"), "orders2"), List.of(), List.of())));
   }
 
   private boolean isValidBase64(String value) {

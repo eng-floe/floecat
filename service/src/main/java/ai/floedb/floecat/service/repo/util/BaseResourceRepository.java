@@ -35,7 +35,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Function;
 
 public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
@@ -44,7 +43,6 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
-  protected PointerOverlay overlay;
 
   public static final int CAS_MAX = 10;
 
@@ -97,13 +95,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected BaseResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
-      PointerOverlay overlay,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
     this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
     this.blobStore = Objects.requireNonNull(blobStore, "blobs");
-    this.overlay = overlay == null ? PointerOverlay.NOOP : overlay;
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
@@ -117,32 +113,29 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
 
     var pointer = pointerStoreOpt.get();
-    var effectivePtr =
-        overlay == null ? pointer : overlay.resolveEffectivePointer(key, pointer).orElse(pointer);
     byte[] bytes;
 
     try {
-      bytes = blobStore.get(effectivePtr.getBlobUri());
+      bytes = blobStore.get(pointer.getBlobUri());
       if (bytes == null) {
         if (pointerChangedOrDeleted(key, pointer)) {
           return Optional.empty();
         }
         throw new CorruptionException(
-            "dangling pointer, missing blob: " + effectivePtr.getBlobUri(), null);
+            "dangling pointer, missing blob: " + pointer.getBlobUri(), null);
       }
       return Optional.of(parser.parse(bytes));
     } catch (StorageNotFoundException snf) {
       if (pointerChangedOrDeleted(key, pointer)) {
         return Optional.empty();
       }
-      throw new CorruptionException(
-          "dangling pointer, missing blob: " + effectivePtr.getBlobUri(), snf);
+      throw new CorruptionException("dangling pointer, missing blob: " + pointer.getBlobUri(), snf);
     } catch (InvalidProtocolBufferException ipbe) {
-      throw new CorruptionException("parse failed: " + effectivePtr.getBlobUri(), ipbe);
+      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), ipbe);
     } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + effectivePtr.getBlobUri());
+      throw new AbortRetryableException("blob read retryable: " + pointer.getBlobUri());
     } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + effectivePtr.getBlobUri(), e);
+      throw new CorruptionException("parse failed: " + pointer.getBlobUri(), e);
     }
   }
 
@@ -172,83 +165,24 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void reserveAllOrRollback(String... keyBlobPairs) {
-    if (keyBlobPairs == null || keyBlobPairs.length == 0) {
-      return;
-    }
-
-    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
-      final var ops = new ArrayList<PointerStore.CasOp>(keyBlobPairs.length / 2);
+    final var createdKeys = new ArrayList<String>(keyBlobPairs.length / 2);
+    try {
       for (int i = 0; i < keyBlobPairs.length; i += 2) {
         final var key = keyBlobPairs[i];
         final var blobUri = keyBlobPairs[i + 1];
-        final var ptr = pointerStore.get(key).orElse(null);
-        if (ptr == null) {
-          Pointer reserve =
-              Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(1L).build();
-          ops.add(new PointerStore.CasUpsert(key, 0L, reserve));
-          continue;
-        }
-        if (!blobUri.equals(ptr.getBlobUri())) {
-          throw new NameConflictException("pointer bound to different blob: " + key);
+        if (reserveIndexOrIdempotent(key, blobUri)) {
+          createdKeys.add(key);
         }
       }
-
-      if (ops.isEmpty() || pointerStore.compareAndSetBatch(ops)) {
-        return;
-      }
-
-      // Under eventually consistent implementations (for example LocalStack's DynamoDB emulation),
-      // a transactional CAS may transiently fail even when all target pointers converge to the
-      // desired blob URIs. Treat that converged state as success.
-      if (allPointersBoundToExpectedBlob(keyBlobPairs)) {
-        return;
-      }
-
-      // Fallback: reserve each pointer independently. This is less strict than the batch CAS, but
-      // significantly more robust under concurrent test seeding where multiple workers attempt to
-      // reserve identical pointers at once.
-      try {
-        for (int i = 0; i < keyBlobPairs.length; i += 2) {
-          reserveIndexOrIdempotent(keyBlobPairs[i], keyBlobPairs[i + 1]);
+    } catch (Throwable e) {
+      for (int i = createdKeys.size() - 1; i >= 0; i--) {
+        final var k = createdKeys.get(i);
+        try {
+          compareAndDeleteOrFalse(k, 1L);
+        } catch (Throwable ignore) {
         }
-      } catch (NameConflictException nce) {
-        throw nce;
-      } catch (AbortRetryableException ignored) {
-        // Continue to bounded retry loop below.
       }
-      if (allPointersBoundToExpectedBlob(keyBlobPairs)) {
-        return;
-      }
-
-      // Back off before the next full re-read/retry to reduce hot contention loops.
-      sleepWithJitter(attempt);
-    }
-
-    throw new AbortRetryableException("failed to reserve pointers due to concurrent updates");
-  }
-
-  private boolean allPointersBoundToExpectedBlob(String... keyBlobPairs) {
-    for (int i = 0; i < keyBlobPairs.length; i += 2) {
-      String key = keyBlobPairs[i];
-      String blobUri = keyBlobPairs[i + 1];
-      var ptr = pointerStore.get(key).orElse(null);
-      if (ptr == null || !blobUri.equals(ptr.getBlobUri())) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private void sleepWithJitter(int attempt) {
-    long baseMs = 5L;
-    long maxMs = 100L;
-    long expMs = Math.min(maxMs, baseMs * (1L << Math.min(attempt, 5)));
-    long delayMs = ThreadLocalRandom.current().nextLong(baseMs, expMs + 1);
-    try {
-      Thread.sleep(delayMs);
-    } catch (InterruptedException ie) {
-      Thread.currentThread().interrupt();
-      throw new AbortRetryableException("interrupted while reserving pointers");
+      throw e;
     }
   }
 
@@ -340,17 +274,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
-    var effective = new ArrayList<Pointer>(rows.size());
     for (var row : rows) {
-      Pointer eff =
-          overlay == null ? row : overlay.resolveEffectivePointer(row.getKey(), row).orElse(row);
-      effective.add(eff);
-      uris.add(eff.getBlobUri());
+      uris.add(row.getBlobUri());
     }
 
     var blobsMap = blobStore.getBatch(uris);
-    var blobs = new ArrayList<T>(effective.size());
-    for (var row : effective) {
+    var blobs = new ArrayList<T>(rows.size());
+    for (var row : rows) {
       byte[] bytes = blobsMap.get(row.getBlobUri());
       if (bytes == null) {
         continue;

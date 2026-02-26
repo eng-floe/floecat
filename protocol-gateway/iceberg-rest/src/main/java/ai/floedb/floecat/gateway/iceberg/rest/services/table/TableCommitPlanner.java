@@ -80,7 +80,7 @@ public class TableCommitPlanner {
     if (paths.contains("namespace_id") && spec.hasNamespaceId()) {
       out.setNamespaceId(spec.getNamespaceId());
     }
-    if (paths.contains("upstream") && spec.hasUpstream()) {
+    if ((paths.contains("upstream") || paths.contains("upstream.uri")) && spec.hasUpstream()) {
       out.setUpstream(spec.getUpstream());
     }
     if (paths.contains("properties")) {

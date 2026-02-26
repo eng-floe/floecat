@@ -97,6 +97,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
@@ -163,6 +164,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
@@ -359,6 +361,101 @@ public class TableUpdatePlanner {
       }
     }
     return targetProps;
+  }
+
+  private Map<String, String> applyTableDefinitionPropertyUpdates(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps =
+        mergedProps == null
+            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
+            : mergedProps;
+    boolean mutated = false;
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if ("upgrade-format-version".equals(action)) {
+        Integer version = asInteger(update.get("format-version"));
+        if (version != null && version > 0) {
+          targetProps.put("format-version", Integer.toString(version));
+          mutated = true;
+        }
+      } else if ("add-schema".equals(action)) {
+        Integer lastColumnId = asInteger(update.get("last-column-id"));
+        if (lastColumnId != null && lastColumnId >= 0) {
+          targetProps.put("last-column-id", Integer.toString(lastColumnId));
+          mutated = true;
+        }
+      } else if ("set-current-schema".equals(action)) {
+        Integer schemaId = asInteger(update.get("schema-id"));
+        if (schemaId != null && schemaId >= 0) {
+          targetProps.put("current-schema-id", Integer.toString(schemaId));
+          mutated = true;
+        }
+      } else if ("add-spec".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> spec =
+            update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (spec != null) {
+          Integer partitionFieldMax = maxPartitionFieldId(spec);
+          if (partitionFieldMax != null && partitionFieldMax >= 0) {
+            targetProps.put("last-partition-id", Integer.toString(partitionFieldMax));
+            mutated = true;
+          }
+        }
+      } else if ("set-default-spec".equals(action)) {
+        Integer specId = asInteger(update.get("spec-id"));
+        if (specId != null && specId >= 0) {
+          targetProps.put("default-spec-id", Integer.toString(specId));
+          mutated = true;
+        }
+      } else if ("set-default-sort-order".equals(action)) {
+        Integer orderId = asInteger(update.get("sort-order-id"));
+        if (orderId != null && orderId >= 0) {
+          targetProps.put("default-sort-order-id", Integer.toString(orderId));
+          mutated = true;
+        }
+      } else if ("set-location".equals(action)) {
+        String location = asString(update.get("location"));
+        if (location != null && !location.isBlank()) {
+          targetProps.put("location", location);
+          mutated = true;
+        }
+      }
+    }
+    if (!mutated) {
+      return mergedProps;
+    }
+    return targetProps;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Integer maxPartitionFieldId(Map<String, Object> spec) {
+    if (spec == null || spec.isEmpty()) {
+      return null;
+    }
+    Object rawFields = spec.get("fields");
+    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+      return 0;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
+        continue;
+      }
+      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("field-id"));
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max == null ? 0 : max;
   }
 
   private Map<String, Map<String, Object>> loadStoredRefs(

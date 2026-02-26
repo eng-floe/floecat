@@ -20,7 +20,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -42,7 +41,6 @@ public class TransactionIntentRepository {
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
-            PointerOverlay.NOOP,
             Schemas.TRANSACTION_INTENT,
             TransactionIntent::parseFrom,
             TransactionIntent::toByteArray,

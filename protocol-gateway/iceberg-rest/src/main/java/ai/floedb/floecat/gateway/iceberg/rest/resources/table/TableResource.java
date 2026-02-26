@@ -23,6 +23,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.MetricsRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.PlanRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TaskRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
@@ -75,6 +76,7 @@ public class TableResource {
   @Inject TableMetricsService tableMetricsService;
   @Inject RequestContextFactory requestContextFactory;
   @Inject TableCreateService tableCreateService;
+  @Inject CommitTrafficLogger commitTrafficLogger;
   @Inject TableClient tableClient;
   @Inject SnapshotClient snapshotClient;
   @Inject ConnectorClient connectorClient;
@@ -162,21 +164,26 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       TableRequests.Commit req) {
+    String path = String.format("/v1/%s/namespaces/%s/tables/%s", prefix, namespace, table);
+    commitTrafficLogger.logRequest("POST", path, req);
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return tableCommitService.commit(
-        new TableCommitService.CommitCommand(
-            namespaceContext.prefix(),
-            namespaceContext.namespace(),
-            namespaceContext.namespacePath(),
-            table,
-            namespaceContext.catalogName(),
-            namespaceContext.catalogId(),
-            namespaceContext.namespaceId(),
-            idempotencyKey,
-            null,
-            transactionId,
-            req,
-            tableSupport));
+    Response response =
+        tableCommitService.commit(
+            new TableCommitService.CommitCommand(
+                namespaceContext.prefix(),
+                namespaceContext.namespace(),
+                namespaceContext.namespacePath(),
+                table,
+                namespaceContext.catalogName(),
+                namespaceContext.catalogId(),
+                namespaceContext.namespaceId(),
+                idempotencyKey,
+                null,
+                transactionId,
+                req,
+                tableSupport));
+    commitTrafficLogger.logResponse("POST", path, response.getStatus(), response.getEntity());
+    return response;
   }
 
   @Path("/tables/{table}/plan")

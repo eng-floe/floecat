@@ -362,8 +362,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
     try {
       for (var change : request.getChangesList()) {
-        ResourceId tableId = resolveTableId(accountId, change);
-        String pointerKey = Keys.tablePointerById(accountId, tableId.getId());
+        ResolvedTxTarget target = resolveTarget(accountId, change);
+        ResourceId tableId = target.tableId();
+        String pointerKey = target.pointerKey();
         if (!seenTargets.add(pointerKey)) {
           throw new IllegalArgumentException("duplicate change for " + pointerKey);
         }
@@ -395,6 +396,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             }
           }
           case TABLE -> {
+            if (tableId == null) {
+              throw new IllegalArgumentException(
+                  "table payload requires table_id/table_fq target for " + pointerKey);
+            }
             var tablePayload = change.getTable();
             if (!tablePayload.hasResourceId()) {
               throw new IllegalArgumentException("table payload missing resource_id");
@@ -644,6 +649,46 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
   }
 
+  private ResolvedTxTarget resolveTarget(
+      String accountId, ai.floedb.floecat.transaction.rpc.TxChange change) {
+    String explicitPointer =
+        change.hasTargetPointerKey() ? change.getTargetPointerKey().trim() : "";
+    ResourceId resolvedTableId = null;
+    if (change.getResourceRefCase()
+        != ai.floedb.floecat.transaction.rpc.TxChange.ResourceRefCase.RESOURCEREF_NOT_SET) {
+      resolvedTableId = resolveTableId(accountId, change);
+    }
+
+    if (!explicitPointer.isBlank()) {
+      validatePointerInAccountScope(accountId, explicitPointer);
+      if (resolvedTableId != null) {
+        String expectedTablePointer = Keys.tablePointerById(accountId, resolvedTableId.getId());
+        if (!expectedTablePointer.equals(explicitPointer)) {
+          throw new IllegalArgumentException(
+              "target_pointer_key does not match table reference for " + explicitPointer);
+        }
+      }
+      return new ResolvedTxTarget(explicitPointer, resolvedTableId);
+    }
+
+    if (resolvedTableId == null) {
+      throw new IllegalArgumentException("missing table reference");
+    }
+    return new ResolvedTxTarget(
+        Keys.tablePointerById(accountId, resolvedTableId.getId()), resolvedTableId);
+  }
+
+  private void validatePointerInAccountScope(String accountId, String pointerKey) {
+    String key = pointerKey == null ? "" : pointerKey.trim();
+    if (key.isBlank()) {
+      throw new IllegalArgumentException("target_pointer_key is empty");
+    }
+    String expectedPrefix = Keys.accountRootPrefix(accountId);
+    if (!key.startsWith(expectedPrefix)) {
+      throw new IllegalArgumentException("target_pointer_key outside account scope");
+    }
+  }
+
   private NameRef parseTableFq(String tableFq) {
     String trimmed = tableFq.trim();
     String[] parts = trimmed.split("\\.");
@@ -716,6 +761,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
   }
+
+  private record ResolvedTxTarget(String pointerKey, ResourceId tableId) {}
 
   private record PendingBlob(String uri, byte[] bytes, String contentType) {}
 }

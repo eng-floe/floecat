@@ -23,7 +23,6 @@ import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.PointerOverlay;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
@@ -38,20 +37,15 @@ public class AccountRepository {
   private final GenericResourceRepository<Account, AccountKey> repo;
 
   @Inject
-  public AccountRepository(PointerStore pointerStore, BlobStore blobStore, PointerOverlay overlay) {
+  public AccountRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
-            overlay,
             Schemas.ACCOUNT,
             Account::parseFrom,
             Account::toByteArray,
             "application/x-protobuf");
-  }
-
-  public AccountRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, PointerOverlay.NOOP);
   }
 
   public void create(Account account) {

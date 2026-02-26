@@ -40,23 +40,12 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   public GenericResourceRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
-      PointerOverlay overlay,
       ResourceSchema<T, K> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    super(pointerStore, blobStore, overlay, parser, toBytes, contentType);
+    super(pointerStore, blobStore, parser, toBytes, contentType);
     this.schema = Objects.requireNonNull(schema, "schema");
-  }
-
-  public GenericResourceRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      ResourceSchema<T, K> schema,
-      ProtoParser<T> parser,
-      Function<T, byte[]> toBytes,
-      String contentType) {
-    this(pointerStore, blobStore, PointerOverlay.NOOP, schema, parser, toBytes, contentType);
   }
 
   public Optional<T> getByKey(K key) {

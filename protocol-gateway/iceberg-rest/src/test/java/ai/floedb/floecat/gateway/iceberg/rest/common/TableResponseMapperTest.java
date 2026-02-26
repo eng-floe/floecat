@@ -184,7 +184,7 @@ class TableResponseMapperTest {
   }
 
   @Test
-  void metadataLocationUsesIcebergMetadataWhenTablePropertyDiffers() {
+  void metadataLocationUsesTablePropertyPointerWhenSnapshotMetadataDiffers() {
     Table table =
         FIXTURE.table().toBuilder()
             .setDisplayName("orders")
@@ -203,7 +203,7 @@ class TableResponseMapperTest {
         TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
 
     assertEquals(
-        "s3://yb-iceberg-tpcds/trino_test/metadata/00001-old.metadata.json",
+        "s3://yb-iceberg-tpcds/trino_test/metadata/00002-new.metadata.json",
         result.metadataLocation());
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));

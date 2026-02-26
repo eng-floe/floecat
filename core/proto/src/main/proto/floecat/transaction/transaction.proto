@@ -52,6 +52,11 @@ message BeginTransactionResponse {
 }
 
 message TxChange {
+  // Optional explicit pointer target. When set, commit applies to this pointer directly.
+  // Used for non-table resources (for example snapshot/statistics pointers) that participate
+  // in the same transaction boundary as table pointer updates.
+  optional string target_pointer_key = 30;
+
   oneof resource_ref {
     ai.floedb.floecat.common.ResourceId table_id = 1;
     // Fully qualified table name: catalog.namespace1.namespace2.table

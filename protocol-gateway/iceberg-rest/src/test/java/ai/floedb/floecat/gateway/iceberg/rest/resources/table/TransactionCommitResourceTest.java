@@ -23,15 +23,19 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import io.grpc.Status;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -46,6 +50,7 @@ import org.junit.jupiter.api.Test;
 class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
   @InjectMock TransactionClient transactionClient;
+  @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
   void setUpTableLookup() {
@@ -56,6 +61,12 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenAnswer(
+            invocation ->
+                MaterializeMetadataResult.success(
+                    invocation.getArgument(4, TableMetadataView.class),
+                    invocation.getArgument(5, String.class)));
   }
 
   @Test
@@ -183,6 +194,69 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
     RestAssured.requestSpecification = defaultSpec;
   }
 
+  @Test
+  void transactionCommitRejectsMissingRequiredRequirementsField() {
+    given()
+        .body(requestBodyMissingRequirements())
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/transactions/commit")
+        .then()
+        .statusCode(400);
+  }
+
+  @Test
+  void transactionCommitAllowsAssertCreateForMissingTable() {
+    when(directoryStub.resolveTable(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-assert-create"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-assert-create")
+                        .setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-assert-create")
+                        .setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-assert-create")
+                        .setState(TransactionState.TS_APPLIED))
+                .build());
+
+    given()
+        .body(
+            Map.of(
+                "table-changes",
+                List.of(
+                    Map.of(
+                        "identifier",
+                        Map.of("namespace", List.of("db"), "name", "new_orders"),
+                        "requirements",
+                        List.of(Map.of("type", "assert-create")),
+                        "updates",
+                        List.of()))))
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/transactions/commit")
+        .then()
+        .statusCode(204);
+  }
+
   private Map<String, Object> requestBody() {
     return Map.of(
         "table-changes",
@@ -192,6 +266,17 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
                 Map.of("namespace", List.of("db"), "name", "orders"),
                 "requirements",
                 List.of(),
+                "updates",
+                List.of())));
+  }
+
+  private Map<String, Object> requestBodyMissingRequirements() {
+    return Map.of(
+        "table-changes",
+        List.of(
+            Map.of(
+                "identifier",
+                Map.of("namespace", List.of("db"), "name", "orders"),
                 "updates",
                 List.of())));
   }

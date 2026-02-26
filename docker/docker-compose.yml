@@ -50,6 +50,8 @@ services:
       ICEBERG_STORAGE_SECRET: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-<secret-key>}}
       ICEBERG_STORAGE_REGION: ${FLOECAT_STORAGE_AWS_REGION:-${AWS_REGION:-us-east-1}}
       FLOECAT_GATEWAY_METADATA_FILE_IO: ${FLOECAT_GATEWAY_METADATA_FILE_IO:-org.apache.iceberg.aws.s3.S3FileIO}
+      FLOECAT_REST_LOG_COMMIT_TRAFFIC: ${FLOECAT_REST_LOG_COMMIT_TRAFFIC:-false}
+      FLOECAT_REST_LOG_REQUEST_BODY: ${FLOECAT_REST_LOG_REQUEST_BODY:-false}
       AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-test}
@@ -121,6 +123,22 @@ services:
       - ./keycloak/realm-floecat.json:/opt/keycloak/data/import/realm-floecat.json:ro
     profiles:
       - keycloak
+      - localstack-oidc
+    networks:
+      - floecat
+
+  trino:
+    image: trinodb/trino:479
+    pull_policy: if_not_present
+    ports:
+      - "${FLOECAT_TRINO_HOST_PORT:-8081}:8080"
+    depends_on:
+      - iceberg-rest
+      - localstack
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    profiles:
+      - localstack
       - localstack-oidc
     networks:
       - floecat
