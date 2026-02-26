@@ -119,17 +119,20 @@ public final class ValueEncoders {
       case TIME:
         {
           // ISO-8601 local time (HH:mm:ss[.fraction]) is emitted; numeric values map to
-          // seconds/milliseconds/microseconds/nanoseconds heuristically.
+          // seconds/milliseconds/microseconds/nanoseconds heuristically. Canonical TIME is
+          // microsecond precision, so truncate any sub-micro nanos.
           if (value instanceof LocalTime t0) {
-            return TIME_FMT.format(t0);
+            return TIME_FMT.format(TemporalCoercions.truncateToMicros(t0));
           }
 
           if (value instanceof Number n) {
             long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
-            return TIME_FMT.format(LocalTime.ofNanoOfDay(dayNanos));
+            long micros = Math.floorDiv(dayNanos, 1_000L);
+            return TIME_FMT.format(LocalTime.ofNanoOfDay(micros * 1_000L));
           }
           if (value instanceof CharSequence s) {
-            return LocalTime.parse(s).toString();
+            return TIME_FMT.format(
+                TemporalCoercions.truncateToMicros(LocalTime.parse(s.toString())));
           }
 
           throw new IllegalArgumentException(
@@ -141,11 +144,12 @@ public final class ValueEncoders {
         {
           // TIMESTAMP is timezone-naive and encoded as ISO local date-time (no zone suffix).
           if (value instanceof LocalDateTime ts) {
-            return LOCAL_TS_FMT.format(ts);
+            return LOCAL_TS_FMT.format(TemporalCoercions.truncateToMicros(ts));
           }
 
           if (value instanceof Instant i) {
-            return LOCAL_TS_FMT.format(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
+            return LOCAL_TS_FMT.format(
+                TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC)));
           }
 
           if (value instanceof Number n) {
@@ -167,7 +171,7 @@ public final class ValueEncoders {
         {
           // TIMESTAMPTZ is always UTC-normalised and encoded as ISO instant with Z suffix.
           if (value instanceof Instant i) {
-            return INSTANT_FMT.format(i);
+            return INSTANT_FMT.format(TemporalCoercions.truncateToMicros(i));
           }
 
           if (value instanceof Number n) {
@@ -175,7 +179,8 @@ public final class ValueEncoders {
           }
 
           if (value instanceof CharSequence s) {
-            return INSTANT_FMT.format(Instant.parse(s.toString()));
+            return INSTANT_FMT.format(
+                TemporalCoercions.truncateToMicros(Instant.parse(s.toString())));
           }
 
           throw new IllegalArgumentException(
@@ -231,12 +236,12 @@ public final class ValueEncoders {
       case DATE:
         return LocalDate.parse(encoded, DATE_FMT);
       case TIME:
-        return LocalTime.parse(encoded, TIME_FMT);
+        return TemporalCoercions.truncateToMicros(LocalTime.parse(encoded, TIME_FMT));
       case TIMESTAMP:
         return TemporalCoercions.parseTimestampNoTz(encoded);
       case TIMESTAMPTZ:
         // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
-        return Instant.parse(encoded);
+        return TemporalCoercions.truncateToMicros(Instant.parse(encoded));
       case STRING:
         return encoded;
       case JSON:

@@ -18,6 +18,7 @@ package ai.floedb.floecat.types;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -46,29 +47,54 @@ final class TemporalCoercions {
     if (av >= NANOS_THRESHOLD) {
       long secs = Math.floorDiv(v, 1_000_000_000L);
       long nanos = Math.floorMod(v, 1_000_000_000L);
-      return Instant.ofEpochSecond(secs, nanos);
+      return truncateToMicros(Instant.ofEpochSecond(secs, nanos));
     }
     if (av >= MICROS_THRESHOLD) {
       long secs = Math.floorDiv(v, 1_000_000L);
       long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, micros * 1_000L);
+      return truncateToMicros(Instant.ofEpochSecond(secs, micros * 1_000L));
     }
     if (av >= MILLIS_THRESHOLD) {
-      return Instant.ofEpochMilli(v);
+      return truncateToMicros(Instant.ofEpochMilli(v));
     }
-    return Instant.ofEpochSecond(v);
+    return truncateToMicros(Instant.ofEpochSecond(v));
   }
 
   static LocalDateTime localDateTimeFromNumber(long v) {
-    return LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC);
+    return truncateToMicros(LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC));
   }
 
   static LocalDateTime parseTimestampNoTz(String raw) {
     try {
-      return LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+      return truncateToMicros(LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME));
     } catch (DateTimeParseException ignore) {
-      return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
+      return truncateToMicros(LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC));
     }
+  }
+
+  static LocalTime truncateToMicros(LocalTime time) {
+    int nanos = time.getNano();
+    if ((nanos % 1_000) == 0) {
+      return time;
+    }
+    return time.withNano((nanos / 1_000) * 1_000);
+  }
+
+  static LocalDateTime truncateToMicros(LocalDateTime time) {
+    int nanos = time.getNano();
+    if ((nanos % 1_000) == 0) {
+      return time;
+    }
+    return time.withNano((nanos / 1_000) * 1_000);
+  }
+
+  static Instant truncateToMicros(Instant instant) {
+    long nanos = instant.getNano();
+    if ((nanos % 1_000) == 0) {
+      return instant;
+    }
+    long truncated = (nanos / 1_000) * 1_000;
+    return Instant.ofEpochSecond(instant.getEpochSecond(), truncated);
   }
 
   private static long toTimeNanos(long v) {

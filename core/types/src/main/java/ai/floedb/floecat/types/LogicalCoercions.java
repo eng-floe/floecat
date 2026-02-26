@@ -164,28 +164,28 @@ public final class LogicalCoercions {
       }
       case TIME -> {
         if (v instanceof LocalTime t0) {
-          return t0;
+          return TemporalCoercions.truncateToMicros(t0);
         }
         if (v instanceof Number n) {
           long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
-          return LocalTime.ofNanoOfDay(dayNanos);
+          return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
         }
         String s = v.toString();
         try {
-          return LocalTime.parse(s);
+          return TemporalCoercions.truncateToMicros(LocalTime.parse(s));
         } catch (Exception ignore) {
           // fall through
         }
         long nv = Long.parseLong(s);
         long dayNanos = TemporalCoercions.timeNanosOfDay(nv);
-        return LocalTime.ofNanoOfDay(dayNanos);
+        return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
       }
       case TIMESTAMP -> {
         if (v instanceof LocalDateTime ts) {
-          return ts;
+          return TemporalCoercions.truncateToMicros(ts);
         }
         if (v instanceof Instant i) {
-          return LocalDateTime.ofInstant(i, ZoneOffset.UTC);
+          return TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
         }
         String s = v.toString();
         try {
@@ -198,11 +198,11 @@ public final class LogicalCoercions {
       case TIMESTAMPTZ -> {
         // TIMESTAMPTZ is always UTC-normalised and coerced as Instant.
         if (v instanceof Instant i) {
-          return i;
+          return TemporalCoercions.truncateToMicros(i);
         }
         String s = v.toString();
         try {
-          return Instant.parse(s);
+          return TemporalCoercions.truncateToMicros(Instant.parse(s));
         } catch (Exception ignore) {
           // fall through
         }

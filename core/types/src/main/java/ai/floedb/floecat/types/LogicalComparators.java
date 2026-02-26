@@ -199,16 +199,16 @@ public final class LogicalComparators {
       case TIME:
         {
           if (v instanceof LocalTime t0) {
-            return t0;
+            return TemporalCoercions.truncateToMicros(t0);
           }
 
           if (v instanceof CharSequence s) {
-            return LocalTime.parse(s.toString());
+            return TemporalCoercions.truncateToMicros(LocalTime.parse(s.toString()));
           }
 
           if (v instanceof Number n) {
             long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
-            return LocalTime.ofNanoOfDay(dayNanos);
+            return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
           }
           throw typeErr("TIME", v);
         }
@@ -216,11 +216,11 @@ public final class LogicalComparators {
       case TIMESTAMP:
         {
           if (v instanceof LocalDateTime ts) {
-            return ts;
+            return TemporalCoercions.truncateToMicros(ts);
           }
 
           if (v instanceof Instant i) {
-            return LocalDateTime.ofInstant(i, ZoneOffset.UTC);
+            return TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
           }
 
           if (v instanceof CharSequence s) {
@@ -238,11 +238,11 @@ public final class LogicalComparators {
         {
           // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
           if (v instanceof Instant i) {
-            return i;
+            return TemporalCoercions.truncateToMicros(i);
           }
 
           if (v instanceof CharSequence s) {
-            return Instant.parse(s.toString());
+            return TemporalCoercions.truncateToMicros(Instant.parse(s.toString()));
           }
 
           if (v instanceof Number n) {
