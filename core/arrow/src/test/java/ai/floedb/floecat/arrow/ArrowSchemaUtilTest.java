@@ -22,7 +22,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.List;
 import org.apache.arrow.vector.types.DateUnit;
-import org.apache.arrow.vector.types.IntervalUnit;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -72,14 +71,12 @@ class ArrowSchemaUtilTest {
                 SchemaColumn.newBuilder().setName("d").setLogicalType("DATE").build(),
                 SchemaColumn.newBuilder().setName("t").setLogicalType("TIME").build(),
                 SchemaColumn.newBuilder().setName("ts").setLogicalType("TIMESTAMP").build(),
-                SchemaColumn.newBuilder().setName("tstz").setLogicalType("TIMESTAMPTZ").build(),
-                SchemaColumn.newBuilder().setName("iv").setLogicalType("INTERVAL").build()));
+                SchemaColumn.newBuilder().setName("tstz").setLogicalType("TIMESTAMPTZ").build()));
 
     ArrowType.Date dateType = (ArrowType.Date) schema.getFields().get(0).getType();
     ArrowType.Time timeType = (ArrowType.Time) schema.getFields().get(1).getType();
     ArrowType.Timestamp timestampType = (ArrowType.Timestamp) schema.getFields().get(2).getType();
     ArrowType.Timestamp timestamptzType = (ArrowType.Timestamp) schema.getFields().get(3).getType();
-    ArrowType.Interval intervalType = (ArrowType.Interval) schema.getFields().get(4).getType();
 
     assertThat(dateType.getUnit()).isEqualTo(DateUnit.DAY);
     assertThat(timeType.getUnit()).isEqualTo(TimeUnit.MICROSECOND);
@@ -88,7 +85,6 @@ class ArrowSchemaUtilTest {
     assertThat(timestampType.getTimezone()).isNull();
     assertThat(timestamptzType.getUnit()).isEqualTo(TimeUnit.MICROSECOND);
     assertThat(timestamptzType.getTimezone()).isEqualTo("UTC");
-    assertThat(intervalType.getUnit()).isEqualTo(IntervalUnit.DAY_TIME);
   }
 
   @Test
@@ -105,7 +101,7 @@ class ArrowSchemaUtilTest {
     ArrowType.FixedSizeBinary uuidType =
         (ArrowType.FixedSizeBinary) schema.getFields().get(1).getType();
     ArrowType.Binary binaryType = (ArrowType.Binary) schema.getFields().get(2).getType();
-    ArrowType.Binary jsonType = (ArrowType.Binary) schema.getFields().get(3).getType();
+    ArrowType.Utf8 jsonType = (ArrowType.Utf8) schema.getFields().get(3).getType();
 
     assertThat(decimalType.getPrecision()).isEqualTo(12);
     assertThat(decimalType.getScale()).isEqualTo(3);
@@ -113,6 +109,25 @@ class ArrowSchemaUtilTest {
     assertThat(uuidType.getByteWidth()).isEqualTo(16);
     assertThat(binaryType).isNotNull();
     assertThat(jsonType).isNotNull();
+  }
+
+  @Test
+  void intervalIsRejectedForArrowSchema() {
+    SchemaColumn column =
+        SchemaColumn.newBuilder().setName("iv").setLogicalType("INTERVAL").build();
+    assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("INTERVAL has no stable Arrow representation");
+  }
+
+  @Test
+  void complexLogicalTypesAreRejectedForArrowSchema() {
+    for (String type : List.of("ARRAY", "MAP", "STRUCT", "VARIANT")) {
+      SchemaColumn column = SchemaColumn.newBuilder().setName("x").setLogicalType(type).build();
+      assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Complex logical types");
+    }
   }
 
   @Test

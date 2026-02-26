@@ -17,11 +17,10 @@
 package ai.floedb.floecat.scanner.utils;
 
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.types.TemporalCoercions;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -141,9 +140,9 @@ public final class ArrowConversion {
       fixed.setSafe(idx, toFixedBytes(value, fixed.getByteWidth()));
       return;
     }
-    if (vector instanceof IntervalDayVector interval) {
-      setIntervalDay(interval, idx, value);
-      return;
+    if (vector instanceof IntervalDayVector) {
+      throw new IllegalArgumentException(
+          "INTERVAL values are not supported for Arrow output (no stable representation)");
     }
     throw new IllegalArgumentException(
         "unsupported vector type " + vector.getClass().getSimpleName());
@@ -164,40 +163,48 @@ public final class ArrowConversion {
 
   private static long toTimeMicros(Object value) {
     if (value instanceof LocalTime time) {
-      return time.toNanoOfDay() / 1_000L;
+      LocalTime truncated = TemporalCoercions.truncateToMicros(time);
+      return truncated.toNanoOfDay() / 1_000L;
     }
     if (value instanceof Number number) {
-      return number.longValue();
+      long dayNanos = TemporalCoercions.timeNanosOfDay(number.longValue());
+      return Math.floorDiv(dayNanos, 1_000L);
     }
     if (value instanceof CharSequence text) {
-      return LocalTime.parse(text.toString()).toNanoOfDay() / 1_000L;
+      LocalTime parsed = LocalTime.parse(text.toString());
+      return TemporalCoercions.truncateToMicros(parsed).toNanoOfDay() / 1_000L;
     }
     throw new IllegalArgumentException("TIME value must be LocalTime, Number, or ISO time string");
   }
 
   private static long toTimestampMicros(Object value) {
     if (value instanceof Instant instant) {
-      return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+      Instant truncated = TemporalCoercions.truncateToMicros(instant);
+      return truncated.getEpochSecond() * 1_000_000L + truncated.getNano() / 1_000L;
     }
     if (value instanceof LocalDateTime localDateTime) {
-      Instant instant = localDateTime.toInstant(ZoneOffset.UTC);
+      LocalDateTime truncated = TemporalCoercions.truncateToMicros(localDateTime);
+      Instant instant = truncated.toInstant(ZoneOffset.UTC);
       return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
     if (value instanceof Number number) {
-      return number.longValue();
+      Instant instant = TemporalCoercions.instantFromNumber(number.longValue());
+      return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
     if (value instanceof CharSequence text) {
       String raw = text.toString();
       try {
-        Instant instant = Instant.parse(raw);
+        Instant instant = TemporalCoercions.truncateToMicros(Instant.parse(raw));
         return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
       } catch (DateTimeParseException ignored) {
         try {
-          LocalDateTime localDateTime = LocalDateTime.parse(raw);
+          LocalDateTime localDateTime =
+              TemporalCoercions.truncateToMicros(LocalDateTime.parse(raw));
           Instant instant = localDateTime.toInstant(ZoneOffset.UTC);
           return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
         } catch (DateTimeParseException ignored2) {
-          return Long.parseLong(raw);
+          Instant instant = TemporalCoercions.instantFromNumber(Long.parseLong(raw));
+          return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
         }
       }
     }
@@ -250,40 +257,5 @@ public final class ArrowConversion {
           "fixed-size binary value width mismatch: expected=" + width + " actual=" + bytes.length);
     }
     return bytes;
-  }
-
-  private static void setIntervalDay(IntervalDayVector interval, int idx, Object value) {
-    if (value instanceof Duration duration) {
-      long totalMillis = duration.toMillis();
-      int days = Math.toIntExact(Math.floorDiv(totalMillis, 86_400_000L));
-      int millis = Math.toIntExact(Math.floorMod(totalMillis, 86_400_000L));
-      interval.setSafe(idx, days, millis);
-      return;
-    }
-    if (value instanceof Number number) {
-      long totalMillis = number.longValue();
-      int days = Math.toIntExact(Math.floorDiv(totalMillis, 86_400_000L));
-      int millis = Math.toIntExact(Math.floorMod(totalMillis, 86_400_000L));
-      interval.setSafe(idx, days, millis);
-      return;
-    }
-    byte[] bytes = null;
-    if (value instanceof byte[] arr) {
-      bytes = arr;
-    } else if (value instanceof ByteBuffer buffer) {
-      ByteBuffer copy = buffer.duplicate();
-      bytes = new byte[copy.remaining()];
-      copy.get(bytes);
-    }
-    if (bytes != null && bytes.length >= 12) {
-      ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-      bb.getInt(); // months (ignored by DAY_TIME interval representation)
-      int days = bb.getInt();
-      int millis = bb.getInt();
-      interval.setSafe(idx, days, millis);
-      return;
-    }
-    throw new IllegalArgumentException(
-        "INTERVAL value must be Duration, Number (millis), or 12-byte parquet interval payload");
   }
 }
