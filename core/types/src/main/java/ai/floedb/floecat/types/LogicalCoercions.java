@@ -44,7 +44,7 @@ public final class LogicalCoercions {
       case INT -> {
         // All integer sizes collapse to canonical 64-bit Long.
         if (v instanceof Number n) {
-          return n.longValue();
+          return Int64Coercions.checkedLong(n);
         }
         return Long.parseLong(v.toString());
       }

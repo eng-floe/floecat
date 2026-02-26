@@ -24,6 +24,7 @@ import java.util.Optional;
 
 /** Maps Floecat logical types to FloeDb builtin type. */
 public final class FloeTypeMapper implements EngineTypeMapper {
+  private static final int MAX_DECIMAL_PRECISION = 38;
 
   @Override
   public Optional<TypeNode> resolve(LogicalType t, TypeLookup lookup) {
@@ -47,7 +48,12 @@ public final class FloeTypeMapper implements EngineTypeMapper {
       case INTERVAL -> lookup.findByName("pg_catalog", "interval");
 
       case JSON -> lookup.findByName("pg_catalog", "jsonb");
-      case DECIMAL -> lookup.findByName("pg_catalog", "numeric");
+      case DECIMAL -> {
+        if (t.precision() == null || t.precision() > MAX_DECIMAL_PRECISION) {
+          yield Optional.empty();
+        }
+        yield lookup.findByName("pg_catalog", "numeric");
+      }
 
       // Complex types are not yet supported by the execution engine; surface as raw bytes.
       case ARRAY, MAP, STRUCT, VARIANT -> lookup.findByName("pg_catalog", "bytea");

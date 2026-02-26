@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -218,11 +220,22 @@ final class DeltaSchemaMapper {
       default -> {
         // decimal(p,s) arrives as e.g. "decimal(10,2)" — upper-case and pass through.
         if (raw.toLowerCase(Locale.ROOT).startsWith("decimal")) {
-          yield raw.toUpperCase(Locale.ROOT);
+          yield canonicalDeltaDecimal(raw);
         }
         throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'");
       }
     };
+  }
+
+  private static String canonicalDeltaDecimal(String raw) {
+    final LogicalType logicalType;
+    try {
+      logicalType = LogicalTypeFormat.parse(raw);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid Delta decimal type: '" + raw + "'", e);
+    }
+    ConnectorTypeConstraints.validateDecimalPrecision(logicalType, "Delta", raw);
+    return LogicalTypeFormat.format(logicalType);
   }
 
   private static SourceType deltaSourceType(JsonNode typeNode) {

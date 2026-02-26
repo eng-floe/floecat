@@ -17,8 +17,11 @@
 package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -61,5 +64,20 @@ class LogicalCoercionsTest {
     assertEquals(expected, fromMicrosString);
     assertEquals(expected, fromNanosString);
     assertEquals(expected, fromNumber);
+  }
+
+  @Test
+  void intCoercionRejectsOutOfRangeAndFractionalNumbers() {
+    LogicalType intType = LogicalType.of(LogicalKind.INT);
+    assertEquals(42L, LogicalCoercions.coerceStatValue(intType, BigInteger.valueOf(42L)));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            LogicalCoercions.coerceStatValue(
+                intType, BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LogicalCoercions.coerceStatValue(intType, new BigDecimal("1.25")));
   }
 }

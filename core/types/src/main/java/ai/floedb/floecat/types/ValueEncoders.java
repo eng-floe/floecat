@@ -61,7 +61,7 @@ public final class ValueEncoders {
       case INT:
         // All integer sizes collapse to canonical 64-bit INT encoded as base-10.
         if (value instanceof Number n) {
-          return Long.toString(n.longValue());
+          return Long.toString(Int64Coercions.checkedLong(n));
         }
         if (value instanceof CharSequence s) {
           String str = trimOrNull(s);

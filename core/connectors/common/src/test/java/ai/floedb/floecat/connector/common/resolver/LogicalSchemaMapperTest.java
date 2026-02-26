@@ -81,6 +81,23 @@ class LogicalSchemaMapperTest {
     assertNotEquals(c0.getId(), c1.getId());
   }
 
+  @Test
+  void genericDecimalPrecisionAbove38IsAllowed() {
+    String json =
+        """
+            {"cols":[
+                {"name":"x","type":"DECIMAL(39,0)"}
+            ]}
+        """;
+
+    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
+    Table t = baseTable(json, upstream);
+
+    SchemaDescriptor desc = mapper.map(t, json);
+    assertEquals(1, desc.getColumnsCount());
+    assertEquals("DECIMAL(39,0)", desc.getColumns(0).getLogicalType());
+  }
+
   // -------------------------------------------------------------------------
   // ICEBERG schema
   // -------------------------------------------------------------------------

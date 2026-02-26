@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalType;
 import java.util.Set;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
@@ -176,6 +177,8 @@ public final class IcebergSchemaMapper {
       case STRUCT -> "STRUCT";
       case DECIMAL -> {
         var d = (Types.DecimalType) t;
+        ConnectorTypeConstraints.validateDecimalPrecision(
+            LogicalType.decimal(d.precision(), d.scale()), "Iceberg", d.toString());
         yield "DECIMAL(" + d.precision() + "," + d.scale() + ")";
       }
       default -> throw new IllegalArgumentException("Unrecognized Iceberg type: " + t.typeId());

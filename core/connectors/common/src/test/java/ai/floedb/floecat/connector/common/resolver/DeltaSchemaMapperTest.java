@@ -135,6 +135,16 @@ class DeltaSchemaMapperTest {
         .isEqualTo("DECIMAL(1,0)");
   }
 
+  @Test
+  void decimalPrecisionAbove38FailsFast() {
+    assertThatThrownBy(
+            () -> DeltaSchemaMapper.map(CID, singleFieldSchema("x", "decimal(39,0)"), Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON")
+        .hasRootCauseMessage(
+            "Unsupported DECIMAL precision 39 for Delta declared type 'decimal(39,0)'; max supported precision is 38");
+  }
+
   // ---------------------------------------------------------------------------
   // Unknown/malformed source type should fail fast
   // ---------------------------------------------------------------------------

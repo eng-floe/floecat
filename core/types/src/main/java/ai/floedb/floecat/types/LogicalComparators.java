@@ -103,7 +103,10 @@ public final class LogicalComparators {
 
       case INT:
         // All integer sizes collapse to canonical 64-bit Long.
-        return (v instanceof Long) ? v : ((Number) v).longValue();
+        if (v instanceof Number n) {
+          return Int64Coercions.checkedLong(n);
+        }
+        throw typeErr("INT", v);
 
       case FLOAT:
         return (v instanceof Float) ? v : ((Number) v).floatValue();

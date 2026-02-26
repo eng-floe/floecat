@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -116,6 +117,23 @@ class ValueEncodersTest {
     LocalTime time = LocalTime.of(5, 4, 3, 120_000_000);
     assertEquals(
         "05:04:03.12", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.TIME), time));
+  }
+
+  @Test
+  void intEncodingRejectsOverflowAndNonIntegralNumericValues() {
+    LogicalType intType = LogicalType.of(LogicalKind.INT);
+    assertEquals(
+        Long.toString(Long.MAX_VALUE),
+        ValueEncoders.encodeToString(intType, BigInteger.valueOf(Long.MAX_VALUE)));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ValueEncoders.encodeToString(
+                intType, BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(intType, new BigDecimal("123.45")));
   }
 
   @Test

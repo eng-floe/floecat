@@ -141,6 +141,12 @@ class FloeTypeMapperTest {
   }
 
   @Test
+  void decimalPrecisionAbove38IsUnsupported() {
+    Optional<TypeNode> result = mapper.resolve(LogicalType.decimal(39, 0), lookup);
+    assertThat(result).isEmpty();
+  }
+
+  @Test
   void unsupportedKindReturnsEmpty() {
     Optional<TypeNode> result =
         mapper.resolve(LogicalType.of(LogicalKind.BINARY), new FakeTypeLookup(Map.of()));
