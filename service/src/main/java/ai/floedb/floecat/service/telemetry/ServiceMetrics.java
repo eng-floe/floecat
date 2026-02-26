@@ -52,4 +52,17 @@ public final class ServiceMetrics {
     public static final MetricId INFLIGHT =
         new MetricId("floecat.service.flight.inflight", MetricType.GAUGE, "", CONTRACT, "service");
   }
+
+  public static final class Reconcile {
+    public static final MetricId SYNC_CAPTURE =
+        new MetricId(
+            "floecat.service.reconcile.sync_capture.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId TRIGGER =
+        new MetricId(
+            "floecat.service.reconcile.trigger.total", MetricType.COUNTER, "", CONTRACT, "service");
+  }
 }

@@ -71,7 +71,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
 4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records and resolves storage credentials returned to clients. Post-commit connector sync/reconcile triggers are queued through `PostCommitSyncOutboxService` (retryable async side effects). Snapshot format metadata is backfilled directly from the committed `metadata.json`.
+6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records and resolves storage credentials returned to clients. Post-commit connector sync/reconcile triggers are invoked directly and enqueue durable reconcile jobs in the service-side `ReconcileJobStore`. Snapshot format metadata is backfilled directly from the committed `metadata.json`.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -101,7 +101,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 2. `CommitStageResolver` fetches/validates the staged payload (assert-create, assert-current-schema, etc.) and either returns a resolved table ID or synthesizes a new table via `StageCommitProcessor`.
 3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
 4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
-5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream). Post-core reconcile/sync actions are queued for async retry by `PostCommitSyncOutboxService`.
+5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream). Post-core reconcile/sync actions are invoked directly and rely on the durable reconciler job store for retry and recovery.
 6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags include the metadata location and representation selector (`snapshots=all|refs`) so clients can safely cache per response shape.
 
 Idempotency behavior:

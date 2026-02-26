@@ -460,6 +460,26 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
+    "name": "floecat.service.reconcile.sync_capture.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "SyncCapture request outcomes by trigger type.",
+    "requiredTags": ["component", "operation", "result", "trigger"],
+    "allowedTags": ["component", "operation", "reason", "result", "trigger"]
+  },
+  {
+    "name": "floecat.service.reconcile.trigger.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "TriggerReconcile request outcomes by trigger type.",
+    "requiredTags": ["component", "operation", "result", "trigger"],
+    "allowedTags": ["component", "operation", "reason", "result", "trigger"]
+  },
+  {
     "name": "floecat.service.storage.account.bytes",
     "type": "GAUGE",
     "unit": "bytes",

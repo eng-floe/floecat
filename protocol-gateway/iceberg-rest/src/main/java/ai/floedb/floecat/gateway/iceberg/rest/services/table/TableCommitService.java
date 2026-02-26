@@ -67,7 +67,6 @@ public class TableCommitService {
   @Inject TableFormatSupport tableFormatSupport;
   @Inject AccountContext accountContext;
   @Inject CommitOperationTracker commitOperationTracker;
-  @Inject PostCommitSyncOutboxService postCommitSyncOutboxService;
 
   public Response commit(CommitCommand command) {
     OperationKey operationKey = operationKey(command);
@@ -180,7 +179,7 @@ public class TableCommitService {
         idempotencyKey);
     syncSnapshotMetadataFromCommit(
         tableSupport, tableId, namespacePath, table, committedTable, responseDto, idempotencyKey);
-    runConnectorSync(tableSupport, connectorId, namespacePath, table, operationKey);
+    runConnectorSync(tableSupport, connectorId, namespacePath, table);
     markStep(operationKey, "METADATA_SYNC_TRIGGERED");
 
     CommitTableResponseDto finalResponse =
@@ -405,15 +404,6 @@ public class TableCommitService {
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
-    runConnectorSync(tableSupport, connectorId, namespacePath, tableName, null);
-  }
-
-  private void runConnectorSync(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName,
-      OperationKey operationKey) {
     if (LOG.isDebugEnabled()) {
       String namespace =
           namespacePath == null
@@ -424,20 +414,6 @@ public class TableCommitService {
       LOG.debugf(
           "Connector sync request namespace=%s table=%s connectorId=%s",
           namespace, tableName == null ? "<missing>" : tableName, connector);
-    }
-    if (postCommitSyncOutboxService != null) {
-      String dedupe =
-          operationKey == null
-              ? null
-              : "commit-sync:"
-                  + operationKey.accountId()
-                  + ":"
-                  + operationKey.scope()
-                  + ":"
-                  + operationKey.operationId();
-      postCommitSyncOutboxService.enqueueConnectorSync(
-          dedupe, tableSupport, connectorId, namespacePath, tableName);
-      return;
     }
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);

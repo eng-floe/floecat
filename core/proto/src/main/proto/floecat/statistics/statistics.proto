@@ -18,6 +18,8 @@ package ai.floedb.floecat.statistics;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.statistics.rpc";
 
+import "floecat/common/common.proto";
+
 message ListJobsRequest {
 
 }
@@ -32,6 +34,20 @@ message AnalyzeRequest {
 
 message AnalyzeResponse {
 
+}
+
+message AnalyzeTableRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  repeated string destination_table_columns = 2;
+}
+
+message AnalyzeTableResponse {
+  uint64 metadata_tables_scanned = 1;
+  uint64 metadata_tables_changed = 2;
+  uint64 metadata_errors = 3;
+  uint64 stats_tables_scanned = 4;
+  uint64 stats_tables_changed = 5;
+  uint64 stats_errors = 6;
 }
 
 message GetJobRequest {
@@ -56,6 +72,7 @@ message CancelJobResponse {
 service StatsCapture {
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc Analyze(AnalyzeRequest) returns (AnalyzeResponse);
+  rpc AnalyzeTable(AnalyzeTableRequest) returns (AnalyzeTableResponse);
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
 }
