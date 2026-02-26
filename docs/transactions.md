@@ -113,7 +113,7 @@ Idempotency keys are supported on:
 The Iceberg REST gateway uses this gRPC flow as follows:
 
 1. Begins a transaction and stores `iceberg.commit.request-hash` in transaction properties.
-   - If `Idempotency-Key` / `Iceberg-Transaction-Id` is absent, begin idempotency falls back to `req:<catalog>:<request-hash>` so retries can resume the same backend transaction without cross-catalog key collisions.
+   - If `Idempotency-Key` is absent, begin idempotency falls back to `req:<catalog>:<request-hash>` so retries can resume the same backend transaction without cross-catalog key collisions.
 2. Reads current transaction state:
    - `TS_APPLIED` => returns HTTP 204 immediately.
    - `TS_APPLY_FAILED_CONFLICT` => returns HTTP 409 immediately.
@@ -128,7 +128,7 @@ The Iceberg REST gateway uses this gRPC flow as follows:
    Auth failures map to:
    - 401 for unauthenticated
    - 403 for permission denied
-6. Post-commit snapshot metadata updates + connector sync are outside backend atomic CAS boundary and are best-effort after apply (they no longer downgrade a committed apply to non-204).
+6. Post-commit side effects (snapshot prune + connector stats sync/reconcile trigger) are outside backend atomic CAS boundary and are best-effort after apply (they no longer downgrade a committed apply to non-204).
 7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
 8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
 

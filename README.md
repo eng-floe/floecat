@@ -94,6 +94,27 @@ make quickstart-down
 make quickstart-up QUICKSTART_OWNER=<owner> QUICKSTART_TAG=<tag>
 ```
 
+### DuckDB (host) with LocalStack
+
+From the repository root, start DuckDB with the LocalStack bootstrap script:
+
+```bash
+duckdb -init tools/duckdb-localstack-init.sql
+```
+
+The init script installs/loads required DuckDB extensions, configures S3 to use LocalStack, and
+attaches the Floecat Iceberg REST catalog as `iceberg_floecat`.
+
+Example sanity checks:
+
+```sql
+SHOW DATABASES;
+SELECT COUNT(*) FROM iceberg_floecat.delta.call_center;
+INSERT INTO iceberg_floecat.iceberg.barf VALUES (1);
+```
+
+If you launch DuckDB outside the repo root, pass the absolute init script path.
+
 ## Build, Test, and Run
 
 Contributor requirements: Java 25+, Maven, Make.

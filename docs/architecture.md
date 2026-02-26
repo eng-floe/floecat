@@ -70,6 +70,5 @@ The following modules compose the system (see linked docs for deep dives):
 
 - **Core table state (single-table commit):** synchronous request path updates table/snapshot state
   before returning success.
-- **Post-core side effects (connector sync/reconcile triggers):** asynchronous and retry-driven.
-- **Multi-table transaction endpoint:** staged sequential replay with idempotent request handling,
-  not a true cross-table ACID transaction manager.
+- **Post-core side effects (connector/snapshot sync actions):** best-effort after commit apply and not part of atomic commit state.
+- **Multi-table transaction endpoint:** request-level atomic apply through backend transactions, with idempotent replay and optimistic preconditions.

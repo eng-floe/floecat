@@ -387,6 +387,7 @@
         <version>${version.plugin.rat}</version>
         <configuration>
           <inputExcludes>
+            <inputExclude>**/*.sql</inputExclude>
             <inputExclude>**/*.csv</inputExclude>
             <inputExclude>**/*.json</inputExclude>
             <inputExclude>**/*.yml</inputExclude>
