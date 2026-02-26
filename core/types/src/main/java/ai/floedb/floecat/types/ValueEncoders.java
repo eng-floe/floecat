@@ -225,7 +225,7 @@ public final class ValueEncoders {
 
     switch (t.kind()) {
       case BOOLEAN:
-        return Boolean.parseBoolean(encoded);
+        return parseBooleanStrict(encoded);
       case INT:
         // All integer sizes decode as canonical 64-bit Long.
         return Long.parseLong(encoded);
@@ -293,6 +293,15 @@ public final class ValueEncoders {
       normalized = BigDecimal.ZERO;
     }
     return normalized.toPlainString();
+  }
+
+  private static boolean parseBooleanStrict(String raw) {
+    String normalized = raw.trim().toLowerCase(java.util.Locale.ROOT);
+    return switch (normalized) {
+      case "true", "t", "1" -> true;
+      case "false", "f", "0" -> false;
+      default -> throw new IllegalArgumentException("Invalid BOOLEAN value: " + raw);
+    };
   }
 
   private static byte[] asBytes(Object v) {
