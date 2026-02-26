@@ -61,7 +61,8 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
   wire message and the JVM `LogicalType`, preserving kind/precision/scale.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
-  any `Number` → `Long` for `INT`, string → `Instant` for `TIMESTAMP`/`TIMESTAMPTZ`).
+  any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP`,
+  string → `Instant` for `TIMESTAMPTZ`).
 - **`LogicalComparators`** – Provides `Comparator` instances for ordering values encoded as strings
   or byte buffers (used when building column stats).
 - **`ValueEncoders` / `MinMaxCodec`** – Encode scalar values into canonical strings/bytes, enabling

@@ -18,11 +18,13 @@ package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Base64;
 import java.util.List;
@@ -40,30 +42,56 @@ class ValueEncodersTest {
   }
 
   @Test
-  void timestampNumericValuesAreInterpretedByMagnitude() {
+  void timestampNumericValuesAreInterpretedByMagnitudeAsTimezoneNaive() {
     LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
 
-    Instant seconds = Instant.ofEpochSecond(1_000_000_000L); // below 10^12 → seconds interpretation
+    LocalDateTime seconds =
+        LocalDateTime.ofInstant(
+            Instant.ofEpochSecond(1_000_000_000L), java.time.ZoneOffset.UTC); // below 10^12
     assertEquals(seconds.toString(), ValueEncoders.encodeToString(timestampType, 1_000_000_000L));
 
-    Instant millis = Instant.ofEpochMilli(1_234_567_890_123L);
+    LocalDateTime millis =
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(1_234_567_890_123L), java.time.ZoneOffset.UTC);
     assertEquals(
         millis.toString(), ValueEncoders.encodeToString(timestampType, 1_234_567_890_123L));
 
     long microsValue = 1_234_567_890_123_456L;
-    Instant microsExpected =
-        Instant.ofEpochSecond(
-            Math.floorDiv(microsValue, 1_000_000L),
-            (int) (Math.floorMod(microsValue, 1_000_000L) * 1_000L));
+    LocalDateTime microsExpected =
+        LocalDateTime.ofInstant(
+            Instant.ofEpochSecond(
+                Math.floorDiv(microsValue, 1_000_000L),
+                (int) (Math.floorMod(microsValue, 1_000_000L) * 1_000L)),
+            java.time.ZoneOffset.UTC);
     assertEquals(
         microsExpected.toString(), ValueEncoders.encodeToString(timestampType, microsValue));
 
     long nanosValue = 1_234_567_890_123_456_789L;
-    Instant nanosExpected =
-        Instant.ofEpochSecond(
-            Math.floorDiv(nanosValue, 1_000_000_000L),
-            (int) Math.floorMod(nanosValue, 1_000_000_000L));
+    LocalDateTime nanosExpected =
+        LocalDateTime.ofInstant(
+            Instant.ofEpochSecond(
+                Math.floorDiv(nanosValue, 1_000_000_000L),
+                (int) Math.floorMod(nanosValue, 1_000_000_000L)),
+            java.time.ZoneOffset.UTC);
     assertEquals(nanosExpected.toString(), ValueEncoders.encodeToString(timestampType, nanosValue));
+  }
+
+  @Test
+  void timestamptzNumericValuesAreInterpretedByMagnitudeAsUtcInstants() {
+    LogicalType timestamptzType = LogicalType.of(LogicalKind.TIMESTAMPTZ);
+    Instant seconds = Instant.ofEpochSecond(1_000_000_000L);
+    assertEquals(seconds.toString(), ValueEncoders.encodeToString(timestamptzType, 1_000_000_000L));
+    assertTrue(ValueEncoders.encodeToString(timestamptzType, 1_000_000_000L).endsWith("Z"));
+  }
+
+  @Test
+  void decodeTimestampReturnsLocalDateTimeAndAcceptsLegacyInstantStrings() {
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    Object fromLocal = ValueEncoders.decodeFromString(timestampType, "2026-02-26T12:34:56.123456");
+    assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56, 123_456_000), fromLocal);
+
+    Object fromLegacyInstant =
+        ValueEncoders.decodeFromString(timestampType, "2026-02-26T12:34:56Z");
+    assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56), fromLegacyInstant);
   }
 
   @Test
@@ -149,6 +177,32 @@ class ValueEncodersTest {
   void dateNumericInterpretsEpochDay() {
     LogicalType dateType = LogicalType.of(LogicalKind.DATE);
     assertEquals("1970-01-02", ValueEncoders.encodeToString(dateType, 1L));
+  }
+
+  @Test
+  void intervalBinaryEncodingRoundTrips() {
+    LogicalType intervalType = LogicalType.of(LogicalKind.INTERVAL);
+    byte[] payload = new byte[] {1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0};
+
+    String encoded = ValueEncoders.encodeToString(intervalType, payload);
+    Object decoded = ValueEncoders.decodeFromString(intervalType, encoded);
+
+    assertEquals(Base64.getEncoder().encodeToString(payload), encoded);
+    assertTrue(decoded instanceof byte[]);
+    assertEquals(payload.length, ((byte[]) decoded).length);
+    for (int i = 0; i < payload.length; i++) {
+      assertEquals(payload[i], ((byte[]) decoded)[i]);
+    }
+  }
+
+  @Test
+  void intervalEncodingRejectsNonBinaryAndWrongWidth() {
+    LogicalType intervalType = LogicalType.of(LogicalKind.INTERVAL);
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(intervalType, "1 day"));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(intervalType, new byte[] {1, 2, 3}));
   }
 
   @Test

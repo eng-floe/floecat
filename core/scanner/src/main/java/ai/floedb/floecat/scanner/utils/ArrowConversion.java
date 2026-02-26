@@ -192,11 +192,17 @@ public final class ArrowConversion {
         Instant instant = Instant.parse(raw);
         return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
       } catch (DateTimeParseException ignored) {
-        return Long.parseLong(raw);
+        try {
+          LocalDateTime localDateTime = LocalDateTime.parse(raw);
+          Instant instant = localDateTime.toInstant(ZoneOffset.UTC);
+          return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+        } catch (DateTimeParseException ignored2) {
+          return Long.parseLong(raw);
+        }
       }
     }
     throw new IllegalArgumentException(
-        "TIMESTAMP value must be Instant, LocalDateTime, Number, or ISO instant string");
+        "TIMESTAMP value must be Instant, LocalDateTime, Number, or ISO local/instant string");
   }
 
   private static BigDecimal toDecimal(Object value) {

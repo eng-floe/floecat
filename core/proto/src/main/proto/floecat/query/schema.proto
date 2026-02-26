@@ -39,7 +39,7 @@ import "floecat/common/common.proto";
  */
 message SchemaColumn {
   string name = 1; // Logical column name.
-  string logical_type = 2; // e.g. BIGINT, STRING, DECIMAL, TIMESTAMP.
+  string logical_type = 2; // e.g. INT, STRING, DECIMAL(10,2), TIMESTAMP, TIMESTAMPTZ.
   int32 field_id = 3; // Stable format-level field ID.
   bool nullable = 4; // True if column may contain NULLs.
   string physical_path = 5; // Optional nested path in the physical layout.

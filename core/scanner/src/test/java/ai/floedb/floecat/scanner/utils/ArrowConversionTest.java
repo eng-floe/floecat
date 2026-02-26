@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.UUID;
@@ -204,6 +205,44 @@ class ArrowConversionTest {
       assertThat(binaryVector.get(0)).containsExactly(binary);
       assertThat(uuidVector.get(0)).hasSize(16);
       assertThat(intervalVector.getObject(0)).isEqualTo(interval);
+    }
+  }
+
+  @Test
+  void fill_parsesCanonicalTimestampStringsForTimestampAndTimestamptzVectors() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)),
+                    List.of()),
+                new Field(
+                    "tstz_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC")),
+                    List.of())));
+
+    String ts = "2026-02-26T12:34:56.123456";
+    String tstz = "2026-02-26T10:00:00Z";
+
+    LocalDateTime parsedTs = LocalDateTime.parse(ts);
+    Instant parsedTstz = Instant.parse(tstz);
+    long tsMicros =
+        parsedTs.toInstant(java.time.ZoneOffset.UTC).getEpochSecond() * 1_000_000L
+            + parsedTs.toInstant(java.time.ZoneOffset.UTC).getNano() / 1_000L;
+    long tstzMicros = parsedTstz.getEpochSecond() * 1_000_000L + parsedTstz.getNano() / 1_000L;
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      ArrowConversion.fill(root, List.of(new SystemObjectRow(new Object[] {ts, tstz})));
+
+      TimeStampMicroVector tsVector = (TimeStampMicroVector) root.getVector("ts_col");
+      TimeStampMicroTZVector tstzVector = (TimeStampMicroTZVector) root.getVector("tstz_col");
+
+      assertThat(tsVector.get(0)).isEqualTo(tsMicros);
+      assertThat(tstzVector.get(0)).isEqualTo(tstzMicros);
     }
   }
 

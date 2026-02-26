@@ -59,7 +59,7 @@ message ScalarValue {
     string dec = 6;
     int32 date = 7;
     int64 time  = 8;
-    int64 ts = 9;
+    int64 ts = 9;       // TIMESTAMP: micros since epoch from LocalDateTime interpreted in UTC (timezone-naive semantic; no UTC normalisation)
     int64 tstz = 10;     // TIMESTAMPTZ: microseconds-since-epoch UTC
     bytes interval = 11; // INTERVAL: 12 bytes — months(4) + days(4) + millis(4)
   }

@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 
 class LogicalComparatorsTest {
@@ -54,5 +56,25 @@ class LogicalComparatorsTest {
     assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.MAP)));
     assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.STRUCT)));
     assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.VARIANT)));
+  }
+
+  @Test
+  void timestampAndTimestamptzNormalizeToDifferentTemporalTypes() {
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    LogicalType timestamptzType = LogicalType.of(LogicalKind.TIMESTAMPTZ);
+
+    Object ts = LogicalComparators.normalize(timestampType, "2026-02-26T12:34:56.123456");
+    Object tstz = LogicalComparators.normalize(timestamptzType, "2026-02-26T12:34:56.123456Z");
+
+    assertTrue(ts instanceof LocalDateTime);
+    assertTrue(tstz instanceof Instant);
+  }
+
+  @Test
+  void timestampComparisonAcceptsLegacyInstantString() {
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    assertEquals(
+        0,
+        LogicalComparators.compare(timestampType, "2026-02-26T12:34:56", "2026-02-26T12:34:56Z"));
   }
 }

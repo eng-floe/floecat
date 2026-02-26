@@ -20,7 +20,10 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
@@ -180,16 +183,20 @@ public final class LogicalComparators {
 
       case TIMESTAMP:
         {
+          if (v instanceof LocalDateTime ts) {
+            return ts;
+          }
+
           if (v instanceof Instant i) {
-            return i;
+            return LocalDateTime.ofInstant(i, ZoneOffset.UTC);
           }
 
           if (v instanceof CharSequence s) {
-            return Instant.parse(s.toString());
+            return parseTimestampNoTz(s.toString());
           }
 
           if (v instanceof Number n) {
-            return instantFromNumber(n.longValue());
+            return localDateTimeFromNumber(n.longValue());
           }
 
           throw typeErr("TIMESTAMP", v);
@@ -197,7 +204,7 @@ public final class LogicalComparators {
 
       case TIMESTAMPTZ:
         {
-          // TIMESTAMPTZ is always UTC-normalised; comparison logic is identical to TIMESTAMP.
+          // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
           if (v instanceof Instant i) {
             return i;
           }
@@ -243,14 +250,30 @@ public final class LogicalComparators {
 
   private static Instant instantFromNumber(long v) {
     long av = Math.abs(v);
-    if (av >= 1_000_000_000_000L && av < 1_000_000_000_000_000L) {
-      return Instant.ofEpochMilli(v);
+    if (av >= 1_000_000_000_000_000_000L) {
+      long secs = Math.floorDiv(v, 1_000_000_000L);
+      long nanos = Math.floorMod(v, 1_000_000_000L);
+      return Instant.ofEpochSecond(secs, nanos);
     } else if (av >= 1_000_000_000_000_000L) {
       long secs = Math.floorDiv(v, 1_000_000L);
       long micros = Math.floorMod(v, 1_000_000L);
       return Instant.ofEpochSecond(secs, micros * 1_000L);
+    } else if (av >= 1_000_000_000_000L) {
+      return Instant.ofEpochMilli(v);
     } else {
       return Instant.ofEpochSecond(v);
+    }
+  }
+
+  private static LocalDateTime localDateTimeFromNumber(long v) {
+    return LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC);
+  }
+
+  private static LocalDateTime parseTimestampNoTz(String raw) {
+    try {
+      return LocalDateTime.parse(raw);
+    } catch (DateTimeParseException ignore) {
+      return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
     }
   }
 

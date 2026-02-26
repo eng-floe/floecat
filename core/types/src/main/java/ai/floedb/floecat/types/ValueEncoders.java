@@ -21,8 +21,11 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.UUID;
@@ -31,6 +34,7 @@ public final class ValueEncoders {
 
   private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
   private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ISO_LOCAL_TIME;
+  private static final DateTimeFormatter LOCAL_TS_FMT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
   private static final DateTimeFormatter INSTANT_FMT = DateTimeFormatter.ISO_INSTANT;
   private static final long NANOS_PER_DAY = 86_400_000_000_000L;
   private static final long TIME_SECONDS_THRESHOLD = 86_400L;
@@ -153,29 +157,33 @@ public final class ValueEncoders {
 
       case TIMESTAMP:
         {
-          // ISO-8601 instant with Z suffix; numeric inputs are interpreted heuristically
-          // (seconds/millis/micros/nanos) but the emitted string is always ISO.
+          // TIMESTAMP is timezone-naive and encoded as ISO local date-time (no zone suffix).
+          if (value instanceof LocalDateTime ts) {
+            return LOCAL_TS_FMT.format(ts);
+          }
+
           if (value instanceof Instant i) {
-            return INSTANT_FMT.format(i);
+            return LOCAL_TS_FMT.format(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
           }
 
           if (value instanceof Number n) {
-            return INSTANT_FMT.format(instantFromNumber(n.longValue()));
+            return LOCAL_TS_FMT.format(localDateTimeFromNumber(n.longValue()));
           }
 
           if (value instanceof CharSequence s) {
-            return INSTANT_FMT.format(Instant.parse(s.toString()));
+            return LOCAL_TS_FMT.format(parseTimestampNoTz(s.toString()));
           }
 
           throw new IllegalArgumentException(
-              "TIMESTAMP must be Instant, numeric seconds/millis/micros/nanos, or ISO-8601 String"
+              "TIMESTAMP must be LocalDateTime, Instant, numeric seconds/millis/micros/nanos,"
+                  + " or ISO-8601 local/instant String"
                   + " but was: "
                   + value.getClass().getName());
         }
 
       case TIMESTAMPTZ:
         {
-          // TIMESTAMPTZ is always UTC-normalised; encoding is identical to TIMESTAMP.
+          // TIMESTAMPTZ is always UTC-normalised and encoded as ISO instant with Z suffix.
           if (value instanceof Instant i) {
             return INSTANT_FMT.format(i);
           }
@@ -207,10 +215,7 @@ public final class ValueEncoders {
         return asUtf8String(value);
       case INTERVAL:
         // INTERVAL is encoded as Base64 of its 12-byte wire representation (months/days/millis).
-        if (value instanceof byte[] arr) {
-          return Base64.getEncoder().encodeToString(arr);
-        }
-        return value.toString();
+        return Base64.getEncoder().encodeToString(asIntervalBytes(value));
       case ARRAY:
       case MAP:
       case STRUCT:
@@ -246,9 +251,9 @@ public final class ValueEncoders {
       case TIME:
         return LocalTime.parse(encoded, TIME_FMT);
       case TIMESTAMP:
-        return Instant.parse(encoded);
+        return parseTimestampNoTz(encoded);
       case TIMESTAMPTZ:
-        // TIMESTAMPTZ is always UTC-normalised; decoding is identical to TIMESTAMP.
+        // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
         return Instant.parse(encoded);
       case STRING:
         return encoded;
@@ -302,6 +307,18 @@ public final class ValueEncoders {
     }
   }
 
+  private static LocalDateTime localDateTimeFromNumber(long v) {
+    return LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC);
+  }
+
+  private static LocalDateTime parseTimestampNoTz(String raw) {
+    try {
+      return LocalDateTime.parse(raw, LOCAL_TS_FMT);
+    } catch (DateTimeParseException ignore) {
+      return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
+    }
+  }
+
   private static String canonicalFloat(float v) {
     if (v == 0f) {
       return "0";
@@ -341,6 +358,27 @@ public final class ValueEncoders {
 
     throw new IllegalArgumentException(
         "BINARY value must be byte[] or ByteBuffer: " + v.getClass());
+  }
+
+  private static byte[] asIntervalBytes(Object v) {
+    byte[] bytes;
+    if (v instanceof byte[] arr) {
+      bytes = arr;
+    } else if (v instanceof ByteBuffer bb) {
+      ByteBuffer dup = bb.duplicate();
+      bytes = new byte[dup.remaining()];
+      dup.get(bytes);
+    } else if (v instanceof LogicalComparators.ByteArrayComparable cmp) {
+      bytes = cmp.copy();
+    } else {
+      throw new IllegalArgumentException(
+          "INTERVAL value must be byte[] or ByteBuffer, not " + v.getClass());
+    }
+    if (bytes.length != 12) {
+      throw new IllegalArgumentException(
+          "INTERVAL value must be exactly 12 bytes (months/days/millis), got " + bytes.length);
+    }
+    return bytes;
   }
 
   private static String asUtf8String(Object v) {
