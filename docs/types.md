@@ -54,10 +54,10 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale)`. For `DECIMAL`, `LogicalType` enforces only `precision ≥ 1` and
-  `0 ≤ scale ≤ precision`; there is **no upper bound on precision** at this layer. Format-specific
-  ceilings (e.g. Iceberg/Delta/Decimal128 cap at 38, BigQuery BIGNUMERIC at ~76) are enforced by
-  the connector layer, not by `LogicalType` itself. All other kinds reject precision/scale fields.
+  stores `(kind, precision, scale)`. Canonical `DECIMAL` semantics are `1 ≤ precision ≤ 38` and
+  `0 ≤ scale ≤ precision`. Connectors and consumers are responsible for enforcing source-format
+  compatibility while preserving the canonical max precision contract. All other kinds reject
+  precision/scale fields.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
   wire message and the JVM `LogicalType`, preserving kind/precision/scale.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
@@ -100,8 +100,8 @@ t.isScalar();    // true
 Most classes expose static helpers:
 ```java
 LogicalType t = LogicalType.decimal(38, 4);
-boolean compatible = LogicalCoercions.canCoerce(t, LogicalType.of(LogicalKind.DOUBLE));
-String encoded = MinMaxCodec.encodeDecimal(BigDecimal.valueOf(42), t);
+String logicalType = LogicalTypeFormat.format(t);
+String encoded = MinMaxCodec.encode(t, BigDecimal.valueOf(42));
 ```
 `LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)` and
 `.encodeLogicalType(LogicalType logicalType)` convert between canonical logical type strings and
@@ -141,8 +141,9 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
 
 ## Important Internal Details
 - **Validation** – `LogicalType` constructor enforces: for `DECIMAL`, `precision ≥ 1` and
-  `0 ≤ scale ≤ precision`. There is no upper bound on precision in `LogicalType`; format-specific
-  ceilings live in the connector layer. Non-decimal kinds reject precision/scale altogether.
+  `0 ≤ scale ≤ precision`. Canonical DECIMAL precision is capped at 38; enforcement happens at
+  connector/consumer boundaries where source formats are interpreted. Non-decimal kinds reject
+  precision/scale altogether.
 - **Complex types** – `isComplex()` kinds (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) have no meaningful
   min/max statistics. `LogicalComparators.normalize()` and `LogicalCoercions.coerceStatValue()`
   both return a neutral/pass-through result for these kinds.
