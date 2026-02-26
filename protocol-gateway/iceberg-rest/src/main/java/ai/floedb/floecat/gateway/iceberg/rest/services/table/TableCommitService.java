@@ -29,7 +29,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -51,7 +50,6 @@ public class TableCommitService {
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
-  @Inject TableCommitMaterializationService materializationService;
   @Inject CommitResponseBuilder responseBuilder;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
@@ -73,20 +71,13 @@ public class TableCommitService {
           "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
     }
 
-    PreCommitMaterializationResult preMaterialization =
-        preMaterializeForAtomicCommit(command, req, preCommitTable);
-    if (preMaterialization.error() != null) {
-      return preMaterialization.error();
-    }
-    TableRequests.Commit effectiveReq = preMaterialization.request();
-
     TransactionCommitRequest txRequest =
         new TransactionCommitRequest(
             List.of(
                 new TransactionCommitRequest.TableChange(
                     new TableIdentifierDto(command.namespacePath(), command.table()),
-                    effectiveReq.requirements(),
-                    effectiveReq.updates())));
+                    req.requirements(),
+                    req.updates())));
 
     Response txResponse =
         transactionCommitService.commit(
@@ -96,7 +87,7 @@ public class TableCommitService {
       return txResponse;
     }
 
-    return buildCommitResponse(command, effectiveReq);
+    return buildCommitResponse(command, req);
   }
 
   private Response buildCommitResponse(CommitCommand command, TableRequests.Commit req) {
@@ -162,96 +153,6 @@ public class TableCommitService {
       throw e;
     }
   }
-
-  private PreCommitMaterializationResult preMaterializeForAtomicCommit(
-      CommitCommand command, TableRequests.Commit req, Table preCommitTable) {
-    if (command == null
-        || req == null
-        || command.tableSupport() == null
-        || preCommitTable == null) {
-      return new PreCommitMaterializationResult(req, null);
-    }
-    if (!preCommitTable.hasResourceId()) {
-      return new PreCommitMaterializationResult(req, null);
-    }
-    ResourceId tableId = preCommitTable.getResourceId();
-    IcebergMetadata metadata = command.tableSupport().loadCurrentMetadata(preCommitTable);
-    CommitTableResponseDto initialResponse =
-        responseBuilder.buildInitialResponse(
-            command.table(), preCommitTable, tableId, null, req, command.tableSupport(), metadata);
-    if (initialResponse == null || initialResponse.metadata() == null) {
-      return new PreCommitMaterializationResult(req, null);
-    }
-    MaterializeMetadataResult materialized =
-        materializationService.materializeMetadata(
-            command.namespace(),
-            tableId,
-            command.table(),
-            preCommitTable,
-            initialResponse.metadata(),
-            initialResponse.metadataLocation());
-    if (materialized == null) {
-      return new PreCommitMaterializationResult(req, null);
-    }
-    if (materialized.error() != null) {
-      return new PreCommitMaterializationResult(null, materialized.error());
-    }
-    String resolvedLocation = materialized.metadataLocation();
-    if (resolvedLocation == null || resolvedLocation.isBlank()) {
-      return new PreCommitMaterializationResult(req, null);
-    }
-    return new PreCommitMaterializationResult(
-        withMetadataLocationProperty(req, resolvedLocation), null);
-  }
-
-  private TableRequests.Commit withMetadataLocationProperty(
-      TableRequests.Commit req, String metadataLocation) {
-    if (req == null || metadataLocation == null || metadataLocation.isBlank()) {
-      return req;
-    }
-    List<Map<String, Object>> updates =
-        req.updates() == null ? List.of() : List.copyOf(req.updates());
-    List<Map<String, Object>> merged = new java.util.ArrayList<>();
-    boolean hasMetadataLocation = false;
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      Object actionObj = update.get("action");
-      String action = actionObj instanceof String s ? s : null;
-      if (!"set-properties".equals(action)) {
-        merged.add(update);
-        continue;
-      }
-      Object rawProps = update.get("updates");
-      Map<String, Object> props = new LinkedHashMap<>();
-      if (rawProps instanceof Map<?, ?> map) {
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-          if (entry.getKey() != null && entry.getValue() != null) {
-            props.put(String.valueOf(entry.getKey()), entry.getValue());
-          }
-        }
-      }
-      Object existing = props.put("metadata-location", metadataLocation);
-      hasMetadataLocation = true;
-      if (existing != null && metadataLocation.equals(String.valueOf(existing))) {
-        merged.add(update);
-      } else {
-        Map<String, Object> rewritten = new LinkedHashMap<>(update);
-        rewritten.put("updates", Map.copyOf(props));
-        merged.add(Map.copyOf(rewritten));
-      }
-    }
-    if (!hasMetadataLocation) {
-      Map<String, Object> setProps = new LinkedHashMap<>();
-      setProps.put("action", "set-properties");
-      setProps.put("updates", Map.of("metadata-location", metadataLocation));
-      merged.add(Map.copyOf(setProps));
-    }
-    return new TableRequests.Commit(req.requirements(), List.copyOf(merged));
-  }
-
-  private record PreCommitMaterializationResult(TableRequests.Commit request, Response error) {}
 
   private void syncExternalSnapshotsIfNeeded(
       TableGatewaySupport tableSupport,

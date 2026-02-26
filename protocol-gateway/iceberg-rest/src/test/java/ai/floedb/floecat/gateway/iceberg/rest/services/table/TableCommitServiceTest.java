@@ -36,7 +36,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitReque
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -58,8 +57,6 @@ class TableCommitServiceTest {
       org.mockito.Mockito.mock(TableLifecycleService.class);
   private final TableCommitSideEffectService sideEffectService =
       org.mockito.Mockito.mock(TableCommitSideEffectService.class);
-  private final TableCommitMaterializationService materializationService =
-      org.mockito.Mockito.mock(TableCommitMaterializationService.class);
   private final CommitResponseBuilder responseBuilder =
       org.mockito.Mockito.mock(CommitResponseBuilder.class);
   private final SnapshotMetadataService snapshotMetadataService =
@@ -76,7 +73,6 @@ class TableCommitServiceTest {
     service.config = config;
     service.tableLifecycleService = tableLifecycleService;
     service.sideEffectService = sideEffectService;
-    service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
     service.snapshotMetadataService = snapshotMetadataService;
     service.tableMetadataImportService = tableMetadataImportService;
@@ -172,7 +168,7 @@ class TableCommitServiceTest {
   }
 
   @Test
-  void commitMaterializesBeforeAtomicCommitAndInjectsMetadataLocationUpdate() {
+  void commitDelegatesOriginalUpdatesWithoutLocalMetadataInjection() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table = tableRecord("cat:db:orders");
     when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
@@ -211,12 +207,6 @@ class TableCommitServiceTest {
     when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
     when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(
-            MaterializeMetadataResult.success(
-                metadataView.withMetadataLocation(
-                    "s3://warehouse/db/orders/metadata/00002.metadata.json"),
-                "s3://warehouse/db/orders/metadata/00002.metadata.json"));
     when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
@@ -229,15 +219,8 @@ class TableCommitServiceTest {
         .commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
     var updates = txRequestCaptor.getValue().tableChanges().get(0).updates();
     assertTrue(
-        updates.stream()
-            .filter(u -> "set-properties".equals(u.get("action")))
-            .map(u -> u.get("updates"))
-            .filter(Map.class::isInstance)
-            .map(Map.class::cast)
-            .anyMatch(
-                m ->
-                    "s3://warehouse/db/orders/metadata/00002.metadata.json"
-                        .equals(m.get("metadata-location"))));
+        updates.isEmpty(),
+        "single-table commit should forward caller updates unchanged at this layer");
   }
 
   @Test

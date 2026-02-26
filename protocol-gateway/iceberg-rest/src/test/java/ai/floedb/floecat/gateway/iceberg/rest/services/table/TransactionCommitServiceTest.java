@@ -204,6 +204,19 @@ class TransactionCommitServiceTest {
   }
 
   @Test
+  void commitRejectsDuplicateTableIdentifiers() {
+    Response response =
+        service.commit("pref", "idem", requestWithDuplicateTableChanges(), tableSupport);
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
+    assertEquals("ValidationException", error.error().type());
+    verify(transactionClient, never()).beginTransaction(any());
+    verify(transactionClient, never()).prepareTransaction(any());
+    verify(transactionClient, never()).commitTransaction(any());
+  }
+
+  @Test
   void commitReturnsNoContentWhenCommitReturnsApplied() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
@@ -1786,6 +1799,15 @@ class TransactionCommitServiceTest {
                 new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of()),
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(List.of("db"), "orders2"), List.of(), List.of())));
+  }
+
+  private TransactionCommitRequest requestWithDuplicateTableChanges() {
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of()),
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of())));
   }
 
   private boolean isValidBase64(String value) {

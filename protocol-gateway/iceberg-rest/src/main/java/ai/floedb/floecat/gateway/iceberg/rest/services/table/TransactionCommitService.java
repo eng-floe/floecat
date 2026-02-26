@@ -123,6 +123,11 @@ public class TransactionCommitService {
     if (changes.isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
+    String duplicateIdentifier = firstDuplicateTableIdentifier(changes);
+    if (duplicateIdentifier != null) {
+      return IcebergErrorResponses.validation(
+          "duplicate table identifier in table-changes: " + duplicateIdentifier);
+    }
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);
     String catalogName = catalogContext.catalogName();
     ResourceId catalogId = catalogContext.catalogId();
@@ -791,6 +796,32 @@ public class TransactionCommitService {
 
   private String encodePathSegment(String value) {
     return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
+  }
+
+  private String firstDuplicateTableIdentifier(List<TransactionCommitRequest.TableChange> changes) {
+    if (changes == null || changes.isEmpty()) {
+      return null;
+    }
+    Set<String> seen = new java.util.LinkedHashSet<>();
+    for (TransactionCommitRequest.TableChange change : changes) {
+      if (change == null || change.identifier() == null) {
+        continue;
+      }
+      String name = change.identifier().name();
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      List<String> namespacePath =
+          change.identifier().namespace() == null
+              ? List.of()
+              : List.copyOf(change.identifier().namespace());
+      String qualifiedName =
+          namespacePath.isEmpty() ? name : String.join(".", namespacePath) + "." + name;
+      if (!seen.add(qualifiedName)) {
+        return qualifiedName;
+      }
+    }
+    return null;
   }
 
   private String requestHash(List<TransactionCommitRequest.TableChange> changes) {
