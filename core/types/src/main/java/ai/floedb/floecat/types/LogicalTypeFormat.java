@@ -31,9 +31,10 @@ import java.util.regex.Pattern;
  *       non-decimal kinds this is the enum name (e.g. {@code "INT"}); for DECIMAL: {@code
  *       "DECIMAL(p,s)"}.
  *   <li>{@link #parse(String)} — parses a type string (canonical name, SQL alias, or parameterised
- *       form) back to a {@code LogicalType}. Case-insensitive, collapses internal whitespace,
- *       strips optional length parameters from non-DECIMAL types (e.g. {@code VARCHAR(10) →
- *       STRING}), and resolves aliases via {@link LogicalKind#fromName(String)}.
+ *       form) back to a {@code LogicalType}. Case-insensitive and whitespace-normalised.
+ *       Parameterised non-DECIMAL forms are accepted only for known SQL spellings where parameters
+ *       are meaningful in source systems (e.g. {@code VARCHAR(10)} → {@code STRING}, {@code
+ *       TIMESTAMP(6)} → {@code TIMESTAMP}); other parameterised forms fail fast.
  * </ul>
  *
  * <p><b>DECIMAL special case:</b> A bare {@code DECIMAL} or {@code NUMERIC} without explicit
@@ -50,10 +51,12 @@ public final class LogicalTypeFormat {
           "^\\s*(DECIMAL|NUMERIC)\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)\\s*$",
           Pattern.CASE_INSENSITIVE);
 
-  // Strip optional type parameters like VARCHAR(10), TIMESTAMP(6), DECIMAL(10,2).
-  // Keeps the base type name (including spaces, e.g., "DOUBLE PRECISION").
-  private static final Pattern BASE_TYPE_WITH_PARAMS_RE =
-      Pattern.compile("^\\s*([A-Z0-9_ ]+?)\\s*(?:\\(.*\\))?\\s*$");
+  // Generic "TYPE(params)" splitter for non-DECIMAL parameter validation.
+  private static final Pattern TYPE_WITH_PARAMS_RE =
+      Pattern.compile("^\\s*([A-Z0-9_ ]+?)\\s*\\(([^)]*)\\)\\s*$");
+
+  private static final Pattern INTEGER_PARAM_RE = Pattern.compile("^\\s*\\d+\\s*$");
+  private static final Pattern STRING_LEN_PARAM_RE = Pattern.compile("^\\s*(\\d+|MAX)\\s*$");
 
   public static String format(LogicalType t) {
     Objects.requireNonNull(t, "LogicalType");
@@ -81,11 +84,15 @@ public final class LogicalTypeFormat {
       return LogicalType.decimal(p, sc);
     }
 
-    // For all other types, strip optional parameters like VARCHAR(10), TIMESTAMP(6), etc.
-    Matcher base = BASE_TYPE_WITH_PARAMS_RE.matcher(normalized);
     String baseName = normalized;
-    if (base.matches()) {
-      baseName = base.group(1).trim();
+    Matcher withParams = TYPE_WITH_PARAMS_RE.matcher(normalized);
+    if (withParams.matches()) {
+      String candidateBase = withParams.group(1).trim();
+      String params = withParams.group(2).trim();
+      validateNonDecimalParameters(s, candidateBase, params);
+      baseName = candidateBase;
+    } else if (normalized.indexOf('(') >= 0 || normalized.indexOf(')') >= 0) {
+      throw new IllegalArgumentException("Unrecognized logical type: \"" + s + "\"");
     }
 
     LogicalKind k;
@@ -102,5 +109,32 @@ public final class LogicalTypeFormat {
     }
 
     return LogicalType.of(k);
+  }
+
+  private static void validateNonDecimalParameters(String raw, String baseName, String params) {
+    if (params.isEmpty()) {
+      throw new IllegalArgumentException("Unrecognized logical type: \"" + raw + "\"");
+    }
+    switch (baseName) {
+      case "VARCHAR", "CHAR", "CHARACTER", "NVARCHAR" -> {
+        if (!STRING_LEN_PARAM_RE.matcher(params).matches()) {
+          throw new IllegalArgumentException(
+              "Unrecognized logical type: \"" + raw + "\" (invalid string length parameter)");
+        }
+      }
+      case "TIME", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ" -> {
+        if (!INTEGER_PARAM_RE.matcher(params).matches()) {
+          throw new IllegalArgumentException(
+              "Unrecognized logical type: \"" + raw + "\" (invalid temporal precision parameter)");
+        }
+      }
+      default ->
+          throw new IllegalArgumentException(
+              "Unrecognized logical type: \""
+                  + raw
+                  + "\" (type does not accept parameters: "
+                  + baseName
+                  + ")");
+    }
   }
 }

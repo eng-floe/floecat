@@ -103,6 +103,14 @@ class LogicalCoercionsTest {
     LogicalType t = LogicalType.of(LogicalKind.BOOLEAN);
     assertEquals(Boolean.TRUE, LogicalCoercions.coerceStatValue(t, "true"));
     assertEquals(Boolean.FALSE, LogicalCoercions.coerceStatValue(t, "false"));
+    assertEquals(Boolean.TRUE, LogicalCoercions.coerceStatValue(t, "1"));
+    assertEquals(Boolean.FALSE, LogicalCoercions.coerceStatValue(t, "0"));
+  }
+
+  @Test
+  void booleanCoercionRejectsGarbageString() {
+    LogicalType t = LogicalType.of(LogicalKind.BOOLEAN);
+    assertThrows(IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(t, "yes"));
   }
 
   // ---------------------------------------------------------------------------
@@ -168,6 +176,15 @@ class LogicalCoercionsTest {
     LogicalType t = LogicalType.of(LogicalKind.BINARY);
     byte[] result = (byte[]) LogicalCoercions.coerceStatValue(t, "0xDEADBEEF");
     assertArrayEquals(new byte[] {(byte) 0xDE, (byte) 0xAD, (byte) 0xBE, (byte) 0xEF}, result);
+  }
+
+  @Test
+  void binaryCoercionRejectsInvalidHex() {
+    LogicalType t = LogicalType.of(LogicalKind.BINARY);
+    assertThrows(
+        IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(t, "0xABC"));
+    assertThrows(
+        IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(t, "0xDEADBEG0"));
   }
 
   // ---------------------------------------------------------------------------

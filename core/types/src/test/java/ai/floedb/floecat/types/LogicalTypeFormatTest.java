@@ -117,6 +117,7 @@ class LogicalTypeFormatTest {
   void parseStripsParametersFromKnownBaseTypes() {
     // VARCHAR(255) → STRING; TIMESTAMP(6) → TIMESTAMP; CHAR(10) → STRING
     assertThat(LogicalTypeFormat.parse("VARCHAR(255)").kind()).isEqualTo(LogicalKind.STRING);
+    assertThat(LogicalTypeFormat.parse("VARCHAR(MAX)").kind()).isEqualTo(LogicalKind.STRING);
     assertThat(LogicalTypeFormat.parse("CHAR(10)").kind()).isEqualTo(LogicalKind.STRING);
     assertThat(LogicalTypeFormat.parse("TIMESTAMP(6)").kind()).isEqualTo(LogicalKind.TIMESTAMP);
     assertThat(LogicalTypeFormat.parse("TIME(6)").kind()).isEqualTo(LogicalKind.TIME);
@@ -164,6 +165,29 @@ class LogicalTypeFormatTest {
     assertThatThrownBy(() -> LogicalTypeFormat.parse("INT96"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("INT96");
+  }
+
+  @Test
+  void parseRejectsParametersForUnsupportedBaseTypes() {
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("INT(10)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not accept parameters");
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("BOOLEAN(1)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not accept parameters");
+  }
+
+  @Test
+  void parseRejectsMalformedParametersOnSupportedBaseTypes() {
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("INT(bad)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not accept parameters");
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("VARCHAR(foo)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid string length parameter");
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("TIMESTAMP(bad)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("invalid temporal precision parameter");
   }
 
   @Test

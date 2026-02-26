@@ -25,6 +25,7 @@ import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -83,7 +84,7 @@ public final class LogicalCoercions {
         if (v instanceof Boolean b) {
           return b;
         }
-        return Boolean.parseBoolean(v.toString());
+        return parseBooleanStrict(v);
       }
       case INT -> {
         // All integer sizes collapse to canonical 64-bit Long.
@@ -146,17 +147,13 @@ public final class LogicalCoercions {
         }
         String s = v.toString().trim();
         if (s.startsWith("0x") || s.startsWith("0X")) {
-          String hex = s.substring(2);
-          int len = hex.length();
-          byte[] out = new byte[len / 2];
-          for (int i = 0; i < out.length; i++) {
-            int hi = Character.digit(hex.charAt(2 * i), 16);
-            int lo = Character.digit(hex.charAt(2 * i + 1), 16);
-            out[i] = (byte) ((hi << 4) | lo);
-          }
-          return out;
+          return decodeHexBytes(s.substring(2));
         }
-        return Base64.getDecoder().decode(s);
+        try {
+          return Base64.getDecoder().decode(s);
+        } catch (IllegalArgumentException e) {
+          throw new IllegalArgumentException("Invalid base64 BINARY value: " + s, e);
+        }
       }
       case DATE -> {
         if (v instanceof LocalDate d) {
@@ -259,5 +256,31 @@ public final class LogicalCoercions {
       return v * 1_000L; // microseconds
     }
     return v; // nanoseconds
+  }
+
+  private static boolean parseBooleanStrict(Object v) {
+    String raw = v.toString().trim();
+    String normalized = raw.toLowerCase(Locale.ROOT);
+    return switch (normalized) {
+      case "true", "t", "1" -> true;
+      case "false", "f", "0" -> false;
+      default -> throw new IllegalArgumentException("Invalid BOOLEAN value: " + raw);
+    };
+  }
+
+  private static byte[] decodeHexBytes(String hex) {
+    if ((hex.length() & 1) != 0) {
+      throw new IllegalArgumentException("Invalid hex BINARY value (odd length): " + hex);
+    }
+    byte[] out = new byte[hex.length() / 2];
+    for (int i = 0; i < out.length; i++) {
+      int hi = Character.digit(hex.charAt(2 * i), 16);
+      int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+      if (hi < 0 || lo < 0) {
+        throw new IllegalArgumentException("Invalid hex BINARY value: " + hex);
+      }
+      out[i] = (byte) ((hi << 4) | lo);
+    }
+    return out;
   }
 }
