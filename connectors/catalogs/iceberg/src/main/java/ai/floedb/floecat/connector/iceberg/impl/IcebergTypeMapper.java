@@ -25,16 +25,22 @@ final class IcebergTypeMapper {
   static LogicalType toLogical(Type t) {
     return switch (t.typeId()) {
       case BOOLEAN -> LogicalType.of(LogicalKind.BOOLEAN);
-      case INTEGER -> LogicalType.of(LogicalKind.INT32);
-      case LONG -> LogicalType.of(LogicalKind.INT64);
-      case FLOAT -> LogicalType.of(LogicalKind.FLOAT32);
-      case DOUBLE -> LogicalType.of(LogicalKind.FLOAT64);
+      case INTEGER, LONG -> LogicalType.of(LogicalKind.INT);
+      case FLOAT -> LogicalType.of(LogicalKind.FLOAT);
+      case DOUBLE -> LogicalType.of(LogicalKind.DOUBLE);
       case DATE -> LogicalType.of(LogicalKind.DATE);
       case TIME -> LogicalType.of(LogicalKind.TIME);
-      case TIMESTAMP -> LogicalType.of(LogicalKind.TIMESTAMP);
+      case TIMESTAMP -> {
+        var ts = (Types.TimestampType) t;
+        yield LogicalType.of(
+            ts.shouldAdjustToUTC() ? LogicalKind.TIMESTAMPTZ : LogicalKind.TIMESTAMP);
+      }
       case STRING -> LogicalType.of(LogicalKind.STRING);
-      case BINARY -> LogicalType.of(LogicalKind.BINARY);
+      case FIXED, BINARY -> LogicalType.of(LogicalKind.BINARY);
       case UUID -> LogicalType.of(LogicalKind.UUID);
+      case LIST -> LogicalType.of(LogicalKind.ARRAY);
+      case MAP -> LogicalType.of(LogicalKind.MAP);
+      case STRUCT -> LogicalType.of(LogicalKind.STRUCT);
       case DECIMAL -> {
         var d = (Types.DecimalType) t;
         yield LogicalType.decimal(d.precision(), d.scale());

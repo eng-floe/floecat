@@ -36,25 +36,14 @@ public final class LogicalCoercions {
         }
         return Boolean.parseBoolean(v.toString());
       }
-      case INT16 -> {
-        if (v instanceof Number n) {
-          return n.shortValue();
-        }
-        return Short.parseShort(v.toString());
-      }
-      case INT32 -> {
-        if (v instanceof Number n) {
-          return n.intValue();
-        }
-        return Integer.parseInt(v.toString());
-      }
-      case INT64 -> {
+      case INT -> {
+        // All integer sizes collapse to canonical 64-bit Long.
         if (v instanceof Number n) {
           return n.longValue();
         }
         return Long.parseLong(v.toString());
       }
-      case FLOAT32 -> {
+      case FLOAT -> {
         if (v instanceof Number n) {
           return n.floatValue();
         }
@@ -69,7 +58,7 @@ public final class LogicalCoercions {
         }
         return Float.parseFloat(s);
       }
-      case FLOAT64 -> {
+      case DOUBLE -> {
         if (v instanceof Number n) {
           return n.doubleValue();
         }
@@ -164,12 +153,36 @@ public final class LogicalCoercions {
         }
         return Instant.ofEpochSecond(x);
       }
+      case TIMESTAMPTZ -> {
+        // TIMESTAMPTZ is always UTC-normalised; coercion logic is identical to TIMESTAMP.
+        if (v instanceof Instant i) {
+          return i;
+        }
+        String s = v.toString();
+        try {
+          return Instant.parse(s);
+        } catch (Exception ignore) {
+        }
+        long x = Long.parseLong(s);
+        long ax = Math.abs(x);
+        if (ax >= 1_000_000_000_000L && ax < 1_000_000_000_000_000L) {
+          return Instant.ofEpochMilli(x);
+        }
+        if (ax >= 1_000_000_000_000_000L) {
+          long secs = Math.floorDiv(x, 1_000_000L);
+          long micros = Math.floorMod(x, 1_000_000L);
+          return Instant.ofEpochSecond(secs, micros * 1_000L);
+        }
+        return Instant.ofEpochSecond(x);
+      }
       case UUID -> {
         if (v instanceof UUID u) {
           return u;
         }
         return UUID.fromString(v.toString());
       }
+        // INTERVAL, JSON, and complex types (ARRAY, MAP, STRUCT, VARIANT) have no standard
+        // coercion; return the value unchanged.
     }
     return v;
   }

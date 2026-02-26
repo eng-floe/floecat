@@ -68,14 +68,15 @@ class ValueEncodersTest {
     assertEquals("true", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.BOOLEAN), true));
     assertEquals("false", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.BOOLEAN), false));
 
+    // All integer sizes collapse to canonical INT (64-bit Long).
     assertEquals(
-        "-123", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT16), (short) -123));
-    assertEquals("456", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT32), 456));
-    assertEquals("-789", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT64), -789L));
+        "-123", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT), (short) -123));
+    assertEquals("456", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT), 456));
+    assertEquals("-789", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.INT), -789L));
 
-    assertEquals("0", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.FLOAT32), -0f));
-    assertEquals("1.5", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.FLOAT32), 1.5f));
-    assertEquals("0", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.FLOAT64), -0d));
+    assertEquals("0", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.FLOAT), -0f));
+    assertEquals("1.5", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.FLOAT), 1.5f));
+    assertEquals("0", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.DOUBLE), -0d));
 
     LocalDate date = LocalDate.of(2024, 1, 2);
     assertEquals(
@@ -112,8 +113,8 @@ class ValueEncodersTest {
 
   @Test
   void floatSpecialTokensStayLiteral() {
-    LogicalType floatType = LogicalType.of(LogicalKind.FLOAT32);
-    LogicalType doubleType = LogicalType.of(LogicalKind.FLOAT64);
+    LogicalType floatType = LogicalType.of(LogicalKind.FLOAT);
+    LogicalType doubleType = LogicalType.of(LogicalKind.DOUBLE);
     assertEquals("NaN", ValueEncoders.encodeToString(floatType, Float.NaN));
     assertEquals("Infinity", ValueEncoders.encodeToString(floatType, Float.POSITIVE_INFINITY));
     assertEquals("-Infinity", ValueEncoders.encodeToString(floatType, Float.NEGATIVE_INFINITY));

@@ -28,7 +28,11 @@ public final class LogicalType {
     if (kind == LogicalKind.DECIMAL) {
       if (precision == null || scale == null || precision < 1 || scale < 0 || scale > precision) {
         throw new IllegalArgumentException(
-            "Invalid DECIMAL(precision, scale): " + precision + ", " + scale);
+            "Invalid DECIMAL(precision, scale): "
+                + precision
+                + ", "
+                + scale
+                + " (precision must be ≥ 1, scale must be 0–precision)");
       }
     } else {
       if (precision != null || scale != null) {
@@ -59,8 +63,39 @@ public final class LogicalType {
     return scale;
   }
 
+  /** Returns true iff this is a DECIMAL type. */
   public boolean isDecimal() {
     return kind == LogicalKind.DECIMAL;
+  }
+
+  /** Returns true iff this is a numeric type: INT, FLOAT, DOUBLE, or DECIMAL. */
+  public boolean isNumeric() {
+    return kind == LogicalKind.INT
+        || kind == LogicalKind.FLOAT
+        || kind == LogicalKind.DOUBLE
+        || kind == LogicalKind.DECIMAL;
+  }
+
+  /** Returns true iff this is a temporal type: DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or INTERVAL. */
+  public boolean isTemporal() {
+    return kind == LogicalKind.DATE
+        || kind == LogicalKind.TIME
+        || kind == LogicalKind.TIMESTAMP
+        || kind == LogicalKind.TIMESTAMPTZ
+        || kind == LogicalKind.INTERVAL;
+  }
+
+  /** Returns true iff this is a complex/container type: ARRAY, MAP, STRUCT, or VARIANT. */
+  public boolean isComplex() {
+    return kind == LogicalKind.ARRAY
+        || kind == LogicalKind.MAP
+        || kind == LogicalKind.STRUCT
+        || kind == LogicalKind.VARIANT;
+  }
+
+  /** Returns true iff this is not a complex type (i.e., a scalar or semi-structured type). */
+  public boolean isScalar() {
+    return !isComplex();
   }
 
   @Override

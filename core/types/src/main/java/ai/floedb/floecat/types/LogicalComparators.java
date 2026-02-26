@@ -52,19 +52,14 @@ public final class LogicalComparators {
       case BOOLEAN:
         return (Boolean) v;
 
-      case INT16:
-        return (v instanceof Short) ? v : ((Number) v).shortValue();
-
-      case INT32:
-        return (v instanceof Integer) ? v : ((Number) v).intValue();
-
-      case INT64:
+      case INT:
+        // All integer sizes collapse to canonical 64-bit Long.
         return (v instanceof Long) ? v : ((Number) v).longValue();
 
-      case FLOAT32:
+      case FLOAT:
         return (v instanceof Float) ? v : ((Number) v).floatValue();
 
-      case FLOAT64:
+      case DOUBLE:
         return (v instanceof Double) ? v : ((Number) v).doubleValue();
 
       case DECIMAL:
@@ -153,6 +148,27 @@ public final class LogicalComparators {
 
           throw typeErr("TIMESTAMP", v);
         }
+
+      case TIMESTAMPTZ:
+        {
+          // TIMESTAMPTZ is always UTC-normalised; comparison logic is identical to TIMESTAMP.
+          if (v instanceof Instant i) {
+            return i;
+          }
+
+          if (v instanceof CharSequence s) {
+            return Instant.parse(s.toString());
+          }
+
+          if (v instanceof Number n) {
+            return instantFromNumber(n.longValue());
+          }
+
+          throw typeErr("TIMESTAMPTZ", v);
+        }
+
+        // INTERVAL, JSON, and complex types (ARRAY, MAP, STRUCT, VARIANT) have no meaningful
+        // min/max stats ordering; callers should check for null before comparing.
     }
     return null;
   }

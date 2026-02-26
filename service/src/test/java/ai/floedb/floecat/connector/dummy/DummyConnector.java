@@ -48,14 +48,14 @@ public final class DummyConnector implements FloecatConnector {
 
   private static final List<Col> LEAF_COLS =
       List.of(
-          new Col(1, "id", "INT64", 1),
+          new Col(1, "id", "INT", 1),
           new Col(2, "ts", "TIMESTAMP", 2),
           // struct user (3) -> id(4), name(5)
-          new Col(4, "user.id", "INT64", 3),
+          new Col(4, "user.id", "INT", 3),
           new Col(5, "user.name", "STRING", 4),
           // list items (6) -> element(7 struct) -> sku(8), qty(9)
           new Col(8, "items.element.sku", "STRING", 5),
-          new Col(9, "items.element.qty", "INT32", 6),
+          new Col(9, "items.element.qty", "INT", 6),
           // map attrs (10) -> key(11), value(12)
           new Col(11, "attrs.key", "STRING", 7),
           new Col(12, "attrs.value", "STRING", 8));

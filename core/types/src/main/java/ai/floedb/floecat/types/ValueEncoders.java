@@ -54,37 +54,9 @@ public final class ValueEncoders {
       case BOOLEAN:
         // Boolean bounds are lowercase "true" or "false".
         return Boolean.toString((Boolean) value);
-      case INT16:
+      case INT:
+        // All integer sizes collapse to canonical 64-bit INT encoded as base-10.
         if (value instanceof Number n) {
-          // Signed integer siblings are emitted as canonical base-10 digits, no leading zeros.
-          return Short.toString(n.shortValue());
-        }
-        if (value instanceof CharSequence s) {
-          String str = trimOrNull(s);
-          if (str == null) {
-            return null;
-          }
-          return Short.toString(Short.parseShort(str));
-        }
-        throw new ClassCastException(
-            "INT16 value must be Number or String but was " + value.getClass());
-      case INT32:
-        if (value instanceof Number n) {
-          // INT32 bounds use base-10 decimals with optional '-' sign.
-          return Integer.toString(n.intValue());
-        }
-        if (value instanceof CharSequence s) {
-          String str = trimOrNull(s);
-          if (str == null) {
-            return null;
-          }
-          return Integer.toString(Integer.parseInt(str));
-        }
-        throw new ClassCastException(
-            "INT32 value must be Number or String but was " + value.getClass());
-      case INT64:
-        if (value instanceof Number n) {
-          // INT64 bounds follow the same base-10 encoding as INT32.
           return Long.toString(n.longValue());
         }
         if (value instanceof CharSequence s) {
@@ -95,8 +67,8 @@ public final class ValueEncoders {
           return Long.toString(Long.parseLong(str));
         }
         throw new ClassCastException(
-            "INT64 value must be Number or String but was " + value.getClass());
-      case FLOAT32:
+            "INT value must be Number or String but was " + value.getClass());
+      case FLOAT:
         // Floating bounds follow Float.toString (includes "NaN", "Infinity", "-Infinity")
         // but normalize ±0 to a stable "0".
         if (value instanceof Number n) {
@@ -110,8 +82,8 @@ public final class ValueEncoders {
           return canonicalFloat(Float.parseFloat(str));
         }
         throw new ClassCastException(
-            "FLOAT32 value must be Number or String but was " + value.getClass());
-      case FLOAT64:
+            "FLOAT value must be Number or String but was " + value.getClass());
+      case DOUBLE:
         if (value instanceof Number n) {
           return canonicalDouble(n.doubleValue());
         }
@@ -123,7 +95,7 @@ public final class ValueEncoders {
           return canonicalDouble(Double.parseDouble(str));
         }
         throw new ClassCastException(
-            "FLOAT64 value must be Number or String but was " + value.getClass());
+            "DOUBLE value must be Number or String but was " + value.getClass());
 
       case DATE:
         {
@@ -181,7 +153,7 @@ public final class ValueEncoders {
 
       case TIMESTAMP:
         {
-          // UTC ISO-8601 instant with Z suffix; numeric inputs are interpreted heuristically
+          // ISO-8601 instant with Z suffix; numeric inputs are interpreted heuristically
           // (seconds/millis/micros/nanos) but the emitted string is always ISO.
           if (value instanceof Instant i) {
             return INSTANT_FMT.format(i);
@@ -201,6 +173,27 @@ public final class ValueEncoders {
                   + value.getClass().getName());
         }
 
+      case TIMESTAMPTZ:
+        {
+          // TIMESTAMPTZ is always UTC-normalised; encoding is identical to TIMESTAMP.
+          if (value instanceof Instant i) {
+            return INSTANT_FMT.format(i);
+          }
+
+          if (value instanceof Number n) {
+            return INSTANT_FMT.format(instantFromNumber(n.longValue()));
+          }
+
+          if (value instanceof CharSequence s) {
+            return INSTANT_FMT.format(Instant.parse(s.toString()));
+          }
+
+          throw new IllegalArgumentException(
+              "TIMESTAMPTZ must be Instant, numeric seconds/millis/micros/nanos, or ISO-8601"
+                  + " String but was: "
+                  + value.getClass().getName());
+        }
+
       case STRING:
         return asUtf8String(value);
       case UUID:
@@ -209,6 +202,21 @@ public final class ValueEncoders {
         return Base64.getEncoder().encodeToString(asBytes(value));
       case DECIMAL:
         return canonicalDecimal((BigDecimal) value);
+      case JSON:
+        // JSON is stored as a UTF-8 string; encoding is identical to STRING.
+        return asUtf8String(value);
+      case INTERVAL:
+        // INTERVAL is encoded as Base64 of its 12-byte wire representation (months/days/millis).
+        if (value instanceof byte[] arr) {
+          return Base64.getEncoder().encodeToString(arr);
+        }
+        return value.toString();
+      case ARRAY:
+      case MAP:
+      case STRUCT:
+      case VARIANT:
+        // Complex types are opaque at the stats layer; encode as Base64 binary.
+        return Base64.getEncoder().encodeToString(asBytes(value));
 
       default:
         return value.toString();
@@ -225,15 +233,12 @@ public final class ValueEncoders {
     switch (t.kind()) {
       case BOOLEAN:
         return Boolean.parseBoolean(encoded);
-      case INT16:
-        return Short.parseShort(encoded);
-      case INT32:
-        return Integer.parseInt(encoded);
-      case INT64:
+      case INT:
+        // All integer sizes decode as canonical 64-bit Long.
         return Long.parseLong(encoded);
-      case FLOAT32:
+      case FLOAT:
         return Float.parseFloat(encoded);
-      case FLOAT64:
+      case DOUBLE:
         return Double.parseDouble(encoded);
       case DATE:
         return LocalDate.parse(encoded, DATE_FMT);
@@ -241,11 +246,23 @@ public final class ValueEncoders {
         return LocalTime.parse(encoded, TIME_FMT);
       case TIMESTAMP:
         return Instant.parse(encoded);
+      case TIMESTAMPTZ:
+        // TIMESTAMPTZ is always UTC-normalised; decoding is identical to TIMESTAMP.
+        return Instant.parse(encoded);
       case STRING:
+        return encoded;
+      case JSON:
+        // JSON is stored as a UTF-8 string; decoding is identical to STRING.
         return encoded;
       case UUID:
         return UUID.fromString(encoded);
       case BINARY:
+        return Base64.getDecoder().decode(encoded);
+      case INTERVAL:
+      case ARRAY:
+      case MAP:
+      case STRUCT:
+      case VARIANT:
         return Base64.getDecoder().decode(encoded);
       case DECIMAL:
         return new BigDecimal(encoded);

@@ -24,17 +24,24 @@ message LogicalType {
   enum Kind {
     TK_UNSPECIFIED = 0;
     TK_BOOLEAN = 1;
-    TK_INT32 = 2;
-    TK_INT64 = 3;
-    TK_FLOAT32 = 4;
-    TK_FLOAT64 = 5;
+    TK_INT = 2;          // All integers are 64-bit (was TK_INT32; field number reused)
+    // Field number 3 retired (was TK_INT64).
+    TK_FLOAT = 4;        // 32-bit IEEE-754 (was TK_FLOAT32; field number reused)
+    TK_DOUBLE = 5;       // 64-bit IEEE-754 (was TK_FLOAT64; field number reused)
     TK_DATE = 6;
     TK_TIME = 7;
-    TK_TIMESTAMP = 8;
+    TK_TIMESTAMP = 8;    // Without UTC normalisation
     TK_STRING = 9;
     TK_BINARY = 10;
     TK_UUID = 11;
     TK_DECIMAL = 12;
+    TK_TIMESTAMPTZ = 13; // UTC-normalised timestamp
+    TK_INTERVAL = 14;
+    TK_JSON = 15;
+    TK_ARRAY = 16;
+    TK_MAP = 17;
+    TK_STRUCT = 18;
+    TK_VARIANT = 19;
   }
   Kind kind = 1;
   int32 precision = 2;
@@ -53,5 +60,7 @@ message ScalarValue {
     int32 date = 7;
     int64 time  = 8;
     int64 ts = 9;
+    int64 tstz = 10;     // TIMESTAMPTZ: microseconds-since-epoch UTC
+    bytes interval = 11; // INTERVAL: 12 bytes — months(4) + days(4) + millis(4)
   }
 }

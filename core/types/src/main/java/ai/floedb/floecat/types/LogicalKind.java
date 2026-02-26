@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.types;
 
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -25,44 +26,127 @@ import java.util.Map;
  *
  * <p>This enum represents only the logical category. Type parameters (precision, scale, timezone,
  * length, etc.) are handled outside of this enum.
+ *
+ * <p>Every integer size from source formats (TINYINT, SMALLINT, INT, BIGINT) collapses to {@link
+ * #INT} (64-bit). Complex types ({@link #ARRAY}, {@link #MAP}, {@link #STRUCT}, {@link #VARIANT})
+ * are non-parameterised here; nested structure is captured by child {@code SchemaColumn} rows with
+ * their own paths.
  */
 public enum LogicalKind {
+  // Scalar numeric
   BOOLEAN,
-  INT16,
-  INT32,
-  INT64,
-  FLOAT32,
-  FLOAT64,
-  DATE,
-  TIME,
-  TIMESTAMP,
+  INT,
+  FLOAT,
+  DOUBLE,
+  DECIMAL,
+
+  // Scalar string / binary
   STRING,
   BINARY,
   UUID,
-  DECIMAL;
 
-  private static final Map<String, LogicalKind> ALIASES =
-      Map.ofEntries(
-          Map.entry("INTEGER", INT32),
-          Map.entry("INT", INT32),
-          Map.entry("SMALLINT", INT16),
-          Map.entry("BIGINT", INT64),
-          Map.entry("LONG", INT64),
-          Map.entry("FLOAT", FLOAT32),
-          Map.entry("REAL", FLOAT32),
-          Map.entry("DOUBLE", FLOAT64),
-          Map.entry("BOOLEAN", BOOLEAN),
-          Map.entry("BOOL", BOOLEAN),
-          Map.entry("VARCHAR", STRING),
-          Map.entry("CHAR", STRING),
-          Map.entry("CHARACTER", STRING),
-          Map.entry("TEXT", STRING),
-          Map.entry("STRING", STRING),
-          Map.entry("VARBINARY", BINARY),
-          Map.entry("BINARY", BINARY),
-          Map.entry("UUID", UUID),
-          Map.entry("DECIMAL", DECIMAL),
-          Map.entry("NUMERIC", DECIMAL));
+  // Scalar temporal
+  DATE,
+  TIME,
+  TIMESTAMP,
+  TIMESTAMPTZ,
+  INTERVAL,
+
+  // Semi-structured
+  JSON,
+
+  // Complex / container (non-parameterised)
+  ARRAY,
+  MAP,
+  STRUCT,
+  VARIANT;
+
+  private static final Map<String, LogicalKind> ALIASES;
+
+  static {
+    Map<String, LogicalKind> m = new HashMap<>();
+
+    // INT — all integer sizes from source formats collapse to 64-bit INT
+    m.put("INT", INT);
+    m.put("INTEGER", INT);
+    m.put("BIGINT", INT);
+    m.put("LONG", INT);
+    m.put("SMALLINT", INT);
+    m.put("TINYINT", INT);
+    m.put("INT8", INT);
+    m.put("INT4", INT);
+    m.put("INT2", INT);
+    m.put("UINT8", INT);
+    m.put("UINT4", INT);
+    m.put("UINT2", INT);
+
+    // FLOAT — 32-bit IEEE-754
+    m.put("FLOAT", FLOAT);
+    m.put("FLOAT4", FLOAT);
+    m.put("FLOAT32", FLOAT);
+    m.put("REAL", FLOAT);
+
+    // DOUBLE — 64-bit IEEE-754
+    m.put("DOUBLE", DOUBLE);
+    m.put("FLOAT8", DOUBLE);
+    m.put("FLOAT64", DOUBLE);
+    m.put("DOUBLE PRECISION", DOUBLE);
+
+    // STRING
+    m.put("STRING", STRING);
+    m.put("VARCHAR", STRING);
+    m.put("CHAR", STRING);
+    m.put("CHARACTER", STRING);
+    m.put("TEXT", STRING);
+    m.put("NTEXT", STRING);
+    m.put("NVARCHAR", STRING);
+
+    // BINARY
+    m.put("BINARY", BINARY);
+    m.put("VARBINARY", BINARY);
+    m.put("BYTEA", BINARY);
+    m.put("BLOB", BINARY);
+    m.put("IMAGE", BINARY);
+
+    // BOOLEAN
+    m.put("BOOLEAN", BOOLEAN);
+    m.put("BOOL", BOOLEAN);
+    m.put("BIT", BOOLEAN);
+
+    // UUID
+    m.put("UUID", UUID);
+
+    // DECIMAL
+    m.put("DECIMAL", DECIMAL);
+    m.put("NUMERIC", DECIMAL);
+
+    // TIMESTAMPTZ
+    m.put("TIMESTAMPTZ", TIMESTAMPTZ);
+    m.put("TIMESTAMP WITH TIME ZONE", TIMESTAMPTZ);
+
+    // TIMESTAMP
+    m.put("TIMESTAMP", TIMESTAMP);
+    m.put("DATETIME", TIMESTAMP);
+
+    // INTERVAL
+    m.put("INTERVAL", INTERVAL);
+
+    // JSON
+    m.put("JSON", JSON);
+    m.put("JSONB", JSON);
+
+    // DATE / TIME
+    m.put("DATE", DATE);
+    m.put("TIME", TIME);
+
+    // Complex types
+    m.put("ARRAY", ARRAY);
+    m.put("MAP", MAP);
+    m.put("STRUCT", STRUCT);
+    m.put("VARIANT", VARIANT);
+
+    ALIASES = Map.copyOf(m);
+  }
 
   public static LogicalKind fromName(String candidate) {
     if (candidate == null) {
@@ -71,7 +155,7 @@ public enum LogicalKind {
 
     String normalized = normalize(candidate);
 
-    // First try exact enum match (INT32, FLOAT64, ...)
+    // First try exact enum match (INT, FLOAT, DOUBLE, TIMESTAMPTZ, ...)
     try {
       return LogicalKind.valueOf(normalized);
     } catch (IllegalArgumentException ignore) {

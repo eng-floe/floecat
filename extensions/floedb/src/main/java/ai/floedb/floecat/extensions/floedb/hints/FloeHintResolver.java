@@ -452,7 +452,7 @@ public final class FloeHintResolver {
       return false;
     }
     return switch (logical.kind()) {
-      case BOOLEAN, INT16, INT32, INT64, FLOAT32, FLOAT64, DATE, TIME, TIMESTAMP, UUID -> true;
+      case BOOLEAN, INT, FLOAT, DOUBLE, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, UUID -> true;
       default -> false;
     };
   }

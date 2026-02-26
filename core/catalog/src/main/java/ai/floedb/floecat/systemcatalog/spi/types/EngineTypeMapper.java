@@ -20,7 +20,10 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.Optional;
 
-/** Maps logical types (INT32, STRING, DECIMAL(10,2), ...) to engine-specific builtin TypeNodes. */
+/**
+ * Maps logical types (INT, STRING, DECIMAL(10,2), TIMESTAMPTZ, ...) to engine-specific builtin
+ * TypeNodes.
+ */
 public interface EngineTypeMapper {
 
   EngineTypeMapper EMPTY = (logicalType, lookup) -> Optional.empty();

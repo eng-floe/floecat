@@ -22,6 +22,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import java.util.Locale;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -90,8 +91,7 @@ final class DeltaSchemaMapper {
       int ordinal = i + 1; // 1-based ordinal within the parent struct
 
       String name = f.path("name").asText();
-      String logicalType =
-          f.path("type").isTextual() ? f.get("type").asText() : f.path("type").toString();
+      String logicalType = deltaTypeToCanonical(f.get("type"));
 
       boolean nullable = f.path("nullable").asBoolean(true);
 
@@ -155,5 +155,75 @@ final class DeltaSchemaMapper {
         }
       }
     }
+  }
+
+  /**
+   * Convert a Delta Lake type JSON node to its canonical logical-type string.
+   *
+   * <p>Delta types are either textual scalars (e.g. {@code "string"}, {@code "timestamp"}) or JSON
+   * objects for complex types ({@code {"type":"struct",...}}, {@code {"type":"array",...}}, {@code
+   * {"type":"map",...}}).
+   *
+   * <p>Timestamp semantics: Delta's {@code "timestamp"} is always UTC-stored → canonical {@code
+   * "TIMESTAMPTZ"}. Delta's {@code "timestamp_ntz"} is timezone-naive → canonical {@code
+   * "TIMESTAMP"}. Note: the spec decode matrix v1 has these inverted; the semantically correct
+   * mapping is applied here.
+   *
+   * <p>Integer aliases: {@code "byte"}, {@code "short"}, {@code "integer"}, {@code "long"} and
+   * their SQL synonyms all collapse to canonical {@code "INT"} (64-bit), consistent with {@link
+   * ai.floedb.floecat.types.LogicalKind}.
+   *
+   * <p>For {@code decimal(p,s)}, the raw Delta string (e.g. {@code "decimal(10,2)"}) is upper-cased
+   * and returned as-is; it is parseable by the canonical type parser.
+   *
+   * @param typeNode Delta "type" JSON node (may be textual or object)
+   * @return canonical logical-type string (never null)
+   */
+  private static String deltaTypeToCanonical(JsonNode typeNode) {
+    if (typeNode == null) {
+      return "BINARY";
+    }
+
+    // Complex types are represented as JSON objects with a "type" discriminator.
+    if (typeNode.isObject()) {
+      return switch (typeNode.path("type").asText("")) {
+        case "struct" -> "STRUCT";
+        case "array" -> "ARRAY";
+        case "map" -> "MAP";
+        default -> {
+          LOG.warnf(
+              "Unrecognised Delta complex type '%s'; mapping to BINARY",
+              typeNode.path("type").asText(""));
+          yield "BINARY";
+        }
+      };
+    }
+
+    // Scalar types are textual identifiers.
+    String raw = typeNode.asText("");
+    return switch (raw.toLowerCase(Locale.ROOT)) {
+      case "boolean" -> "BOOLEAN";
+      // All integer sizes collapse to canonical INT (64-bit).
+      case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" -> "INT";
+      case "float" -> "FLOAT";
+      case "double" -> "DOUBLE";
+      case "string" -> "STRING";
+      case "binary" -> "BINARY";
+      case "date" -> "DATE";
+      // Delta "timestamp" is UTC-stored → TIMESTAMPTZ.
+      // Delta "timestamp_ntz" is timezone-naive → TIMESTAMP.
+      // Note: the spec decode matrix v1 has these inverted; correct semantic mapping applied.
+      case "timestamp" -> "TIMESTAMPTZ";
+      case "timestamp_ntz" -> "TIMESTAMP";
+      case "interval" -> "INTERVAL";
+      default -> {
+        // decimal(p,s) arrives as e.g. "decimal(10,2)" — upper-case and pass through.
+        if (raw.toLowerCase(Locale.ROOT).startsWith("decimal")) {
+          yield raw.toUpperCase(Locale.ROOT);
+        }
+        LOG.warnf("Unrecognised Delta scalar type '%s'; mapping to BINARY", raw);
+        yield "BINARY";
+      }
+    };
   }
 }

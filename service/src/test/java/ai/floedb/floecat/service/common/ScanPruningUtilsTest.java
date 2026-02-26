@@ -32,14 +32,14 @@ import org.junit.jupiter.api.Test;
 /** Regression test suite for {@link ScanPruningUtils}. */
 public class ScanPruningUtilsTest {
 
-  /** Build a ScanFile with encoded min/max INT64 stats. */
+  /** Build a ScanFile with encoded min/max INT stats. */
   private static ScanFile file(String path, String col, long min, long max) {
-    LogicalType t = LogicalType.of(LogicalKind.INT64);
+    LogicalType t = LogicalType.of(LogicalKind.INT);
 
     ColumnStats cs =
         ColumnStats.newBuilder()
             .setColumnName(col)
-            .setLogicalType("INT64")
+            .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
             .build();
@@ -55,12 +55,12 @@ public class ScanPruningUtilsTest {
 
   /** Delete-file variant. */
   private static ScanFile deleteFileWithStats(String path, String col, long min, long max) {
-    LogicalType t = LogicalType.of(LogicalKind.INT64);
+    LogicalType t = LogicalType.of(LogicalKind.INT);
 
     ColumnStats cs =
         ColumnStats.newBuilder()
             .setColumnName(col)
-            .setLogicalType("INT64")
+            .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
             .build();

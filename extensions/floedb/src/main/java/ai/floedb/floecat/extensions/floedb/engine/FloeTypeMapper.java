@@ -30,12 +30,11 @@ public final class FloeTypeMapper implements EngineTypeMapper {
     return switch (t.kind()) {
       case BOOLEAN -> lookup.findByName("pg_catalog", "bool");
 
-      case INT16 -> lookup.findByName("pg_catalog", "int2");
-      case INT32 -> lookup.findByName("pg_catalog", "int4");
-      case INT64 -> lookup.findByName("pg_catalog", "int8");
+      // All integer sizes collapse to canonical INT (64-bit) → pg int8.
+      case INT -> lookup.findByName("pg_catalog", "int8");
 
-      case FLOAT32 -> lookup.findByName("pg_catalog", "float4");
-      case FLOAT64 -> lookup.findByName("pg_catalog", "float8");
+      case FLOAT -> lookup.findByName("pg_catalog", "float4");
+      case DOUBLE -> lookup.findByName("pg_catalog", "float8");
 
       case STRING -> lookup.findByName("pg_catalog", "text");
       case BINARY -> lookup.findByName("pg_catalog", "bytea");
@@ -44,8 +43,14 @@ public final class FloeTypeMapper implements EngineTypeMapper {
       case DATE -> lookup.findByName("pg_catalog", "date");
       case TIME -> lookup.findByName("pg_catalog", "time");
       case TIMESTAMP -> lookup.findByName("pg_catalog", "timestamp");
+      case TIMESTAMPTZ -> lookup.findByName("pg_catalog", "timestamptz");
+      case INTERVAL -> lookup.findByName("pg_catalog", "interval");
 
+      case JSON -> lookup.findByName("pg_catalog", "jsonb");
       case DECIMAL -> lookup.findByName("pg_catalog", "numeric");
+
+      // Complex types are not yet supported by the execution engine; surface as raw bytes.
+      case ARRAY, MAP, STRUCT, VARIANT -> lookup.findByName("pg_catalog", "bytea");
 
       default -> Optional.empty();
     };
