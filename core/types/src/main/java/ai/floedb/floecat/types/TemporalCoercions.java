@@ -19,13 +19,16 @@ package ai.floedb.floecat.types;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Locale;
 
 /** Shared helpers for timestamp/time coercion across stats, encoders, and comparators. */
-final class TemporalCoercions {
-  static final long NANOS_PER_DAY = 86_400_000_000_000L;
+public final class TemporalCoercions {
+  public static final long NANOS_PER_DAY = 86_400_000_000_000L;
 
   private static final long TIME_SECONDS_THRESHOLD = 86_400L;
   private static final long TIME_MILLIS_THRESHOLD = 86_400_000L;
@@ -37,12 +40,12 @@ final class TemporalCoercions {
 
   private TemporalCoercions() {}
 
-  static long timeNanosOfDay(long v) {
+  public static long timeNanosOfDay(long v) {
     long nanos = toTimeNanos(v);
     return Math.floorMod(nanos, NANOS_PER_DAY);
   }
 
-  static Instant instantFromNumber(long v) {
+  public static Instant instantFromNumber(long v) {
     long av = Math.abs(v);
     if (av >= NANOS_THRESHOLD) {
       long secs = Math.floorDiv(v, 1_000_000_000L);
@@ -60,19 +63,73 @@ final class TemporalCoercions {
     return truncateToMicros(Instant.ofEpochSecond(v));
   }
 
-  static LocalDateTime localDateTimeFromNumber(long v) {
+  public static LocalDateTime localDateTimeFromNumber(long v) {
     return truncateToMicros(LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC));
   }
 
-  static LocalDateTime parseTimestampNoTz(String raw) {
+  public enum TimestampNoTzPolicy {
+    REJECT_ZONED,
+    CONVERT_TO_SESSION_ZONE
+  }
+
+  public static LocalDateTime parseTimestampNoTz(String raw) {
+    return parseTimestampNoTz(raw, defaultSessionZone(), defaultTimestampNoTzPolicy());
+  }
+
+  public static LocalDateTime parseTimestampNoTz(
+      String raw, ZoneId sessionZone, TimestampNoTzPolicy policy) {
     try {
       return truncateToMicros(LocalDateTime.parse(raw, DateTimeFormatter.ISO_LOCAL_DATE_TIME));
     } catch (DateTimeParseException ignore) {
-      return truncateToMicros(LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC));
+      // fall through
+    }
+
+    Instant instant = parseZonedInstant(raw);
+    if (policy == TimestampNoTzPolicy.REJECT_ZONED) {
+      throw new IllegalArgumentException(
+          "TIMESTAMP must be timezone-naive, got zoned value: " + raw);
+    }
+    ZoneId zone = (sessionZone == null) ? ZoneOffset.UTC : sessionZone;
+    return truncateToMicros(LocalDateTime.ofInstant(instant, zone));
+  }
+
+  public static Instant parseZonedInstant(String raw) {
+    try {
+      return Instant.parse(raw);
+    } catch (DateTimeParseException ignore) {
+      return OffsetDateTime.parse(raw).toInstant();
     }
   }
 
-  static LocalTime truncateToMicros(LocalTime time) {
+  public static ZoneId defaultSessionZone() {
+    String zone = System.getProperty("floecat.session.timezone");
+    if (zone == null || zone.isBlank()) {
+      zone = System.getenv("FLOECAT_SESSION_TIMEZONE");
+    }
+    if (zone == null || zone.isBlank()) {
+      return ZoneOffset.UTC;
+    }
+    return ZoneId.of(zone);
+  }
+
+  public static TimestampNoTzPolicy defaultTimestampNoTzPolicy() {
+    String policy = System.getProperty("floecat.timestamp_no_tz.policy");
+    if (policy == null || policy.isBlank()) {
+      policy = System.getenv("FLOECAT_TIMESTAMP_NO_TZ_POLICY");
+    }
+    if (policy == null || policy.isBlank()) {
+      return TimestampNoTzPolicy.REJECT_ZONED;
+    }
+    String normalized = policy.trim().toUpperCase(Locale.ROOT);
+    return switch (normalized) {
+      case "REJECT", "REJECT_ZONED" -> TimestampNoTzPolicy.REJECT_ZONED;
+      case "CONVERT", "CONVERT_TO_SESSION_ZONE" -> TimestampNoTzPolicy.CONVERT_TO_SESSION_ZONE;
+      default ->
+          throw new IllegalArgumentException("Invalid floecat.timestamp_no_tz.policy: " + policy);
+    };
+  }
+
+  public static LocalTime truncateToMicros(LocalTime time) {
     int nanos = time.getNano();
     if ((nanos % 1_000) == 0) {
       return time;
@@ -80,7 +137,7 @@ final class TemporalCoercions {
     return time.withNano((nanos / 1_000) * 1_000);
   }
 
-  static LocalDateTime truncateToMicros(LocalDateTime time) {
+  public static LocalDateTime truncateToMicros(LocalDateTime time) {
     int nanos = time.getNano();
     if ((nanos % 1_000) == 0) {
       return time;
@@ -88,7 +145,7 @@ final class TemporalCoercions {
     return time.withNano((nanos / 1_000) * 1_000);
   }
 
-  static Instant truncateToMicros(Instant instant) {
+  public static Instant truncateToMicros(Instant instant) {
     long nanos = instant.getNano();
     if ((nanos % 1_000) == 0) {
       return instant;

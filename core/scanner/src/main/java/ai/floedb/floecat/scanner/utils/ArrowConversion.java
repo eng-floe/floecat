@@ -26,7 +26,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeParseException;
 import java.util.Objects;
 import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
@@ -121,11 +120,11 @@ public final class ArrowConversion {
       return;
     }
     if (vector instanceof TimeStampMicroVector timestamp) {
-      timestamp.setSafe(idx, toTimestampMicros(value));
+      timestamp.setSafe(idx, toTimestampMicrosNoTz(value));
       return;
     }
     if (vector instanceof TimeStampMicroTZVector timestamptz) {
-      timestamptz.setSafe(idx, toTimestampMicros(value));
+      timestamptz.setSafe(idx, toTimestampMicrosTz(value));
       return;
     }
     if (vector instanceof DecimalVector decimal) {
@@ -177,10 +176,12 @@ public final class ArrowConversion {
     throw new IllegalArgumentException("TIME value must be LocalTime, Number, or ISO time string");
   }
 
-  private static long toTimestampMicros(Object value) {
+  private static long toTimestampMicrosNoTz(Object value) {
     if (value instanceof Instant instant) {
-      Instant truncated = TemporalCoercions.truncateToMicros(instant);
-      return truncated.getEpochSecond() * 1_000_000L + truncated.getNano() / 1_000L;
+      LocalDateTime local =
+          TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(instant, ZoneOffset.UTC));
+      return local.toInstant(ZoneOffset.UTC).getEpochSecond() * 1_000_000L
+          + local.getNano() / 1_000L;
     }
     if (value instanceof LocalDateTime localDateTime) {
       LocalDateTime truncated = TemporalCoercions.truncateToMicros(localDateTime);
@@ -188,28 +189,40 @@ public final class ArrowConversion {
       return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
     if (value instanceof Number number) {
-      Instant instant = TemporalCoercions.instantFromNumber(number.longValue());
+      LocalDateTime local = TemporalCoercions.localDateTimeFromNumber(number.longValue());
+      Instant instant = local.toInstant(ZoneOffset.UTC);
       return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
     if (value instanceof CharSequence text) {
       String raw = text.toString();
       try {
-        Instant instant = TemporalCoercions.truncateToMicros(Instant.parse(raw));
+        LocalDateTime local = TemporalCoercions.parseTimestampNoTz(raw);
+        Instant instant = local.toInstant(ZoneOffset.UTC);
         return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
-      } catch (DateTimeParseException ignored) {
-        try {
-          LocalDateTime localDateTime =
-              TemporalCoercions.truncateToMicros(LocalDateTime.parse(raw));
-          Instant instant = localDateTime.toInstant(ZoneOffset.UTC);
-          return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
-        } catch (DateTimeParseException ignored2) {
-          Instant instant = TemporalCoercions.instantFromNumber(Long.parseLong(raw));
-          return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
-        }
+      } catch (RuntimeException ignored) {
+        LocalDateTime local = TemporalCoercions.localDateTimeFromNumber(Long.parseLong(raw));
+        Instant instant = local.toInstant(ZoneOffset.UTC);
+        return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
       }
     }
     throw new IllegalArgumentException(
         "TIMESTAMP value must be Instant, LocalDateTime, Number, or ISO local/instant string");
+  }
+
+  private static long toTimestampMicrosTz(Object value) {
+    Instant instant;
+    if (value instanceof Instant i) {
+      instant = TemporalCoercions.truncateToMicros(i);
+    } else if (value instanceof Number number) {
+      instant = TemporalCoercions.instantFromNumber(number.longValue());
+    } else if (value instanceof CharSequence text) {
+      instant =
+          TemporalCoercions.truncateToMicros(TemporalCoercions.parseZonedInstant(text.toString()));
+    } else {
+      throw new IllegalArgumentException(
+          "TIMESTAMPTZ value must be Instant, Number, or ISO instant string");
+    }
+    return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
   }
 
   private static BigDecimal toDecimal(Object value) {
