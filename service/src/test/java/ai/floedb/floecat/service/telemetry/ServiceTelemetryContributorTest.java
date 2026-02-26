@@ -36,6 +36,8 @@ class ServiceTelemetryContributorTest {
     MetricDef errors = registry.metric(ServiceMetrics.Flight.ERRORS.name());
     MetricDef cancelled = registry.metric(ServiceMetrics.Flight.CANCELLED.name());
     MetricDef inflight = registry.metric(ServiceMetrics.Flight.INFLIGHT.name());
+    MetricDef syncCapture = registry.metric(ServiceMetrics.Reconcile.SYNC_CAPTURE.name());
+    MetricDef triggerReconcile = registry.metric(ServiceMetrics.Reconcile.TRIGGER.name());
 
     assertThat(requests).isNotNull();
     assertThat(requests.requiredTags())
@@ -63,6 +65,18 @@ class ServiceTelemetryContributorTest {
     assertThat(inflight.allowedTags())
         .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
 
+    assertThat(syncCapture).isNotNull();
+    assertThat(syncCapture.requiredTags())
+        .containsExactlyInAnyOrder(
+            TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER);
+    assertThat(syncCapture.allowedTags())
+        .containsExactlyInAnyOrder(
+            TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER, TagKey.REASON);
+
+    assertThat(triggerReconcile).isNotNull();
+    assertThat(triggerReconcile.requiredTags()).isEqualTo(syncCapture.requiredTags());
+    assertThat(triggerReconcile.allowedTags()).isEqualTo(syncCapture.allowedTags());
+
     // Ensure the new Flight metric IDs are all present in the registry.
     assertThat(registry.metrics().keySet())
         .containsAll(
@@ -71,6 +85,8 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Flight.LATENCY.name(),
                 ServiceMetrics.Flight.ERRORS.name(),
                 ServiceMetrics.Flight.CANCELLED.name(),
-                ServiceMetrics.Flight.INFLIGHT.name()));
+                ServiceMetrics.Flight.INFLIGHT.name(),
+                ServiceMetrics.Reconcile.SYNC_CAPTURE.name(),
+                ServiceMetrics.Reconcile.TRIGGER.name()));
   }
 }

@@ -662,6 +662,75 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/idempotency/";
   }
 
+  // ===== Reconcile Jobs =====
+
+  public static String reconcileJobPointerById(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-id/" + encode(jid);
+  }
+
+  public static String reconcileJobPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/by-id/";
+  }
+
+  public static String reconcileJobLookupPointerById(String jobId) {
+    String jid = req("job_id", jobId);
+    return "/accounts/by-id/reconcile/jobs/by-id/" + encode(jid);
+  }
+
+  public static String reconcileJobLookupPointerByIdPrefix() {
+    return "/accounts/by-id/reconcile/jobs/by-id/";
+  }
+
+  public static String reconcileJobBlobUri(String accountId, String jobId, String suffix) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    String s = req("suffix", suffix);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/"
+        + encode(jid)
+        + "/job-"
+        + encode(s)
+        + ".json";
+  }
+
+  public static String reconcileReadyPointerPrefix() {
+    // Keep ready-queue pointers in the global account directory partition so cross-account
+    // schedulers can scan due jobs while still satisfying backends that require /accounts/* keys.
+    return "/accounts/by-id/reconcile/jobs/ready/";
+  }
+
+  public static String reconcileReadyPointerByDue(
+      long dueAtMs, String accountId, String laneKey, String jobId) {
+    long due = reqNonNegative("due_at_ms", dueAtMs);
+    String tid = req("account_id", accountId);
+    String lane = req("lane_key", laneKey);
+    String jid = req("job_id", jobId);
+    return String.format(
+        "/accounts/by-id/reconcile/jobs/ready/%019d/%s/%s/%s",
+        due, encode(tid), encode(lane), encode(jid));
+  }
+
+  public static String reconcileDedupePointer(String accountId, String dedupeKeyHash) {
+    String tid = req("account_id", accountId);
+    String hash = req("dedupe_key_hash", dedupeKeyHash);
+    return "/accounts/" + encode(tid) + "/reconcile/dedupe/" + encode(hash);
+  }
+
+  public static String reconcileDedupePointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
+  }
+
+  public static String reconcileJobBlobPrefix(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
+  }
+
   // ===== Markers =====
 
   public static String catalogChildrenMarker(String accountId, String catalogId) {

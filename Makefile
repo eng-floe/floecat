@@ -319,23 +319,29 @@ $(TEST_SUPPORT_JAR): $(shell find core/storage-spi/src/test -type f -name '*.jav
 .PHONY: test test-localstack unit-test integration-test verify
 
 test: $(PROTO_JAR) keycloak-up
-	@echo "==> [BUILD] installing parent POM to local repo"
-	$(MVN) $(MVN_TESTALL) install -N
-	@echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"
-	$(MVN) $(MVN_TESTALL) \
-	  -Dfloecat.fixtures.use-aws-s3=false \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
-	  verify
+	@bash -c 'set -euo pipefail; \
+	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT; \
+	  echo "==> [BUILD] installing parent POM to local repo"; \
+	  $(MVN) $(MVN_TESTALL) install -N; \
+	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
+	  $(MVN) $(MVN_TESTALL) \
+	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    verify'
 
 .PHONY: test-localstack
 test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
-	@echo "==> [BUILD] installing parent POM to local repo"
-	$(MVN) $(MVN_TESTALL) install -N
-	@echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"
-	$(LOCALSTACK_ENV) \
-	$(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
-	  verify
+	@bash -c 'set -euo pipefail; \
+	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT; \
+	  echo "==> [BUILD] installing parent POM to local repo"; \
+	  $(MVN) $(MVN_TESTALL) install -N; \
+	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
+	  $(LOCALSTACK_ENV) \
+	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
+	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    verify'
 
 .PHONY: localstack-restart
 localstack-restart: localstack-down localstack-up
@@ -373,19 +379,25 @@ unit-test:
 	  test
 
 integration-test: keycloak-up
-	@echo "==> [TEST] integration tests (service, REST gateway, client-cli)"
-	$(MVN) $(MVN_TESTALL) \
-	  -Dfloecat.fixtures.use-aws-s3=false \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
-	  -DskipUTs=true -DfailIfNoTests=false \
-	  verify
+	@bash -c 'set -euo pipefail; \
+	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT; \
+	  echo "==> [TEST] integration tests (service, REST gateway, client-cli)"; \
+	  $(MVN) $(MVN_TESTALL) \
+	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    -DskipUTs=true -DfailIfNoTests=false \
+	    verify'
 
 verify: keycloak-up
-	@echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"
-	$(MVN) $(MVN_TESTALL) \
-	  -Dfloecat.fixtures.use-aws-s3=false \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
-	  verify
+	@bash -c 'set -euo pipefail; \
+	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
+	  trap cleanup EXIT; \
+	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"; \
+	  $(MVN) $(MVN_TESTALL) \
+	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    verify'
 
 # ===================================================
 # Trino connector (requires Java 21)

@@ -32,18 +32,22 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
+import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -262,5 +266,35 @@ class ReconcilerServiceTest {
         .containsEntry("meta-key", ByteString.copyFromUtf8("new"));
     assertThat(result.getFormatMetadataMap())
         .containsEntry("extra", ByteString.copyFromUtf8("value"));
+  }
+
+  @Test
+  void effectiveSelectorsPreferScopeColumnsOverConnectorSourceColumns() throws Exception {
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("barf", "#2"));
+    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
+
+    Set<String> selectors = invokeEffectiveSelectors(scope, source);
+
+    assertThat(selectors).containsExactlyInAnyOrder("barf", "#2");
+  }
+
+  @Test
+  void effectiveSelectorsFallbackToConnectorSourceColumnsWhenScopeHasNoColumns() throws Exception {
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+    SourceSelector source = SourceSelector.newBuilder().addColumns("i").addColumns("#1").build();
+
+    Set<String> selectors = invokeEffectiveSelectors(scope, source);
+
+    assertThat(selectors).containsExactlyInAnyOrder("i", "#1");
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Set<String> invokeEffectiveSelectors(ReconcileScope scope, SourceSelector source)
+      throws Exception {
+    Method method =
+        ReconcilerService.class.getDeclaredMethod(
+            "effectiveSelectors", ReconcileScope.class, SourceSelector.class);
+    method.setAccessible(true);
+    return (Set<String>) method.invoke(null, scope, source);
   }
 }

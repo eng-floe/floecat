@@ -133,6 +133,8 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.statistics.rpc.AnalyzeTableRequest;
+import ai.floedb.floecat.statistics.rpc.StatsCaptureGrpc;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
@@ -301,6 +303,10 @@ public class Shell implements Runnable {
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
+  @Inject
+  @GrpcClient("floecat")
+  StatsCaptureGrpc.StatsCaptureBlockingStub statscapture;
+
   private ManagedChannel overrideChannel;
 
   private static final int DEFAULT_PAGE_SIZE = 1000;
@@ -344,6 +350,7 @@ public class Shell implements Runnable {
               "describe",
               "snapshots",
               "stats",
+              "analyze",
               "query",
               "account",
               "help",
@@ -586,6 +593,8 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         analyze <tableFQ> [--columns c1,c2,...]
+             # Runs synchronous table-scoped reconcile (metadata pass, then stats pass).
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          query renew <query_id> [--ttl <seconds>]
          query end <query_id> [--commit|--abort]
@@ -637,6 +646,7 @@ public class Shell implements Runnable {
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
+    statscapture = StatsCaptureGrpc.newBlockingStub(overrideChannel);
   }
 
   private void initAuthConfig() {
@@ -723,6 +733,7 @@ public class Shell implements Runnable {
     queryScan = queryScan.withInterceptors(authInterceptor);
     querySchema = querySchema.withInterceptors(authInterceptor);
     accounts = accounts.withInterceptors(authInterceptor);
+    statscapture = statscapture.withInterceptors(authInterceptor);
   }
 
   private void dispatch(String inputLine) {
@@ -760,6 +771,7 @@ public class Shell implements Runnable {
       case "snapshots" -> cmdSnapshots(tail(tokens));
       case "snapshot" -> cmdSnapshotCrud(tail(tokens));
       case "stats" -> cmdStats(tail(tokens));
+      case "analyze" -> cmdAnalyze(tail(tokens));
       case "query" -> cmdQuery(tail(tokens));
       default -> out.println("Unknown command. Type 'help'.");
     }
@@ -2243,6 +2255,39 @@ public class Shell implements Runnable {
     }
   }
 
+  // analyze runs a synchronous table-scoped reconcile pass for metadata and table stats.
+  private void cmdAnalyze(List<String> args) {
+    if (args.isEmpty()) {
+      out.println("usage: analyze <tableFQ> [--columns c1,c2,...]");
+      return;
+    }
+
+    String fq = args.get(0);
+    String columnsArg = Quotes.unquote(parseStringFlag(args, "--columns", ""));
+    List<String> columns = csvList(columnsArg);
+
+    var resolved =
+        directory.resolveTable(
+            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
+
+    var response =
+        statscapture.analyzeTable(
+            AnalyzeTableRequest.newBuilder()
+                .setTableId(resolved.getResourceId())
+                .addAllDestinationTableColumns(columns)
+                .build());
+    out.printf(
+        "analyze ok table=%s metadata(scanned=%d changed=%d errors=%d) "
+            + "stats(scanned=%d changed=%d errors=%d)%n",
+        fq,
+        response.getMetadataTablesScanned(),
+        response.getMetadataTablesChanged(),
+        response.getMetadataErrors(),
+        response.getStatsTablesScanned(),
+        response.getStatsTablesChanged(),
+        response.getStatsErrors());
+  }
+
   private void statsTable(List<String> args) {
     if (args.isEmpty()) {
       out.println(
@@ -3230,10 +3275,13 @@ public class Shell implements Runnable {
       return;
     }
 
-    out.printf("%-4s %-10s %-12s %s%n", "IDX", "ROWS", "BYTES", "PATH");
+    out.printf("%-4s %-10s %-12s %-20s %s%n", "IDX", "ROWS", "BYTES", "CONTENT", "PATH");
     for (int i = 0; i < files.size(); i++) {
       FileColumnStats fs = files.get(i);
-      out.printf("%-4d %-10d %-12d %s%n", i, fs.getRowCount(), fs.getSizeBytes(), fs.getFilePath());
+      String content = fs.getFileContent().name().replaceFirst("^FC_", "");
+      out.printf(
+          "%-4d %-10d %-12d %-20s %s%n",
+          i, fs.getRowCount(), fs.getSizeBytes(), content, fs.getFilePath());
 
       var cols = fs.getColumnsList();
       if (!cols.isEmpty()) {

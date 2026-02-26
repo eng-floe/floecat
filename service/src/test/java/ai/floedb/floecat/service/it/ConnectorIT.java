@@ -524,7 +524,8 @@ public class ConnectorIT {
     String jobId = trig.getJobId();
     assertFalse(jobId.isBlank());
 
-    var deadline = System.nanoTime() + Duration.ofSeconds(900).toNanos();
+    long startedAt = System.nanoTime();
+    var deadline = System.nanoTime() + Duration.ofSeconds(300).toNanos();
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
       job = jobs.get(jobId).orElse(null);
@@ -534,7 +535,7 @@ public class ConnectorIT {
       if (System.nanoTime() > deadline) {
         break;
       }
-      Thread.sleep(25);
+      Thread.sleep(250);
     }
 
     return job;

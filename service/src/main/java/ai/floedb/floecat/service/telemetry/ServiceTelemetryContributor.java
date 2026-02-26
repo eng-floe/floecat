@@ -37,6 +37,10 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.STATUS, TagKey.RESOURCE, TagKey.REASON);
     Set<String> flightInFlightRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> flightInFlightAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
+    Set<String> reconcileRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER);
+    Set<String> reconcileAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER, TagKey.REASON);
 
     add(
         defs,
@@ -80,6 +84,18 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         flightInFlightRequired,
         flightInFlightAllowed,
         "Current number of in-flight Flight streams.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SYNC_CAPTURE,
+        reconcileRequired,
+        reconcileAllowed,
+        "SyncCapture request outcomes by trigger type.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.TRIGGER,
+        reconcileRequired,
+        reconcileAllowed,
+        "TriggerReconcile request outcomes by trigger type.");
     return Collections.unmodifiableMap(defs);
   }
 

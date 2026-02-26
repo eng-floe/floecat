@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.util;
 
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -46,6 +47,10 @@ public class TestDataResetter {
       for (var nm : accountNames) {
         ptr.delete(GLOBAL_ACCOUNTS_BY_NAME_PREFIX + nm);
       }
+      // Durable reconcile state includes global lookup/ready pointers not scoped under
+      // /accounts/<id>/.
+      ptr.deleteByPrefix(Keys.reconcileJobLookupPointerByIdPrefix());
+      ptr.deleteByPrefix(Keys.reconcileReadyPointerPrefix());
       ptr.deleteByPrefix("/accounts/");
 
       for (var tid : accountIds) {

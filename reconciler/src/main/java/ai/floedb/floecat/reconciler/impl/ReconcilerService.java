@@ -205,7 +205,7 @@ public class ReconcilerService {
       }
 
       final boolean singleTableMode = tables.size() == 1;
-      final Set<String> includeSelectors = normalizeSelectors(source.getColumnsList());
+      final Set<String> includeSelectors = effectiveSelectors(scope, source);
 
       final String tableDisplayHint =
           (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
@@ -802,6 +802,16 @@ public class ReconcilerService {
       out.add(t.startsWith("#") ? "#" + t.substring(1).trim() : t);
     }
     return out;
+  }
+
+  private static Set<String> effectiveSelectors(ReconcileScope scope, SourceSelector source) {
+    if (scope != null && scope.hasColumnFilter()) {
+      return normalizeSelectors(scope.destinationTableColumns());
+    }
+    if (source == null) {
+      return Set.of();
+    }
+    return normalizeSelectors(source.getColumnsList());
   }
 
   private ConnectorConfig resolveCredentials(
