@@ -25,7 +25,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.util.Locale;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 /**
  * DeltaSchemaMapper: Converts Delta Lake-formatted schema JSON to logical SchemaDescriptor.
@@ -33,8 +32,6 @@ import org.jboss.logging.Logger;
  * <p>Handles Delta's JSON metadata format with support for nested structures (struct, array, map).
  */
 final class DeltaSchemaMapper {
-
-  private static final Logger LOG = Logger.getLogger(DeltaSchemaMapper.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private DeltaSchemaMapper() {}
@@ -53,10 +50,13 @@ final class DeltaSchemaMapper {
 
     try {
       JsonNode root = MAPPER.readTree(schemaJson);
+      JsonNode fields = root.get("fields");
+      if (fields == null || !fields.isArray()) {
+        throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
+      }
       walkDeltaStruct(cid_algo, sb, root, "", partitionKeys);
-
     } catch (Exception e) {
-      LOG.warn("Failed to parse Delta schema JSON; returning empty schema", e);
+      throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
 
     return sb.build();
@@ -183,7 +183,7 @@ final class DeltaSchemaMapper {
    */
   private static String deltaTypeToCanonical(JsonNode typeNode) {
     if (typeNode == null) {
-      return "BINARY";
+      throw new IllegalArgumentException("Delta field type is missing");
     }
 
     // Complex types are represented as JSON objects with a "type" discriminator.
@@ -192,12 +192,9 @@ final class DeltaSchemaMapper {
         case "struct" -> "STRUCT";
         case "array" -> "ARRAY";
         case "map" -> "MAP";
-        default -> {
-          LOG.warnf(
-              "Unrecognised Delta complex type '%s'; mapping to BINARY",
-              typeNode.path("type").asText(""));
-          yield "BINARY";
-        }
+        default ->
+            throw new IllegalArgumentException(
+                "Unrecognized Delta complex type: '" + typeNode.path("type").asText("") + "'");
       };
     }
 
@@ -223,8 +220,7 @@ final class DeltaSchemaMapper {
         if (raw.toLowerCase(Locale.ROOT).startsWith("decimal")) {
           yield raw.toUpperCase(Locale.ROOT);
         }
-        LOG.warnf("Unrecognised Delta scalar type '%s'; mapping to BINARY", raw);
-        yield "BINARY";
+        throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'");
       }
     };
   }

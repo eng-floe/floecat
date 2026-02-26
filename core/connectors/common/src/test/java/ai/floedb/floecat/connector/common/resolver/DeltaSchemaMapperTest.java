@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -39,7 +40,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Integer collapsing: all Delta int flavours → {@code "INT"}
  *   <li>Complex object nodes (struct/array/map) → correct canonical name, {@code leaf=false}
  *   <li>DECIMAL passthrough: {@code "decimal(10,2)"} → {@code "DECIMAL(10,2)"}
- *   <li>Unknown scalars → {@code "BINARY"} (null-bug regression)
+ *   <li>Unknown/malformed source types fail fast (no silent fallback)
  * </ul>
  */
 class DeltaSchemaMapperTest {
@@ -135,14 +136,30 @@ class DeltaSchemaMapperTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Unknown scalar type → BINARY (null-bug regression guard)
+  // Unknown/malformed source type should fail fast
   // ---------------------------------------------------------------------------
 
   @Test
-  void unknownScalarMappsToBinaryNotNull() {
-    SchemaColumn col = firstColumn(singleFieldSchema("x", "someunknowntype"));
-    assertThat(col.getLogicalType()).isNotNull();
-    assertThat(col.getLogicalType()).isEqualTo("BINARY");
+  void unknownScalarFailsFast() {
+    assertThatThrownBy(
+            () -> DeltaSchemaMapper.map(CID, singleFieldSchema("x", "someunknowntype"), Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON")
+        .hasRootCauseMessage("Unrecognized Delta scalar type: 'someunknowntype'");
+  }
+
+  @Test
+  void unknownComplexTypeFailsFast() {
+    String json =
+        """
+        {"fields":[
+          {"name":"x","type":{"type":"some_unknown_complex","fields":[]},"nullable":true}
+        ]}
+        """;
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, json, Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON")
+        .hasRootCauseMessage("Unrecognized Delta complex type: 'some_unknown_complex'");
   }
 
   // ---------------------------------------------------------------------------
@@ -276,12 +293,21 @@ class DeltaSchemaMapperTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Null-safe: empty / malformed JSON produces an empty descriptor, no exception
+  // Invalid top-level Delta schema should fail fast (no silent empty descriptor)
   // ---------------------------------------------------------------------------
 
   @Test
-  void emptySchemaProducesNoColumns() {
-    SchemaDescriptor desc = DeltaSchemaMapper.map(CID, "{}", Set.of());
-    assertThat(desc.getColumnsCount()).isEqualTo(0);
+  void schemaWithoutFieldsArrayFailsFast() {
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, "{}", Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON")
+        .hasRootCauseMessage("Delta schema JSON must contain a 'fields' array");
+  }
+
+  @Test
+  void malformedJsonFailsFast() {
+    assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, "{not-valid-json", Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Delta schema JSON");
   }
 }

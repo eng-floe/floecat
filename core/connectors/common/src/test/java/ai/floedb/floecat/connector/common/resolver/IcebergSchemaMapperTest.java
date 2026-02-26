@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -272,5 +273,13 @@ class IcebergSchemaMapperTest {
 
     assertThat(desc.getColumns(0).getId()).isEqualTo(42L);
     assertThat(desc.getColumns(1).getId()).isEqualTo(99L);
+  }
+
+  @Test
+  void invalidIcebergSchemaFailsFast() {
+    assertThatThrownBy(
+            () -> IcebergSchemaMapper.map(ColumnIdAlgorithm.CID_FIELD_ID, "{not-json", Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Failed to parse Iceberg schema JSON");
   }
 }

@@ -25,7 +25,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.jboss.logging.Logger;
 
 /**
  * IcebergSchemaMapper: Converts Iceberg-formatted schema JSON to logical SchemaDescriptor.
@@ -34,8 +33,6 @@ import org.jboss.logging.Logger;
  * map<*,struct>).
  */
 public final class IcebergSchemaMapper {
-
-  private static final Logger LOG = Logger.getLogger(IcebergSchemaMapper.class);
 
   private IcebergSchemaMapper() {}
 
@@ -61,8 +58,7 @@ public final class IcebergSchemaMapper {
       return sb.build();
 
     } catch (Exception e) {
-      LOG.warn("Invalid Iceberg schema, falling back to generic: " + schemaJson, e);
-      return GenericSchemaMapper.map(cid_algo, schemaJson);
+      throw new IllegalArgumentException("Failed to parse Iceberg schema JSON", e);
     }
   }
 
@@ -182,10 +178,7 @@ public final class IcebergSchemaMapper {
         var d = (Types.DecimalType) t;
         yield "DECIMAL(" + d.precision() + "," + d.scale() + ")";
       }
-      default -> {
-        LOG.warnf("Unrecognised Iceberg type %s; mapping to BINARY", t.typeId());
-        yield "BINARY";
-      }
+      default -> throw new IllegalArgumentException("Unrecognized Iceberg type: " + t.typeId());
     };
   }
 
