@@ -24,7 +24,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.IntervalUnit;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -32,6 +37,9 @@ import org.apache.arrow.vector.types.pojo.Schema;
 
 /** Utilities for converting {@link SchemaColumn} metadata into Arrow schemas. */
 public final class ArrowSchemaUtil {
+
+  private static final Pattern DECIMAL_TYPE =
+      Pattern.compile("^(DECIMAL|NUMERIC)\\s*\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$");
 
   private ArrowSchemaUtil() {}
 
@@ -55,20 +63,59 @@ public final class ArrowSchemaUtil {
 
   private static ArrowType arrowType(String logicalType) {
     if (logicalType == null) {
-      return new ArrowType.Utf8();
+      throw new IllegalArgumentException("Logical type must not be null");
     }
-    String normalized = logicalType.toUpperCase(Locale.ROOT).trim();
+    String normalized = logicalType.toUpperCase(Locale.ROOT).trim().replaceAll("\\s+", " ");
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("Logical type must not be blank");
+    }
+    Matcher decimalMatcher = DECIMAL_TYPE.matcher(normalized);
+    if (decimalMatcher.matches()) {
+      int precision = Integer.parseInt(decimalMatcher.group(2));
+      int scale = Integer.parseInt(decimalMatcher.group(3));
+      return new ArrowType.Decimal(precision, scale, 128);
+    }
+    if ("DECIMAL".equals(normalized) || "NUMERIC".equals(normalized)) {
+      return new ArrowType.Decimal(38, 0, 128);
+    }
     if (normalized.endsWith("[]")) {
       return new ArrowType.Utf8();
     }
+    if ("INTERVAL".equals(normalized) || normalized.startsWith("INTERVAL ")) {
+      return new ArrowType.Interval(IntervalUnit.DAY_TIME);
+    }
     return switch (normalized) {
-      case "INT", "INTEGER" -> new ArrowType.Int(32, true);
-      case "BIGINT" -> new ArrowType.Int(64, true);
-      case "SMALLINT" -> new ArrowType.Int(16, true);
+      case "INT",
+          "INTEGER",
+          "BIGINT",
+          "LONG",
+          "SMALLINT",
+          "TINYINT",
+          "INT8",
+          "INT4",
+          "INT2",
+          "UINT8",
+          "UINT4",
+          "UINT2" ->
+          new ArrowType.Int(64, true);
       case "FLOAT", "FLOAT4", "REAL" -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-      case "DOUBLE", "FLOAT8" -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+      case "DOUBLE", "FLOAT8", "FLOAT64", "DOUBLE PRECISION" ->
+          new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
       case "BOOLEAN", "BOOL" -> ArrowType.Bool.INSTANCE;
-      default -> new ArrowType.Utf8();
+      case "STRING", "VARCHAR", "CHAR", "CHARACTER", "TEXT", "NTEXT", "NVARCHAR" ->
+          new ArrowType.Utf8();
+      case "DATE" -> new ArrowType.Date(DateUnit.DAY);
+      case "TIME" -> new ArrowType.Time(TimeUnit.MICROSECOND, 64);
+      case "TIMESTAMP", "DATETIME", "TIMESTAMP_NTZ" ->
+          new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+      case "TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE" ->
+          new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+      case "UUID" -> new ArrowType.FixedSizeBinary(16);
+      case "BINARY", "VARBINARY", "BYTEA", "BLOB", "IMAGE" -> new ArrowType.Binary();
+      case "JSON", "JSONB", "ARRAY", "MAP", "STRUCT", "VARIANT" -> new ArrowType.Binary();
+      default ->
+          throw new IllegalArgumentException(
+              "Unsupported logical type for Arrow schema mapping: " + logicalType);
     };
   }
 

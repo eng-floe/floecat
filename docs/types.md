@@ -102,8 +102,26 @@ LogicalType t = LogicalType.decimal(38, 4);
 boolean compatible = LogicalCoercions.canCoerce(t, LogicalType.of(LogicalKind.DOUBLE));
 String encoded = MinMaxCodec.encodeDecimal(BigDecimal.valueOf(42), t);
 ```
-`LogicalTypeProtoAdapter.fromProto(LogicalType rpcType)` and `.toProto(LogicalType jt)` convert
-between wire format and runtime objects.
+`LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)` and
+`.encodeLogicalType(LogicalType logicalType)` convert between canonical logical type strings and
+runtime objects.
+
+## Arrow Mapping Contract
+
+`core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over FloeCat logical types, not over
+arbitrary engine-native type systems.
+
+- Input is `SchemaColumn.logical_type` and should be a FloeCat canonical logical type string (or an
+  accepted alias handled by `LogicalKind.fromName` semantics).
+- Integer aliases (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `INT2/4/8`, `UINT2/4/8`) all map to
+  Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
+- Unknown, null, or blank logical types fail fast with `IllegalArgumentException`; they are not
+  silently coerced to `Utf8`.
+- `JSON`, `ARRAY`, `MAP`, `STRUCT`, and `VARIANT` map to Arrow `Binary` in v1 (opaque payload
+  handling).
+
+If external Flight providers want to reuse `core/arrow`, they should first map their source type
+surface into FloeCat logical types.
 
 ## Source-Format Alias Lookup
 

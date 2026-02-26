@@ -23,7 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.junit.jupiter.api.Test;
@@ -65,7 +65,7 @@ class RowStreamToArrowBatchAdapterTest {
         VectorSchemaRoot root = batch.root();
         assert root.getRowCount() == 2;
 
-        IntVector idVector = (IntVector) root.getVector(0);
+        BigIntVector idVector = (BigIntVector) root.getVector(0);
         assert idVector.get(0) == 1;
         assert idVector.get(1) == 2;
 

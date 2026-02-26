@@ -49,8 +49,8 @@ import java.util.function.Consumer;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -390,7 +390,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     private final VarCharVector tableName;
     private final VarCharVector columnName;
     private final VarCharVector dataType;
-    private final IntVector ordinalPosition;
+    private final BigIntVector ordinalPosition;
     private final boolean includeCatalog;
     private final boolean includeSchema;
     private final boolean includeTable;
@@ -406,7 +406,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
       this.tableName = (VarCharVector) vectors.get(2);
       this.columnName = (VarCharVector) vectors.get(3);
       this.dataType = (VarCharVector) vectors.get(4);
-      this.ordinalPosition = (IntVector) vectors.get(5);
+      this.ordinalPosition = (BigIntVector) vectors.get(5);
       this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
       this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
       this.includeTable = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
