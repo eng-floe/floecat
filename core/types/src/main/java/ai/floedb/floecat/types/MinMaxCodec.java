@@ -25,8 +25,8 @@ package ai.floedb.floecat.types;
  * the broader {@link ValueEncoders} utility.
  *
  * <p>Complex types ({@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link LogicalKind#STRUCT},
- * {@link LogicalKind#VARIANT}) have no meaningful min/max encoding; calling {@link #encode} for
- * these kinds throws {@link IllegalArgumentException}.
+ * {@link LogicalKind#VARIANT}) and {@link LogicalKind#JSON} have no meaningful min/max encoding;
+ * calling {@link #encode} for these kinds throws {@link IllegalArgumentException}.
  *
  * @see ValueEncoders
  */

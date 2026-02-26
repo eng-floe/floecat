@@ -136,7 +136,8 @@ class ArrowSchemaUtilTest {
         SchemaColumn.newBuilder().setName("x").setLogicalType("NOT_A_TYPE").build();
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Unsupported logical type");
+        .hasMessageContaining("Unrecognized logical type")
+        .hasMessageContaining("NOT_A_TYPE");
   }
 
   @Test

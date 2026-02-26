@@ -104,7 +104,7 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return DATE_FMT.format(LocalDate.ofEpochDay(n.longValue()));
+            return DATE_FMT.format(LocalDate.ofEpochDay(Int64Coercions.checkedLong(n)));
           }
 
           if (value instanceof CharSequence s) {
@@ -126,7 +126,7 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
+            long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
             long micros = Math.floorDiv(dayNanos, 1_000L);
             return TIME_FMT.format(LocalTime.ofNanoOfDay(micros * 1_000L));
           }
@@ -153,7 +153,8 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return LOCAL_TS_FMT.format(TemporalCoercions.localDateTimeFromNumber(n.longValue()));
+            return LOCAL_TS_FMT.format(
+                TemporalCoercions.localDateTimeFromNumber(Int64Coercions.checkedLong(n)));
           }
 
           if (value instanceof CharSequence s) {
@@ -175,7 +176,8 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return INSTANT_FMT.format(TemporalCoercions.instantFromNumber(n.longValue()));
+            return INSTANT_FMT.format(
+                TemporalCoercions.instantFromNumber(Int64Coercions.checkedLong(n)));
           }
 
           if (value instanceof CharSequence s) {
@@ -198,8 +200,9 @@ public final class ValueEncoders {
       case DECIMAL:
         return canonicalDecimal((BigDecimal) value);
       case JSON:
-        // JSON is stored as a UTF-8 string; encoding is identical to STRING.
-        return asUtf8String(value);
+        // JSON has no meaningful min/max ordering semantics.
+        throw new IllegalArgumentException(
+            "min/max encoding is unsupported for non-orderable type " + t.kind().name());
       case INTERVAL:
         // INTERVAL is encoded as Base64 of its 12-byte wire representation (months/days/millis).
         return Base64.getEncoder().encodeToString(asIntervalBytes(value));

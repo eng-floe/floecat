@@ -72,11 +72,13 @@ class LogicalComparatorsTest {
   }
 
   @Test
-  void timestampComparisonAcceptsLegacyInstantString() {
+  void timestampComparisonRejectsZonedString() {
     LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
-    assertEquals(
-        0,
-        LogicalComparators.compare(timestampType, "2026-02-26T12:34:56", "2026-02-26T12:34:56Z"));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            LogicalComparators.compare(
+                timestampType, "2026-02-26T12:34:56", "2026-02-26T12:34:56Z"));
   }
 
   @Test

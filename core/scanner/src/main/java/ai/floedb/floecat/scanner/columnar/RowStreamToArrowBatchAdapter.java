@@ -57,15 +57,22 @@ public final class RowStreamToArrowBatchAdapter {
     this.batchSize = batchSize;
     boolean hasArray = false;
     this.stringifyArrays = new boolean[schema.size()];
+    List<SchemaColumn> arrowSchemaColumns = new ArrayList<>(schema.size());
     for (int i = 0; i < schema.size(); i++) {
-      boolean arrayType = isArrayType(schema.get(i).getLogicalType());
+      SchemaColumn column = schema.get(i);
+      boolean arrayType = isArrayType(column.getLogicalType());
       stringifyArrays[i] = arrayType;
       if (arrayType) {
         hasArray = true;
       }
+      if (arrayType) {
+        arrowSchemaColumns.add(SchemaColumn.newBuilder(column).setLogicalType("STRING").build());
+      } else {
+        arrowSchemaColumns.add(column);
+      }
     }
     this.hasArrayColumns = hasArray;
-    this.arrowSchema = ArrowSchemaUtil.toArrowSchema(schema);
+    this.arrowSchema = ArrowSchemaUtil.toArrowSchema(arrowSchemaColumns);
   }
 
   public Stream<ColumnarBatch> adapt(Stream<SystemObjectRow> rows) {

@@ -47,6 +47,19 @@ resolved via `LogicalKind.fromName(String)`.
 > **Note:** The Floe spec decode matrix v1 has these two entries inverted. The implementation
 > applies the semantically correct mapping and records the discrepancy in code comments.
 
+#### Precision + parsing
+- Canonical `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` are microsecond precision. Inputs with
+  higher precision are truncated to micros for stats encoding/comparison.
+- Numeric encodings for `DATE`, `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` must be whole numbers
+  representing the chosen unit; fractional numeric values are rejected.
+- `TIMESTAMP` expects timezone‑naive inputs (no `Z` or offset). By default, zoned strings are
+  rejected. You can opt into conversion by setting:
+  - `floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` (or env
+    `FLOECAT_TIMESTAMP_NO_TZ_POLICY`)
+  - `floecat.session.timezone=<IANA zone>` (or env `FLOECAT_SESSION_TIMEZONE`)
+  When enabled, zoned timestamps are converted into that session zone and stored as local
+  `TIMESTAMP` values.
+
 ### Complex types (v1)
 `ARRAY`, `MAP`, `STRUCT`, and `VARIANT` are non-parameterised in v1. The logical kind captures
 only the container category; element/value/field types are captured by child `SchemaColumn` rows
@@ -61,7 +74,7 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
   wire message and the JVM `LogicalType`, preserving kind/precision/scale.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
-  any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP`,
+  any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP` (timezone‑naive policy),
   string → `Instant` for `TIMESTAMPTZ`).
 - **`LogicalComparators`** – Provides `Comparator` instances for ordering values encoded as strings
   or byte buffers (used when building column stats).
@@ -118,8 +131,13 @@ arbitrary engine-native type systems.
   Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
 - Unknown, null, or blank logical types fail fast with `IllegalArgumentException`; they are not
   silently coerced to `Utf8`.
-- `JSON`, `ARRAY`, `MAP`, `STRUCT`, and `VARIANT` map to Arrow `Binary` in v1 (opaque payload
-  handling).
+- `JSON` maps to Arrow `Utf8`.
+- `UUID` maps to Arrow `FixedSizeBinary(16)`; `BINARY` maps to Arrow `Binary`.
+- `DECIMAL` maps to Arrow `Decimal128` with the declared precision/scale.
+- `TIME` maps to Arrow `Time(MICROSECOND, 64)`, `TIMESTAMP` to `Timestamp(MICROSECOND, null)`,
+  and `TIMESTAMPTZ` to `Timestamp(MICROSECOND, "UTC")`.
+- `INTERVAL` and complex container types (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) are **not**
+  supported in Arrow schema generation; they must be omitted or cast to `STRING`/`BINARY`.
 
 If external Flight providers want to reuse `core/arrow`, they should first map their source type
 surface into FloeCat logical types.
@@ -144,9 +162,10 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
   `0 ≤ scale ≤ precision`. Canonical DECIMAL precision is capped at 38; enforcement happens at
   connector/consumer boundaries where source formats are interpreted. Non-decimal kinds reject
   precision/scale altogether.
-- **Complex types** – `isComplex()` kinds (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) have no meaningful
-  min/max statistics. `LogicalComparators.normalize()` and `LogicalCoercions.coerceStatValue()`
-  both return a neutral/pass-through result for these kinds.
+- **Non-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
+  `VARIANT`) have no meaningful min/max statistics. `LogicalComparators.normalize()` returns
+  `null` and `ValueEncoders.encodeToString` throws for JSON/complex kinds, so connectors should
+  leave bounds unset.
 - **Comparators** – `LogicalComparators` provides specialised comparators for lexical ordering of
   encoded min/max values so histogram builders can operate on encoded strings.
 - **Encoders** – `ValueEncoders` normalises values before storing them in stats to guarantee

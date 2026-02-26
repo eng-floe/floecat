@@ -39,11 +39,17 @@ class LogicalCoercionsTest {
   void coercesTimestampAsTimezoneNaiveLocalDateTime() {
     LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
     Object local = LogicalCoercions.coerceStatValue(timestampType, "2026-02-26T12:34:56.123456");
-    Object legacyInstant = LogicalCoercions.coerceStatValue(timestampType, "2026-02-26T12:34:56Z");
 
     assertTrue(local instanceof LocalDateTime);
     assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56, 123_456_000), local);
-    assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56), legacyInstant);
+  }
+
+  @Test
+  void timestampCoercionRejectsZonedStringsByDefault() {
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> LogicalCoercions.coerceStatValue(timestampType, "2026-02-26T12:34:56Z"));
   }
 
   @Test
@@ -52,6 +58,32 @@ class LogicalCoercionsTest {
     Object coerced = LogicalCoercions.coerceStatValue(timestamptzType, "2026-02-26T12:34:56Z");
     assertTrue(coerced instanceof Instant);
     assertEquals(Instant.parse("2026-02-26T12:34:56Z"), coerced);
+  }
+
+  @Test
+  void timestampCoercionCanConvertZonedStringsWhenPolicyEnabled() {
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    String policyKey = "floecat.timestamp_no_tz.policy";
+    String zoneKey = "floecat.session.timezone";
+    String prevPolicy = System.getProperty(policyKey);
+    String prevZone = System.getProperty(zoneKey);
+    try {
+      System.setProperty(policyKey, "CONVERT_TO_SESSION_ZONE");
+      System.setProperty(zoneKey, "UTC");
+      Object legacy = LogicalCoercions.coerceStatValue(timestampType, "2026-02-26T12:34:56Z");
+      assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56), legacy);
+    } finally {
+      if (prevPolicy == null) {
+        System.clearProperty(policyKey);
+      } else {
+        System.setProperty(policyKey, prevPolicy);
+      }
+      if (prevZone == null) {
+        System.clearProperty(zoneKey);
+      } else {
+        System.setProperty(zoneKey, prevZone);
+      }
+    }
   }
 
   @Test
@@ -70,6 +102,13 @@ class LogicalCoercionsTest {
     assertEquals(expected, fromMicrosString);
     assertEquals(expected, fromNanosString);
     assertEquals(expected, fromNumber);
+  }
+
+  @Test
+  void timeCoercionRejectsFractionalNumber() {
+    LogicalType timeType = LogicalType.of(LogicalKind.TIME);
+    assertThrows(
+        IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(timeType, 1.5));
   }
 
   @Test
@@ -216,6 +255,12 @@ class LogicalCoercionsTest {
     LogicalType t = LogicalType.of(LogicalKind.DATE);
     // epoch day 0 = 1970-01-01
     assertEquals(LocalDate.of(1970, 1, 1), LogicalCoercions.coerceStatValue(t, 0L));
+  }
+
+  @Test
+  void dateCoercionRejectsFractionalNumber() {
+    LogicalType t = LogicalType.of(LogicalKind.DATE);
+    assertThrows(IllegalArgumentException.class, () -> LogicalCoercions.coerceStatValue(t, 1.25));
   }
 
   @Test

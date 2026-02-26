@@ -187,7 +187,7 @@ public final class LogicalComparators {
         }
 
         if (v instanceof Number n) {
-          return LocalDate.ofEpochDay(n.longValue());
+          return LocalDate.ofEpochDay(Int64Coercions.checkedLong(n));
         }
 
         if (v instanceof CharSequence s) {
@@ -207,7 +207,7 @@ public final class LogicalComparators {
           }
 
           if (v instanceof Number n) {
-            long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
+            long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
             return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
           }
           throw typeErr("TIME", v);
@@ -228,7 +228,7 @@ public final class LogicalComparators {
           }
 
           if (v instanceof Number n) {
-            return TemporalCoercions.localDateTimeFromNumber(n.longValue());
+            return TemporalCoercions.localDateTimeFromNumber(Int64Coercions.checkedLong(n));
           }
 
           throw typeErr("TIMESTAMP", v);
@@ -246,7 +246,7 @@ public final class LogicalComparators {
           }
 
           if (v instanceof Number n) {
-            return TemporalCoercions.instantFromNumber(n.longValue());
+            return TemporalCoercions.instantFromNumber(Int64Coercions.checkedLong(n));
           }
 
           throw typeErr("TIMESTAMPTZ", v);

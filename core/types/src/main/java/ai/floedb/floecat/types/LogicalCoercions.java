@@ -158,7 +158,7 @@ public final class LogicalCoercions {
           return d;
         }
         if (v instanceof Number n) {
-          return LocalDate.ofEpochDay(n.longValue());
+          return LocalDate.ofEpochDay(Int64Coercions.checkedLong(n));
         }
         return LocalDate.parse(v.toString());
       }
@@ -167,7 +167,7 @@ public final class LogicalCoercions {
           return TemporalCoercions.truncateToMicros(t0);
         }
         if (v instanceof Number n) {
-          long dayNanos = TemporalCoercions.timeNanosOfDay(n.longValue());
+          long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
           return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
         }
         String s = v.toString();
@@ -193,7 +193,15 @@ public final class LogicalCoercions {
         } catch (Exception ignore) {
           // fall through
         }
-        return TemporalCoercions.localDateTimeFromNumber(Long.parseLong(s));
+        try {
+          return TemporalCoercions.localDateTimeFromNumber(Long.parseLong(s));
+        } catch (NumberFormatException e) {
+          throw new IllegalArgumentException(
+              "TIMESTAMP value must be LocalDateTime, Instant, numeric seconds/millis/micros/nanos,"
+                  + " or ISO local date-time string but was: "
+                  + s,
+              e);
+        }
       }
       case TIMESTAMPTZ -> {
         // TIMESTAMPTZ is always UTC-normalised and coerced as Instant.

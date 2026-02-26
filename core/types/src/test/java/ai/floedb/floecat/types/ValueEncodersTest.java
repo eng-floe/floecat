@@ -73,7 +73,9 @@ class ValueEncodersTest {
                 Math.floorDiv(nanosValue, 1_000_000_000L),
                 (int) Math.floorMod(nanosValue, 1_000_000_000L)),
             java.time.ZoneOffset.UTC);
-    assertEquals(nanosExpected.toString(), ValueEncoders.encodeToString(timestampType, nanosValue));
+    assertEquals(
+        TemporalCoercions.truncateToMicros(nanosExpected).toString(),
+        ValueEncoders.encodeToString(timestampType, nanosValue));
   }
 
   @Test
@@ -85,14 +87,14 @@ class ValueEncodersTest {
   }
 
   @Test
-  void decodeTimestampReturnsLocalDateTimeAndAcceptsLegacyInstantStrings() {
+  void decodeTimestampReturnsLocalDateTimeAndRejectsZonedStrings() {
     LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
     Object fromLocal = ValueEncoders.decodeFromString(timestampType, "2026-02-26T12:34:56.123456");
     assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56, 123_456_000), fromLocal);
 
-    Object fromLegacyInstant =
-        ValueEncoders.decodeFromString(timestampType, "2026-02-26T12:34:56Z");
-    assertEquals(LocalDateTime.of(2026, 2, 26, 12, 34, 56), fromLegacyInstant);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.decodeFromString(timestampType, "2026-02-26T12:34:56Z"));
   }
 
   @Test
@@ -186,15 +188,34 @@ class ValueEncodersTest {
         LocalTime.ofNanoOfDay(Math.floorMod(microsValue * 1_000L, 86_400_000_000_000L)).toString();
     assertEquals(microsExpected, ValueEncoders.encodeToString(timeType, microsValue));
     long nanosValue = 9_876_543_210_123L;
-    String nanosExpected =
-        LocalTime.ofNanoOfDay(Math.floorMod(nanosValue, 86_400_000_000_000L)).toString();
-    assertEquals(nanosExpected, ValueEncoders.encodeToString(timeType, nanosValue));
+    LocalTime nanosExpected = LocalTime.ofNanoOfDay(Math.floorMod(nanosValue, 86_400_000_000_000L));
+    LocalTime nanosTruncated = TemporalCoercions.truncateToMicros(nanosExpected);
+    assertEquals(
+        java.time.format.DateTimeFormatter.ISO_LOCAL_TIME.format(nanosTruncated),
+        ValueEncoders.encodeToString(timeType, nanosValue));
   }
 
   @Test
   void dateNumericInterpretsEpochDay() {
     LogicalType dateType = LogicalType.of(LogicalKind.DATE);
     assertEquals("1970-01-02", ValueEncoders.encodeToString(dateType, 1L));
+  }
+
+  @Test
+  void temporalNumericRejectsFractionalValues() {
+    LogicalType dateType = LogicalType.of(LogicalKind.DATE);
+    LogicalType timeType = LogicalType.of(LogicalKind.TIME);
+    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
+    LogicalType timestamptzType = LogicalType.of(LogicalKind.TIMESTAMPTZ);
+
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(dateType, 1.25));
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timeType, 1.25));
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timestampType, 1.25));
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timestamptzType, 1.25));
   }
 
   @Test
@@ -225,6 +246,9 @@ class ValueEncodersTest {
 
   @Test
   void complexTypesRejectMinMaxEncoding() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.JSON), "{}"));
     assertThrows(
         IllegalArgumentException.class,
         () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.ARRAY), List.of(1, 2, 3)));

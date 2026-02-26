@@ -156,13 +156,13 @@ public final class TemporalCoercions {
 
   private static long toTimeNanos(long v) {
     long abs = Math.abs(v);
-    if (abs < TIME_SECONDS_THRESHOLD) {
+    if (abs <= TIME_SECONDS_THRESHOLD) {
       return v * 1_000_000_000L; // seconds
     }
-    if (abs < TIME_MILLIS_THRESHOLD) {
+    if (abs <= TIME_MILLIS_THRESHOLD) {
       return v * 1_000_000L; // milliseconds
     }
-    if (abs < TIME_MICROS_THRESHOLD) {
+    if (abs <= TIME_MICROS_THRESHOLD) {
       return v * 1_000L; // microseconds
     }
     return v; // nanoseconds

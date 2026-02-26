@@ -135,6 +135,10 @@ Retry only transient failures (`UNAVAILABLE`), with bounded timeout/retry budget
   `ArrowSchemaUtil`:
   - use FloeCat canonical logical types (or supported aliases),
   - integer aliases collapse to Arrow `Int64`,
+  - `JSON` maps to Arrow `Utf8`; `BINARY` maps to Arrow `Binary`; `UUID` maps to
+    `FixedSizeBinary(16)`,
+  - `INTERVAL` and complex container kinds (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) are not supported
+    and must be omitted or cast to `STRING`/`BINARY`,
   - unknown/null/blank logical types fail fast instead of defaulting to `Utf8`.
 
 Auth/authorization behavior:
