@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import java.util.Set;
@@ -103,6 +104,7 @@ public final class IcebergSchemaMapper {
             SchemaColumn.newBuilder()
                 .setName(field.name())
                 .setLogicalType(toCanonical(field.type()))
+                .setSourceType(icebergSourceType(field.type()))
                 .setFieldId(field.fieldId())
                 .setNullable(!field.isRequired())
                 .setPhysicalPath(physical)
@@ -185,5 +187,9 @@ public final class IcebergSchemaMapper {
         yield "BINARY";
       }
     };
+  }
+
+  private static SourceType icebergSourceType(Type t) {
+    return SourceType.newBuilder().setEngineKind("iceberg").setDeclaredType(t.toString()).build();
   }
 }

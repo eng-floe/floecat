@@ -55,6 +55,15 @@ message NameRef {
   optional ResourceId resource_id = 4;
 }
 
+message SourceType {
+  // Source engine identifier (for example: "delta", "iceberg", "generic").
+  string engine_kind = 1;
+  // Raw declared type from the source system.
+  string declared_type = 2;
+  // Optional source-specific parameters.
+  map<string, string> attrs = 3;
+}
+
 enum SpecialSnapshot {
   SS_UNSPECIFIED = 0;
   SS_CURRENT = 1;

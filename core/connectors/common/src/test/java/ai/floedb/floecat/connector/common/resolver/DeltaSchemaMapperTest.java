@@ -72,6 +72,8 @@ class DeltaSchemaMapperTest {
     // Delta "timestamp" is UTC-adjusted → canonical TIMESTAMPTZ
     SchemaColumn col = firstColumn(singleFieldSchema("ts", "timestamp"));
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(col.getSourceType().getEngineKind()).isEqualTo("delta");
+    assertThat(col.getSourceType().getDeclaredType()).isEqualTo("timestamp");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -159,6 +161,8 @@ class DeltaSchemaMapperTest {
         """;
     SchemaColumn col = firstColumn(json);
     assertThat(col.getLogicalType()).isEqualTo("STRUCT");
+    assertThat(col.getSourceType().getEngineKind()).isEqualTo("delta");
+    assertThat(col.getSourceType().getDeclaredType()).contains("\"type\":\"struct\"");
     assertThat(col.getLeaf()).isFalse();
   }
 

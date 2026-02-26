@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -74,6 +75,11 @@ final class GenericSchemaMapper {
                 SchemaColumn.newBuilder()
                     .setName(name)
                     .setLogicalType(type)
+                    .setSourceType(
+                        SourceType.newBuilder()
+                            .setEngineKind("generic")
+                            .setDeclaredType(type)
+                            .build())
                     .setFieldId(ordinal) // deterministic order
                     .setNullable(true) // assume nullable
                     .setPhysicalPath(name)

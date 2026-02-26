@@ -70,14 +70,20 @@ public final class UserObjectBundleUtils {
   }
 
   public static ColumnInfo columnInfo(SchemaColumn column, Origin origin) {
-    return ColumnInfo.newBuilder()
-        .setId(column.getId())
-        .setName(column.getName())
-        .setType(NameRefUtil.name(column.getLogicalType()))
-        .setNullable(column.getNullable())
-        .setOrdinal(column.getOrdinal())
-        .setOrigin(origin)
-        .build();
+    ColumnInfo.Builder builder =
+        ColumnInfo.newBuilder()
+            .setId(column.getId())
+            .setName(column.getName())
+            .setType(NameRefUtil.name(column.getLogicalType()))
+            .setNullable(column.getNullable())
+            .setOrdinal(column.getOrdinal())
+            .setOrigin(origin);
+
+    if (column.hasSourceType()) {
+      builder.setSourceType(column.getSourceType());
+    }
+
+    return builder.build();
   }
 
   public static List<ColumnInfo> columnsFor(

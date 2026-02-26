@@ -64,9 +64,11 @@ class IcebergSchemaMapperTest {
 
   @Test
   void utcTimestampMapsToTimestamptz() {
-    SchemaColumn col =
-        singleColumn(Types.NestedField.optional(1, "ts_utc", Types.TimestampType.withZone()));
+    Types.TimestampType sourceType = Types.TimestampType.withZone();
+    SchemaColumn col = singleColumn(Types.NestedField.optional(1, "ts_utc", sourceType));
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(col.getSourceType().getEngineKind()).isEqualTo("iceberg");
+    assertThat(col.getSourceType().getDeclaredType()).isEqualTo(sourceType.toString());
     assertThat(col.getLeaf()).isTrue();
   }
 

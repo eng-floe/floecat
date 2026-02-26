@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -120,6 +121,7 @@ final class DeltaSchemaMapper {
               SchemaColumn.newBuilder()
                   .setName(name)
                   .setLogicalType(logicalType)
+                  .setSourceType(deltaSourceType(typeNode))
                   .setFieldId(fieldId)
                   .setNullable(nullable)
                   .setPhysicalPath(physical)
@@ -225,5 +227,22 @@ final class DeltaSchemaMapper {
         yield "BINARY";
       }
     };
+  }
+
+  private static SourceType deltaSourceType(JsonNode typeNode) {
+    return SourceType.newBuilder()
+        .setEngineKind("delta")
+        .setDeclaredType(deltaDeclaredType(typeNode))
+        .build();
+  }
+
+  private static String deltaDeclaredType(JsonNode typeNode) {
+    if (typeNode == null) {
+      return "";
+    }
+    if (typeNode.isTextual()) {
+      return typeNode.asText("");
+    }
+    return typeNode.toString();
   }
 }
