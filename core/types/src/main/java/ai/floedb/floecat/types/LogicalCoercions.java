@@ -27,9 +27,53 @@ import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.UUID;
 
+/**
+ * Coerces raw stat values from external sources (Parquet stats, Delta checkpoint metadata, etc.)
+ * into the canonical Java types expected by FloeCat's statistics engine.
+ *
+ * <p>Each connector produces min/max/ndv statistics in its own native representation (Parquet
+ * statistics give integers as {@code int}/{@code long}, timestamps as epoch-micros, etc.). This
+ * class normalises those values to a single canonical form per {@link LogicalKind} so that the
+ * statistics engine and query planner can compare them without source-format-specific logic.
+ *
+ * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
+ * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
+ * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) have no standard stat coercion; the input value
+ * is returned unchanged.
+ *
+ * @see LogicalComparators for ordering normalised values
+ * @see ValueEncoders for encoding values into canonical strings/bytes
+ */
 public final class LogicalCoercions {
   private static final long NANOS_PER_DAY = 86_400_000_000_000L;
 
+  /**
+   * Coerces a raw stat value to the canonical Java type for the given logical type.
+   *
+   * <p>Typical coercions:
+   *
+   * <ul>
+   *   <li>{@code INT}: any {@link Number} or {@link String} → {@link Long}
+   *   <li>{@code FLOAT}: any {@link Number} or {@link String} → {@link Float}
+   *   <li>{@code DOUBLE}: any {@link Number} or {@link String} → {@link Double}
+   *   <li>{@code DECIMAL}: {@link java.math.BigDecimal} / {@link Number} / {@link String} → {@link
+   *       java.math.BigDecimal}
+   *   <li>{@code TIMESTAMP}: {@link String} / {@link Long} / {@link java.time.Instant} → {@link
+   *       java.time.LocalDateTime} (timezone-naive)
+   *   <li>{@code TIMESTAMPTZ}: {@link String} / {@link Long} → {@link java.time.Instant} (UTC)
+   *   <li>{@code DATE}: {@link Number} (epoch-days) / {@link String} → {@link java.time.LocalDate}
+   *   <li>{@code TIME}: {@link Number} (nanos/micros/millis/secs heuristic) / {@link String} →
+   *       {@link java.time.LocalTime}
+   *   <li>{@code BINARY}: {@code byte[]}, {@link java.nio.ByteBuffer}, or hex-string → {@code
+   *       byte[]}
+   *   <li>Complex/semi-structured: returned unchanged
+   * </ul>
+   *
+   * @param t the logical type governing the coercion
+   * @param v the raw value (null is returned as null)
+   * @return coerced value in canonical Java form
+   * @throws IllegalArgumentException if the value cannot be coerced to the requested type
+   */
   public static Object coerceStatValue(LogicalType t, Object v) {
     if (v == null) {
       return null;

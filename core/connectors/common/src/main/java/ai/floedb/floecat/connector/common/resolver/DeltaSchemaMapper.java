@@ -202,7 +202,8 @@ final class DeltaSchemaMapper {
 
     // Scalar types are textual identifiers.
     String raw = typeNode.asText("");
-    return switch (raw.toLowerCase(Locale.ROOT)) {
+    String lowerRaw = raw.toLowerCase(Locale.ROOT);
+    return switch (lowerRaw) {
       case "boolean" -> "BOOLEAN";
       // All integer sizes collapse to canonical INT (64-bit).
       case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" -> "INT";
@@ -219,7 +220,7 @@ final class DeltaSchemaMapper {
       case "interval" -> "INTERVAL";
       default -> {
         // decimal(p,s) arrives as e.g. "decimal(10,2)" — upper-case and pass through.
-        if (raw.toLowerCase(Locale.ROOT).startsWith("decimal")) {
+        if (lowerRaw.startsWith("decimal")) {
           yield canonicalDeltaDecimal(raw);
         }
         throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'");

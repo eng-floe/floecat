@@ -21,6 +21,28 @@ import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * String formatting and parsing for FloeCat canonical {@link LogicalType} values.
+ *
+ * <p>Two complementary operations:
+ *
+ * <ul>
+ *   <li>{@link #format(LogicalType)} — converts a {@code LogicalType} to its canonical string. For
+ *       non-decimal kinds this is the enum name (e.g. {@code "INT"}); for DECIMAL: {@code
+ *       "DECIMAL(p,s)"}.
+ *   <li>{@link #parse(String)} — parses a type string (canonical name, SQL alias, or parameterised
+ *       form) back to a {@code LogicalType}. Case-insensitive, collapses internal whitespace,
+ *       strips optional length parameters from non-DECIMAL types (e.g. {@code VARCHAR(10) →
+ *       STRING}), and resolves aliases via {@link LogicalKind#fromName(String)}.
+ * </ul>
+ *
+ * <p><b>DECIMAL special case:</b> A bare {@code DECIMAL} or {@code NUMERIC} without explicit
+ * precision and scale parameters is rejected by {@link #parse} — both precision and scale are
+ * required by {@link LogicalType#decimal(int, int)}.
+ *
+ * @see LogicalType
+ * @see LogicalKind
+ */
 public final class LogicalTypeFormat {
   // Accept common SQL spellings for decimals (e.g., DECIMAL(10,2), NUMERIC(10,2)).
   private static final Pattern DECIMAL_RE =

@@ -41,10 +41,36 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.jboss.logging.Logger;
 
+/**
+ * Maps Delta Kernel {@link DataType} instances to FloeCat canonical {@link LogicalType}.
+ *
+ * <p>This class operates on Delta Kernel's typed object model (used when reading Delta tables via
+ * the Kernel API). For Delta's JSON-schema representation (used when reading table metadata from
+ * Unity Catalog or checkpoint files), see {@code DeltaSchemaMapper.deltaTypeToCanonical()}.
+ *
+ * <p><b>Timestamp semantics:</b> Delta's {@link TimestampType} is always UTC-stored → {@link
+ * LogicalKind#TIMESTAMPTZ}. Delta's {@link TimestampNTZType} is timezone-naive → {@link
+ * LogicalKind#TIMESTAMP}. The Floe spec decode matrix v1 has these two entries inverted; this
+ * implementation applies the semantically correct mapping and records the discrepancy in code
+ * comments.
+ *
+ * <p><b>Integer collapsing:</b> All Delta integer sizes ({@link ByteType}, {@link ShortType},
+ * {@link IntegerType}, {@link LongType}) collapse to canonical {@link LogicalKind#INT} (64-bit).
+ *
+ * <p><b>Unrecognised types</b> are logged at WARN level and mapped to {@link LogicalKind#BINARY}.
+ * Prior to this refactor, unrecognised types silently returned {@code null}, causing columns to be
+ * dropped; returning BINARY is the spec-mandated safe fallback.
+ */
 final class DeltaTypeMapper {
 
   private static final Logger LOG = Logger.getLogger(DeltaTypeMapper.class);
 
+  /**
+   * Maps all fields in a Delta {@link StructType} to canonical logical types.
+   *
+   * @param st top-level Delta struct schema
+   * @return ordered map of field name → {@link LogicalType}
+   */
   static Map<String, LogicalType> deltaTypeMap(StructType st) {
     Map<String, LogicalType> out = new LinkedHashMap<>();
     for (StructField f : st.fields()) {
@@ -54,6 +80,13 @@ final class DeltaTypeMapper {
     return out;
   }
 
+  /**
+   * Converts a single Delta Kernel {@link DataType} to a FloeCat canonical {@link LogicalType}.
+   *
+   * @param dt a Delta Kernel data type (never null)
+   * @return the corresponding canonical {@link LogicalType}; falls back to {@link
+   *     LogicalKind#BINARY} for any unrecognised type
+   */
   static LogicalType toLogical(DataType dt) {
     if (dt instanceof BooleanType) return LogicalType.of(LogicalKind.BOOLEAN);
     if (dt instanceof ByteType

@@ -148,6 +148,24 @@ public enum LogicalKind {
     ALIASES = Map.copyOf(m);
   }
 
+  /**
+   * Resolves a type name (canonical or aliased) to a {@link LogicalKind}.
+   *
+   * <p>The lookup is case-insensitive and collapses internal whitespace, so {@code "BIGINT"},
+   * {@code "bigint"}, and {@code "BigInt"} all resolve to {@link #INT}, and {@code "double
+   * precision"} resolves to {@link #DOUBLE}.
+   *
+   * <p>Canonical enum names are tried first ({@link #INT}, {@link #FLOAT}, {@link #TIMESTAMPTZ},
+   * …); if no exact match is found, the ALIASES map is consulted. The ALIASES map covers all
+   * source-format synonyms documented in the Floe Data Types spec, including integer sizes ({@code
+   * TINYINT} … {@code BIGINT}), float aliases ({@code FLOAT4}, {@code FLOAT32}, {@code REAL}),
+   * string aliases ({@code VARCHAR}, {@code CHAR}, …), and multi-word aliases ({@code "TIMESTAMP
+   * WITH TIME ZONE"}, {@code "DOUBLE PRECISION"}).
+   *
+   * @param candidate type name to resolve (may be null, blank, or unknown — all throw)
+   * @return the matching {@link LogicalKind}
+   * @throws IllegalArgumentException if {@code candidate} is null, blank, or not recognised
+   */
   public static LogicalKind fromName(String candidate) {
     if (candidate == null) {
       throw new IllegalArgumentException("Logical kind must not be null");

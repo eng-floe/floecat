@@ -28,8 +28,31 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
 
+/**
+ * Provides ordering and normalisation utilities for FloeCat canonical logical types.
+ *
+ * <p>Used primarily by statistics builders that need to compare encoded min/max values stored as
+ * strings or objects. Comparisons are performed on <em>normalised</em> Java values (e.g., all
+ * integers are promoted to {@link Long}, all UTC timestamps to {@link java.time.Instant}) so that
+ * histogram builders can order them without deserialising raw binary payloads.
+ *
+ * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
+ * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
+ * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) have no meaningful min/max ordering. {@link
+ * #isOrderable(LogicalType)} returns {@code false} for these kinds, and {@link
+ * #normalize(LogicalType, Object)} returns {@code null} rather than throwing.
+ */
 public final class LogicalComparators {
 
+  /**
+   * Returns {@code true} iff values of the given type can be meaningfully ordered.
+   *
+   * <p>All scalar numeric, string, binary, UUID, and temporal types (except INTERVAL) are
+   * orderable. Complex and semi-structured types are not.
+   *
+   * @param t the logical type to test (null → {@code false})
+   * @return {@code true} if the type is orderable
+   */
   public static boolean isOrderable(LogicalType t) {
     if (t == null) {
       return false;
@@ -52,6 +75,19 @@ public final class LogicalComparators {
     };
   }
 
+  /**
+   * Compares two values of the given type after normalisation.
+   *
+   * <p>Both values are normalised to their canonical Java representation (via {@link
+   * #normalize(LogicalType, Object)}) before comparison. The returned int follows the standard
+   * {@link Comparable#compareTo} contract: negative, zero, or positive.
+   *
+   * @param t the logical type governing comparison semantics
+   * @param a left-hand value (null treated as "less than everything")
+   * @param b right-hand value (null treated as "less than everything")
+   * @return comparison result
+   * @throws IllegalArgumentException if the type is not orderable
+   */
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static int compare(LogicalType t, Object a, Object b) {
     if (a == b) {
@@ -96,6 +132,17 @@ public final class LogicalComparators {
     }
   }
 
+  /**
+   * Normalises a raw stat value to its canonical Java type for ordering.
+   *
+   * <p>Examples: any {@link Number} for INT → {@link Long}; string for TIMESTAMP → {@link
+   * java.time.LocalDateTime}; string for TIMESTAMPTZ → {@link java.time.Instant}. For unorderable
+   * kinds (INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT), returns {@code null}.
+   *
+   * @param t the logical type
+   * @param v the raw value (may be a Java primitive wrapper, String, or byte array)
+   * @return normalised value, or {@code null} if the kind is not orderable
+   */
   public static Object normalize(LogicalType t, Object v) {
     switch (t.kind()) {
       case BOOLEAN:

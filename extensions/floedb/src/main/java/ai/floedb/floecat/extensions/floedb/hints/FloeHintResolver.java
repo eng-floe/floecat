@@ -2,6 +2,8 @@
  * Copyright 2026 Yellowbrick Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -447,12 +449,13 @@ public final class FloeHintResolver {
     return ScannerUtils.payload(ctx.overlay(), id, descriptor, messageClass, ctx.engineContext());
   }
 
-  private static boolean passByValue(LogicalType logical) {
+  // package-private for testing
+  static boolean passByValue(LogicalType logical) {
     if (logical == null) {
       return false;
     }
     return switch (logical.kind()) {
-      case BOOLEAN, INT, FLOAT, DOUBLE, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL, UUID -> true;
+      case BOOLEAN, INT, FLOAT, DOUBLE, DATE, TIME, TIMESTAMP, TIMESTAMPTZ -> true;
       default -> false;
     };
   }

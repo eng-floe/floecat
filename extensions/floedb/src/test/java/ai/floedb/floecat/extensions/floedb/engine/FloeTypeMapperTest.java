@@ -147,7 +147,9 @@ class FloeTypeMapperTest {
   }
 
   @Test
-  void unsupportedKindReturnsEmpty() {
+  void whenTypeLookupCannotFindPgTypeResolveReturnsEmpty() {
+    // BINARY is a supported kind (maps to bytea), but if the TypeLookup has no entry for
+    // pg_catalog.bytea — e.g. in a minimal catalog — resolve() must return empty rather than throw.
     Optional<TypeNode> result =
         mapper.resolve(LogicalType.of(LogicalKind.BINARY), new FakeTypeLookup(Map.of()));
     assertThat(result).isEmpty();

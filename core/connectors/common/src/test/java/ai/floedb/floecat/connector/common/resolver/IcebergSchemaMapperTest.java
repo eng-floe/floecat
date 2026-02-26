@@ -124,6 +124,15 @@ class IcebergSchemaMapperTest {
     assertThat(desc.getColumns(7).getLogicalType()).isEqualTo("TIME");
   }
 
+  @Test
+  void fixedLengthBinaryMapsToBinary() {
+    // Iceberg FIXED (fixed-length byte array) must collapse to canonical BINARY.
+    SchemaColumn col =
+        singleColumn(Types.NestedField.optional(1, "fingerprint", Types.FixedType.ofLength(16)));
+    assertThat(col.getLogicalType()).isEqualTo("BINARY");
+    assertThat(col.getLeaf()).isTrue();
+  }
+
   // ---------------------------------------------------------------------------
   // DECIMAL
   // ---------------------------------------------------------------------------

@@ -23,10 +23,36 @@ import com.google.protobuf.Timestamp;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * Adapter between FloeCat {@link LogicalType} objects and their protobuf wire representations
+ * ({@code ColumnStats}, {@code UpstreamStamp}).
+ *
+ * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Encoding and
+ * decoding of min/max values is delegated to {@link ValueEncoders}.
+ *
+ * <p>Typical usage:
+ *
+ * <pre>{@code
+ * // Writing stats to proto
+ * String typeStr = LogicalTypeProtoAdapter.encodeLogicalType(logicalType);
+ * String minStr  = LogicalTypeProtoAdapter.encodeValue(logicalType, minValue);
+ *
+ * // Reading stats from proto
+ * LogicalType t  = LogicalTypeProtoAdapter.columnLogicalType(columnStats);
+ * Object min     = LogicalTypeProtoAdapter.columnMin(columnStats);
+ * }</pre>
+ */
 public final class LogicalTypeProtoAdapter {
 
   private LogicalTypeProtoAdapter() {}
 
+  /**
+   * Encodes a {@link LogicalType} to its canonical wire string (e.g. {@code "INT"}, {@code
+   * "DECIMAL(10,2)"}).
+   *
+   * @param t the logical type to encode (must not be null)
+   * @return canonical string representation
+   */
   public static String encodeLogicalType(LogicalType t) {
     Objects.requireNonNull(t, "logical type");
     if (t.kind == LogicalKind.DECIMAL) {
@@ -37,6 +63,14 @@ public final class LogicalTypeProtoAdapter {
     return t.kind.name();
   }
 
+  /**
+   * Decodes a canonical type string (as written by {@link #encodeLogicalType}) back to a {@link
+   * LogicalType}. Also accepts aliases (e.g. {@code "BIGINT"}, {@code "JSONB"}).
+   *
+   * @param s the type string to decode (must not be null or blank)
+   * @return the corresponding {@link LogicalType}
+   * @throws IllegalArgumentException if {@code s} is null, blank, or not recognised
+   */
   public static LogicalType decodeLogicalType(String s) {
     if (s == null || s.isBlank()) {
       throw new IllegalArgumentException("Logical type must not be null/blank");
@@ -44,6 +78,14 @@ public final class LogicalTypeProtoAdapter {
     return LogicalTypeFormat.parse(s);
   }
 
+  /**
+   * Encodes a stat value to its canonical string (for storage in {@code ColumnStats.min/max}).
+   * Returns an empty string for null values.
+   *
+   * @param type the logical type governing encoding semantics
+   * @param value the value to encode (null → {@code ""})
+   * @return encoded string, never null
+   */
   public static String encodeValue(LogicalType type, Object value) {
     if (value == null) {
       return "";
@@ -52,6 +94,14 @@ public final class LogicalTypeProtoAdapter {
     return ValueEncoders.encodeToString(type, value);
   }
 
+  /**
+   * Decodes a stat value string (as written by {@link #encodeValue}) back to its canonical Java
+   * type. Returns null for null or blank strings.
+   *
+   * @param type the logical type governing decoding semantics
+   * @param encoded the encoded string (null or blank → null)
+   * @return the decoded value, or null
+   */
   public static Object decodeValue(LogicalType type, String encoded) {
     if (encoded == null || encoded.isBlank()) {
       return null;
@@ -101,6 +151,16 @@ public final class LogicalTypeProtoAdapter {
     return decodeValue(t, cs.getMax());
   }
 
+  /**
+   * Compares two encoded stat value strings by decoding both and delegating to {@link
+   * LogicalComparators#compare}.
+   *
+   * @param type the logical type governing comparison semantics
+   * @param a first encoded value (null treated as less than everything)
+   * @param b second encoded value (null treated as less than everything)
+   * @return negative, zero, or positive per {@link Comparable#compareTo} contract
+   * @throws IllegalArgumentException if the type is not orderable
+   */
   public static int compareEncoded(LogicalType type, String a, String b) {
     Object va = decodeValue(type, a);
     Object vb = decodeValue(type, b);

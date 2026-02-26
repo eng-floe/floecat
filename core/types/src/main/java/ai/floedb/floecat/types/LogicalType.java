@@ -18,6 +18,33 @@ package ai.floedb.floecat.types;
 
 import java.util.Objects;
 
+/**
+ * Immutable representation of a FloeCat canonical logical type.
+ *
+ * <p>A {@code LogicalType} carries a {@link LogicalKind} plus optional {@code precision} and {@code
+ * scale} parameters. Only {@link LogicalKind#DECIMAL} uses precision/scale; all other kinds reject
+ * them. Precision/scale are absent (null) for non-decimal kinds.
+ *
+ * <p><b>DECIMAL precision contract:</b> {@code LogicalType} enforces only {@code precision ≥ 1} and
+ * {@code 0 ≤ scale ≤ precision}. No upper bound on precision is enforced here — that is a
+ * connector-layer concern. For example, Iceberg and Delta naturally produce max precision 38;
+ * FloeDB's execution engine imposes a hard stop at 38 via {@code FloeTypeMapper}; BigQuery supports
+ * up to 76. Connectors must enforce their own format ceiling while preserving this canonical
+ * contract.
+ *
+ * <p><b>Complex types</b> ({@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
+ * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) carry no meaningful min/max statistics. Use
+ * {@link #isComplex()} to detect them before attempting stat coercions.
+ *
+ * <p>Factory methods:
+ *
+ * <ul>
+ *   <li>{@link #of(LogicalKind)} — for all non-decimal kinds
+ *   <li>{@link #decimal(int, int)} — for DECIMAL
+ * </ul>
+ *
+ * @see LogicalKind
+ */
 public final class LogicalType {
   public final LogicalKind kind;
   public final Integer precision;
@@ -43,10 +70,25 @@ public final class LogicalType {
     this.scale = scale;
   }
 
+  /**
+   * Creates a non-decimal logical type.
+   *
+   * @param kind the logical kind (must not be {@link LogicalKind#DECIMAL})
+   * @return a new {@code LogicalType} with no precision or scale
+   * @throws IllegalArgumentException if {@code kind} is DECIMAL (use {@link #decimal} instead)
+   */
   public static LogicalType of(LogicalKind kind) {
     return new LogicalType(kind, null, null);
   }
 
+  /**
+   * Creates a DECIMAL logical type with the given precision and scale.
+   *
+   * @param precision number of significant decimal digits; must be ≥ 1
+   * @param scale number of digits after the decimal point; must be ≥ 0 and ≤ precision
+   * @return a new DECIMAL {@code LogicalType}
+   * @throws IllegalArgumentException if the precision/scale constraints are violated
+   */
   public static LogicalType decimal(int precision, int scale) {
     return new LogicalType(LogicalKind.DECIMAL, precision, scale);
   }

@@ -19,9 +19,33 @@ package ai.floedb.floecat.types;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
+/**
+ * Package-private helper that safely coerces any {@link Number} subtype to a canonical 64-bit
+ * {@code long} representing a FloeCat {@link LogicalKind#INT} value.
+ *
+ * <p>Supported input types: {@link Long}, {@link Integer}, {@link Short}, {@link Byte}, {@link
+ * java.math.BigInteger}, {@link java.math.BigDecimal}, {@link Double}, {@link Float}. All other
+ * {@code Number} subtypes are coerced via their {@link Object#toString()} representation.
+ *
+ * <p>Throws {@link IllegalArgumentException} for:
+ *
+ * <ul>
+ *   <li>Values outside the {@code long} range ({@code Long.MIN_VALUE}…{@code Long.MAX_VALUE})
+ *   <li>Fractional values (e.g. {@code 1.5})
+ *   <li>Non-finite floating-point values (NaN, ±Infinity)
+ * </ul>
+ */
 final class Int64Coercions {
   private Int64Coercions() {}
 
+  /**
+   * Converts {@code value} to a {@code long}, validating that it is a finite, whole number within
+   * the 64-bit integer range.
+   *
+   * @param value source number (never null)
+   * @return the {@code long} equivalent
+   * @throws IllegalArgumentException if the value is out of range, fractional, or non-finite
+   */
   static long checkedLong(Number value) {
     if (value instanceof Long l) {
       return l;
