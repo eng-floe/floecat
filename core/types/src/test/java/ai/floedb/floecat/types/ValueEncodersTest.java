@@ -17,6 +17,7 @@
 package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -24,6 +25,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -146,5 +149,21 @@ class ValueEncodersTest {
   void dateNumericInterpretsEpochDay() {
     LogicalType dateType = LogicalType.of(LogicalKind.DATE);
     assertEquals("1970-01-02", ValueEncoders.encodeToString(dateType, 1L));
+  }
+
+  @Test
+  void complexTypesRejectMinMaxEncoding() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.ARRAY), List.of(1, 2, 3)));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.MAP), Map.of("k", "v")));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.STRUCT), new Object()));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(LogicalType.of(LogicalKind.VARIANT), "{}"));
   }
 }

@@ -215,8 +215,9 @@ public final class ValueEncoders {
       case MAP:
       case STRUCT:
       case VARIANT:
-        // Complex types are opaque at the stats layer; encode as Base64 binary.
-        return Base64.getEncoder().encodeToString(asBytes(value));
+        // Complex/container types have no stable min/max ordering semantics.
+        throw new IllegalArgumentException(
+            "min/max encoding is unsupported for complex type " + t.kind().name());
 
       default:
         return value.toString();
@@ -263,6 +264,7 @@ public final class ValueEncoders {
       case MAP:
       case STRUCT:
       case VARIANT:
+        // Backward compatibility for previously persisted opaque values.
         return Base64.getDecoder().decode(encoded);
       case DECIMAL:
         return new BigDecimal(encoded);

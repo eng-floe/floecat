@@ -204,89 +204,98 @@ public final class ScanPruningUtils {
       return true;
     }
 
+    if (!LogicalComparators.isOrderable(type)) {
+      return true;
+    }
+
     BiFunction<Object, Object, Integer> cmp = (a, b) -> LogicalComparators.compare(type, a, b);
 
     var op = p.getOp();
     List<String> values = p.getValuesList();
 
-    switch (op) {
-      case OP_EQ -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(v, min) < 0 || cmp.apply(v, max) > 0) return false;
-        return true;
-      }
-
-      case OP_IN -> {
-        if (values.isEmpty()) return true;
-        for (String vstr : values) {
-          Object v = LogicalCoercions.coerceStatValue(type, vstr);
-          if (cmp.apply(v, min) >= 0 && cmp.apply(v, max) <= 0) return true;
-        }
-        return false;
-      }
-
-      case OP_BETWEEN -> {
-        if (values.size() < 2) return true;
-        Object a = LogicalCoercions.coerceStatValue(type, values.get(0));
-        Object b = LogicalCoercions.coerceStatValue(type, values.get(1));
-
-        if (cmp.apply(a, b) > 0) {
-          Object tmp = a;
-          a = b;
-          b = tmp;
+    try {
+      switch (op) {
+        case OP_EQ -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(v, min) < 0 || cmp.apply(v, max) > 0) return false;
+          return true;
         }
 
-        if (cmp.apply(b, min) < 0 || cmp.apply(a, max) > 0) return false;
-        return true;
-      }
+        case OP_IN -> {
+          if (values.isEmpty()) return true;
+          for (String vstr : values) {
+            Object v = LogicalCoercions.coerceStatValue(type, vstr);
+            if (cmp.apply(v, min) >= 0 && cmp.apply(v, max) <= 0) return true;
+          }
+          return false;
+        }
 
-      case OP_LT -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, v) >= 0) return false;
-        return true;
-      }
+        case OP_BETWEEN -> {
+          if (values.size() < 2) return true;
+          Object a = LogicalCoercions.coerceStatValue(type, values.get(0));
+          Object b = LogicalCoercions.coerceStatValue(type, values.get(1));
 
-      case OP_LTE -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, v) > 0) return false;
-        return true;
-      }
+          if (cmp.apply(a, b) > 0) {
+            Object tmp = a;
+            a = b;
+            b = tmp;
+          }
 
-      case OP_GT -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(max, v) <= 0) return false;
-        return true;
-      }
+          if (cmp.apply(b, min) < 0 || cmp.apply(a, max) > 0) return false;
+          return true;
+        }
 
-      case OP_GTE -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(max, v) < 0) return false;
-        return true;
-      }
+        case OP_LT -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(min, v) >= 0) return false;
+          return true;
+        }
 
-      case OP_NEQ -> {
-        if (values.isEmpty()) return true;
-        Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
-        if (cmp.apply(min, max) == 0 && cmp.apply(min, v) == 0) return false;
-        return true;
-      }
+        case OP_LTE -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(min, v) > 0) return false;
+          return true;
+        }
 
-      case OP_IS_NULL -> {
-        return true;
-      }
+        case OP_GT -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(max, v) <= 0) return false;
+          return true;
+        }
 
-      case OP_IS_NOT_NULL -> {
-        return true;
-      }
+        case OP_GTE -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(max, v) < 0) return false;
+          return true;
+        }
 
-      default -> {
-        return true;
+        case OP_NEQ -> {
+          if (values.isEmpty()) return true;
+          Object v = LogicalCoercions.coerceStatValue(type, values.get(0));
+          if (cmp.apply(min, max) == 0 && cmp.apply(min, v) == 0) return false;
+          return true;
+        }
+
+        case OP_IS_NULL -> {
+          return true;
+        }
+
+        case OP_IS_NOT_NULL -> {
+          return true;
+        }
+
+        default -> {
+          return true;
+        }
       }
+    } catch (RuntimeException ignore) {
+      // Conservative fallback: if coercion/comparison fails, keep the file.
+      return true;
     }
   }
 }

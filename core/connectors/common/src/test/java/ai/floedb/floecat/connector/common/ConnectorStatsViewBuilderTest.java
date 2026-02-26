@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -147,5 +148,19 @@ class ConnectorStatsViewBuilderTest {
     assertEquals(123.0, approx.getEstimate());
     assertEquals(
         tableTotalRows, approx.getRowsTotal(), "rowsTotal should fallback to tableTotalRows");
+  }
+
+  @Test
+  void toColumnStatsView_skipsMinMaxForNonOrderableComplexTypes() {
+    Map<String, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
+    cols.put("arr_col", new Agg(10L, 0L, 0L, List.of(1, 2), List.of(9, 10), null, null));
+
+    List<FloecatConnector.ColumnStatsView> out =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            cols, k -> k, k -> k, k -> 1, k -> 0, k -> LogicalType.of(LogicalKind.ARRAY), 10L);
+
+    assertEquals(1, out.size());
+    assertNull(out.get(0).min());
+    assertNull(out.get(0).max());
   }
 }

@@ -27,6 +27,28 @@ import java.util.UUID;
 
 public final class LogicalComparators {
 
+  public static boolean isOrderable(LogicalType t) {
+    if (t == null) {
+      return false;
+    }
+    return switch (t.kind()) {
+      case BOOLEAN,
+          INT,
+          FLOAT,
+          DOUBLE,
+          DECIMAL,
+          STRING,
+          UUID,
+          BINARY,
+          DATE,
+          TIME,
+          TIMESTAMP,
+          TIMESTAMPTZ ->
+          true;
+      case INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT -> false;
+    };
+  }
+
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static int compare(LogicalType t, Object a, Object b) {
     if (a == b) {
@@ -41,10 +63,34 @@ public final class LogicalComparators {
       return 1;
     }
 
+    if (!isOrderable(t)) {
+      String kind = (t == null) ? "<null>" : t.kind().name();
+      throw new IllegalArgumentException("Logical type is not orderable: " + kind);
+    }
+
     Object na = normalize(t, a);
     Object nb = normalize(t, b);
 
-    return ((Comparable) na).compareTo(nb);
+    if (!(na instanceof Comparable<?> c)) {
+      throw new IllegalArgumentException(
+          "Normalized value is not Comparable for type "
+              + t.kind().name()
+              + ": "
+              + na.getClass().getName());
+    }
+
+    try {
+      return ((Comparable) c).compareTo(nb);
+    } catch (ClassCastException e) {
+      throw new IllegalArgumentException(
+          "Incompatible normalized values for type "
+              + t.kind().name()
+              + ": "
+              + na.getClass().getName()
+              + " vs "
+              + nb.getClass().getName(),
+          e);
+    }
   }
 
   public static Object normalize(LogicalType t, Object v) {

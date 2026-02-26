@@ -54,6 +54,8 @@ field was populated (even when the string itself is empty). In brief:
     * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).
   * Null/NAN counts are optional (`null_count`, `nan_count`); set them only when the connector can
     report a value so downstream planners can distinguish “unknown” from zero.
+  * Non-orderable types (`INTERVAL`, `JSON`, `ARRAY`, `MAP`, `STRUCT`, `VARIANT`) should leave
+    `min`/`max` unset.
 
 Helpers such as `ValueEncoders.encodeToString` already follow these rules; reuse them when converting
 native column values to strings so stats stay portable across languages.

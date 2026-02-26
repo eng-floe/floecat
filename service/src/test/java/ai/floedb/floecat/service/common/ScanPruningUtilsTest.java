@@ -53,6 +53,25 @@ public class ScanPruningUtilsTest {
         .build();
   }
 
+  private static ScanFile fileWithStats(
+      String path, String col, LogicalType type, Object min, Object max) {
+    ColumnStats cs =
+        ColumnStats.newBuilder()
+            .setColumnName(col)
+            .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type))
+            .setMin(LogicalTypeProtoAdapter.encodeValue(type, min))
+            .setMax(LogicalTypeProtoAdapter.encodeValue(type, max))
+            .build();
+
+    return ScanFile.newBuilder()
+        .setFilePath(path)
+        .setFileFormat("PARQUET")
+        .setFileSizeInBytes(10)
+        .setRecordCount(1)
+        .addColumns(cs)
+        .build();
+  }
+
   /** Delete-file variant. */
   private static ScanFile deleteFileWithStats(String path, String col, long min, long max) {
     LogicalType t = LogicalType.of(LogicalKind.INT);
@@ -312,5 +331,32 @@ public class ScanPruningUtilsTest {
 
     assertSame(f, raw.dataFiles().get(0));
     assertNotSame(f, out.getDataFiles(0));
+  }
+
+  @Test
+  void testNonOrderableTypesDoNotCrashPruningAndAreKept() {
+    List<LogicalType> nonOrderableTypes =
+        List.of(
+            LogicalType.of(LogicalKind.JSON),
+            LogicalType.of(LogicalKind.INTERVAL),
+            LogicalType.of(LogicalKind.ARRAY),
+            LogicalType.of(LogicalKind.MAP),
+            LogicalType.of(LogicalKind.STRUCT),
+            LogicalType.of(LogicalKind.VARIANT));
+
+    for (LogicalType type : nonOrderableTypes) {
+      Object min = type.kind() == LogicalKind.JSON ? "{\"a\":1}" : new byte[] {1};
+      Object max = type.kind() == LogicalKind.JSON ? "{\"z\":1}" : new byte[] {2};
+      ScanFile f = fileWithStats("p-" + type.kind().name(), "col", type, min, max);
+      Predicate pred =
+          Predicate.newBuilder().setColumn("col").setOp(Operator.OP_EQ).addValues("x").build();
+
+      var out =
+          assertDoesNotThrow(
+              () ->
+                  ScanPruningUtils.pruneBundle(
+                      rawBundle(List.of(f), List.of()), List.of("col"), List.of(pred)));
+      assertEquals(1, out.getDataFilesCount(), "must keep file for non-orderable type " + type);
+    }
   }
 }
