@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
@@ -55,20 +56,22 @@ public class ScanPruningUtilsTest {
 
   private static ScanFile fileWithStats(
       String path, String col, LogicalType type, Object min, Object max) {
-    ColumnStats cs =
+    ColumnStats.Builder cs =
         ColumnStats.newBuilder()
             .setColumnName(col)
-            .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type))
-            .setMin(LogicalTypeProtoAdapter.encodeValue(type, min))
-            .setMax(LogicalTypeProtoAdapter.encodeValue(type, max))
-            .build();
+            .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type));
+
+    if (LogicalComparators.isOrderable(type)) {
+      cs.setMin(LogicalTypeProtoAdapter.encodeValue(type, min))
+          .setMax(LogicalTypeProtoAdapter.encodeValue(type, max));
+    }
 
     return ScanFile.newBuilder()
         .setFilePath(path)
         .setFileFormat("PARQUET")
         .setFileSizeInBytes(10)
         .setRecordCount(1)
-        .addColumns(cs)
+        .addColumns(cs.build())
         .build();
   }
 
