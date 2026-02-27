@@ -119,16 +119,16 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       throw decorationFailure(
           FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_TYPE_MAPPING_MISSING, e);
     } catch (ColumnTypeResolutionException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (MissingSystemOidException e) {
       throw decorationFailure(
           FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_MISSING_OID, e);
     } catch (MissingSystemMetadataException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (SecurityException e) {
       throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED, e);
     } catch (RuntimeException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     }
   }
 
@@ -156,16 +156,16 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       throw decorationFailure(
           FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_TYPE_MAPPING_MISSING, e);
     } catch (ColumnTypeResolutionException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (MissingSystemOidException e) {
       throw decorationFailure(
           FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_MISSING_OID, e);
     } catch (MissingSystemMetadataException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (SecurityException e) {
       throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED, e);
     } catch (RuntimeException e) {
-      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR, e);
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     }
   }
 
