@@ -73,5 +73,4 @@ public class NamespaceCreateService {
 
     return Response.ok(NamespaceResponseMapper.toInfo(created)).build();
   }
-
 }

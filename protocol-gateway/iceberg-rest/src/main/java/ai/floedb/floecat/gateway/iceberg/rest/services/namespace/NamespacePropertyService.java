@@ -42,7 +42,9 @@ public class NamespacePropertyService {
   @Inject NamespaceClient namespaceClient;
 
   public Response update(
-      NamespaceRequestContext namespaceContext, String idempotencyKey, NamespacePropertiesRequest req) {
+      NamespaceRequestContext namespaceContext,
+      String idempotencyKey,
+      NamespacePropertiesRequest req) {
     ResourceId namespaceId = namespaceContext.namespaceId();
     List<String> removals = req == null || req.removals() == null ? List.of() : req.removals();
     Map<String, String> updates = req == null || req.updates() == null ? Map.of() : req.updates();

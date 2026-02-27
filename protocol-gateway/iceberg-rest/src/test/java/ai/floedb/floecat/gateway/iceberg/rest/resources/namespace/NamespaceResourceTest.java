@@ -24,8 +24,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.CreateNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.CreateNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;

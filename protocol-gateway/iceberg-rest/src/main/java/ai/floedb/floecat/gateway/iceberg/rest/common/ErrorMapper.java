@@ -67,7 +67,8 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
       case PERMISSION_DENIED -> Response.Status.FORBIDDEN;
       case UNAUTHENTICATED -> Response.Status.UNAUTHORIZED;
       case UNIMPLEMENTED -> Response.Status.NOT_ACCEPTABLE;
-      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED -> Response.Status.SERVICE_UNAVAILABLE;
+      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED ->
+          Response.Status.SERVICE_UNAVAILABLE;
       default -> Response.Status.INTERNAL_SERVER_ERROR;
     };
   }
