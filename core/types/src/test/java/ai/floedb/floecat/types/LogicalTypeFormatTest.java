@@ -153,6 +153,19 @@ class LogicalTypeFormatTest {
     assertThat(dt.intervalQualifier()).isEqualTo(IntervalQualifier.DAY_TIME);
   }
 
+  @Test
+  void intervalQualifierRoundTrips() {
+    for (IntervalQualifier qualifier : IntervalQualifier.values()) {
+      if (qualifier == IntervalQualifier.UNSPECIFIED) {
+        continue;
+      }
+      LogicalType t = LogicalType.interval(qualifier);
+      assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(t))).isEqualTo(t);
+    }
+    LogicalType unset = LogicalType.of(LogicalKind.INTERVAL);
+    assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(unset))).isEqualTo(unset);
+  }
+
   // ---------------------------------------------------------------------------
   // parse() — case and whitespace normalisation
   // ---------------------------------------------------------------------------

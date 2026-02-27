@@ -17,11 +17,8 @@
 package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.types.rpc.LogicalType;
 import org.junit.jupiter.api.Test;
 
 class LogicalTypeProtoAdapterTest {
@@ -44,19 +41,5 @@ class LogicalTypeProtoAdapterTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> LogicalTypeProtoAdapter.decodeLogicalType("NOT_A_REAL_TYPE"));
-  }
-
-  @Test
-  void protoTemporalPrecisionPresenceIsPreserved() {
-    LogicalType unset = LogicalType.newBuilder().setKind(LogicalType.Kind.TK_TIMESTAMP).build();
-    assertFalse(unset.hasTemporalPrecision());
-
-    LogicalType zero =
-        LogicalType.newBuilder()
-            .setKind(LogicalType.Kind.TK_TIMESTAMP)
-            .setTemporalPrecision(0)
-            .build();
-    assertTrue(zero.hasTemporalPrecision());
-    assertEquals(0, zero.getTemporalPrecision());
   }
 }

@@ -357,7 +357,7 @@ public final class ValueEncoders {
     }
     return switch (qualifier) {
       case YEAR_MONTH -> normalizeYearMonthInterval(raw);
-      case DAY_TIME -> java.time.Duration.parse(raw).toString();
+      case DAY_TIME -> normalizeDayTimeInterval(raw);
       case UNSPECIFIED -> normalizeIntervalString(raw, qualifier);
     };
   }
@@ -368,30 +368,81 @@ public final class ValueEncoders {
       throw new IllegalArgumentException("INTERVAL string must not be blank");
     }
     if (qualifier == IntervalQualifier.UNSPECIFIED) {
-      return normalizeIntervalAuto(trimmed);
+      try {
+        return normalizeIntervalAuto(trimmed);
+      } catch (RuntimeException e) {
+        throw new IllegalArgumentException("INTERVAL string must be ISO-8601", e);
+      }
     }
     if (qualifier == IntervalQualifier.YEAR_MONTH) {
       return normalizeYearMonthInterval(trimmed);
     }
-    java.time.Duration d = java.time.Duration.parse(trimmed);
-    return d.toString();
+    return normalizeDayTimeInterval(trimmed);
   }
 
   private static String normalizeYearMonthInterval(String raw) {
-    java.time.Period p = java.time.Period.parse(raw);
+    java.time.Period p;
+    try {
+      p = java.time.Period.parse(raw);
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 year-month", e);
+    }
     if (p.getDays() != 0) {
       throw new IllegalArgumentException("INTERVAL YEAR TO MONTH must not include day components");
     }
     return p.toString();
   }
 
+  private static String normalizePeriodInterval(String raw) {
+    try {
+      return java.time.Period.parse(raw).toString();
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 year-month", e);
+    }
+  }
+
+  private static String normalizeDayTimeInterval(String raw) {
+    try {
+      return java.time.Duration.parse(raw).toString();
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 day-time", e);
+    }
+  }
+
   private static String normalizeIntervalAuto(String raw) {
     try {
-      return normalizeYearMonthInterval(raw);
+      return normalizePeriodInterval(raw);
     } catch (RuntimeException ignore) {
       // fall through to duration parsing
     }
-    return java.time.Duration.parse(raw).toString();
+    try {
+      return normalizeDayTimeInterval(raw);
+    } catch (RuntimeException ignore) {
+      // fall through to combined parsing
+    }
+    return normalizeMixedInterval(raw);
+  }
+
+  private static String normalizeMixedInterval(String raw) {
+    int tPos = raw.indexOf('T');
+    if (tPos <= 0) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601");
+    }
+    String datePart = raw.substring(0, tPos);
+    String timePart = raw.substring(tPos + 1);
+    if (timePart.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601");
+    }
+    java.time.Period p =
+        "P".equals(datePart) ? java.time.Period.ZERO : java.time.Period.parse(datePart);
+    java.time.Duration d = java.time.Duration.parse("PT" + timePart);
+    if (p.isZero()) {
+      return d.toString();
+    }
+    if (d.isZero()) {
+      return p.toString();
+    }
+    return p.toString() + d.toString().substring(1);
   }
 
   private static String asUtf8String(Object v) {

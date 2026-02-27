@@ -109,7 +109,7 @@ public final class LogicalTypeFormat {
       return LogicalType.interval(IntervalQualifier.DAY_TIME);
     }
     if ("INTERVAL".equals(normalized)) {
-      return LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+      return LogicalType.of(LogicalKind.INTERVAL);
     }
 
     String baseName = normalized;
@@ -160,7 +160,7 @@ public final class LogicalTypeFormat {
               "Unrecognized logical type: \"" + raw + "\" (invalid string length parameter)");
         }
       }
-      case "TIME", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ" -> {
+      case "TIME", "TIMESTAMP", "TIMESTAMPTZ" -> {
         if (!INTEGER_PARAM_RE.matcher(params).matches()) {
           throw new IllegalArgumentException(
               "Unrecognized logical type: \"" + raw + "\" (invalid temporal precision parameter)");

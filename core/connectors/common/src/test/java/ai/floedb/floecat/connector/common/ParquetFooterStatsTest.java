@@ -65,11 +65,14 @@ class ParquetFooterStatsTest {
     m.setAccessible(true);
 
     long nanosPerDay = TemporalCoercions.NANOS_PER_DAY;
-    Object outOfRange = m.invoke(null, lta, nanosPerDay);
+    long outOfRangeMicros = nanosPerDay / 1_000L;
+    Object outOfRange = m.invoke(null, lta, outOfRangeMicros);
     assertThat(outOfRange).isNull();
 
-    Object inRange = m.invoke(null, lta, nanosPerDay - 1);
-    assertThat(inRange).isEqualTo(LocalTime.ofNanoOfDay(nanosPerDay - 1));
+    long inRangeNanos = nanosPerDay - 1;
+    long inRangeMicros = inRangeNanos / 1_000L;
+    Object inRange = m.invoke(null, lta, inRangeMicros);
+    assertThat(inRange).isEqualTo(LocalTime.ofNanoOfDay(inRangeMicros * 1_000L));
   }
 
   private static Object timeLogicalTypeAnnotation(TimeUnit unit) throws Exception {

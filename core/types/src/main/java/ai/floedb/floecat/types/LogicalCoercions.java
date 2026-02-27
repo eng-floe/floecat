@@ -59,10 +59,10 @@ public final class LogicalCoercions {
    *       java.math.BigDecimal}
    *   <li>{@code TIMESTAMP}: {@link String} / {@link Long} / {@link java.time.Instant} → {@link
    *       java.time.LocalDateTime} (timezone-naive)
-   *   <li>{@code TIMESTAMPTZ}: {@link String} / {@link Long} → {@link java.time.Instant} (UTC)
+   *   <li>{@code TIMESTAMPTZ}: {@link String} / {@link java.time.Instant} → {@link
+   *       java.time.Instant} (UTC)
    *   <li>{@code DATE}: {@link Number} (epoch-days) / {@link String} → {@link java.time.LocalDate}
-   *   <li>{@code TIME}: {@link Number} (nanos/micros/millis/secs heuristic) / {@link String} →
-   *       {@link java.time.LocalTime}
+   *   <li>{@code TIME}: {@link String} → {@link java.time.LocalTime}
    *   <li>{@code BINARY}: {@code byte[]}, {@link java.nio.ByteBuffer}, or hex-string → {@code
    *       byte[]}
    *   <li>Complex/semi-structured: returned unchanged
@@ -192,7 +192,8 @@ public final class LogicalCoercions {
           // fall through
         }
         throw new IllegalArgumentException(
-            "TIMESTAMP value must be LocalDateTime, Instant, or ISO local date-time string but was: "
+            "TIMESTAMP value must be LocalDateTime, Instant, or ISO local date-time string but was:"
+                + " "
                 + s);
       }
       case TIMESTAMPTZ -> {

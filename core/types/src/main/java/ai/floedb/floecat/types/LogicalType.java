@@ -100,7 +100,8 @@ public final class LogicalType {
       }
     } else if (kind == LogicalKind.INTERVAL) {
       if (precision != null || scale != null || temporalPrecision != null) {
-        throw new IllegalArgumentException("type parameters are not supported for INTERVAL");
+        throw new IllegalArgumentException(
+            "precision, scale, and temporalPrecision are not supported for INTERVAL");
       }
     } else {
       if (precision != null
