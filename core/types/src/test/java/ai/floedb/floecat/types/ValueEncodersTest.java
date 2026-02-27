@@ -183,7 +183,7 @@ class ValueEncodersTest {
 
   @Test
   void intervalYearMonthEncodingRoundTrips() {
-    LogicalType intervalType = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
+    LogicalType intervalType = LogicalType.interval(IntervalRange.YEAR_TO_MONTH);
     java.time.Period period = java.time.Period.of(1, 2, 0);
 
     String encoded = ValueEncoders.encodeToString(intervalType, period);
@@ -196,7 +196,7 @@ class ValueEncodersTest {
 
   @Test
   void intervalDayTimeEncodingRoundTrips() {
-    LogicalType intervalType = LogicalType.interval(IntervalQualifier.DAY_TIME);
+    LogicalType intervalType = LogicalType.interval(IntervalRange.DAY_TO_SECOND);
     java.time.Duration duration = java.time.Duration.ofHours(1).plusMinutes(2);
 
     String encoded = ValueEncoders.encodeToString(intervalType, duration);
@@ -208,9 +208,20 @@ class ValueEncodersTest {
   }
 
   @Test
+  void intervalDayTimePrecisionTruncatesFractionalSeconds() {
+    LogicalType intervalType = LogicalType.interval(IntervalRange.DAY_TO_SECOND, null, 3);
+    java.time.Duration duration = java.time.Duration.ofSeconds(1, 123_456_789);
+
+    assertEquals("PT1.123S", ValueEncoders.encodeToString(intervalType, duration));
+    assertEquals("PT1.123S", ValueEncoders.encodeToString(intervalType, "PT1.123456S"));
+    assertEquals("PT1.123S", ValueEncoders.decodeFromString(intervalType, "PT1.123456S"));
+    assertEquals("PT24H0.123S", ValueEncoders.encodeToString(intervalType, "P1DT0.123456S"));
+  }
+
+  @Test
   void intervalEncodingRejectsMismatchedQualifiers() {
-    LogicalType yearMonth = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
-    LogicalType dayTime = LogicalType.interval(IntervalQualifier.DAY_TIME);
+    LogicalType yearMonth = LogicalType.interval(IntervalRange.YEAR_TO_MONTH);
+    LogicalType dayTime = LogicalType.interval(IntervalRange.DAY_TO_SECOND);
 
     assertThrows(
         IllegalArgumentException.class,
@@ -225,7 +236,7 @@ class ValueEncodersTest {
 
   @Test
   void intervalEncodingAcceptsUnspecifiedStrings() {
-    LogicalType intervalType = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+    LogicalType intervalType = LogicalType.interval(IntervalRange.UNSPECIFIED);
     String encoded = ValueEncoders.encodeToString(intervalType, "P1Y2M3DT4H");
     assertEquals("P1Y2M3DT4H", encoded);
     assertEquals("P1Y2M3DT4H", ValueEncoders.decodeFromString(intervalType, encoded));
@@ -233,7 +244,7 @@ class ValueEncodersTest {
 
   @Test
   void intervalEncodingRejectsNonIsoStrings() {
-    LogicalType intervalType = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+    LogicalType intervalType = LogicalType.interval(IntervalRange.UNSPECIFIED);
     assertThrows(
         IllegalArgumentException.class,
         () -> ValueEncoders.encodeToString(intervalType, "not-an-interval"));

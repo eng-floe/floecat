@@ -204,20 +204,35 @@ class LogicalTypeTest {
   }
 
   @Test
-  void intervalQualifierIsRenderedWhenPresent() {
-    LogicalType t = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
-    assertThat(t.intervalQualifier()).isEqualTo(IntervalQualifier.YEAR_MONTH);
-    assertThat(t.toString()).isEqualTo("INTERVAL YEAR TO MONTH");
+  void intervalRangeIsRenderedWhenPresent() {
+    LogicalType t = LogicalType.interval(IntervalRange.YEAR_TO_MONTH, 3, null);
+    assertThat(t.intervalRange()).isEqualTo(IntervalRange.YEAR_TO_MONTH);
+    assertThat(t.intervalLeadingPrecision()).isEqualTo(3);
+    assertThat(t.toString()).isEqualTo("INTERVAL YEAR(3) TO MONTH");
   }
 
   @Test
-  void intervalQualifierPresenceIsPreserved() {
+  void intervalRangePresenceIsPreserved() {
     LogicalType unset = LogicalType.of(LogicalKind.INTERVAL);
-    assertThat(unset.intervalQualifier()).isNull();
+    assertThat(unset.intervalRange()).isEqualTo(IntervalRange.UNSPECIFIED);
 
-    LogicalType explicit = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
-    assertThat(explicit.intervalQualifier()).isEqualTo(IntervalQualifier.UNSPECIFIED);
-    assertThat(unset).isNotEqualTo(explicit);
+    LogicalType explicit = LogicalType.interval(IntervalRange.UNSPECIFIED);
+    assertThat(explicit.intervalRange()).isEqualTo(IntervalRange.UNSPECIFIED);
+    assertThat(unset).isEqualTo(explicit);
+  }
+
+  @Test
+  void intervalPrecisionsRequireExplicitRange() {
+    assertThatThrownBy(() -> LogicalType.interval(null, 2, null))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> LogicalType.interval(IntervalRange.UNSPECIFIED, null, 3))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void intervalFractionalPrecisionRequiresDayToSecondRange() {
+    assertThatThrownBy(() -> LogicalType.interval(IntervalRange.YEAR_TO_MONTH, null, 3))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -268,9 +283,9 @@ class LogicalTypeTest {
   }
 
   @Test
-  void intervalQualifierAffectsEquality() {
-    LogicalType a = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
-    LogicalType b = LogicalType.interval(IntervalQualifier.DAY_TIME);
+  void intervalRangeAffectsEquality() {
+    LogicalType a = LogicalType.interval(IntervalRange.YEAR_TO_MONTH, 2, null);
+    LogicalType b = LogicalType.interval(IntervalRange.DAY_TO_SECOND, null, 3);
     assertThat(a).isNotEqualTo(b);
   }
 }

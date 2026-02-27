@@ -320,28 +320,28 @@ public final class ValueEncoders {
   }
 
   private static String encodeInterval(LogicalType t, Object value) {
-    IntervalQualifier qualifier =
-        t.intervalQualifier() == null ? IntervalQualifier.UNSPECIFIED : t.intervalQualifier();
+    IntervalRange range = t.intervalRange() == null ? IntervalRange.UNSPECIFIED : t.intervalRange();
+    Integer fractionalPrecision = t.intervalFractionalPrecision();
     if (value instanceof CharSequence cs) {
-      return normalizeIntervalString(cs.toString(), qualifier);
+      return normalizeIntervalString(cs.toString(), range, fractionalPrecision);
     }
     if (value instanceof java.time.Period p) {
-      if (qualifier == IntervalQualifier.DAY_TIME) {
+      if (range == IntervalRange.DAY_TO_SECOND) {
         throw new IllegalArgumentException(
             "INTERVAL DAY TO SECOND does not accept year-month values");
       }
-      if (qualifier == IntervalQualifier.YEAR_MONTH && p.getDays() != 0) {
+      if (range == IntervalRange.YEAR_TO_MONTH && p.getDays() != 0) {
         throw new IllegalArgumentException(
             "INTERVAL YEAR TO MONTH must not include day components");
       }
       return p.toString();
     }
     if (value instanceof java.time.Duration d) {
-      if (qualifier == IntervalQualifier.YEAR_MONTH) {
+      if (range == IntervalRange.YEAR_TO_MONTH) {
         throw new IllegalArgumentException(
             "INTERVAL YEAR TO MONTH does not accept day-time values");
       }
-      return d.toString();
+      return truncateDuration(d, fractionalPrecision).toString();
     }
     throw new IllegalArgumentException(
         "INTERVAL value must be ISO-8601 String, Period, or Duration but was: "
@@ -349,35 +349,36 @@ public final class ValueEncoders {
   }
 
   private static Object decodeInterval(LogicalType t, String encoded) {
-    IntervalQualifier qualifier =
-        t.intervalQualifier() == null ? IntervalQualifier.UNSPECIFIED : t.intervalQualifier();
+    IntervalRange range = t.intervalRange() == null ? IntervalRange.UNSPECIFIED : t.intervalRange();
+    Integer fractionalPrecision = t.intervalFractionalPrecision();
     String raw = encoded.trim();
     if (raw.isEmpty()) {
       throw new IllegalArgumentException("INTERVAL string must not be blank");
     }
-    return switch (qualifier) {
-      case YEAR_MONTH -> normalizeYearMonthInterval(raw);
-      case DAY_TIME -> normalizeDayTimeInterval(raw);
-      case UNSPECIFIED -> normalizeIntervalString(raw, qualifier);
+    return switch (range) {
+      case YEAR_TO_MONTH -> normalizeYearMonthInterval(raw);
+      case DAY_TO_SECOND -> normalizeDayTimeInterval(raw, fractionalPrecision);
+      case UNSPECIFIED -> normalizeIntervalString(raw, range, fractionalPrecision);
     };
   }
 
-  private static String normalizeIntervalString(String raw, IntervalQualifier qualifier) {
+  private static String normalizeIntervalString(
+      String raw, IntervalRange range, Integer fractionalPrecision) {
     String trimmed = raw.trim();
     if (trimmed.isEmpty()) {
       throw new IllegalArgumentException("INTERVAL string must not be blank");
     }
-    if (qualifier == IntervalQualifier.UNSPECIFIED) {
+    if (range == IntervalRange.UNSPECIFIED) {
       try {
-        return normalizeIntervalAuto(trimmed);
+        return normalizeIntervalAuto(trimmed, fractionalPrecision);
       } catch (RuntimeException e) {
         throw new IllegalArgumentException("INTERVAL string must be ISO-8601", e);
       }
     }
-    if (qualifier == IntervalQualifier.YEAR_MONTH) {
+    if (range == IntervalRange.YEAR_TO_MONTH) {
       return normalizeYearMonthInterval(trimmed);
     }
-    return normalizeDayTimeInterval(trimmed);
+    return normalizeDayTimeInterval(trimmed, fractionalPrecision);
   }
 
   private static String normalizeYearMonthInterval(String raw) {
@@ -401,29 +402,30 @@ public final class ValueEncoders {
     }
   }
 
-  private static String normalizeDayTimeInterval(String raw) {
+  private static String normalizeDayTimeInterval(String raw, Integer fractionalPrecision) {
     try {
-      return java.time.Duration.parse(raw).toString();
+      java.time.Duration duration = java.time.Duration.parse(raw);
+      return truncateDuration(duration, fractionalPrecision).toString();
     } catch (RuntimeException e) {
       throw new IllegalArgumentException("INTERVAL string must be ISO-8601 day-time", e);
     }
   }
 
-  private static String normalizeIntervalAuto(String raw) {
+  private static String normalizeIntervalAuto(String raw, Integer fractionalPrecision) {
     try {
       return normalizePeriodInterval(raw);
     } catch (RuntimeException ignore) {
       // fall through to duration parsing
     }
     try {
-      return normalizeDayTimeInterval(raw);
+      return normalizeDayTimeInterval(raw, fractionalPrecision);
     } catch (RuntimeException ignore) {
       // fall through to combined parsing
     }
-    return normalizeMixedInterval(raw);
+    return normalizeMixedInterval(raw, fractionalPrecision);
   }
 
-  private static String normalizeMixedInterval(String raw) {
+  private static String normalizeMixedInterval(String raw, Integer fractionalPrecision) {
     int tPos = raw.indexOf('T');
     if (tPos <= 0) {
       throw new IllegalArgumentException("INTERVAL string must be ISO-8601");
@@ -435,7 +437,8 @@ public final class ValueEncoders {
     }
     java.time.Period p =
         "P".equals(datePart) ? java.time.Period.ZERO : java.time.Period.parse(datePart);
-    java.time.Duration d = java.time.Duration.parse("PT" + timePart);
+    java.time.Duration d =
+        truncateDuration(java.time.Duration.parse("PT" + timePart), fractionalPrecision);
     if (p.isZero()) {
       return d.toString();
     }
@@ -443,6 +446,32 @@ public final class ValueEncoders {
       return p.toString();
     }
     return p.toString() + d.toString().substring(1);
+  }
+
+  private static java.time.Duration truncateDuration(
+      java.time.Duration duration, Integer fractionalPrecision) {
+    if (fractionalPrecision == null) {
+      return duration;
+    }
+    int precision = fractionalPrecision;
+    if (precision >= 9) {
+      return duration;
+    }
+    int nanos = duration.getNano();
+    int factor = pow10(9 - precision);
+    int truncated = (nanos / factor) * factor;
+    if (truncated == nanos) {
+      return duration;
+    }
+    return java.time.Duration.ofSeconds(duration.getSeconds(), truncated);
+  }
+
+  private static int pow10(int exponent) {
+    int value = 1;
+    for (int i = 0; i < exponent; i++) {
+      value *= 10;
+    }
+    return value;
   }
 
   private static String asUtf8String(Object v) {

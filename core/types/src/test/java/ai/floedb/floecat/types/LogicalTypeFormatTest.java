@@ -143,27 +143,51 @@ class LogicalTypeFormatTest {
   }
 
   @Test
-  void parseIntervalQualifiers() {
+  void parseIntervalRanges() {
     LogicalType ym = LogicalTypeFormat.parse("INTERVAL YEAR TO MONTH");
     assertThat(ym.kind()).isEqualTo(LogicalKind.INTERVAL);
-    assertThat(ym.intervalQualifier()).isEqualTo(IntervalQualifier.YEAR_MONTH);
+    assertThat(ym.intervalRange()).isEqualTo(IntervalRange.YEAR_TO_MONTH);
 
     LogicalType dt = LogicalTypeFormat.parse("INTERVAL DAY TO SECOND");
     assertThat(dt.kind()).isEqualTo(LogicalKind.INTERVAL);
-    assertThat(dt.intervalQualifier()).isEqualTo(IntervalQualifier.DAY_TIME);
+    assertThat(dt.intervalRange()).isEqualTo(IntervalRange.DAY_TO_SECOND);
   }
 
   @Test
-  void intervalQualifierRoundTrips() {
-    for (IntervalQualifier qualifier : IntervalQualifier.values()) {
-      if (qualifier == IntervalQualifier.UNSPECIFIED) {
-        continue;
-      }
-      LogicalType t = LogicalType.interval(qualifier);
+  void intervalRangeRoundTrips() {
+    for (IntervalRange range : IntervalRange.values()) {
+      LogicalType t = LogicalType.interval(range);
       assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(t))).isEqualTo(t);
     }
-    LogicalType unset = LogicalType.of(LogicalKind.INTERVAL);
-    assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(unset))).isEqualTo(unset);
+
+    LogicalType ds = LogicalType.interval(IntervalRange.DAY_TO_SECOND, 2, 3);
+    assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(ds))).isEqualTo(ds);
+  }
+
+  @Test
+  void intervalPrecisionsAreParsed() {
+    LogicalType t = LogicalTypeFormat.parse("INTERVAL DAY(2) TO SECOND(3)");
+    assertThat(t.kind()).isEqualTo(LogicalKind.INTERVAL);
+    assertThat(t.intervalRange()).isEqualTo(IntervalRange.DAY_TO_SECOND);
+    assertThat(t.intervalLeadingPrecision()).isEqualTo(2);
+    assertThat(t.intervalFractionalPrecision()).isEqualTo(3);
+
+    LogicalType ym = LogicalTypeFormat.parse("INTERVAL YEAR(4) TO MONTH");
+    assertThat(ym.intervalRange()).isEqualTo(IntervalRange.YEAR_TO_MONTH);
+    assertThat(ym.intervalLeadingPrecision()).isEqualTo(4);
+    assertThat(ym.intervalFractionalPrecision()).isNull();
+
+    LogicalType shorthand = LogicalTypeFormat.parse("INTERVAL(3)");
+    assertThat(shorthand.intervalRange()).isEqualTo(IntervalRange.DAY_TO_SECOND);
+    assertThat(shorthand.intervalLeadingPrecision()).isNull();
+    assertThat(shorthand.intervalFractionalPrecision()).isEqualTo(3);
+  }
+
+  @Test
+  void intervalLeadingPrecisionAllowsValuesAboveTemporalPrecision() {
+    LogicalType t = LogicalTypeFormat.parse("INTERVAL YEAR(9) TO MONTH");
+    assertThat(t.intervalRange()).isEqualTo(IntervalRange.YEAR_TO_MONTH);
+    assertThat(t.intervalLeadingPrecision()).isEqualTo(9);
   }
 
   // ---------------------------------------------------------------------------
@@ -218,6 +242,13 @@ class LogicalTypeFormatTest {
     assertThatThrownBy(() -> LogicalTypeFormat.parse("BOOLEAN(1)"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("does not accept parameters");
+  }
+
+  @Test
+  void parseRejectsIntervalFractionalPrecisionAboveSix() {
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("INTERVAL DAY TO SECOND(7)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("precision must be 0..");
   }
 
   @Test

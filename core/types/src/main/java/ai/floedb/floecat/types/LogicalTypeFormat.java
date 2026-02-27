@@ -57,22 +57,21 @@ public final class LogicalTypeFormat {
 
   private static final Pattern INTEGER_PARAM_RE = Pattern.compile("^\\s*\\d+\\s*$");
   private static final Pattern STRING_LEN_PARAM_RE = Pattern.compile("^\\s*(\\d+|MAX)\\s*$");
+  private static final Pattern INTERVAL_SHORTHAND_RE =
+      Pattern.compile("^INTERVAL\\s*\\(\\s*(\\d+)\\s*\\)$");
   private static final Pattern INTERVAL_YEAR_MONTH_RE =
-      Pattern.compile("^INTERVAL\\s+YEAR\\s+TO\\s+MONTH$");
-  private static final Pattern INTERVAL_DAY_TIME_RE =
-      Pattern.compile("^INTERVAL\\s+DAY\\s+TO\\s+SECOND$");
+      Pattern.compile("^INTERVAL\\s+YEAR(?:\\s*\\(\\s*(\\d+)\\s*\\))?\\s+TO\\s+MONTH$");
+  private static final Pattern INTERVAL_DAY_SECOND_RE =
+      Pattern.compile(
+          "^INTERVAL\\s+DAY(?:\\s*\\(\\s*(\\d+)\\s*\\))?\\s+TO\\s+SECOND(?:\\s*\\(\\s*(\\d+)\\s*\\))?$");
 
   public static String format(LogicalType t) {
     Objects.requireNonNull(t, "LogicalType");
     if (t.isDecimal()) {
       return "DECIMAL(" + t.precision() + "," + t.scale() + ")";
     }
-    if (t.kind() == LogicalKind.INTERVAL && t.intervalQualifier() != null) {
-      return switch (t.intervalQualifier()) {
-        case YEAR_MONTH -> "INTERVAL YEAR TO MONTH";
-        case DAY_TIME -> "INTERVAL DAY TO SECOND";
-        case UNSPECIFIED -> "INTERVAL";
-      };
+    if (t.kind() == LogicalKind.INTERVAL) {
+      return formatInterval(t);
     }
     Integer temporalPrecision = t.temporalPrecision();
     if (temporalPrecision != null
@@ -102,14 +101,27 @@ public final class LogicalTypeFormat {
       return LogicalType.decimal(p, sc);
     }
 
-    if (INTERVAL_YEAR_MONTH_RE.matcher(normalized).matches()) {
-      return LogicalType.interval(IntervalQualifier.YEAR_MONTH);
-    }
-    if (INTERVAL_DAY_TIME_RE.matcher(normalized).matches()) {
-      return LogicalType.interval(IntervalQualifier.DAY_TIME);
-    }
     if ("INTERVAL".equals(normalized)) {
       return LogicalType.of(LogicalKind.INTERVAL);
+    }
+
+    Matcher intervalShorthand = INTERVAL_SHORTHAND_RE.matcher(normalized);
+    if (intervalShorthand.matches()) {
+      Integer fractional = parseOptionalPrecision(intervalShorthand.group(1), normalized, true);
+      return LogicalType.interval(IntervalRange.DAY_TO_SECOND, null, fractional);
+    }
+
+    Matcher intervalYm = INTERVAL_YEAR_MONTH_RE.matcher(normalized);
+    if (intervalYm.matches()) {
+      Integer leading = parseOptionalPrecision(intervalYm.group(1), normalized, false);
+      return LogicalType.interval(IntervalRange.YEAR_TO_MONTH, leading, null);
+    }
+
+    Matcher intervalDs = INTERVAL_DAY_SECOND_RE.matcher(normalized);
+    if (intervalDs.matches()) {
+      Integer leading = parseOptionalPrecision(intervalDs.group(1), normalized, false);
+      Integer fractional = parseOptionalPrecision(intervalDs.group(2), normalized, true);
+      return LogicalType.interval(IntervalRange.DAY_TO_SECOND, leading, fractional);
     }
 
     String baseName = normalized;
@@ -160,7 +172,7 @@ public final class LogicalTypeFormat {
               "Unrecognized logical type: \"" + raw + "\" (invalid string length parameter)");
         }
       }
-      case "TIME", "TIMESTAMP", "TIMESTAMPTZ" -> {
+      case "TIME", "TIMESTAMP", "TIMESTAMPTZ", "INTERVAL" -> {
         if (!INTEGER_PARAM_RE.matcher(params).matches()) {
           throw new IllegalArgumentException(
               "Unrecognized logical type: \"" + raw + "\" (invalid temporal precision parameter)");
@@ -205,5 +217,59 @@ public final class LogicalTypeFormat {
               + ")");
     }
     return precision;
+  }
+
+  private static Integer parseOptionalPrecision(
+      String raw, String fullType, boolean enforceTemporalPrecision) {
+    if (raw == null) {
+      return null;
+    }
+    String trimmed = raw.trim();
+    if (trimmed.isEmpty()) {
+      return null;
+    }
+    if (!INTEGER_PARAM_RE.matcher(trimmed).matches()) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \"" + fullType + "\" (invalid precision parameter)");
+    }
+    int precision = Integer.parseInt(trimmed);
+    if (precision < 0) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \"" + fullType + "\" (precision must be >= 0)");
+    }
+    if (enforceTemporalPrecision && precision > LogicalType.MAX_TEMPORAL_PRECISION) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \""
+              + fullType
+              + "\" (precision must be 0.."
+              + LogicalType.MAX_TEMPORAL_PRECISION
+              + ")");
+    }
+    return precision;
+  }
+
+  private static String formatInterval(LogicalType t) {
+    IntervalRange range = t.intervalRange();
+    if (range == null || range == IntervalRange.UNSPECIFIED) {
+      return "INTERVAL";
+    }
+    Integer leading = t.intervalLeadingPrecision();
+    Integer fractional = t.intervalFractionalPrecision();
+    return switch (range) {
+      case YEAR_TO_MONTH ->
+          (leading == null) ? "INTERVAL YEAR TO MONTH" : "INTERVAL YEAR(" + leading + ") TO MONTH";
+      case DAY_TO_SECOND -> {
+        StringBuilder sb = new StringBuilder("INTERVAL DAY");
+        if (leading != null) {
+          sb.append('(').append(leading).append(')');
+        }
+        sb.append(" TO SECOND");
+        if (fractional != null) {
+          sb.append('(').append(fractional).append(')');
+        }
+        yield sb.toString();
+      }
+      case UNSPECIFIED -> "INTERVAL";
+    };
   }
 }

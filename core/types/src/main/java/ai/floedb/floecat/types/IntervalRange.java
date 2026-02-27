@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.types;
 
-/** Qualifier for INTERVAL logical types. */
-public enum IntervalQualifier {
+/** Range/qualifier for INTERVAL logical types. */
+public enum IntervalRange {
   UNSPECIFIED,
-  YEAR_MONTH,
-  DAY_TIME;
+  YEAR_TO_MONTH,
+  DAY_TO_SECOND;
 }

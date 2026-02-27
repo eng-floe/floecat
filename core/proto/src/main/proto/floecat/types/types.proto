@@ -21,10 +21,10 @@ option java_package = "ai.floedb.floecat.types.rpc";
 option java_outer_classname = "LogicalTypeProto";
 
 message LogicalType {
-  enum IntervalQualifier {
-    IQ_UNSPECIFIED = 0;
-    IQ_YEAR_MONTH = 1;
-    IQ_DAY_TIME = 2;
+  enum IntervalRange {
+    IR_UNSPECIFIED = 0;
+    IR_YEAR_TO_MONTH = 1;
+    IR_DAY_TO_SECOND = 2;
   }
   enum Kind {
     TK_UNSPECIFIED = 0;
@@ -53,8 +53,12 @@ message LogicalType {
   int32 scale = 3;
   // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..6). Unset means default.
   optional int32 temporal_precision = 4;
-  // Qualifier for INTERVAL types (optional).
-  optional IntervalQualifier interval_qualifier = 5;
+  // Range/qualifier for INTERVAL types (optional).
+  optional IntervalRange interval_range = 5;
+  // Leading field precision for INTERVAL (applies to the leading field).
+  optional int32 interval_leading_precision = 6;
+  // Fractional seconds precision for INTERVAL (applies when range includes SECOND).
+  optional int32 interval_fractional_precision = 7;
   map<string,string> params = 99;
 }
 
