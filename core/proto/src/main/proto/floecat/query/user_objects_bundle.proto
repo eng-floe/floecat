@@ -294,9 +294,6 @@ message ColumnInfo {
   /** Origin marks builtin vs user columns (propagated from relation origin). */
   ai.floedb.floecat.query.Origin origin = 6;
 
-  /** Source type provenance captured at ingestion/mapping time. */
-  ai.floedb.floecat.common.SourceType source_type = 7;
-
   /** Engine-specific metadata extensions (optional). */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
 }

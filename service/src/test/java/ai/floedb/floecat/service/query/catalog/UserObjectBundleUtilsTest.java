@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.common.rpc.SourceType;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import org.junit.jupiter.api.Test;
@@ -26,9 +25,7 @@ import org.junit.jupiter.api.Test;
 class UserObjectBundleUtilsTest {
 
   @Test
-  void columnInfoPropagatesSourceTypeFromSchemaColumn() {
-    SourceType sourceType =
-        SourceType.newBuilder().setEngineKind("delta").setDeclaredType("timestamp").build();
+  void columnInfoPropagatesCoreFields() {
     SchemaColumn schema =
         SchemaColumn.newBuilder()
             .setId(42)
@@ -36,12 +33,13 @@ class UserObjectBundleUtilsTest {
             .setLogicalType("TIMESTAMPTZ")
             .setNullable(true)
             .setOrdinal(1)
-            .setSourceType(sourceType)
             .build();
 
     var info = UserObjectBundleUtils.columnInfo(schema, Origin.ORIGIN_USER);
 
-    assertThat(info.hasSourceType()).isTrue();
-    assertThat(info.getSourceType()).isEqualTo(sourceType);
+    assertThat(info.getId()).isEqualTo(42);
+    assertThat(info.getName()).isEqualTo("ts");
+    assertThat(info.getNullable()).isTrue();
+    assertThat(info.getOrdinal()).isEqualTo(1);
   }
 }

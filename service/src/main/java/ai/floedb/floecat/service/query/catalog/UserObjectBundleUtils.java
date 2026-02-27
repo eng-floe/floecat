@@ -79,10 +79,6 @@ public final class UserObjectBundleUtils {
             .setOrdinal(column.getOrdinal())
             .setOrigin(origin);
 
-    if (column.hasSourceType()) {
-      builder.setSourceType(column.getSourceType());
-    }
-
     return builder.build();
   }
 

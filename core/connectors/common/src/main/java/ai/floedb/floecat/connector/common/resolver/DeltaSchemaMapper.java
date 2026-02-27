@@ -17,8 +17,6 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.common.rpc.SourceType;
-import ai.floedb.floecat.common.rpc.TemporalUnit;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.LogicalType;
@@ -124,7 +122,6 @@ final class DeltaSchemaMapper {
               SchemaColumn.newBuilder()
                   .setName(name)
                   .setLogicalType(logicalType)
-                  .setSourceType(deltaSourceType(typeNode))
                   .setFieldId(fieldId)
                   .setNullable(nullable)
                   .setPhysicalPath(physical)
@@ -242,35 +239,4 @@ final class DeltaSchemaMapper {
   }
 
   private static final int MAX_DECIMAL_PRECISION = 38;
-
-  private static SourceType deltaSourceType(JsonNode typeNode) {
-    SourceType.Builder builder =
-        SourceType.newBuilder().setEngineKind("delta").setDeclaredType(deltaDeclaredType(typeNode));
-    TemporalUnit unit = deltaTemporalUnit(typeNode);
-    if (unit != TemporalUnit.TU_UNSPECIFIED) {
-      builder.setTemporalUnit(unit);
-    }
-    return builder.build();
-  }
-
-  private static String deltaDeclaredType(JsonNode typeNode) {
-    if (typeNode == null) {
-      return "";
-    }
-    if (typeNode.isTextual()) {
-      return typeNode.asText("");
-    }
-    return typeNode.toString();
-  }
-
-  private static TemporalUnit deltaTemporalUnit(JsonNode typeNode) {
-    if (typeNode == null || !typeNode.isTextual()) {
-      return TemporalUnit.TU_UNSPECIFIED;
-    }
-    String lower = typeNode.asText("").toLowerCase(Locale.ROOT);
-    return switch (lower) {
-      case "timestamp", "timestamp_ntz" -> TemporalUnit.TU_MICROS;
-      default -> TemporalUnit.TU_UNSPECIFIED;
-    };
-  }
 }

@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.common.rpc.TemporalUnit;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import java.util.Set;
@@ -74,9 +73,6 @@ class DeltaSchemaMapperTest {
     // Delta "timestamp" is UTC-adjusted → canonical TIMESTAMPTZ
     SchemaColumn col = firstColumn(singleFieldSchema("ts", "timestamp"));
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
-    assertThat(col.getSourceType().getEngineKind()).isEqualTo("delta");
-    assertThat(col.getSourceType().getDeclaredType()).isEqualTo("timestamp");
-    assertThat(col.getSourceType().getTemporalUnit()).isEqualTo(TemporalUnit.TU_MICROS);
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -85,7 +81,6 @@ class DeltaSchemaMapperTest {
     // Delta "timestamp_ntz" is timezone-naive → canonical TIMESTAMP
     SchemaColumn col = firstColumn(singleFieldSchema("ts", "timestamp_ntz"));
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
-    assertThat(col.getSourceType().getTemporalUnit()).isEqualTo(TemporalUnit.TU_MICROS);
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -191,8 +186,6 @@ class DeltaSchemaMapperTest {
         """;
     SchemaColumn col = firstColumn(json);
     assertThat(col.getLogicalType()).isEqualTo("STRUCT");
-    assertThat(col.getSourceType().getEngineKind()).isEqualTo("delta");
-    assertThat(col.getSourceType().getDeclaredType()).contains("\"type\":\"struct\"");
     assertThat(col.getLeaf()).isFalse();
   }
 

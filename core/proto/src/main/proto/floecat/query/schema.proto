@@ -47,7 +47,6 @@ message SchemaColumn {
   int64 id = 7; // Internal unique column ID.
   int32 ordinal = 8; // Ordinal position in the schema (1-based within the parent struct).
   bool leaf = 9; // True if this is a leaf (stats-capable); false for containers.
-  ai.floedb.floecat.common.SourceType source_type = 10; // Upstream source type provenance.
 }
 
 /**

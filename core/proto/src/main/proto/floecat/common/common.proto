@@ -55,25 +55,6 @@ message NameRef {
   optional ResourceId resource_id = 4;
 }
 
-enum TemporalUnit {
-  TU_UNSPECIFIED = 0;
-  TU_SECONDS = 1;
-  TU_MILLIS = 2;
-  TU_MICROS = 3;
-  TU_NANOS = 4;
-}
-
-message SourceType {
-  // Source engine identifier (for example: "delta", "iceberg", "generic").
-  string engine_kind = 1;
-  // Raw declared type from the source system.
-  string declared_type = 2;
-  // Optional source-specific parameters.
-  map<string, string> attrs = 3;
-  // Source temporal unit for TIME/TIMESTAMP encodings when known.
-  TemporalUnit temporal_unit = 4;
-}
-
 enum SpecialSnapshot {
   SS_UNSPECIFIED = 0;
   SS_CURRENT = 1;
