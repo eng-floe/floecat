@@ -178,8 +178,7 @@ public final class ArrowConversion {
 
   private static long toTimestampMicrosNoTz(Object value) {
     if (value instanceof Instant instant) {
-      LocalDateTime local =
-          TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(instant, ZoneOffset.UTC));
+      LocalDateTime local = TemporalCoercions.localDateTimeFromInstantNoTz(instant);
       return local.toInstant(ZoneOffset.UTC).getEpochSecond() * 1_000_000L
           + local.getNano() / 1_000L;
     }

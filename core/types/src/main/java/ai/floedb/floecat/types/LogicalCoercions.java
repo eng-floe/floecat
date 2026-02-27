@@ -22,7 +22,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.UUID;
@@ -182,7 +181,7 @@ public final class LogicalCoercions {
         }
         if (v instanceof Instant i) {
           return TemporalCoercions.truncateToTemporalPrecision(
-              LocalDateTime.ofInstant(i, ZoneOffset.UTC), t.temporalPrecision());
+              TemporalCoercions.localDateTimeFromInstantNoTz(i), t.temporalPrecision());
         }
         String s = v.toString();
         try {
@@ -204,7 +203,7 @@ public final class LogicalCoercions {
         String s = v.toString();
         try {
           return TemporalCoercions.truncateToTemporalPrecision(
-              Instant.parse(s), t.temporalPrecision());
+              TemporalCoercions.parseZonedInstant(s), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }

@@ -23,7 +23,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Objects;
@@ -143,7 +142,7 @@ public final class ValueEncoders {
 
           if (value instanceof Instant i) {
             return TemporalCoercions.formatLocalDateTime(
-                LocalDateTime.ofInstant(i, ZoneOffset.UTC), precision);
+                TemporalCoercions.localDateTimeFromInstantNoTz(i), precision);
           }
 
           if (value instanceof CharSequence s) {
@@ -166,7 +165,8 @@ public final class ValueEncoders {
           }
 
           if (value instanceof CharSequence s) {
-            return TemporalCoercions.formatInstantUtc(Instant.parse(s.toString()), precision);
+            return TemporalCoercions.formatInstantUtc(
+                TemporalCoercions.parseZonedInstant(s.toString()), precision);
           }
 
           throw new IllegalArgumentException(
@@ -236,7 +236,7 @@ public final class ValueEncoders {
       case TIMESTAMPTZ:
         // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
         return TemporalCoercions.truncateToTemporalPrecision(
-            Instant.parse(encoded), t.temporalPrecision());
+            TemporalCoercions.parseZonedInstant(encoded), t.temporalPrecision());
       case STRING:
         return encoded;
       case JSON:

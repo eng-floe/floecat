@@ -25,6 +25,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
+import java.util.Objects;
 
 /** Shared helpers for timestamp/time coercion across stats, encoders, and comparators. */
 public final class TemporalCoercions {
@@ -70,6 +71,22 @@ public final class TemporalCoercions {
 
   public static LocalDateTime localDateTimeFromNumber(long v) {
     return truncateToMicros(LocalDateTime.ofInstant(instantFromNumber(v), ZoneOffset.UTC));
+  }
+
+  public static LocalDateTime localDateTimeFromInstantNoTz(Instant instant) {
+    return localDateTimeFromInstantNoTz(
+        instant, defaultSessionZone(), defaultTimestampNoTzPolicy());
+  }
+
+  public static LocalDateTime localDateTimeFromInstantNoTz(
+      Instant instant, ZoneId sessionZone, TimestampNoTzPolicy policy) {
+    Objects.requireNonNull(instant, "instant");
+    if (policy == TimestampNoTzPolicy.REJECT_ZONED) {
+      throw new IllegalArgumentException(
+          "TIMESTAMP must be timezone-naive, got zoned value: " + instant);
+    }
+    ZoneId zone = (sessionZone == null) ? ZoneOffset.UTC : sessionZone;
+    return truncateToMicros(LocalDateTime.ofInstant(instant, zone));
   }
 
   public enum TimestampNoTzPolicy {

@@ -22,7 +22,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
@@ -221,7 +220,7 @@ public final class LogicalComparators {
 
           if (v instanceof Instant i) {
             return TemporalCoercions.truncateToTemporalPrecision(
-                LocalDateTime.ofInstant(i, ZoneOffset.UTC), t.temporalPrecision());
+                TemporalCoercions.localDateTimeFromInstantNoTz(i), t.temporalPrecision());
           }
 
           if (v instanceof CharSequence s) {
@@ -241,7 +240,7 @@ public final class LogicalComparators {
 
           if (v instanceof CharSequence s) {
             return TemporalCoercions.truncateToTemporalPrecision(
-                Instant.parse(s.toString()), t.temporalPrecision());
+                TemporalCoercions.parseZonedInstant(s.toString()), t.temporalPrecision());
           }
 
           throw typeErr("TIMESTAMPTZ", v);
