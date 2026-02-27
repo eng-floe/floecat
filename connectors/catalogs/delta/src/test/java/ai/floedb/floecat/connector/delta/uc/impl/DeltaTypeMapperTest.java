@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -50,7 +51,7 @@ import org.junit.jupiter.api.Test;
  *       TimestampNTZType} (naive) → {@code TIMESTAMP}
  *   <li>Integer collapsing: Byte/Short/Integer/Long all → {@code INT}
  *   <li>Complex types map to their respective kinds
- *   <li>Unknown types return {@code BINARY} — not null (null-bug regression guard)
+ *   <li>Unknown types fail fast (null-bug regression guard)
  * </ul>
  */
 class DeltaTypeMapperTest {
@@ -149,6 +150,21 @@ class DeltaTypeMapperTest {
     assertThat(t.scale()).isEqualTo(2);
   }
 
+  @Test
+  void decimalPrecisionAboveMaxThrows() {
+    assertThatThrownBy(() -> new DecimalType(39, 0))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("precision");
+  }
+
+  @Test
+  void decimalMaxPrecisionMaps() {
+    LogicalType t = DeltaTypeMapper.toLogical(new DecimalType(38, 0));
+    assertThat(t.kind()).isEqualTo(LogicalKind.DECIMAL);
+    assertThat(t.precision()).isEqualTo(38);
+    assertThat(t.scale()).isEqualTo(0);
+  }
+
   // ---------------------------------------------------------------------------
   // Complex / container types
   // ---------------------------------------------------------------------------
@@ -175,11 +191,11 @@ class DeltaTypeMapperTest {
   }
 
   // ---------------------------------------------------------------------------
-  // Null-bug regression: unknown types must return BINARY, never null
+  // Null-bug regression: unknown types must fail fast
   // ---------------------------------------------------------------------------
 
   @Test
-  void unknownTypeReturnsBinaryNotNull() {
+  void unknownTypeThrows() {
     // Use an anonymous DataType subclass to simulate an unrecognised type
     DataType unknownType =
         new DataType() {
@@ -203,8 +219,8 @@ class DeltaTypeMapperTest {
             return System.identityHashCode(this);
           }
         };
-    LogicalType result = DeltaTypeMapper.toLogical(unknownType);
-    assertThat(result).isNotNull();
-    assertThat(result.kind()).isEqualTo(LogicalKind.BINARY);
+    assertThatThrownBy(() -> DeltaTypeMapper.toLogical(unknownType))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unrecognised Delta type");
   }
 }

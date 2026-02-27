@@ -18,9 +18,7 @@ package ai.floedb.floecat.types;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Base64;
@@ -31,8 +29,9 @@ import java.util.UUID;
  *
  * <p>Used primarily by statistics builders that need to compare encoded min/max values stored as
  * strings or objects. Comparisons are performed on <em>normalised</em> Java values (e.g., all
- * integers are promoted to {@link Long}, all UTC timestamps to {@link java.time.Instant}) so that
- * histogram builders can order them without deserialising raw binary payloads.
+ * integers are promoted to {@link Long}, TIMESTAMP to {@link java.time.LocalDateTime}, TIMESTAMPTZ
+ * to {@link java.time.Instant}) so that histogram builders can order them without deserialising raw
+ * binary payloads.
  *
  * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
  * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
@@ -118,9 +117,10 @@ public final class LogicalComparators {
   /**
    * Normalises a raw stat value to its canonical Java type for ordering.
    *
-   * <p>Examples: any {@link Number} for INT → {@link Long}; string for TIMESTAMP → {@link
-   * java.time.LocalDateTime}; string for TIMESTAMPTZ → {@link java.time.Instant}. For unorderable
-   * kinds (INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT), returns {@code null}.
+   * <p>Examples: any {@link Number} for INT → {@link Long}; string/instant for TIMESTAMP → {@link
+   * java.time.LocalDateTime} (session policy applies); string/instant for TIMESTAMPTZ → {@link
+   * java.time.Instant}. For unorderable kinds (INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT),
+   * returns {@code null}.
    *
    * @param t the logical type
    * @param v the raw value (may be a Java primitive wrapper, String, or byte array)
@@ -179,7 +179,7 @@ public final class LogicalComparators {
         } else if (v instanceof CharSequence s) {
           String raw = s.toString().trim();
           if (raw.startsWith("0x") || raw.startsWith("0X")) {
-            bytes = decodeHexBytes(raw.substring(2));
+            bytes = HexBytes.decodeHexBytes(raw.substring(2));
           } else {
             bytes = Base64.getDecoder().decode(raw);
           }
@@ -219,36 +219,15 @@ public final class LogicalComparators {
 
       case TIMESTAMP:
         {
-          if (v instanceof LocalDateTime ts) {
-            return TemporalCoercions.truncateToTemporalPrecision(ts, t.temporalPrecision());
-          }
-
-          if (v instanceof Instant i) {
-            return TemporalCoercions.truncateToTemporalPrecision(
-                TemporalCoercions.localDateTimeFromInstantNoTz(i), t.temporalPrecision());
-          }
-
-          if (v instanceof CharSequence s) {
-            return TemporalCoercions.truncateToTemporalPrecision(
-                TemporalCoercions.parseTimestampNoTz(s.toString()), t.temporalPrecision());
-          }
-
-          throw typeErr("TIMESTAMP", v);
+          return TemporalCoercions.truncateToTemporalPrecision(
+              TemporalCoercions.coerceTimestampNoTz(v), t.temporalPrecision());
         }
 
       case TIMESTAMPTZ:
         {
           // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
-          if (v instanceof Instant i) {
-            return TemporalCoercions.truncateToTemporalPrecision(i, t.temporalPrecision());
-          }
-
-          if (v instanceof CharSequence s) {
-            return TemporalCoercions.truncateToTemporalPrecision(
-                TemporalCoercions.parseZonedInstant(s.toString()), t.temporalPrecision());
-          }
-
-          throw typeErr("TIMESTAMPTZ", v);
+          return TemporalCoercions.truncateToTemporalPrecision(
+              TemporalCoercions.coerceInstant(v), t.temporalPrecision());
         }
 
         // INTERVAL, JSON, and complex types (ARRAY, MAP, STRUCT, VARIANT) have no meaningful
@@ -260,22 +239,6 @@ public final class LogicalComparators {
   private static IllegalArgumentException typeErr(String kind, Object v) {
     return new IllegalArgumentException(
         kind + " compare expects canonical types, got: " + v.getClass().getName());
-  }
-
-  private static byte[] decodeHexBytes(String hex) {
-    if ((hex.length() & 1) != 0) {
-      throw new IllegalArgumentException("Invalid hex BINARY value (odd length): " + hex);
-    }
-    byte[] out = new byte[hex.length() / 2];
-    for (int i = 0; i < out.length; i++) {
-      int hi = Character.digit(hex.charAt(2 * i), 16);
-      int lo = Character.digit(hex.charAt(2 * i + 1), 16);
-      if (hi < 0 || lo < 0) {
-        throw new IllegalArgumentException("Invalid hex BINARY value: " + hex);
-      }
-      out[i] = (byte) ((hi << 4) | lo);
-    }
-    return out;
   }
 
   public static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {

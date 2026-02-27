@@ -18,9 +18,7 @@ package ai.floedb.floecat.types;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Base64;
 import java.util.Locale;
@@ -30,10 +28,11 @@ import java.util.UUID;
  * Coerces raw stat values from external sources (Parquet stats, Delta checkpoint metadata, etc.)
  * into the canonical Java types expected by FloeCat's statistics engine.
  *
- * <p>Each connector produces min/max/ndv statistics in its own native representation (Parquet
- * statistics give integers as {@code int}/{@code long}, timestamps as epoch-micros, etc.). This
- * class normalises those values to a single canonical form per {@link LogicalKind} so that the
- * statistics engine and query planner can compare them without source-format-specific logic.
+ * <p>Each connector produces min/max/ndv statistics in its own native representation. This class
+ * normalises those values to a single canonical form per {@link LogicalKind} so that the statistics
+ * engine and query planner can compare them without source-format-specific logic. For temporal
+ * types, connectors are expected to supply ISO-8601 strings or {@code java.time} objects; numeric
+ * epoch values should be converted by the connector before calling this API.
  *
  * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
  * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
@@ -56,12 +55,12 @@ public final class LogicalCoercions {
    *   <li>{@code DOUBLE}: any {@link Number} or {@link String} → {@link Double}
    *   <li>{@code DECIMAL}: {@link java.math.BigDecimal} / {@link Number} / {@link String} → {@link
    *       java.math.BigDecimal}
-   *   <li>{@code TIMESTAMP}: {@link String} / {@link Long} / {@link java.time.Instant} → {@link
-   *       java.time.LocalDateTime} (timezone-naive)
+   *   <li>{@code TIMESTAMP}: {@link String} (ISO local date-time) / {@link java.time.Instant} →
+   *       {@link java.time.LocalDateTime} (timezone-naive, session policy applies)
    *   <li>{@code TIMESTAMPTZ}: {@link String} / {@link java.time.Instant} → {@link
    *       java.time.Instant} (UTC)
    *   <li>{@code DATE}: {@link Number} (epoch-days) / {@link String} → {@link java.time.LocalDate}
-   *   <li>{@code TIME}: {@link String} → {@link java.time.LocalTime}
+   *   <li>{@code TIME}: {@link String} (ISO local time) → {@link java.time.LocalTime}
    *   <li>{@code BINARY}: {@code byte[]}, {@link java.nio.ByteBuffer}, or hex-string → {@code
    *       byte[]}
    *   <li>Complex/semi-structured: returned unchanged
@@ -144,7 +143,7 @@ public final class LogicalCoercions {
         }
         String s = v.toString().trim();
         if (s.startsWith("0x") || s.startsWith("0X")) {
-          return decodeHexBytes(s.substring(2));
+          return HexBytes.decodeHexBytes(s.substring(2));
         }
         try {
           return Base64.getDecoder().decode(s);
@@ -176,39 +175,27 @@ public final class LogicalCoercions {
             "TIME value must be LocalTime or ISO HH:mm:ss[.nnn] String but was: " + s);
       }
       case TIMESTAMP -> {
-        if (v instanceof LocalDateTime ts) {
-          return TemporalCoercions.truncateToTemporalPrecision(ts, t.temporalPrecision());
-        }
-        if (v instanceof Instant i) {
-          return TemporalCoercions.truncateToTemporalPrecision(
-              TemporalCoercions.localDateTimeFromInstantNoTz(i), t.temporalPrecision());
-        }
-        String s = v.toString();
         try {
           return TemporalCoercions.truncateToTemporalPrecision(
-              TemporalCoercions.parseTimestampNoTz(s), t.temporalPrecision());
+              TemporalCoercions.coerceTimestampNoTz(v), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }
         throw new IllegalArgumentException(
             "TIMESTAMP value must be LocalDateTime, Instant, or ISO local date-time string but was:"
                 + " "
-                + s);
+                + v);
       }
       case TIMESTAMPTZ -> {
         // TIMESTAMPTZ is always UTC-normalised and coerced as Instant.
-        if (v instanceof Instant i) {
-          return TemporalCoercions.truncateToTemporalPrecision(i, t.temporalPrecision());
-        }
-        String s = v.toString();
         try {
           return TemporalCoercions.truncateToTemporalPrecision(
-              TemporalCoercions.parseZonedInstant(s), t.temporalPrecision());
+              TemporalCoercions.coerceInstant(v), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }
         throw new IllegalArgumentException(
-            "TIMESTAMPTZ value must be Instant or ISO-8601 String but was: " + s);
+            "TIMESTAMPTZ value must be Instant or ISO-8601 String but was: " + v);
       }
       case UUID -> {
         if (v instanceof UUID u) {
@@ -230,21 +217,5 @@ public final class LogicalCoercions {
       case "false", "f", "0" -> false;
       default -> throw new IllegalArgumentException("Invalid BOOLEAN value: " + raw);
     };
-  }
-
-  private static byte[] decodeHexBytes(String hex) {
-    if ((hex.length() & 1) != 0) {
-      throw new IllegalArgumentException("Invalid hex BINARY value (odd length): " + hex);
-    }
-    byte[] out = new byte[hex.length() / 2];
-    for (int i = 0; i < out.length; i++) {
-      int hi = Character.digit(hex.charAt(2 * i), 16);
-      int lo = Character.digit(hex.charAt(2 * i + 1), 16);
-      if (hi < 0 || lo < 0) {
-        throw new IllegalArgumentException("Invalid hex BINARY value: " + hex);
-      }
-      out[i] = (byte) ((hi << 4) | lo);
-    }
-    return out;
   }
 }

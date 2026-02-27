@@ -19,10 +19,10 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.types.LogicalType;
 
 /** Connector-layer DECIMAL precision validation helper. */
-final class DecimalPrecisionConstraints {
+public final class DecimalPrecisionConstraints {
   private DecimalPrecisionConstraints() {}
 
-  static void validateDecimalPrecision(
+  public static void validateDecimalPrecision(
       LogicalType logicalType, String sourceSystem, String declaredType, int maxPrecision) {
     if (logicalType == null || !logicalType.isDecimal()) {
       return;

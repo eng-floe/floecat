@@ -29,12 +29,15 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li>{@link #format(LogicalType)} — converts a {@code LogicalType} to its canonical string. For
  *       non-decimal kinds this is the enum name (e.g. {@code "INT"}), optionally with a temporal
- *       precision suffix (e.g. {@code "TIMESTAMP(3)"}); for DECIMAL: {@code "DECIMAL(p,s)"}.
+ *       precision suffix (e.g. {@code "TIMESTAMP(3)"}). INTERVAL uses ANSI-style spellings (e.g.
+ *       {@code "INTERVAL YEAR TO MONTH"}, {@code "INTERVAL DAY TO SECOND(3)"}) when range or
+ *       precision is present; for DECIMAL: {@code "DECIMAL(p,s)"}.
  *   <li>{@link #parse(String)} — parses a type string (canonical name, SQL alias, or parameterised
  *       form) back to a {@code LogicalType}. Case-insensitive and whitespace-normalised.
  *       Parameterised non-DECIMAL forms are accepted only for known SQL spellings where parameters
  *       are meaningful in source systems (e.g. {@code VARCHAR(10)} → {@code STRING}, {@code
- *       TIMESTAMP(6)} → {@code TIMESTAMP}); other parameterised forms fail fast.
+ *       TIMESTAMP(6)} → {@code TIMESTAMP}, {@code INTERVAL DAY TO SECOND(3)} → {@code INTERVAL});
+ *       other parameterised forms fail fast.
  * </ul>
  *
  * <p><b>DECIMAL special case:</b> A bare {@code DECIMAL} or {@code NUMERIC} without explicit

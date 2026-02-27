@@ -31,6 +31,7 @@ import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
 import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
@@ -125,6 +126,10 @@ public final class ArrowConversion {
     }
     if (vector instanceof TimeStampMicroTZVector timestamptz) {
       timestamptz.setSafe(idx, toTimestampMicrosTz(value));
+      return;
+    }
+    if (vector instanceof Decimal256Vector decimal256) {
+      decimal256.setSafe(idx, toDecimal(value));
       return;
     }
     if (vector instanceof DecimalVector decimal) {

@@ -24,8 +24,8 @@ import java.util.Map;
  * Canonical logical type kinds shared across table formats (e.g. Iceberg, Delta) and SQL-facing
  * components.
  *
- * <p>This enum represents only the logical category. Type parameters (precision, scale, timezone,
- * length, etc.) are handled outside of this enum.
+ * <p>This enum represents only the logical category. Type parameters (precision, scale, temporal
+ * precision, interval range/precision, length, etc.) are handled outside of this enum.
  *
  * <p>Every integer size from source formats (TINYINT, SMALLINT, INT, BIGINT) collapses to {@link
  * #INT} (64-bit). Complex types ({@link #ARRAY}, {@link #MAP}, {@link #STRUCT}, {@link #VARIANT})

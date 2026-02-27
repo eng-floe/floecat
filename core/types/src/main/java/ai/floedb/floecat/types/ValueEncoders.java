@@ -19,9 +19,7 @@ package ai.floedb.floecat.types;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
@@ -32,8 +30,6 @@ public final class ValueEncoders {
 
   private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
   private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ISO_LOCAL_TIME;
-  private static final DateTimeFormatter LOCAL_TS_FMT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
-  private static final DateTimeFormatter INSTANT_FMT = DateTimeFormatter.ISO_INSTANT;
 
   /**
    * Encode {@code value} to the canonical string used by ColumnStats min/max. Each {@link
@@ -136,42 +132,16 @@ public final class ValueEncoders {
         {
           // TIMESTAMP is timezone-naive and encoded as ISO local date-time (no zone suffix).
           Integer precision = t.temporalPrecision();
-          if (value instanceof LocalDateTime ts) {
-            return TemporalCoercions.formatLocalDateTime(ts, precision);
-          }
-
-          if (value instanceof Instant i) {
-            return TemporalCoercions.formatLocalDateTime(
-                TemporalCoercions.localDateTimeFromInstantNoTz(i), precision);
-          }
-
-          if (value instanceof CharSequence s) {
-            return TemporalCoercions.formatLocalDateTime(
-                TemporalCoercions.parseTimestampNoTz(s.toString()), precision);
-          }
-
-          throw new IllegalArgumentException(
-              "TIMESTAMP must be LocalDateTime, Instant, or ISO-8601 local date-time String"
-                  + " but was: "
-                  + value.getClass().getName());
+          return TemporalCoercions.formatLocalDateTime(
+              TemporalCoercions.coerceTimestampNoTz(value), precision);
         }
 
       case TIMESTAMPTZ:
         {
           // TIMESTAMPTZ is always UTC-normalised and encoded as ISO instant with Z suffix.
           Integer precision = t.temporalPrecision();
-          if (value instanceof Instant i) {
-            return TemporalCoercions.formatInstantUtc(i, precision);
-          }
-
-          if (value instanceof CharSequence s) {
-            return TemporalCoercions.formatInstantUtc(
-                TemporalCoercions.parseZonedInstant(s.toString()), precision);
-          }
-
-          throw new IllegalArgumentException(
-              "TIMESTAMPTZ must be Instant or ISO-8601 String but was: "
-                  + value.getClass().getName());
+          return TemporalCoercions.formatInstantUtc(
+              TemporalCoercions.coerceInstant(value), precision);
         }
 
       case STRING:

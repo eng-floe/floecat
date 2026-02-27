@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.resolver.DecimalPrecisionConstraints;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import io.delta.kernel.types.ArrayType;
@@ -59,6 +60,7 @@ import java.util.Map;
  * <p><b>Unrecognised types</b> fail fast with {@link IllegalArgumentException}.
  */
 final class DeltaTypeMapper {
+  private static final int MAX_DECIMAL_PRECISION = 38;
 
   /**
    * Maps all fields in a Delta {@link StructType} to canonical logical types.
@@ -100,8 +102,12 @@ final class DeltaTypeMapper {
     if (dt instanceof MapType) return LogicalType.of(LogicalKind.MAP);
     if (dt instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
     if (dt instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
-    if (dt instanceof DecimalType dec)
-      return LogicalType.decimal(dec.getPrecision(), dec.getScale());
+    if (dt instanceof DecimalType dec) {
+      LogicalType logicalType = LogicalType.decimal(dec.getPrecision(), dec.getScale());
+      DecimalPrecisionConstraints.validateDecimalPrecision(
+          logicalType, "Delta", dec.toString(), MAX_DECIMAL_PRECISION);
+      return logicalType;
+    }
 
     throw new IllegalArgumentException("Unrecognised Delta type: " + dt.getClass().getSimpleName());
   }

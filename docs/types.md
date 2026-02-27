@@ -158,7 +158,8 @@ arbitrary engine-native type systems.
   silently coerced to `Utf8`.
 - `JSON` maps to Arrow `Utf8`.
 - `UUID` maps to Arrow `FixedSizeBinary(16)`; `BINARY` maps to Arrow `Binary`.
-- `DECIMAL` maps to Arrow `Decimal128` with the declared precision/scale.
+- `DECIMAL` maps to Arrow `Decimal128` when precision ≤ 38, and `Decimal256` when precision ≤ 76.
+  Precision > 76 is rejected by `ArrowSchemaUtil`.
 - `TIME` maps to Arrow `Time(MICROSECOND, 64)`, `TIMESTAMP` to `Timestamp(MICROSECOND, null)`,
   and `TIMESTAMPTZ` to `Timestamp(MICROSECOND, "UTC")`.
 - `INTERVAL` and complex container types (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) are **not**

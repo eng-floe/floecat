@@ -93,22 +93,37 @@ class ArrowSchemaUtilTest {
         ArrowSchemaUtil.toArrowSchema(
             List.of(
                 SchemaColumn.newBuilder().setName("dec").setLogicalType("DECIMAL(12,3)").build(),
+                SchemaColumn.newBuilder().setName("dec256").setLogicalType("DECIMAL(50,2)").build(),
                 SchemaColumn.newBuilder().setName("uuid").setLogicalType("UUID").build(),
                 SchemaColumn.newBuilder().setName("bin").setLogicalType("BINARY").build(),
                 SchemaColumn.newBuilder().setName("json").setLogicalType("JSON").build()));
 
     ArrowType.Decimal decimalType = (ArrowType.Decimal) schema.getFields().get(0).getType();
+    ArrowType.Decimal decimal256Type = (ArrowType.Decimal) schema.getFields().get(1).getType();
     ArrowType.FixedSizeBinary uuidType =
-        (ArrowType.FixedSizeBinary) schema.getFields().get(1).getType();
-    ArrowType.Binary binaryType = (ArrowType.Binary) schema.getFields().get(2).getType();
-    ArrowType.Utf8 jsonType = (ArrowType.Utf8) schema.getFields().get(3).getType();
+        (ArrowType.FixedSizeBinary) schema.getFields().get(2).getType();
+    ArrowType.Binary binaryType = (ArrowType.Binary) schema.getFields().get(3).getType();
+    ArrowType.Utf8 jsonType = (ArrowType.Utf8) schema.getFields().get(4).getType();
 
     assertThat(decimalType.getPrecision()).isEqualTo(12);
     assertThat(decimalType.getScale()).isEqualTo(3);
     assertThat(decimalType.getBitWidth()).isEqualTo(128);
+    assertThat(decimal256Type.getPrecision()).isEqualTo(50);
+    assertThat(decimal256Type.getScale()).isEqualTo(2);
+    assertThat(decimal256Type.getBitWidth()).isEqualTo(256);
     assertThat(uuidType.getByteWidth()).isEqualTo(16);
     assertThat(binaryType).isNotNull();
     assertThat(jsonType).isNotNull();
+  }
+
+  @Test
+  void decimalPrecisionAboveArrowLimitThrows() {
+    SchemaColumn column =
+        SchemaColumn.newBuilder().setName("dec").setLogicalType("DECIMAL(77,2)").build();
+    assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("DECIMAL precision")
+        .hasMessageContaining("max 76");
   }
 
   @Test

@@ -27,7 +27,20 @@ import java.time.format.DateTimeParseException;
 import java.util.Locale;
 import java.util.Objects;
 
-/** Shared helpers for timestamp/time coercion across stats, encoders, and comparators. */
+/**
+ * Shared helpers for timestamp/time coercion across stats, encoders, and comparators.
+ *
+ * <p>Session timezone and TIMESTAMP-without-zone policy are configured via system properties:
+ *
+ * <ul>
+ *   <li>{@code floecat.session.timezone} — IANA zone ID (defaults to UTC)
+ *   <li>{@code floecat.timestamp_no_tz.policy} — {@code REJECT_ZONED} (default) or {@code
+ *       CONVERT_TO_SESSION_ZONE}
+ * </ul>
+ *
+ * <p>These settings affect how zoned inputs are handled for TIMESTAMP (no timezone). TIMESTAMPTZ
+ * always normalizes to UTC.
+ */
 public final class TemporalCoercions {
   public static final long NANOS_PER_DAY = 86_400_000_000_000L;
 
@@ -94,6 +107,12 @@ public final class TemporalCoercions {
     CONVERT_TO_SESSION_ZONE
   }
 
+  /**
+   * Parse a TIMESTAMP (no timezone) value.
+   *
+   * <p>Accepts ISO local date-time strings directly. Zoned strings are accepted only when the
+   * policy is {@code CONVERT_TO_SESSION_ZONE}; otherwise they are rejected.
+   */
   public static LocalDateTime parseTimestampNoTz(String raw) {
     return parseTimestampNoTz(raw, defaultSessionZone(), defaultTimestampNoTzPolicy());
   }
@@ -115,6 +134,36 @@ public final class TemporalCoercions {
     return truncateToMicros(LocalDateTime.ofInstant(instant, zone));
   }
 
+  /** Coerce a TIMESTAMP (no timezone) from LocalDateTime, Instant, or ISO string. */
+  public static LocalDateTime coerceTimestampNoTz(Object value) {
+    if (value instanceof LocalDateTime ts) {
+      return ts;
+    }
+    if (value instanceof Instant i) {
+      return localDateTimeFromInstantNoTz(i);
+    }
+    if (value instanceof CharSequence s) {
+      return parseTimestampNoTz(s.toString());
+    }
+    throw new IllegalArgumentException(
+        "TIMESTAMP value must be LocalDateTime, Instant, or ISO local date-time string but was: "
+            + value.getClass().getName());
+  }
+
+  /** Coerce a TIMESTAMPTZ value from Instant or ISO-8601 string with offset/zone. */
+  public static Instant coerceInstant(Object value) {
+    if (value instanceof Instant i) {
+      return i;
+    }
+    if (value instanceof CharSequence s) {
+      return parseZonedInstant(s.toString());
+    }
+    throw new IllegalArgumentException(
+        "TIMESTAMPTZ value must be Instant or ISO-8601 String but was: "
+            + value.getClass().getName());
+  }
+
+  /** Parse an ISO-8601 timestamp with zone/offset into an Instant. */
   public static Instant parseZonedInstant(String raw) {
     try {
       return Instant.parse(raw);
