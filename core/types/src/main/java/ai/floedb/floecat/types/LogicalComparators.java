@@ -177,7 +177,12 @@ public final class LogicalComparators {
           bytes = new byte[dup.remaining()];
           dup.get(bytes);
         } else if (v instanceof CharSequence s) {
-          bytes = Base64.getDecoder().decode(s.toString());
+          String raw = s.toString().trim();
+          if (raw.startsWith("0x") || raw.startsWith("0X")) {
+            bytes = decodeHexBytes(raw.substring(2));
+          } else {
+            bytes = Base64.getDecoder().decode(raw);
+          }
         } else {
           throw typeErr("BINARY", v);
         }
@@ -255,6 +260,22 @@ public final class LogicalComparators {
   private static IllegalArgumentException typeErr(String kind, Object v) {
     return new IllegalArgumentException(
         kind + " compare expects canonical types, got: " + v.getClass().getName());
+  }
+
+  private static byte[] decodeHexBytes(String hex) {
+    if ((hex.length() & 1) != 0) {
+      throw new IllegalArgumentException("Invalid hex BINARY value (odd length): " + hex);
+    }
+    byte[] out = new byte[hex.length() / 2];
+    for (int i = 0; i < out.length; i++) {
+      int hi = Character.digit(hex.charAt(2 * i), 16);
+      int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+      if (hi < 0 || lo < 0) {
+        throw new IllegalArgumentException("Invalid hex BINARY value: " + hex);
+      }
+      out[i] = (byte) ((hi << 4) | lo);
+    }
+    return out;
   }
 
   public static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {
