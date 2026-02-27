@@ -39,7 +39,6 @@ import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import org.jboss.logging.Logger;
 
 /**
  * Maps Delta Kernel {@link DataType} instances to FloeCat canonical {@link LogicalType}.
@@ -57,13 +56,9 @@ import org.jboss.logging.Logger;
  * <p><b>Integer collapsing:</b> All Delta integer sizes ({@link ByteType}, {@link ShortType},
  * {@link IntegerType}, {@link LongType}) collapse to canonical {@link LogicalKind#INT} (64-bit).
  *
- * <p><b>Unrecognised types</b> are logged at WARN level and mapped to {@link LogicalKind#BINARY}.
- * Prior to this refactor, unrecognised types silently returned {@code null}, causing columns to be
- * dropped; returning BINARY is the spec-mandated safe fallback.
+ * <p><b>Unrecognised types</b> fail fast with {@link IllegalArgumentException}.
  */
 final class DeltaTypeMapper {
-
-  private static final Logger LOG = Logger.getLogger(DeltaTypeMapper.class);
 
   /**
    * Maps all fields in a Delta {@link StructType} to canonical logical types.
@@ -84,8 +79,7 @@ final class DeltaTypeMapper {
    * Converts a single Delta Kernel {@link DataType} to a FloeCat canonical {@link LogicalType}.
    *
    * @param dt a Delta Kernel data type (never null)
-   * @return the corresponding canonical {@link LogicalType}; falls back to {@link
-   *     LogicalKind#BINARY} for any unrecognised type
+   * @return the corresponding canonical {@link LogicalType}
    */
   static LogicalType toLogical(DataType dt) {
     if (dt instanceof BooleanType) return LogicalType.of(LogicalKind.BOOLEAN);
@@ -109,8 +103,6 @@ final class DeltaTypeMapper {
     if (dt instanceof DecimalType dec)
       return LogicalType.decimal(dec.getPrecision(), dec.getScale());
 
-    // Per spec, unrecognised types are returned as raw BINARY.
-    LOG.warnf("Unrecognised Delta type %s; mapping to BINARY", dt.getClass().getSimpleName());
-    return LogicalType.of(LogicalKind.BINARY);
+    throw new IllegalArgumentException("Unrecognised Delta type: " + dt.getClass().getSimpleName());
   }
 }
