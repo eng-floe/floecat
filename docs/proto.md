@@ -121,6 +121,12 @@ _State diagram for the query lease protocol:_
 ## Configuration & Extensibility
 - **Evolving protos** – Prefer `optional` fields for new metadata. Keep enum values stable; add new
   entries to the end. Reserve field numbers explicitly if deprecating to avoid reuse.
+- **Temporal precision** – `types.LogicalType.temporal_precision` is optional. Absence means
+  default microsecond precision, while an explicit `0` represents second precision.
+- **Interval range** – `types.LogicalType.interval_range` distinguishes `INTERVAL YEAR TO MONTH`
+  vs `INTERVAL DAY TO SECOND`. In the JVM model, absence is normalised to `IR_UNSPECIFIED`.
+  Leading and fractional precisions live in `interval_leading_precision` and
+  `interval_fractional_precision`.
 - **Custom properties** – Many records expose `map<string,string> properties` for lightweight
   extensions. Document keys in the consuming module (for example connector-specific hints in
   [`docs/connectors-spi.md`](connectors-spi.md)).

@@ -30,8 +30,8 @@ import java.util.Map;
 import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -184,7 +184,7 @@ class ColumnsScannerTest {
           } else {
             values.add(new String(varchar.get(row), StandardCharsets.UTF_8));
           }
-        } else if (vector instanceof IntVector intVec) {
+        } else if (vector instanceof BigIntVector intVec) {
           if (intVec.isNull(row)) {
             values.add(null);
           } else {

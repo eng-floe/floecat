@@ -19,9 +19,9 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.jboss.logging.Logger;
 
 /**
  * GenericSchemaMapper: Converts generic (non-Iceberg, non-Delta) schema JSON to logical
@@ -39,7 +39,6 @@ import org.jboss.logging.Logger;
  */
 final class GenericSchemaMapper {
 
-  private static final Logger LOG = Logger.getLogger(GenericSchemaMapper.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private GenericSchemaMapper() {}
@@ -59,21 +58,30 @@ final class GenericSchemaMapper {
       JsonNode colsNode = root.path("cols");
 
       if (!colsNode.isArray()) {
-        LOG.warn("Generic schema JSON does not contain 'cols' array: " + schemaJson);
-        return sb.build();
+        throw new IllegalArgumentException("Generic schema JSON must contain a 'cols' array");
       }
 
       int ordinal = 1;
 
       for (JsonNode col : colsNode) {
-        String name = col.path("name").asText();
-        String type = col.path("type").asText();
+        String name = col.path("name").asText("").trim();
+        if (name.isEmpty()) {
+          throw new IllegalArgumentException(
+              "Generic schema column at ordinal " + ordinal + " is missing a non-blank 'name'");
+        }
+        String declaredType = col.path("type").asText("").trim();
+        if (declaredType.isEmpty()) {
+          throw new IllegalArgumentException(
+              "Generic schema column '" + name + "' is missing a non-blank 'type'");
+        }
+
+        String canonicalType = LogicalTypeFormat.format(LogicalTypeFormat.parse(declaredType));
         sb.addColumns(
             ColumnIdComputer.withComputedId(
                 cid_algo,
                 SchemaColumn.newBuilder()
                     .setName(name)
-                    .setLogicalType(type)
+                    .setLogicalType(canonicalType)
                     .setFieldId(ordinal) // deterministic order
                     .setNullable(true) // assume nullable
                     .setPhysicalPath(name)
@@ -84,7 +92,7 @@ final class GenericSchemaMapper {
       }
 
     } catch (Exception e) {
-      LOG.warn("Failed to parse generic schema JSON; returning empty schema", e);
+      throw new IllegalArgumentException("Failed to parse generic schema JSON", e);
     }
 
     return sb.build();

@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
@@ -32,14 +33,14 @@ import org.junit.jupiter.api.Test;
 /** Regression test suite for {@link ScanPruningUtils}. */
 public class ScanPruningUtilsTest {
 
-  /** Build a ScanFile with encoded min/max INT64 stats. */
+  /** Build a ScanFile with encoded min/max INT stats. */
   private static ScanFile file(String path, String col, long min, long max) {
-    LogicalType t = LogicalType.of(LogicalKind.INT64);
+    LogicalType t = LogicalType.of(LogicalKind.INT);
 
     ColumnStats cs =
         ColumnStats.newBuilder()
             .setColumnName(col)
-            .setLogicalType("INT64")
+            .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
             .build();
@@ -53,14 +54,35 @@ public class ScanPruningUtilsTest {
         .build();
   }
 
+  private static ScanFile fileWithStats(
+      String path, String col, LogicalType type, Object min, Object max) {
+    ColumnStats.Builder cs =
+        ColumnStats.newBuilder()
+            .setColumnName(col)
+            .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type));
+
+    if (LogicalComparators.isStatsOrderable(type)) {
+      cs.setMin(LogicalTypeProtoAdapter.encodeValue(type, min))
+          .setMax(LogicalTypeProtoAdapter.encodeValue(type, max));
+    }
+
+    return ScanFile.newBuilder()
+        .setFilePath(path)
+        .setFileFormat("PARQUET")
+        .setFileSizeInBytes(10)
+        .setRecordCount(1)
+        .addColumns(cs.build())
+        .build();
+  }
+
   /** Delete-file variant. */
   private static ScanFile deleteFileWithStats(String path, String col, long min, long max) {
-    LogicalType t = LogicalType.of(LogicalKind.INT64);
+    LogicalType t = LogicalType.of(LogicalKind.INT);
 
     ColumnStats cs =
         ColumnStats.newBuilder()
             .setColumnName(col)
-            .setLogicalType("INT64")
+            .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
             .build();
@@ -312,5 +334,32 @@ public class ScanPruningUtilsTest {
 
     assertSame(f, raw.dataFiles().get(0));
     assertNotSame(f, out.getDataFiles(0));
+  }
+
+  @Test
+  void testNonOrderableTypesDoNotCrashPruningAndAreKept() {
+    List<LogicalType> nonOrderableTypes =
+        List.of(
+            LogicalType.of(LogicalKind.JSON),
+            LogicalType.of(LogicalKind.INTERVAL),
+            LogicalType.of(LogicalKind.ARRAY),
+            LogicalType.of(LogicalKind.MAP),
+            LogicalType.of(LogicalKind.STRUCT),
+            LogicalType.of(LogicalKind.VARIANT));
+
+    for (LogicalType type : nonOrderableTypes) {
+      Object min = type.kind() == LogicalKind.JSON ? "{\"a\":1}" : new byte[] {1};
+      Object max = type.kind() == LogicalKind.JSON ? "{\"z\":1}" : new byte[] {2};
+      ScanFile f = fileWithStats("p-" + type.kind().name(), "col", type, min, max);
+      Predicate pred =
+          Predicate.newBuilder().setColumn("col").setOp(Operator.OP_EQ).addValues("x").build();
+
+      var out =
+          assertDoesNotThrow(
+              () ->
+                  ScanPruningUtils.pruneBundle(
+                      rawBundle(List.of(f), List.of()), List.of("col"), List.of(pred)));
+      assertEquals(1, out.getDataFilesCount(), "must keep file for non-orderable type " + type);
+    }
   }
 }

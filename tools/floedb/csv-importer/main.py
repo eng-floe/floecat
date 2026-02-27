@@ -18,7 +18,7 @@
 FloeDB catalog importer (CSV -> pbtxt).
 
 Reads exported Postgres catalog CSVs (from your earlier export script),
-and emits FloeCat pbtxt files for each object type.
+and emits Floecat pbtxt files for each object type.
 
 Right now:
 - 10_types.pbtxt  (from pg_type.csv + pg_namespace.csv)
@@ -45,7 +45,7 @@ from aggregates_pbtxt import AggregatesConfig, write_aggregates_pbtxt
 from registries_pbtxt import RegistriesConfig, write_registries_pbtxt
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Import PG catalog CSVs into FloeCat pbtxt files.")
+    p = argparse.ArgumentParser(description="Import PG catalog CSVs into Floecat pbtxt files.")
     p.add_argument(
         "--csv-dir",
         type=Path,

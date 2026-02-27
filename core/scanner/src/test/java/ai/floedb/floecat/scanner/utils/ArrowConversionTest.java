@@ -20,12 +20,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.UUID;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
+import org.apache.arrow.vector.DecimalVector;
+import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeStampMicroTZVector;
+import org.apache.arrow.vector.TimeStampMicroVector;
+import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.DateUnit;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -106,7 +123,7 @@ class ArrowConversionTest {
   void fill_rejectsUnsupportedVector() {
     Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
 
-    Field col = new Field("col", FieldType.nullable(new ArrowType.Decimal(10, 2)), List.of());
+    Field col = new Field("col", FieldType.nullable(new ArrowType.Null()), List.of());
     Schema schema = new Schema(List.of(col));
 
     try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
@@ -117,6 +134,148 @@ class ArrowConversionTest {
       assertThatThrownBy(() -> ArrowConversion.fill(root, List.of(row)))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("unsupported vector type");
+    }
+  }
+
+  @Test
+  void fill_supportsCanonicalTemporalBinaryAndDecimalVectors() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "date_col", FieldType.nullable(new ArrowType.Date(DateUnit.DAY)), List.of()),
+                new Field(
+                    "time_col",
+                    FieldType.nullable(new ArrowType.Time(TimeUnit.MICROSECOND, 64)),
+                    List.of()),
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)),
+                    List.of()),
+                new Field(
+                    "tstz_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC")),
+                    List.of()),
+                new Field(
+                    "dec_col", FieldType.nullable(new ArrowType.Decimal(12, 3, 128)), List.of()),
+                new Field(
+                    "dec256_col", FieldType.nullable(new ArrowType.Decimal(50, 2, 256)), List.of()),
+                new Field("bin_col", FieldType.nullable(new ArrowType.Binary()), List.of()),
+                new Field(
+                    "uuid_col", FieldType.nullable(new ArrowType.FixedSizeBinary(16)), List.of()),
+                new Field("iv_col", FieldType.nullable(new ArrowType.Binary()), List.of())));
+
+    LocalDate date = LocalDate.of(2026, 2, 26);
+    LocalTime time = LocalTime.of(12, 34, 56, 123_456_000);
+    LocalDateTime ts = LocalDateTime.parse("2026-02-26T11:22:33.123456");
+    Instant tstz = Instant.parse("2026-02-26T10:00:00Z");
+    BigDecimal decimal = new BigDecimal("123.456");
+    BigDecimal decimal256 = new BigDecimal("1234567890123456789012345.67");
+    byte[] binary = new byte[] {1, 2, 3};
+    UUID uuid = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+    byte[] interval = new byte[] {1, 2, 3};
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      ArrowConversion.fill(
+          root,
+          List.of(
+              new SystemObjectRow(
+                  new Object[] {
+                    date, time, ts, tstz, decimal, decimal256, binary, uuid, interval
+                  })));
+
+      DateDayVector dateVector = (DateDayVector) root.getVector("date_col");
+      TimeMicroVector timeVector = (TimeMicroVector) root.getVector("time_col");
+      TimeStampMicroVector tsVector = (TimeStampMicroVector) root.getVector("ts_col");
+      TimeStampMicroTZVector tstzVector = (TimeStampMicroTZVector) root.getVector("tstz_col");
+      DecimalVector decimalVector = (DecimalVector) root.getVector("dec_col");
+      Decimal256Vector decimal256Vector = (Decimal256Vector) root.getVector("dec256_col");
+      VarBinaryVector binaryVector = (VarBinaryVector) root.getVector("bin_col");
+      FixedSizeBinaryVector uuidVector = (FixedSizeBinaryVector) root.getVector("uuid_col");
+      VarBinaryVector intervalVector = (VarBinaryVector) root.getVector("iv_col");
+
+      assertThat(dateVector.get(0)).isEqualTo((int) date.toEpochDay());
+      assertThat(timeVector.get(0)).isEqualTo(time.toNanoOfDay() / 1_000L);
+      Instant tsInstant = ts.toInstant(ZoneOffset.UTC);
+      assertThat(tsVector.get(0))
+          .isEqualTo(tsInstant.getEpochSecond() * 1_000_000L + tsInstant.getNano() / 1_000L);
+      assertThat(tstzVector.get(0))
+          .isEqualTo(tstz.getEpochSecond() * 1_000_000L + tstz.getNano() / 1_000L);
+      assertThat(decimalVector.getObject(0)).isEqualByComparingTo(decimal);
+      assertThat(decimal256Vector.getObject(0)).isEqualByComparingTo(decimal256);
+      assertThat(binaryVector.get(0)).containsExactly(binary);
+      assertThat(uuidVector.get(0)).hasSize(16);
+      assertThat(intervalVector.get(0)).containsExactly(interval);
+    }
+  }
+
+  @Test
+  void fill_rejectsNumericTemporalInputs() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "time_col",
+                    FieldType.nullable(new ArrowType.Time(TimeUnit.MICROSECOND, 64)),
+                    List.of()),
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)),
+                    List.of()),
+                new Field(
+                    "tstz_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC")),
+                    List.of())));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      SystemObjectRow row = new SystemObjectRow(new Object[] {1_000L, 1_000L, 1_000L});
+      assertThatThrownBy(() -> ArrowConversion.fill(root, List.of(row)))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("value must be");
+    }
+  }
+
+  @Test
+  void fill_parsesCanonicalTimestampStringsForTimestampAndTimestamptzVectors() {
+    Assumptions.assumeTrue(isArrowAvailable(), "Arrow memory allocator is unavailable");
+
+    Schema schema =
+        new Schema(
+            List.of(
+                new Field(
+                    "ts_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, null)),
+                    List.of()),
+                new Field(
+                    "tstz_col",
+                    FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC")),
+                    List.of())));
+
+    String ts = "2026-02-26T12:34:56.123456";
+    String tstz = "2026-02-26T10:00:00Z";
+
+    LocalDateTime parsedTs = LocalDateTime.parse(ts);
+    Instant parsedTstz = Instant.parse(tstz);
+    long tsMicros =
+        parsedTs.toInstant(java.time.ZoneOffset.UTC).getEpochSecond() * 1_000_000L
+            + parsedTs.toInstant(java.time.ZoneOffset.UTC).getNano() / 1_000L;
+    long tstzMicros = parsedTstz.getEpochSecond() * 1_000_000L + parsedTstz.getNano() / 1_000L;
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator)) {
+      ArrowConversion.fill(root, List.of(new SystemObjectRow(new Object[] {ts, tstz})));
+
+      TimeStampMicroVector tsVector = (TimeStampMicroVector) root.getVector("ts_col");
+      TimeStampMicroTZVector tstzVector = (TimeStampMicroTZVector) root.getVector("tstz_col");
+
+      assertThat(tsVector.get(0)).isEqualTo(tsMicros);
+      assertThat(tstzVector.get(0)).isEqualTo(tstzMicros);
     }
   }
 

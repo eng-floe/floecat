@@ -15,7 +15,7 @@
 #  * limitations under the License.
 #  */
 """
-Generate FloeCat PBtxt for collations from pg_collation.csv (system only).
+Generate Floecat PBtxt for collations from pg_collation.csv (system only).
 
 Emits blocks like:
 

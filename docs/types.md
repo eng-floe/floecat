@@ -1,48 +1,207 @@
 # Type System Utilities
 
 ## Overview
-The `core/types/` module implements Floecat’s logical type system. It bridges the logical types declared
-in protobuf (`types/types.proto`) with Java helpers used by connectors, statistics engines, and the
-execution scan bundle assembler.
+The `core/types/` module implements Floecat's canonical logical type system. It bridges the logical
+types declared in protobuf (`types/types.proto`) with Java helpers used by connectors, schema
+mappers, statistics engines, and the execution scan bundle assembler.
 
 Key classes: `LogicalType`, `LogicalKind`, `LogicalTypeProtoAdapter`, `LogicalComparators`,
 `LogicalCoercions`, `ValueEncoders`, and `MinMaxCodec`.
 
+## Canonical Type Kinds
+
+`LogicalKind` defines the complete set of canonical types shared across all table formats (Iceberg,
+Delta, etc.) and SQL-facing components.
+
+| Canonical Kind   | Proto field number | Description                                       |
+|------------------|--------------------|---------------------------------------------------|
+| `BOOLEAN`        | 1                  | Boolean true/false                                |
+| `INT`            | 2                  | 64-bit signed integer (all source sizes collapse) |
+| `FLOAT`          | 4                  | 32-bit IEEE-754 single-precision float            |
+| `DOUBLE`         | 5                  | 64-bit IEEE-754 double-precision float            |
+| `DATE`           | 6                  | Calendar date (no time, no timezone)              |
+| `TIME`           | 7                  | Time of day (no date, no timezone)                |
+| `TIMESTAMP`      | 8                  | Timezone-naive timestamp (local time)             |
+| `TIMESTAMPTZ`    | 13                 | UTC-normalised timestamp                          |
+| `STRING`         | 9                  | UTF-8 text                                        |
+| `BINARY`         | 10                 | Arbitrary byte sequence                           |
+| `UUID`           | 11                 | 128-bit universally unique identifier             |
+| `DECIMAL`        | 12                 | Fixed-precision decimal (precision, scale)        |
+| `INTERVAL`       | 14                 | Duration / period                                 |
+| `JSON`           | 15                 | Semi-structured JSON text                         |
+| `ARRAY`          | 16                 | Ordered collection (non-parameterised in v1)      |
+| `MAP`            | 17                 | Key-value map (non-parameterised in v1)           |
+| `STRUCT`         | 18                 | Named-field record (non-parameterised in v1)      |
+| `VARIANT`        | 19                 | Schema-flexible semi-structured value             |
+
+### Integer collapsing
+Every source-format integer size (TINYINT, SMALLINT, INT, INTEGER, BIGINT, LONG, INT8, INT4, INT2,
+UINT8, UINT4, UINT2) collapses to canonical `INT` (64-bit signed). Source alias names can be
+resolved via `LogicalKind.fromName(String)`.
+
+### Timestamp semantics
+* `TIMESTAMP` — stores local time without UTC normalisation (Iceberg `withoutZone()`, Delta
+  `timestamp_ntz`).
+* `TIMESTAMPTZ` — stores microseconds-since-epoch UTC (Iceberg `withZone()`, Delta `timestamp`).
+
+> **Note:** The Floe spec decode matrix v1 has these two entries inverted. The implementation
+> applies the semantically correct mapping and records the discrepancy in code comments.
+
+### Interval ranges
+`INTERVAL` remains a single logical kind with an optional range:
+- `INTERVAL YEAR TO MONTH` → range `YEAR_TO_MONTH`
+- `INTERVAL DAY TO SECOND` → range `DAY_TO_SECOND`
+- Plain `INTERVAL` → range `UNSPECIFIED`
+
+Stats encoding (when present) uses ISO‑8601 duration strings. Engine‑native interval layouts are
+carried via overlays/hints, not Floecat core types.
+
+Interval precisions follow ANSI SQL conventions:
+- `INTERVAL YEAR(p) TO MONTH` → `interval_leading_precision = p`
+- `INTERVAL DAY(p) TO SECOND(s)` → `interval_leading_precision = p`,
+  `interval_fractional_precision = s`
+- `INTERVAL(s)` → normalized to `DAY_TO_SECOND` with `interval_fractional_precision = s`
+
+Leading precision is non‑negative and connector‑defined; fractional precision is limited to 0..6
+(microsecond scale) in Floecat encoders.
+
+#### Precision + parsing
+- Canonical `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` are microsecond precision. Inputs with
+  higher precision are truncated to micros for stats encoding/comparison.
+- Numeric encodings are only accepted for `DATE` (epoch days). `TIME`, `TIMESTAMP`, and
+  `TIMESTAMPTZ` require typed values or ISO‑8601 strings; numeric heuristics are not used.
+- Temporal precisions can be carried in the logical type string (e.g. `TIME(3)`,
+  `TIMESTAMP(6)`, `TIMESTAMPTZ(0)`, range 0..6). When present, encoders truncate and emit exactly that many
+  fractional digits. When absent, Floecat defaults to microsecond precision and ISO‑8601
+  formatting (no fixed width).
+- `TIMESTAMP` expects timezone‑naive inputs (no `Z` or offset). By default, zoned strings are
+  rejected. You can opt into conversion by setting:
+  - `floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` (or env
+    `FLOECAT_TIMESTAMP_NO_TZ_POLICY`)
+  - `floecat.session.timezone=<IANA zone>` (or env `FLOECAT_SESSION_TIMEZONE`)
+  When enabled, zoned timestamps are converted into that session zone and stored as local
+  `TIMESTAMP` values.
+
+### Complex types (v1)
+`ARRAY`, `MAP`, `STRUCT`, and `VARIANT` are non-parameterised in v1. The logical kind captures
+only the container category; element/value/field types are captured by child `SchemaColumn` rows
+carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
+
 ## Architecture & Responsibilities
-- **`LogicalType` / `LogicalKind`** – Immutable representations of logical types (boolean, integer,
-  decimal with precision/scale, temporal, UUID, etc.). Validates that decimals include both precision
-  and scale.
-- **`LogicalTypeProtoAdapter`** – Converts between protobuf `ai.floedb.floecat.types.LogicalType` and
-  JVM `LogicalType`, ensuring kind/precision/scale consistency.
-- **`LogicalCoercions`** – Rules for widening or narrowing conversions between logical types (for
-  example INT32 → INT64, DECIMAL precision adjustments).
-- **`LogicalComparators`** – Provides `Comparator` instances for ordering values encoded as strings or
-  byte buffers (used when building stats).
+- **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
+  stores `(kind, precision, scale, temporalPrecision, intervalRange, intervalLeadingPrecision, intervalFractionalPrecision)`.
+  `temporalPrecision` is optional (unset means default microsecond precision). Interval fields are
+  optional and only apply to `INTERVAL`. Canonical `DECIMAL` semantics are
+  `precision ≥ 1` and `0 ≤ scale ≤ precision` with no global precision ceiling in the core model.
+  Connector-specific constraints apply (for example Iceberg/Delta cap precision at 38, while other
+  sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
+  precision (0..6). All other kinds reject parameters.
+- **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
+  wire message and the JVM `LogicalType`, preserving kind/precision/scale/interval range metadata.
+- **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
+  any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP` (timezone‑naive policy),
+  string → `Instant` for `TIMESTAMPTZ`).
+- **`LogicalComparators`** – Provides `Comparator` instances for ordering values encoded as strings
+  or byte buffers (used when building column stats).
 - **`ValueEncoders` / `MinMaxCodec`** – Encode scalar values into canonical strings/bytes, enabling
-  deterministic min/max statistics. Handles signed numbers, decimals, binary, and temporals.
+  deterministic min/max statistics across connectors.
+
+## Type-Family Helpers
+
+`LogicalType` exposes four predicate helpers for grouping kinds:
+
+```java
+// Scalar numeric: INT, FLOAT, DOUBLE, DECIMAL
+boolean isNumeric()
+
+// Temporal: DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL
+boolean isTemporal()
+
+// Container: ARRAY, MAP, STRUCT, VARIANT
+boolean isComplex()
+
+// Everything that is not a container (alias for !isComplex())
+boolean isScalar()
+```
+
+Example:
+```java
+LogicalType t = LogicalType.decimal(10, 2);
+t.isNumeric();   // true
+t.isDecimal();   // true
+t.isTemporal();  // false
+t.isComplex();   // false
+t.isScalar();    // true
+```
 
 ## Public API / Surface Area
 Most classes expose static helpers:
 ```java
 LogicalType t = LogicalType.decimal(38, 4);
-boolean compatible = LogicalCoercions.canCoerce(t, LogicalType.of(LogicalKind.FLOAT64));
-String encoded = MinMaxCodec.encodeDecimal(BigDecimal.valueOf(42), t);
+String logicalType = LogicalTypeFormat.format(t);
+String encoded = MinMaxCodec.encode(t, BigDecimal.valueOf(42));
 ```
-`LogicalTypeProtoAdapter.fromProto(LogicalType rpcType)` and `.toProto(LogicalType jt)` convert
-between wire format and runtime objects.
+`LogicalTypeProtoAdapter.decodeLogicalType(String logicalType)` and
+`.encodeLogicalType(LogicalType logicalType)` convert between canonical logical type strings and
+runtime objects.
+
+## Arrow Mapping Contract
+
+`core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over Floecat logical types, not over
+arbitrary engine-native type systems.
+
+- Input is `SchemaColumn.logical_type` and should be a Floecat canonical logical type string (or an
+  accepted alias handled by `LogicalKind.fromName` semantics).
+- Integer aliases (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `INT2/4/8`, `UINT2/4/8`) all map to
+  Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
+- Unknown, null, or blank logical types fail fast with `IllegalArgumentException`; they are not
+  silently coerced to `Utf8`.
+- `JSON` maps to Arrow `Utf8`.
+- `UUID` maps to Arrow `FixedSizeBinary(16)`; `BINARY` maps to Arrow `Binary`.
+- `DECIMAL` maps to Arrow `Decimal128` when precision ≤ 38, and `Decimal256` when precision ≤ 76.
+  Precision > 76 is rejected by `ArrowSchemaUtil`.
+- `TIME` maps to Arrow `Time(MICROSECOND, 64)`, `TIMESTAMP` to `Timestamp(MICROSECOND, null)`,
+  and `TIMESTAMPTZ` to `Timestamp(MICROSECOND, "UTC")`.
+- `INTERVAL` and complex container types (`ARRAY`, `MAP`, `STRUCT`, `VARIANT`) are **not**
+  supported in Arrow schema generation; they must be omitted or cast to `STRING`/`BINARY`.
+
+If external Flight providers want to reuse `core/arrow`, they should first map their source type
+surface into Floecat logical types.
+
+## Source-Format Alias Lookup
+
+`LogicalKind.fromName(String candidate)` resolves source-format type names to canonical kinds:
+
+```java
+LogicalKind.fromName("bigint")               // → INT
+LogicalKind.fromName("float4")               // → FLOAT
+LogicalKind.fromName("double precision")     // → DOUBLE
+LogicalKind.fromName("timestamp with time zone") // → TIMESTAMPTZ
+LogicalKind.fromName("ARRAY")                // → ARRAY
+```
+
+The lookup is case-insensitive and collapses internal whitespace. Unknown names throw
+`IllegalArgumentException`.
 
 ## Important Internal Details
-- **Validation** – `LogicalType` constructor enforces decimal constraints (`precision >= 1`,
-  `0 <= scale <= precision`). Non-decimals reject precision/scale settings altogether.
-- **Comparators** – `LogicalComparators` provide specialised comparators for lexical ordering of
+- **Validation** – `LogicalType` constructor enforces: for `DECIMAL`, `precision ≥ 1` and
+  `0 ≤ scale ≤ precision`. There is no global DECIMAL precision cap in the core model; connectors
+  enforce their own ceilings (for example Iceberg/Delta cap at 38) at schema-parse time. Non-decimal
+  kinds reject precision/scale altogether.
+- **Non-stats-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
+  `VARIANT`) have no meaningful min/max statistics. `LogicalComparators.normalize()` returns
+  `null` and `ValueEncoders.encodeToString` throws for JSON/complex kinds, so connectors should
+  leave bounds unset. `INTERVAL` encodings can be stored but are ignored by stats comparisons.
+- **Comparators** – `LogicalComparators` provides specialised comparators for lexical ordering of
   encoded min/max values so histogram builders can operate on encoded strings.
-- **Encoders** – `ValueEncoders` normalise values before storing them in stats to guarantee consistent
-  lexical ordering across connectors (for example left-padding integers, standardising boolean
-  casing).
+- **Encoders** – `ValueEncoders` normalises values before storing them in stats to guarantee
+  consistent lexical ordering across connectors.
 
 ## Data Flow & Lifecycle
 ```
-Connector reads Parquet schema → maps physical types to LogicalType
+Connector reads Parquet/Delta/Iceberg schema
+  → schema mapper emits canonical LogicalKind strings (e.g. "INT", "TIMESTAMPTZ", "ARRAY")
+  → SchemaColumn.logical_type stores the canonical string
   → ValueEncoders encode per-column min/max/ndv bounds
   → StatsRepository stores encoded values (string or bytes)
   → Query lifecycle service converts stored logical type IDs into planner TypeSpecs via TypeRegistry
@@ -50,16 +209,22 @@ Connector reads Parquet schema → maps physical types to LogicalType
 
 ## Configuration & Extensibility
 The module is pure Java; no configuration is required. Extending the type system involves:
-- Adding new `LogicalKind` enum entries.
-- Updating `LogicalTypeProtoAdapter`, `LogicalCoercions`, comparators, and encoders to handle new
-  kinds.
-- Ensuring connectors map upstream physical types to the new logical kind, and planners understand
-  the emitted `TypeSpec` (see [`docs/service.md`](service.md#query-lifecycle-service)).
+1. Adding a new `LogicalKind` enum entry and proto `Kind` field number.
+2. Registering source-format aliases in the `ALIASES` map inside `LogicalKind`.
+3. Updating `LogicalCoercions`, `LogicalComparators`, and `ValueEncoders` for the new kind.
+4. Updating connector schema mappers (`IcebergSchemaMapper`, `DeltaSchemaMapper`) to emit the new
+   canonical name.
+5. Ensuring downstream consumers (`FloeTypeMapper`, `DeltaManifestMaterializer`) handle the new
+   canonical name.
 
 ## Examples & Scenarios
-- **Iceberg schema parsing** – The query lifecycle service parses Iceberg schemas,
-  constructs `TypeSpec`s, registers them with `TypeRegistry`, and uses `LogicalTypeProtoAdapter` to
-  maintain consistency between stored schema JSON and bundle metadata.
+- **Iceberg schema parsing** – `IcebergSchemaMapper.toCanonical(Type)` converts Iceberg types to
+  canonical strings (e.g. `TimestampType.withZone()` → `"TIMESTAMPTZ"`), storing them in
+  `SchemaColumn.logical_type`. This avoids the historic ambiguity where `"timestamp"` meant
+  UTC-stored in Delta but non-UTC in Iceberg.
+- **Delta schema parsing** – `DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)` applies Delta-
+  specific semantics: `"timestamp"` → `"TIMESTAMPTZ"` (UTC-stored), `"timestamp_ntz"` → `"TIMESTAMP"`
+  (timezone-naive).
 - **Statistics ingestion** – NDV providers convert Parquet min/max values using `MinMaxCodec` before
   storing them in `ColumnStats`, ensuring planners can compare them without deserialising actual
   binary payloads.

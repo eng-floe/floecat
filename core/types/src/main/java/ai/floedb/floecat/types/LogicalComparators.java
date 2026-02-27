@@ -18,15 +18,58 @@ package ai.floedb.floecat.types;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.UUID;
 
+/**
+ * Provides ordering and normalisation utilities for Floecat canonical logical types.
+ *
+ * <p>Used primarily by statistics builders that need to compare encoded min/max values stored as
+ * strings or objects. Comparisons are performed on <em>normalised</em> Java values (e.g., all
+ * integers are promoted to {@link Long}, TIMESTAMP to {@link java.time.LocalDateTime}, TIMESTAMPTZ
+ * to {@link java.time.Instant}) so that histogram builders can order them without deserialising raw
+ * binary payloads.
+ *
+ * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
+ * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
+ * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) have no meaningful min/max ordering. {@link
+ * #isStatsOrderable(LogicalType)} returns {@code false} for these kinds, and {@link
+ * #normalize(LogicalType, Object)} returns {@code null} rather than throwing.
+ */
 public final class LogicalComparators {
 
+  /**
+   * Returns {@code true} iff values of the given type can be meaningfully ordered for stats.
+   *
+   * <p>All scalar numeric, string, binary, UUID, and temporal types (except INTERVAL) are orderable
+   * for stats. Complex and semi-structured types are not.
+   *
+   * @param t the logical type to test (null → {@code false})
+   * @return {@code true} if the type is orderable
+   */
+  public static boolean isStatsOrderable(LogicalType t) {
+    if (t == null) {
+      return false;
+    }
+    return t.kind().isStatsOrderable();
+  }
+
+  /**
+   * Compares two values of the given type after normalisation.
+   *
+   * <p>Both values are normalised to their canonical Java representation (via {@link
+   * #normalize(LogicalType, Object)}) before comparison. The returned int follows the standard
+   * {@link Comparable#compareTo} contract: negative, zero, or positive.
+   *
+   * @param t the logical type governing comparison semantics
+   * @param a left-hand value (null treated as "less than everything")
+   * @param b right-hand value (null treated as "less than everything")
+   * @return comparison result
+   * @throws IllegalArgumentException if the type is not orderable
+   */
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static int compare(LogicalType t, Object a, Object b) {
     if (a == b) {
@@ -41,30 +84,67 @@ public final class LogicalComparators {
       return 1;
     }
 
+    if (!isStatsOrderable(t)) {
+      String kind = (t == null) ? "<null>" : t.kind().name();
+      throw new IllegalArgumentException("Logical type is not orderable: " + kind);
+    }
+
     Object na = normalize(t, a);
     Object nb = normalize(t, b);
 
-    return ((Comparable) na).compareTo(nb);
+    if (!(na instanceof Comparable<?> c)) {
+      throw new IllegalArgumentException(
+          "Normalized value is not Comparable for type "
+              + t.kind().name()
+              + ": "
+              + na.getClass().getName());
+    }
+
+    try {
+      return ((Comparable) c).compareTo(nb);
+    } catch (ClassCastException e) {
+      throw new IllegalArgumentException(
+          "Incompatible normalized values for type "
+              + t.kind().name()
+              + ": "
+              + na.getClass().getName()
+              + " vs "
+              + nb.getClass().getName(),
+          e);
+    }
   }
 
+  /**
+   * Normalises a raw stat value to its canonical Java type for ordering.
+   *
+   * <p>Examples: any {@link Number} for INT → {@link Long}; string/instant for TIMESTAMP → {@link
+   * java.time.LocalDateTime} (session policy applies); string/instant for TIMESTAMPTZ → {@link
+   * java.time.Instant}. For unorderable kinds (INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT),
+   * returns {@code null}.
+   *
+   * @param t the logical type
+   * @param v the raw value (may be a Java primitive wrapper, String, or byte array)
+   * @return normalised value, or {@code null} if the kind is not stats-orderable
+   */
   public static Object normalize(LogicalType t, Object v) {
+    if (!isStatsOrderable(t)) {
+      return null;
+    }
     switch (t.kind()) {
       case BOOLEAN:
         return (Boolean) v;
 
-      case INT16:
-        return (v instanceof Short) ? v : ((Number) v).shortValue();
+      case INT:
+        // All integer sizes collapse to canonical 64-bit Long.
+        if (v instanceof Number n) {
+          return Int64Coercions.checkedLong(n);
+        }
+        throw typeErr("INT", v);
 
-      case INT32:
-        return (v instanceof Integer) ? v : ((Number) v).intValue();
-
-      case INT64:
-        return (v instanceof Long) ? v : ((Number) v).longValue();
-
-      case FLOAT32:
+      case FLOAT:
         return (v instanceof Float) ? v : ((Number) v).floatValue();
 
-      case FLOAT64:
+      case DOUBLE:
         return (v instanceof Double) ? v : ((Number) v).doubleValue();
 
       case DECIMAL:
@@ -97,7 +177,12 @@ public final class LogicalComparators {
           bytes = new byte[dup.remaining()];
           dup.get(bytes);
         } else if (v instanceof CharSequence s) {
-          bytes = Base64.getDecoder().decode(s.toString());
+          String raw = s.toString().trim();
+          if (raw.startsWith("0x") || raw.startsWith("0X")) {
+            bytes = HexBytes.decodeHexBytes(raw.substring(2));
+          } else {
+            bytes = Base64.getDecoder().decode(raw);
+          }
         } else {
           throw typeErr("BINARY", v);
         }
@@ -109,7 +194,7 @@ public final class LogicalComparators {
         }
 
         if (v instanceof Number n) {
-          return LocalDate.ofEpochDay(n.longValue());
+          return LocalDate.ofEpochDay(Int64Coercions.checkedLong(n));
         }
 
         if (v instanceof CharSequence s) {
@@ -121,38 +206,32 @@ public final class LogicalComparators {
       case TIME:
         {
           if (v instanceof LocalTime t0) {
-            return t0;
+            return TemporalCoercions.truncateToTemporalPrecision(t0, t.temporalPrecision());
           }
 
           if (v instanceof CharSequence s) {
-            return LocalTime.parse(s.toString());
+            return TemporalCoercions.truncateToTemporalPrecision(
+                LocalTime.parse(s.toString()), t.temporalPrecision());
           }
 
-          if (v instanceof Number n) {
-            long nanos = toTimeNanos(n.longValue());
-            long day = 86_400_000_000_000L;
-            long norm = Math.floorMod(nanos, day);
-            return LocalTime.ofNanoOfDay(norm);
-          }
           throw typeErr("TIME", v);
         }
 
       case TIMESTAMP:
         {
-          if (v instanceof Instant i) {
-            return i;
-          }
-
-          if (v instanceof CharSequence s) {
-            return Instant.parse(s.toString());
-          }
-
-          if (v instanceof Number n) {
-            return instantFromNumber(n.longValue());
-          }
-
-          throw typeErr("TIMESTAMP", v);
+          return TemporalCoercions.truncateToTemporalPrecision(
+              TemporalCoercions.coerceTimestampNoTz(v), t.temporalPrecision());
         }
+
+      case TIMESTAMPTZ:
+        {
+          // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
+          return TemporalCoercions.truncateToTemporalPrecision(
+              TemporalCoercions.coerceInstant(v), t.temporalPrecision());
+        }
+
+        // INTERVAL, JSON, and complex types (ARRAY, MAP, STRUCT, VARIANT) have no meaningful
+        // min/max stats ordering; callers should check for null before comparing.
     }
     return null;
   }
@@ -160,36 +239,6 @@ public final class LogicalComparators {
   private static IllegalArgumentException typeErr(String kind, Object v) {
     return new IllegalArgumentException(
         kind + " compare expects canonical types, got: " + v.getClass().getName());
-  }
-
-  private static long toTimeNanos(long v) {
-    long abs = Math.abs(v);
-    if (abs < 86_400L) {
-      return v * 1_000_000_000L;
-    }
-
-    if (abs < 86_400_000L) {
-      return v * 1_000_000L;
-    }
-
-    if (abs < 86_400_000_000L) {
-      return v * 1_000L;
-    }
-
-    return v;
-  }
-
-  private static Instant instantFromNumber(long v) {
-    long av = Math.abs(v);
-    if (av >= 1_000_000_000_000L && av < 1_000_000_000_000_000L) {
-      return Instant.ofEpochMilli(v);
-    } else if (av >= 1_000_000_000_000_000L) {
-      long secs = Math.floorDiv(v, 1_000_000L);
-      long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, micros * 1_000L);
-    } else {
-      return Instant.ofEpochSecond(v);
-    }
   }
 
   public static final class ByteArrayComparable implements Comparable<ByteArrayComparable> {

@@ -24,7 +24,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.jboss.logging.Logger;
 
 /**
  * IcebergSchemaMapper: Converts Iceberg-formatted schema JSON to logical SchemaDescriptor.
@@ -33,8 +32,6 @@ import org.jboss.logging.Logger;
  * map<*,struct>).
  */
 public final class IcebergSchemaMapper {
-
-  private static final Logger LOG = Logger.getLogger(IcebergSchemaMapper.class);
 
   private IcebergSchemaMapper() {}
 
@@ -60,8 +57,7 @@ public final class IcebergSchemaMapper {
       return sb.build();
 
     } catch (Exception e) {
-      LOG.warn("Invalid Iceberg schema, falling back to generic: " + schemaJson, e);
-      return GenericSchemaMapper.map(cid_algo, schemaJson);
+      throw new IllegalArgumentException("Failed to parse Iceberg schema JSON", e);
     }
   }
 
@@ -102,7 +98,7 @@ public final class IcebergSchemaMapper {
             cid_algo,
             SchemaColumn.newBuilder()
                 .setName(field.name())
-                .setLogicalType(field.type().toString())
+                .setLogicalType(IcebergTypeMappings.toCanonical(field.type()))
                 .setFieldId(field.fieldId())
                 .setNullable(!field.isRequired())
                 .setPhysicalPath(physical)

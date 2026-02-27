@@ -21,24 +21,44 @@ option java_package = "ai.floedb.floecat.types.rpc";
 option java_outer_classname = "LogicalTypeProto";
 
 message LogicalType {
+  enum IntervalRange {
+    IR_UNSPECIFIED = 0;
+    IR_YEAR_TO_MONTH = 1;
+    IR_DAY_TO_SECOND = 2;
+  }
   enum Kind {
     TK_UNSPECIFIED = 0;
     TK_BOOLEAN = 1;
-    TK_INT32 = 2;
-    TK_INT64 = 3;
-    TK_FLOAT32 = 4;
-    TK_FLOAT64 = 5;
+    TK_INT = 2;          // All integers are 64-bit (was TK_INT32; field number reused)
+    // Field number 3 retired (was TK_INT64).
+    TK_FLOAT = 4;        // 32-bit IEEE-754 (was TK_FLOAT32; field number reused)
+    TK_DOUBLE = 5;       // 64-bit IEEE-754 (was TK_FLOAT64; field number reused)
     TK_DATE = 6;
     TK_TIME = 7;
-    TK_TIMESTAMP = 8;
+    TK_TIMESTAMP = 8;    // Without UTC normalisation
     TK_STRING = 9;
     TK_BINARY = 10;
     TK_UUID = 11;
     TK_DECIMAL = 12;
+    TK_TIMESTAMPTZ = 13; // UTC-normalised timestamp
+    TK_INTERVAL = 14;
+    TK_JSON = 15;
+    TK_ARRAY = 16;
+    TK_MAP = 17;
+    TK_STRUCT = 18;
+    TK_VARIANT = 19;
   }
   Kind kind = 1;
   int32 precision = 2;
   int32 scale = 3;
+  // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..6). Unset means default.
+  optional int32 temporal_precision = 4;
+  // Range/qualifier for INTERVAL types (optional).
+  optional IntervalRange interval_range = 5;
+  // Leading field precision for INTERVAL (applies to the leading field).
+  optional int32 interval_leading_precision = 6;
+  // Fractional seconds precision for INTERVAL (applies when range includes SECOND).
+  optional int32 interval_fractional_precision = 7;
   map<string,string> params = 99;
 }
 
@@ -52,6 +72,8 @@ message ScalarValue {
     string dec = 6;
     int32 date = 7;
     int64 time  = 8;
-    int64 ts = 9;
+    int64 ts = 9;       // TIMESTAMP: micros since epoch from LocalDateTime interpreted in UTC (timezone-naive semantic; no UTC normalisation)
+    int64 tstz = 10;     // TIMESTAMPTZ: microseconds-since-epoch UTC
+    string interval = 11; // INTERVAL: ISO-8601 duration string
   }
 }
