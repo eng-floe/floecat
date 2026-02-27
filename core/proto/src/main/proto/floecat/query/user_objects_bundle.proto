@@ -264,21 +264,107 @@ message RelationInfo {
 /** Status of a resolved relation column. */
 enum ColumnStatus {
   COLUMN_STATUS_UNSPECIFIED = 0;
-  COLUMN_STATUS_READY = 1;
+  COLUMN_STATUS_OK = 1;
   COLUMN_STATUS_FAILED = 2;
 }
 
-/** Machine-readable reason for a column decoration failure. */
+/** Machine-readable reason why the RPC could not return complete / correct column results. */
 enum ColumnFailureCode {
+  /** Unspecified or unknown failure. */
   COLUMN_FAILURE_CODE_UNSPECIFIED = 0;
+
+  /**
+   * The request inputs and the resolved relation/schema are structurally inconsistent.
+   *
+   * Use when the RPC cannot reliably align requested columns with the resolved schema.
+   *
+   * Examples:
+   * - The resolved/pruned schema is missing or has a different column count than requested
+   * - The schema/columns alignment is lost (projection/order drift) such that per-column
+   *   results cannot be constructed deterministically
+   *
+   * Typically indicates planner/schema propagation drift or an internal mismatch between
+   * request shape and resolved relation schema.
+   */
   COLUMN_FAILURE_CODE_SCHEMA_MISMATCH = 1;
+
+  /**
+   * A required subsystem needed to fulfill the RPC is unavailable.
+   *
+   * Examples:
+   * - Engine metadata provider/decorator is not registered or disabled
+   * - Required engine module/plugin not loaded
+   * - Feature not available for the target engine or relation type
+   */
   COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE = 2;
+
+  /**
+   * A required request field or resolved input payload is missing.
+   *
+   * Use when the RPC requires specific metadata/annotations to proceed and they are absent.
+   *
+   * Examples:
+   * - Missing column logical type string/annotation when the RPC requires it
+   * - Missing engine-specific identifiers or metadata required to fetch/compute results
+   * - Missing relation identifier / context required for the operation
+   */
   COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING = 3;
+
+  /**
+   * The caller is not authorized to perform this operation or access required metadata.
+   *
+   * Examples:
+   * - Insufficient privileges to read relation/column metadata
+   * - Engine denies access to required metadata for the caller
+   */
   COLUMN_FAILURE_CODE_PERMISSION_DENIED = 4;
+
+  /**
+   * The RPC cannot handle the column's physical type for the requested operation.
+   *
+   * Examples:
+   * - A column type is outside the supported set for this RPC
+   * - The engine/provider cannot represent or process the type
+   */
   COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED = 5;
+
+  /**
+   * The column logical type information is invalid, malformed, or semantically inconsistent.
+   *
+   * Use when logical type metadata exists but cannot be parsed or does not make sense.
+   * This is distinct from SCHEMA_MISMATCH: the schema may be aligned, but the logical typing
+   * metadata is not usable.
+   *
+   * Examples:
+   * - Logical type string fails to parse (invalid syntax/format)
+   * - Invalid logical parameters (e.g., DECIMAL scale > precision)
+   * - Logical type incompatible with the physical type
+   */
   COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID = 6;
+
+  /**
+   * The requested column or its required metadata could not be found.
+   *
+   * Examples:
+   * - Column name/identifier does not exist in the resolved relation
+   * - Column was dropped/renamed and cannot be resolved
+   * - Required per-column metadata lookup returns no entry
+   */
   COLUMN_FAILURE_CODE_NOT_FOUND = 7;
-  COLUMN_FAILURE_CODE_DECORATION_ERROR = 8;
+
+  /**
+   * A generic internal error occurred while processing the RPC.
+   *
+   * Use when the failure does not fit a more specific code above.
+   */
+  COLUMN_FAILURE_CODE_INTERNAL_ERROR = 8;
+
+  /**
+   * An engine/plugin boundary returned an error while fulfilling the RPC.
+   *
+   * Use for failures originating inside engine extensions/plugins/providers after they
+   * were invoked (e.g., engine internal error, extension exception).
+   */
   COLUMN_FAILURE_CODE_ENGINE_EXTENSION = 9;
 }
 

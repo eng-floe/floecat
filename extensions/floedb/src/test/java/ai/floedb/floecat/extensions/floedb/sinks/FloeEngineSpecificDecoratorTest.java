@@ -56,7 +56,8 @@ final class FloeEngineSpecificDecoratorTest {
         .satisfies(
             throwable -> {
               DecorationException de = (DecorationException) throwable;
-              assertThat(de.code()).isNull();
+              assertThat(de.code())
+                  .isEqualTo(ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION);
               assertThat(de.hasExtensionCodeValue()).isTrue();
               assertThat(de.extensionCodeValue())
                   .isEqualTo(
@@ -69,7 +70,7 @@ final class FloeEngineSpecificDecoratorTest {
   void decorateColumn_mapsMissingTypeMappingToTypeMappingMissingExtensionCode() {
     NamespaceNode userNs = userNamespace("public", Map.of());
     SchemaColumn column =
-        SchemaColumn.newBuilder().setId(202).setName("c_unmapped").setLogicalType("INT32").build();
+        SchemaColumn.newBuilder().setId(202).setName("c_unmapped").setLogicalType("INT").build();
     TableNode table = userTable(userNs.id(), "t_unmapped", List.of(column), Map.of(), Map.of());
     SystemObjectScanContext ctx = contextWithRelations(userNs, table);
 
@@ -83,7 +84,8 @@ final class FloeEngineSpecificDecoratorTest {
         .satisfies(
             throwable -> {
               DecorationException de = (DecorationException) throwable;
-              assertThat(de.code()).isNull();
+              assertThat(de.code())
+                  .isEqualTo(ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION);
               assertThat(de.hasExtensionCodeValue()).isTrue();
               assertThat(de.extensionCodeValue())
                   .isEqualTo(
@@ -117,8 +119,7 @@ final class FloeEngineSpecificDecoratorTest {
         .satisfies(
             throwable -> {
               DecorationException de = (DecorationException) throwable;
-              assertThat(de.code())
-                  .isEqualTo(ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR);
+              assertThat(de.code()).isEqualTo(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR);
               assertThat(de.hasExtensionCodeValue()).isFalse();
             });
   }

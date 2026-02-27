@@ -82,7 +82,7 @@ class DecorationExceptionTest {
 
     details.put("floe_code", "99");
 
-    assertThat(exception.code()).isNull();
+    assertThat(exception.code()).isEqualTo(ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION);
     assertThat(exception.hasExtensionCodeValue()).isTrue();
     assertThat(exception.extensionCodeValue()).isEqualTo(1207);
     assertThat(exception.details()).containsEntry("floe_code", "7");

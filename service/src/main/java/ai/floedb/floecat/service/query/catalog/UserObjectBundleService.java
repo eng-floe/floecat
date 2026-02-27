@@ -455,7 +455,7 @@ public class UserObjectBundleService {
           "Built relation bundle relation=%s columns=%d ready=%d failed=%d",
           relation.relationId(),
           columnResults.size(),
-          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_READY),
+          countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_OK),
           countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED));
     }
 
@@ -601,7 +601,7 @@ public class UserObjectBundleService {
         .setColumnId(column.getId())
         .setColumnName(column.getName())
         .setOrdinal(column.getOrdinal())
-        .setStatus(ColumnStatus.COLUMN_STATUS_READY)
+        .setStatus(ColumnStatus.COLUMN_STATUS_OK)
         .setColumn(column)
         .build();
   }
@@ -662,7 +662,7 @@ public class UserObjectBundleService {
       return builder.build();
     }
 
-    ColumnFailureCode code = ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATION_ERROR;
+    ColumnFailureCode code = ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR;
     if (e instanceof SecurityException) {
       code = ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED;
     } else if (e instanceof UnsupportedOperationException) {
@@ -700,7 +700,7 @@ public class UserObjectBundleService {
 
   private static String userFacingFailureMessage(ColumnFailureCode code) {
     if (code == null) {
-      return "Column decoration failed.";
+      return "Column resolution failed.";
     }
     return switch (code) {
       case COLUMN_FAILURE_CODE_SCHEMA_MISMATCH ->
@@ -718,7 +718,7 @@ public class UserObjectBundleService {
       case COLUMN_FAILURE_CODE_NOT_FOUND -> "Column metadata was not found during decoration.";
       case COLUMN_FAILURE_CODE_ENGINE_EXTENSION ->
           "Engine extension failed to provide column metadata.";
-      default -> "Column decoration failed.";
+      default -> "Column resolution failed.";
     };
   }
 
@@ -739,7 +739,7 @@ public class UserObjectBundleService {
       return true;
     }
     for (ColumnResult result : columnResults) {
-      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_READY) {
+      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_OK) {
         return true;
       }
     }
@@ -752,7 +752,7 @@ public class UserObjectBundleService {
     }
     Set<Long> ids = new java.util.HashSet<>();
     for (ColumnResult result : columnResults) {
-      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_READY && result.getColumnId() > 0) {
+      if (result.getStatus() == ColumnStatus.COLUMN_STATUS_OK && result.getColumnId() > 0) {
         ids.add(result.getColumnId());
       }
     }

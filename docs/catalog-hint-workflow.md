@@ -60,7 +60,7 @@ When `UserObjectBundleService` builds responses it:
 * collects cached relation/column metadata from `RelationDecoration` + `ColumnDecoration`.
 * asks `EngineMetadataDecorator` (e.g., `FloeEngineSpecificDecorator`) for Floe hints when overlays are enabled.
 * the decorator calls `FloeHintResolver`, asks the matching `FloePayloads.Descriptor` for the payloadType string (`Descriptor.type()`) and, when replaying overlays, optionally decodes persisted bytes via `Descriptor.decode()`, uses `toEngineSpecific` to build the wrapper, and attaches the `EngineSpecific` blob to the bundle.
-* emits one `ColumnResult` per requested column: `COLUMN_STATUS_READY` with `column` when decoration succeeded and required payloads are present, or `COLUMN_STATUS_FAILED` with `failure` (`code`, `message`, optional `details`) when decoration failed.
+* emits one `ColumnResult` per requested column: `COLUMN_STATUS_OK` with `column` when decoration succeeded and required payloads are present, or `COLUMN_STATUS_FAILED` with `failure` (`code`, `message`, optional `details`) when decoration failed.
 * if snapshot-aware stats exist for the relation, the bundle includes them in `RelationInfo.stats` (a new `RelationStats` proto carrying best-effort `row_count` and `total_size_bytes`). This field is optional: resolvers may see `RelationInfo.stats` unset for views, system tables, or any unpinned relation, and should treat missing stats as a best-effort decoration rather than required data.
 
 The decorator is a pure sink: it never parses schemas nor recomputes defaults, so the bundle payloads match exactly what `pg_*` scanners would have emitted for the same column in the same engine context.

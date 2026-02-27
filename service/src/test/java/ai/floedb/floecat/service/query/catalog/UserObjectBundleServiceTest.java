@@ -751,7 +751,7 @@ class UserObjectBundleServiceTest {
     assertThat(columnDecorations.get()).isGreaterThan(0);
     RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
     assertThat(relation.getColumnsList())
-        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_READY && c.hasColumn());
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.hasColumn());
   }
 
   @Test
@@ -1112,7 +1112,7 @@ class UserObjectBundleServiceTest {
 
     RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
     assertThat(relation.getColumnsList())
-        .anyMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_READY && c.getColumnId() == 101);
+        .anyMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.getColumnId() == 101);
     assertThat(relation.getColumnsList())
         .anyMatch(
             c ->
@@ -1205,7 +1205,7 @@ class UserObjectBundleServiceTest {
     assertThat(columnDecorations.get()).isGreaterThan(0);
     RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
     assertThat(relation.getColumnsList())
-        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_READY && c.hasColumn());
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.hasColumn());
     assertThat(commitRelationHints.get()).isFalse();
     assertThat(commitColumnHints.get()).isFalse();
     assertThat(committedColumnIds.get()).isEmpty();
