@@ -51,7 +51,8 @@ public final class IcebergTypeMappings {
       case DECIMAL -> {
         var d = (Types.DecimalType) t;
         LogicalType logicalType = LogicalType.decimal(d.precision(), d.scale());
-        ConnectorTypeConstraints.validateDecimalPrecision(logicalType, "Iceberg", d.toString());
+        DecimalPrecisionConstraints.validateDecimalPrecision(
+            logicalType, "Iceberg", d.toString(), MAX_DECIMAL_PRECISION);
         yield logicalType;
       }
       default -> throw new IllegalArgumentException("Unrecognized Iceberg type: " + t.typeId());
@@ -62,4 +63,6 @@ public final class IcebergTypeMappings {
   public static String toCanonical(Type t) {
     return LogicalTypeFormat.format(toLogical(t));
   }
+
+  private static final int MAX_DECIMAL_PRECISION = 38;
 }

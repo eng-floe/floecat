@@ -236,9 +236,12 @@ final class DeltaSchemaMapper {
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException("Invalid Delta decimal type: '" + raw + "'", e);
     }
-    ConnectorTypeConstraints.validateDecimalPrecision(logicalType, "Delta", raw);
+    DecimalPrecisionConstraints.validateDecimalPrecision(
+        logicalType, "Delta", raw, MAX_DECIMAL_PRECISION);
     return LogicalTypeFormat.format(logicalType);
   }
+
+  private static final int MAX_DECIMAL_PRECISION = 38;
 
   private static SourceType deltaSourceType(JsonNode typeNode) {
     SourceType.Builder builder =

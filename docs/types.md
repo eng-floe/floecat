@@ -73,10 +73,10 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
   stores `(kind, precision, scale, temporalPrecision)`. `temporalPrecision` is optional (unset means
   default microsecond precision). Canonical `DECIMAL` semantics are
-  `1 ≤ precision ≤ 38` and `0 ≤ scale ≤ precision`. TIME/TIMESTAMP/TIMESTAMPTZ may carry a
-  fractional‑second precision (0..6). Connectors and consumers are responsible for enforcing
-  source-format compatibility while preserving the canonical max precision contract. All other
-  kinds reject parameters.
+  `precision ≥ 1` and `0 ≤ scale ≤ precision` with no global precision ceiling in the core model.
+  Connector-specific constraints apply (for example Iceberg/Delta cap precision at 38, while other
+  sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
+  precision (0..6). All other kinds reject parameters.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
   wire message and the JVM `LogicalType`, preserving kind/precision/scale.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
@@ -165,9 +165,9 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
 
 ## Important Internal Details
 - **Validation** – `LogicalType` constructor enforces: for `DECIMAL`, `precision ≥ 1` and
-  `0 ≤ scale ≤ precision`. Canonical DECIMAL precision is capped at 38; enforcement happens at
-  connector/consumer boundaries where source formats are interpreted. Non-decimal kinds reject
-  precision/scale altogether.
+  `0 ≤ scale ≤ precision`. There is no global DECIMAL precision cap in the core model; connectors
+  enforce their own ceilings (for example Iceberg/Delta cap at 38) at schema-parse time. Non-decimal
+  kinds reject precision/scale altogether.
 - **Non-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
   `VARIANT`) have no meaningful min/max statistics. `LogicalComparators.normalize()` returns
   `null` and `ValueEncoders.encodeToString` throws for JSON/complex kinds, so connectors should
