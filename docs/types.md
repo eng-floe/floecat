@@ -1,7 +1,7 @@
 # Type System Utilities
 
 ## Overview
-The `core/types/` module implements FloeCat's canonical logical type system. It bridges the logical
+The `core/types/` module implements Floecat's canonical logical type system. It bridges the logical
 types declared in protobuf (`types/types.proto`) with Java helpers used by connectors, schema
 mappers, statistics engines, and the execution scan bundle assembler.
 
@@ -54,7 +54,7 @@ resolved via `LogicalKind.fromName(String)`.
 - Plain `INTERVAL` → range `UNSPECIFIED`
 
 Stats encoding (when present) uses ISO‑8601 duration strings. Engine‑native interval layouts are
-carried via overlays/hints, not FloeCat core types.
+carried via overlays/hints, not Floecat core types.
 
 Interval precisions follow ANSI SQL conventions:
 - `INTERVAL YEAR(p) TO MONTH` → `interval_leading_precision = p`
@@ -63,7 +63,7 @@ Interval precisions follow ANSI SQL conventions:
 - `INTERVAL(s)` → normalized to `DAY_TO_SECOND` with `interval_fractional_precision = s`
 
 Leading precision is non‑negative and connector‑defined; fractional precision is limited to 0..6
-(microsecond scale) in FloeCat encoders.
+(microsecond scale) in Floecat encoders.
 
 #### Precision + parsing
 - Canonical `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` are microsecond precision. Inputs with
@@ -72,7 +72,7 @@ Leading precision is non‑negative and connector‑defined; fractional precisio
   `TIMESTAMPTZ` require typed values or ISO‑8601 strings; numeric heuristics are not used.
 - Temporal precisions can be carried in the logical type string (e.g. `TIME(3)`,
   `TIMESTAMP(6)`, `TIMESTAMPTZ(0)`, range 0..6). When present, encoders truncate and emit exactly that many
-  fractional digits. When absent, FloeCat defaults to microsecond precision and ISO‑8601
+  fractional digits. When absent, Floecat defaults to microsecond precision and ISO‑8601
   formatting (no fixed width).
 - `TIMESTAMP` expects timezone‑naive inputs (no `Z` or offset). By default, zoned strings are
   rejected. You can opt into conversion by setting:
@@ -147,10 +147,10 @@ runtime objects.
 
 ## Arrow Mapping Contract
 
-`core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over FloeCat logical types, not over
+`core/arrow` helpers (especially `ArrowSchemaUtil`) are defined over Floecat logical types, not over
 arbitrary engine-native type systems.
 
-- Input is `SchemaColumn.logical_type` and should be a FloeCat canonical logical type string (or an
+- Input is `SchemaColumn.logical_type` and should be a Floecat canonical logical type string (or an
   accepted alias handled by `LogicalKind.fromName` semantics).
 - Integer aliases (`TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `INT2/4/8`, `UINT2/4/8`) all map to
   Arrow signed 64-bit (`Int64`) to preserve collapsed canonical `INT` behavior.
@@ -166,7 +166,7 @@ arbitrary engine-native type systems.
   supported in Arrow schema generation; they must be omitted or cast to `STRING`/`BINARY`.
 
 If external Flight providers want to reuse `core/arrow`, they should first map their source type
-surface into FloeCat logical types.
+surface into Floecat logical types.
 
 ## Source-Format Alias Lookup
 

@@ -21,7 +21,7 @@ import java.math.BigInteger;
 
 /**
  * Package-private helper that safely coerces any {@link Number} subtype to a canonical 64-bit
- * {@code long} representing a FloeCat {@link LogicalKind#INT} value.
+ * {@code long} representing a Floecat {@link LogicalKind#INT} value.
  *
  * <p>Supported input types: {@link Long}, {@link Integer}, {@link Short}, {@link Byte}, {@link
  * java.math.BigInteger}, {@link java.math.BigDecimal}, {@link Double}, {@link Float}. All other

@@ -19,7 +19,7 @@ package ai.floedb.floecat.types;
 import java.util.Objects;
 
 /**
- * Immutable representation of a FloeCat canonical logical type.
+ * Immutable representation of a Floecat canonical logical type.
  *
  * <p>A {@code LogicalType} carries a {@link LogicalKind} plus optional {@code precision}/{@code
  * scale} (for DECIMAL), {@code temporalPrecision} (for TIME/TIMESTAMP/TIMESTAMPTZ), or interval

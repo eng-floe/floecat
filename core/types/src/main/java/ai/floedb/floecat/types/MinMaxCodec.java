@@ -17,7 +17,7 @@
 package ai.floedb.floecat.types;
 
 /**
- * Public façade for encoding and decoding FloeCat column statistics min/max values to and from
+ * Public façade for encoding and decoding Floecat column statistics min/max values to and from
  * canonical strings.
  *
  * <p>All logic is delegated to {@link ValueEncoders}. This class exists as a stable, narrow public

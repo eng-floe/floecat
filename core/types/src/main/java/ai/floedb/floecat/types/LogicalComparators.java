@@ -25,7 +25,7 @@ import java.util.Base64;
 import java.util.UUID;
 
 /**
- * Provides ordering and normalisation utilities for FloeCat canonical logical types.
+ * Provides ordering and normalisation utilities for Floecat canonical logical types.
  *
  * <p>Used primarily by statistics builders that need to compare encoded min/max values stored as
  * strings or objects. Comparisons are performed on <em>normalised</em> Java values (e.g., all

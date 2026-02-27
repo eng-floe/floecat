@@ -26,7 +26,7 @@ import java.util.UUID;
 
 /**
  * Coerces raw stat values from external sources (Parquet stats, Delta checkpoint metadata, etc.)
- * into the canonical Java types expected by FloeCat's statistics engine.
+ * into the canonical Java types expected by Floecat's statistics engine.
  *
  * <p>Each connector produces min/max/ndv statistics in its own native representation. This class
  * normalises those values to a single canonical form per {@link LogicalKind} so that the statistics

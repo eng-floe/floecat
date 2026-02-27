@@ -23,7 +23,7 @@ import java.util.Objects;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 
-/** Shared Iceberg -> FloeCat type mapping logic for schema and stats. */
+/** Shared Iceberg -> Floecat type mapping logic for schema and stats. */
 public final class IcebergTypeMappings {
   private IcebergTypeMappings() {}
 

@@ -22,7 +22,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * String formatting and parsing for FloeCat canonical {@link LogicalType} values.
+ * String formatting and parsing for Floecat canonical {@link LogicalType} values.
  *
  * <p>Two complementary operations:
  *

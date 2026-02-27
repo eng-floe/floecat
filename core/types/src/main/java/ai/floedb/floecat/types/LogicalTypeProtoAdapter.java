@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Adapter between FloeCat {@link LogicalType} objects and their protobuf wire representations
+ * Adapter between Floecat {@link LogicalType} objects and their protobuf wire representations
  * ({@code ColumnStats}, {@code UpstreamStamp}).
  *
  * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Encoding and

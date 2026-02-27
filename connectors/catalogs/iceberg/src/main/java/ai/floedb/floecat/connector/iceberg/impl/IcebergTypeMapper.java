@@ -21,7 +21,7 @@ import ai.floedb.floecat.types.LogicalType;
 import org.apache.iceberg.types.Type;
 
 /**
- * Maps Iceberg native types to FloeCat canonical {@link LogicalType}.
+ * Maps Iceberg native types to Floecat canonical {@link LogicalType}.
  *
  * <p><b>Module boundary note:</b> This mapper delegates to {@link IcebergTypeMappings} in {@code
  * core/connectors/common} so that schema and stats paths share the exact same mapping and
@@ -44,7 +44,7 @@ import org.apache.iceberg.types.Type;
  */
 final class IcebergTypeMapper {
   /**
-   * Converts an Iceberg {@link Type} to a FloeCat canonical {@link LogicalType}.
+   * Converts an Iceberg {@link Type} to a Floecat canonical {@link LogicalType}.
    *
    * @param t an Iceberg type (never null)
    * @return the corresponding canonical {@link LogicalType}

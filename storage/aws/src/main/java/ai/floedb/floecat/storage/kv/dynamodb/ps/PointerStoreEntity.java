@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Mutiny KV-backed implementation of the FloeCat {@code PointerStore} storage model.
+ * Mutiny KV-backed implementation of the Floecat {@code PointerStore} storage model.
  *
  * <p>Keyspace layout:
  *

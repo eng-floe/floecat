@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate FloeCat PBtxt for SQL operators from pg_operator.csv (system only).
+Generate Floecat PBtxt for SQL operators from pg_operator.csv (system only).
 
 Important:
 - pg_operator.oprcode/oprrest/oprjoin are regproc in Postgres; exporters may emit

@@ -42,7 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Maps Delta Kernel {@link DataType} instances to FloeCat canonical {@link LogicalType}.
+ * Maps Delta Kernel {@link DataType} instances to Floecat canonical {@link LogicalType}.
  *
  * <p>This class operates on Delta Kernel's typed object model (used when reading Delta tables via
  * the Kernel API). For Delta's JSON-schema representation (used when reading table metadata from
@@ -78,7 +78,7 @@ final class DeltaTypeMapper {
   }
 
   /**
-   * Converts a single Delta Kernel {@link DataType} to a FloeCat canonical {@link LogicalType}.
+   * Converts a single Delta Kernel {@link DataType} to a Floecat canonical {@link LogicalType}.
    *
    * @param dt a Delta Kernel data type (never null)
    * @return the corresponding canonical {@link LogicalType}

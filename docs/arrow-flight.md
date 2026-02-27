@@ -131,9 +131,9 @@ Retry only transient failures (`UNAVAILABLE`), with bounded timeout/retry budget
   `INVALID_ARGUMENT`.
 - Producers may accept name-only targets (no ID) for external endpoints.
 - `required_columns` projection is applied to both `GetFlightInfo` schema and stream data.
-- Arrow schema generation uses FloeCat `SchemaColumn.logical_type` semantics via
+- Arrow schema generation uses Floecat `SchemaColumn.logical_type` semantics via
   `ArrowSchemaUtil`:
-  - use FloeCat canonical logical types (or supported aliases),
+  - use Floecat canonical logical types (or supported aliases),
   - integer aliases collapse to Arrow `Int64`,
   - `JSON` maps to Arrow `Utf8`; `BINARY` maps to Arrow `Binary`; `UUID` maps to
     `FixedSizeBinary(16)`,
