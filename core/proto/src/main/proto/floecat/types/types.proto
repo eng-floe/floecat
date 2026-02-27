@@ -46,6 +46,8 @@ message LogicalType {
   Kind kind = 1;
   int32 precision = 2;
   int32 scale = 3;
+  // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..6). Unset means default.
+  int32 temporal_precision = 4;
   map<string,string> params = 99;
 }
 

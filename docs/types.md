@@ -50,8 +50,12 @@ resolved via `LogicalKind.fromName(String)`.
 #### Precision + parsing
 - Canonical `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` are microsecond precision. Inputs with
   higher precision are truncated to micros for stats encoding/comparison.
-- Numeric encodings for `DATE`, `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` must be whole numbers
-  representing the chosen unit; fractional numeric values are rejected.
+- Numeric encodings are only accepted for `DATE` (epoch days). `TIME`, `TIMESTAMP`, and
+  `TIMESTAMPTZ` require typed values or ISO‑8601 strings; numeric heuristics are not used.
+- Temporal precisions can be carried in the logical type string (e.g. `TIME(3)`,
+  `TIMESTAMP(6)`, `TIMESTAMPTZ(0)`, range 0..6). When present, encoders truncate and emit exactly that many
+  fractional digits. When absent, FloeCat defaults to microsecond precision and ISO‑8601
+  formatting (no fixed width).
 - `TIMESTAMP` expects timezone‑naive inputs (no `Z` or offset). By default, zoned strings are
   rejected. You can opt into conversion by setting:
   - `floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` (or env
@@ -67,10 +71,11 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale)`. Canonical `DECIMAL` semantics are `1 ≤ precision ≤ 38` and
-  `0 ≤ scale ≤ precision`. Connectors and consumers are responsible for enforcing source-format
-  compatibility while preserving the canonical max precision contract. All other kinds reject
-  precision/scale fields.
+  stores `(kind, precision, scale, temporalPrecision)`. Canonical `DECIMAL` semantics are
+  `1 ≤ precision ≤ 38` and `0 ≤ scale ≤ precision`. TIME/TIMESTAMP/TIMESTAMPTZ may carry a
+  fractional‑second precision (0..6). Connectors and consumers are responsible for enforcing
+  source-format compatibility while preserving the canonical max precision contract. All other
+  kinds reject parameters.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
   wire message and the JVM `LogicalType`, preserving kind/precision/scale.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.

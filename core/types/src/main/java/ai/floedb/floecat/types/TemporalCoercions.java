@@ -38,6 +38,11 @@ public final class TemporalCoercions {
   private static final long MICROS_THRESHOLD = 1_000_000_000_000_000L;
   private static final long MILLIS_THRESHOLD = 1_000_000_000_000L;
 
+  private static final int[] POW10 =
+      new int[] {
+        1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000, 1_000_000_000
+      };
+
   private TemporalCoercions() {}
 
   public static long timeNanosOfDay(long v) {
@@ -99,6 +104,111 @@ public final class TemporalCoercions {
     } catch (DateTimeParseException ignore) {
       return OffsetDateTime.parse(raw).toInstant();
     }
+  }
+
+  public static LocalTime truncateToTemporalPrecision(LocalTime time, Integer precision) {
+    int p = normalizeTemporalPrecision(precision);
+    return truncateToTemporalPrecision(time, p);
+  }
+
+  public static LocalDateTime truncateToTemporalPrecision(LocalDateTime time, Integer precision) {
+    int p = normalizeTemporalPrecision(precision);
+    return truncateToTemporalPrecision(time, p);
+  }
+
+  public static Instant truncateToTemporalPrecision(Instant instant, Integer precision) {
+    int p = normalizeTemporalPrecision(precision);
+    return truncateToTemporalPrecision(instant, p);
+  }
+
+  private static LocalTime truncateToTemporalPrecision(LocalTime time, int precision) {
+    int nanos = time.getNano();
+    int truncated = truncateNanos(nanos, precision);
+    if (truncated == nanos) {
+      return time;
+    }
+    return time.withNano(truncated);
+  }
+
+  private static LocalDateTime truncateToTemporalPrecision(LocalDateTime time, int precision) {
+    int nanos = time.getNano();
+    int truncated = truncateNanos(nanos, precision);
+    if (truncated == nanos) {
+      return time;
+    }
+    return time.withNano(truncated);
+  }
+
+  private static Instant truncateToTemporalPrecision(Instant instant, int precision) {
+    int nanos = instant.getNano();
+    int truncated = truncateNanos(nanos, precision);
+    if (truncated == nanos) {
+      return instant;
+    }
+    return Instant.ofEpochSecond(instant.getEpochSecond(), truncated);
+  }
+
+  public static String formatLocalTime(LocalTime time, Integer precision) {
+    if (precision == null) {
+      return DateTimeFormatter.ISO_LOCAL_TIME.format(truncateToMicros(time));
+    }
+    int p = normalizeTemporalPrecision(precision);
+    LocalTime truncated = truncateToTemporalPrecision(time, p);
+    String base =
+        String.format(
+            Locale.ROOT,
+            "%02d:%02d:%02d",
+            truncated.getHour(),
+            truncated.getMinute(),
+            truncated.getSecond());
+    if (p == 0) {
+      return base;
+    }
+    int frac = truncated.getNano() / POW10[9 - p];
+    return base + "." + String.format(Locale.ROOT, "%0" + p + "d", frac);
+  }
+
+  public static String formatLocalDateTime(LocalDateTime time, Integer precision) {
+    if (precision == null) {
+      return DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(truncateToMicros(time));
+    }
+    int p = normalizeTemporalPrecision(precision);
+    LocalDateTime truncated = truncateToTemporalPrecision(time, p);
+    String base =
+        DateTimeFormatter.ISO_LOCAL_DATE.format(truncated.toLocalDate())
+            + "T"
+            + formatLocalTime(truncated.toLocalTime(), p);
+    return base;
+  }
+
+  public static String formatInstantUtc(Instant instant, Integer precision) {
+    if (precision == null) {
+      return DateTimeFormatter.ISO_INSTANT.format(truncateToMicros(instant));
+    }
+    int p = normalizeTemporalPrecision(precision);
+    Instant truncated = truncateToTemporalPrecision(instant, p);
+    LocalDateTime local = LocalDateTime.ofInstant(truncated, ZoneOffset.UTC);
+    return formatLocalDateTime(local, p) + "Z";
+  }
+
+  private static int normalizeTemporalPrecision(Integer precision) {
+    if (precision == null) {
+      return LogicalType.DEFAULT_TEMPORAL_PRECISION;
+    }
+    if (precision < 0 || precision > LogicalType.MAX_TEMPORAL_PRECISION) {
+      throw new IllegalArgumentException(
+          "Invalid temporal precision: "
+              + precision
+              + " (must be between 0 and "
+              + LogicalType.MAX_TEMPORAL_PRECISION
+              + ")");
+    }
+    return precision;
+  }
+
+  private static int truncateNanos(int nanos, int precision) {
+    int factor = POW10[9 - precision];
+    return (nanos / factor) * factor;
   }
 
   public static ZoneId defaultSessionZone() {

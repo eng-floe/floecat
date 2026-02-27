@@ -21,9 +21,9 @@ import java.util.Objects;
 /**
  * Immutable representation of a FloeCat canonical logical type.
  *
- * <p>A {@code LogicalType} carries a {@link LogicalKind} plus optional {@code precision} and {@code
- * scale} parameters. Only {@link LogicalKind#DECIMAL} uses precision/scale; all other kinds reject
- * them. Precision/scale are absent (null) for non-decimal kinds.
+ * <p>A {@code LogicalType} carries a {@link LogicalKind} plus optional {@code precision}/{@code
+ * scale} (for DECIMAL) or {@code temporalPrecision} (for TIME/TIMESTAMP/TIMESTAMPTZ). Other kinds
+ * reject parameters. Parameters are absent (null) for kinds that do not accept them.
  *
  * <p><b>DECIMAL precision contract:</b> {@code LogicalType} enforces only {@code precision ≥ 1} and
  * {@code 0 ≤ scale ≤ precision}. No upper bound on precision is enforced here — that is a
@@ -39,18 +39,24 @@ import java.util.Objects;
  * <p>Factory methods:
  *
  * <ul>
- *   <li>{@link #of(LogicalKind)} — for all non-decimal kinds
+ *   <li>{@link #of(LogicalKind)} — for all non-decimal kinds without temporal precision
+ *   <li>{@link #temporal(LogicalKind, Integer)} — for TIME/TIMESTAMP/TIMESTAMPTZ with precision
  *   <li>{@link #decimal(int, int)} — for DECIMAL
  * </ul>
  *
  * @see LogicalKind
  */
 public final class LogicalType {
+  public static final int DEFAULT_TEMPORAL_PRECISION = 6;
+  public static final int MAX_TEMPORAL_PRECISION = 6;
+
   public final LogicalKind kind;
   public final Integer precision;
   public final Integer scale;
+  public final Integer temporalPrecision;
 
-  private LogicalType(LogicalKind kind, Integer precision, Integer scale) {
+  private LogicalType(
+      LogicalKind kind, Integer precision, Integer scale, Integer temporalPrecision) {
     this.kind = Objects.requireNonNull(kind, "kind");
     if (kind == LogicalKind.DECIMAL) {
       if (precision == null || scale == null || precision < 1 || scale < 0 || scale > precision) {
@@ -61,13 +67,32 @@ public final class LogicalType {
                 + scale
                 + " (precision must be ≥ 1, scale must be 0–precision)");
       }
-    } else {
+      if (temporalPrecision != null) {
+        throw new IllegalArgumentException("temporal precision is not allowed for DECIMAL");
+      }
+    } else if (kind == LogicalKind.TIME
+        || kind == LogicalKind.TIMESTAMP
+        || kind == LogicalKind.TIMESTAMPTZ) {
       if (precision != null || scale != null) {
         throw new IllegalArgumentException("precision/scale only allowed for DECIMAL");
+      }
+      if (temporalPrecision != null
+          && (temporalPrecision < 0 || temporalPrecision > MAX_TEMPORAL_PRECISION)) {
+        throw new IllegalArgumentException(
+            "Invalid temporal precision: "
+                + temporalPrecision
+                + " (must be between 0 and "
+                + MAX_TEMPORAL_PRECISION
+                + ")");
+      }
+    } else {
+      if (precision != null || scale != null || temporalPrecision != null) {
+        throw new IllegalArgumentException("type parameters are not supported for " + kind.name());
       }
     }
     this.precision = precision;
     this.scale = scale;
+    this.temporalPrecision = temporalPrecision;
   }
 
   /**
@@ -78,7 +103,19 @@ public final class LogicalType {
    * @throws IllegalArgumentException if {@code kind} is DECIMAL (use {@link #decimal} instead)
    */
   public static LogicalType of(LogicalKind kind) {
-    return new LogicalType(kind, null, null);
+    return new LogicalType(kind, null, null, null);
+  }
+
+  /**
+   * Creates a temporal logical type with an optional precision (fractional seconds digits).
+   *
+   * @param kind TIME, TIMESTAMP, or TIMESTAMPTZ
+   * @param temporalPrecision fractional second precision (0..6) or null if unspecified
+   * @return a new temporal {@code LogicalType}
+   * @throws IllegalArgumentException if the kind is not temporal or precision is out of range
+   */
+  public static LogicalType temporal(LogicalKind kind, Integer temporalPrecision) {
+    return new LogicalType(kind, null, null, temporalPrecision);
   }
 
   /**
@@ -90,7 +127,7 @@ public final class LogicalType {
    * @throws IllegalArgumentException if the precision/scale constraints are violated
    */
   public static LogicalType decimal(int precision, int scale) {
-    return new LogicalType(LogicalKind.DECIMAL, precision, scale);
+    return new LogicalType(LogicalKind.DECIMAL, precision, scale, null);
   }
 
   public LogicalKind kind() {
@@ -103,6 +140,14 @@ public final class LogicalType {
 
   public Integer scale() {
     return scale;
+  }
+
+  public Integer temporalPrecision() {
+    return temporalPrecision;
+  }
+
+  public int temporalPrecisionOrDefault() {
+    return temporalPrecision == null ? DEFAULT_TEMPORAL_PRECISION : temporalPrecision;
   }
 
   /** Returns true iff this is a DECIMAL type. */
@@ -132,7 +177,7 @@ public final class LogicalType {
 
   @Override
   public String toString() {
-    return isDecimal() ? "DECIMAL(" + precision + "," + scale + ")" : kind.name();
+    return LogicalTypeFormat.format(this);
   }
 
   @Override
@@ -147,11 +192,12 @@ public final class LogicalType {
 
     return kind == that.kind
         && Objects.equals(precision, that.precision)
-        && Objects.equals(scale, that.scale);
+        && Objects.equals(scale, that.scale)
+        && Objects.equals(temporalPrecision, that.temporalPrecision);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(kind, precision, scale);
+    return Objects.hash(kind, precision, scale, temporalPrecision);
   }
 }

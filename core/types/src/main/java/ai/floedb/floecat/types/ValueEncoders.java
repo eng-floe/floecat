@@ -118,52 +118,41 @@ public final class ValueEncoders {
 
       case TIME:
         {
-          // ISO-8601 local time (HH:mm:ss[.fraction]) is emitted; numeric values map to
-          // seconds/milliseconds/microseconds/nanoseconds heuristically. Canonical TIME is
-          // microsecond precision, so truncate any sub-micro nanos.
+          // ISO-8601 local time (HH:mm:ss[.fraction]) is emitted; numeric values are not accepted.
+          Integer precision = t.temporalPrecision();
           if (value instanceof LocalTime t0) {
-            return TIME_FMT.format(TemporalCoercions.truncateToMicros(t0));
+            return TemporalCoercions.formatLocalTime(t0, precision);
           }
 
-          if (value instanceof Number n) {
-            long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
-            long micros = Math.floorDiv(dayNanos, 1_000L);
-            return TIME_FMT.format(LocalTime.ofNanoOfDay(micros * 1_000L));
-          }
           if (value instanceof CharSequence s) {
-            return TIME_FMT.format(
-                TemporalCoercions.truncateToMicros(LocalTime.parse(s.toString())));
+            return TemporalCoercions.formatLocalTime(LocalTime.parse(s.toString()), precision);
           }
 
           throw new IllegalArgumentException(
-              "TIME must be LocalTime, Number (s/ms/µs/ns), or ISO HH:mm:ss[.nnn] String but was: "
+              "TIME must be LocalTime or ISO HH:mm:ss[.nnn] String but was: "
                   + value.getClass().getName());
         }
 
       case TIMESTAMP:
         {
           // TIMESTAMP is timezone-naive and encoded as ISO local date-time (no zone suffix).
+          Integer precision = t.temporalPrecision();
           if (value instanceof LocalDateTime ts) {
-            return LOCAL_TS_FMT.format(TemporalCoercions.truncateToMicros(ts));
+            return TemporalCoercions.formatLocalDateTime(ts, precision);
           }
 
           if (value instanceof Instant i) {
-            return LOCAL_TS_FMT.format(
-                TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC)));
-          }
-
-          if (value instanceof Number n) {
-            return LOCAL_TS_FMT.format(
-                TemporalCoercions.localDateTimeFromNumber(Int64Coercions.checkedLong(n)));
+            return TemporalCoercions.formatLocalDateTime(
+                LocalDateTime.ofInstant(i, ZoneOffset.UTC), precision);
           }
 
           if (value instanceof CharSequence s) {
-            return LOCAL_TS_FMT.format(TemporalCoercions.parseTimestampNoTz(s.toString()));
+            return TemporalCoercions.formatLocalDateTime(
+                TemporalCoercions.parseTimestampNoTz(s.toString()), precision);
           }
 
           throw new IllegalArgumentException(
-              "TIMESTAMP must be LocalDateTime, Instant, numeric seconds/millis/micros/nanos,"
-                  + " or ISO-8601 local/instant String"
+              "TIMESTAMP must be LocalDateTime, Instant, or ISO-8601 local date-time String"
                   + " but was: "
                   + value.getClass().getName());
         }
@@ -171,23 +160,17 @@ public final class ValueEncoders {
       case TIMESTAMPTZ:
         {
           // TIMESTAMPTZ is always UTC-normalised and encoded as ISO instant with Z suffix.
+          Integer precision = t.temporalPrecision();
           if (value instanceof Instant i) {
-            return INSTANT_FMT.format(TemporalCoercions.truncateToMicros(i));
-          }
-
-          if (value instanceof Number n) {
-            return INSTANT_FMT.format(
-                TemporalCoercions.instantFromNumber(Int64Coercions.checkedLong(n)));
+            return TemporalCoercions.formatInstantUtc(i, precision);
           }
 
           if (value instanceof CharSequence s) {
-            return INSTANT_FMT.format(
-                TemporalCoercions.truncateToMicros(Instant.parse(s.toString())));
+            return TemporalCoercions.formatInstantUtc(Instant.parse(s.toString()), precision);
           }
 
           throw new IllegalArgumentException(
-              "TIMESTAMPTZ must be Instant, numeric seconds/millis/micros/nanos, or ISO-8601"
-                  + " String but was: "
+              "TIMESTAMPTZ must be Instant or ISO-8601 String but was: "
                   + value.getClass().getName());
         }
 
@@ -246,12 +229,15 @@ public final class ValueEncoders {
       case DATE:
         return LocalDate.parse(encoded, DATE_FMT);
       case TIME:
-        return TemporalCoercions.truncateToMicros(LocalTime.parse(encoded, TIME_FMT));
+        return TemporalCoercions.truncateToTemporalPrecision(
+            LocalTime.parse(encoded, TIME_FMT), t.temporalPrecision());
       case TIMESTAMP:
-        return TemporalCoercions.parseTimestampNoTz(encoded);
+        return TemporalCoercions.truncateToTemporalPrecision(
+            TemporalCoercions.parseTimestampNoTz(encoded), t.temporalPrecision());
       case TIMESTAMPTZ:
         // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
-        return TemporalCoercions.truncateToMicros(Instant.parse(encoded));
+        return TemporalCoercions.truncateToTemporalPrecision(
+            Instant.parse(encoded), t.temporalPrecision());
       case STRING:
         return encoded;
       case JSON:

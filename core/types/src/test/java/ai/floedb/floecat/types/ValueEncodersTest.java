@@ -43,47 +43,16 @@ class ValueEncodersTest {
   }
 
   @Test
-  void timestampNumericValuesAreInterpretedByMagnitudeAsTimezoneNaive() {
+  void timestampAndTimestamptzRejectNumericInputs() {
     LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
-
-    LocalDateTime seconds =
-        LocalDateTime.ofInstant(
-            Instant.ofEpochSecond(1_000_000_000L), java.time.ZoneOffset.UTC); // below 10^12
-    assertEquals(seconds.toString(), ValueEncoders.encodeToString(timestampType, 1_000_000_000L));
-
-    LocalDateTime millis =
-        LocalDateTime.ofInstant(Instant.ofEpochMilli(1_234_567_890_123L), java.time.ZoneOffset.UTC);
-    assertEquals(
-        millis.toString(), ValueEncoders.encodeToString(timestampType, 1_234_567_890_123L));
-
-    long microsValue = 1_234_567_890_123_456L;
-    LocalDateTime microsExpected =
-        LocalDateTime.ofInstant(
-            Instant.ofEpochSecond(
-                Math.floorDiv(microsValue, 1_000_000L),
-                (int) (Math.floorMod(microsValue, 1_000_000L) * 1_000L)),
-            java.time.ZoneOffset.UTC);
-    assertEquals(
-        microsExpected.toString(), ValueEncoders.encodeToString(timestampType, microsValue));
-
-    long nanosValue = 1_234_567_890_123_456_789L;
-    LocalDateTime nanosExpected =
-        LocalDateTime.ofInstant(
-            Instant.ofEpochSecond(
-                Math.floorDiv(nanosValue, 1_000_000_000L),
-                (int) Math.floorMod(nanosValue, 1_000_000_000L)),
-            java.time.ZoneOffset.UTC);
-    assertEquals(
-        TemporalCoercions.truncateToMicros(nanosExpected).toString(),
-        ValueEncoders.encodeToString(timestampType, nanosValue));
-  }
-
-  @Test
-  void timestamptzNumericValuesAreInterpretedByMagnitudeAsUtcInstants() {
     LogicalType timestamptzType = LogicalType.of(LogicalKind.TIMESTAMPTZ);
-    Instant seconds = Instant.ofEpochSecond(1_000_000_000L);
-    assertEquals(seconds.toString(), ValueEncoders.encodeToString(timestamptzType, 1_000_000_000L));
-    assertTrue(ValueEncoders.encodeToString(timestamptzType, 1_000_000_000L).endsWith("Z"));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(timestampType, 1_000_000_000L));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(timestamptzType, 1_000_000_000L));
   }
 
   @Test
@@ -119,6 +88,21 @@ class ValueEncodersTest {
     LocalTime time = LocalTime.of(5, 4, 3, 120_000_000);
     assertEquals(
         "05:04:03.12", ValueEncoders.encodeToString(LogicalType.of(LogicalKind.TIME), time));
+  }
+
+  @Test
+  void temporalPrecisionControlsEncoding() {
+    LocalDateTime ts = LocalDateTime.of(2026, 2, 26, 12, 34, 56, 123_456_789);
+    LocalTime time = LocalTime.of(1, 2, 3, 456_789_000);
+    Instant instant = Instant.parse("2026-02-26T12:34:56.123456789Z");
+
+    LogicalType ts3 = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
+    LogicalType time0 = LogicalType.temporal(LogicalKind.TIME, 0);
+    LogicalType tstz3 = LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 3);
+
+    assertEquals("2026-02-26T12:34:56.123", ValueEncoders.encodeToString(ts3, ts));
+    assertEquals("01:02:03", ValueEncoders.encodeToString(time0, time));
+    assertEquals("2026-02-26T12:34:56.123Z", ValueEncoders.encodeToString(tstz3, instant));
   }
 
   @Test
@@ -178,24 +162,10 @@ class ValueEncodersTest {
   }
 
   @Test
-  void timeNumericContractsAcrossUnits() {
+  void timeRejectsNumericInputs() {
     LogicalType timeType = LogicalType.of(LogicalKind.TIME);
-    assertEquals("01:01:01", ValueEncoders.encodeToString(timeType, 3_661L));
-    long millisValue = 200_000L;
-    String millisExpected =
-        LocalTime.ofNanoOfDay(Math.floorMod(millisValue * 1_000_000L, 86_400_000_000_000L))
-            .toString();
-    assertEquals(millisExpected, ValueEncoders.encodeToString(timeType, millisValue));
-    long microsValue = 123_000_000L;
-    String microsExpected =
-        LocalTime.ofNanoOfDay(Math.floorMod(microsValue * 1_000L, 86_400_000_000_000L)).toString();
-    assertEquals(microsExpected, ValueEncoders.encodeToString(timeType, microsValue));
-    long nanosValue = 9_876_543_210_123L;
-    LocalTime nanosExpected = LocalTime.ofNanoOfDay(Math.floorMod(nanosValue, 86_400_000_000_000L));
-    LocalTime nanosTruncated = TemporalCoercions.truncateToMicros(nanosExpected);
-    assertEquals(
-        java.time.format.DateTimeFormatter.ISO_LOCAL_TIME.format(nanosTruncated),
-        ValueEncoders.encodeToString(timeType, nanosValue));
+    assertThrows(
+        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timeType, 3_661L));
   }
 
   @Test
@@ -207,18 +177,8 @@ class ValueEncodersTest {
   @Test
   void temporalNumericRejectsFractionalValues() {
     LogicalType dateType = LogicalType.of(LogicalKind.DATE);
-    LogicalType timeType = LogicalType.of(LogicalKind.TIME);
-    LogicalType timestampType = LogicalType.of(LogicalKind.TIMESTAMP);
-    LogicalType timestamptzType = LogicalType.of(LogicalKind.TIMESTAMPTZ);
-
     assertThrows(
         IllegalArgumentException.class, () -> ValueEncoders.encodeToString(dateType, 1.25));
-    assertThrows(
-        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timeType, 1.25));
-    assertThrows(
-        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timestampType, 1.25));
-    assertThrows(
-        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(timestamptzType, 1.25));
   }
 
   @Test

@@ -49,8 +49,9 @@ field was populated (even when the string itself is empty). In brief:
       zeros in the integer part and trailing zeros in the fractional part; `ValueEncoders.encodeToString(lt, value)`
       already follows this normalization routine and collapses `-0` → `0`.
     * Date/Time/Timestamp → ISO-8601 (`YYYY-MM-DD`, `HH:MM:SS[.fffffffff]`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]`
-      for `TIMESTAMP`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z` for `TIMESTAMPTZ`). All temporal encodings
-      are truncated to microsecond precision.
+      for `TIMESTAMP`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z` for `TIMESTAMPTZ`). If the logical type
+      includes a temporal precision suffix (e.g. `TIMESTAMP(3)`), emit exactly that many fractional
+      digits (0..6). Otherwise FloeCat defaults to microsecond precision with ISO formatting.
     * UUID → lowercase 8-4-4-4-12 hex.
     * String → literal UTF-8 content.
     * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).
@@ -62,22 +63,19 @@ field was populated (even when the string itself is empty). In brief:
 Helpers such as `ValueEncoders.encodeToString` already follow these rules; reuse them when converting
 native column values to strings so stats stay portable across languages.
 
-### Timestamp numeric heuristics
+### Temporal values (no numeric heuristics)
 
-When you emit timestamps from numeric values, `ValueEncoders.encodeToString` infers the unit from the magnitude:
-values less than `10^12` are treated as seconds, values in `[10^12, 10^15)` as milliseconds, values in
-`[10^15, 10^18)` as microseconds, and larger magnitudes as nanoseconds. `TIMESTAMP` emits ISO local
-date-time without zone, while `TIMESTAMPTZ` emits an ISO `Instant` with `Z`. Values are truncated to
-microsecond precision.
+FloeCat does not guess time units based on numeric magnitude. Connectors must supply typed temporal
+values (e.g., `LocalTime`, `LocalDateTime`, `Instant`) or ISO‑8601 strings with the correct
+precision. Numeric epoch values are rejected for `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ`. If your
+connector reads Parquet/Delta/Iceberg stats, convert numeric values using the source metadata’s
+explicit unit before calling `ValueEncoders.encodeToString`.
 
-`TIME` numeric values use the same magnitude heuristics and are wrapped to a 24h time-of-day
-(modulo 86,400 seconds). If your connector provides zoned timestamp strings, either map them to
-`TIMESTAMPTZ` or enable conversion for `TIMESTAMP` by setting
-`floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` and `floecat.session.timezone=<IANA zone>`
-(or the corresponding `FLOECAT_*` env vars).
+If your connector provides zoned timestamp strings, either map them to `TIMESTAMPTZ` or enable
+conversion for `TIMESTAMP` by setting `floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` and
+`floecat.session.timezone=<IANA zone>` (or the corresponding `FLOECAT_*` env vars).
 
-Fractional numeric values are rejected for `DATE`, `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` — pass
-whole-number epoch units only.
+`DATE` continues to accept numeric epoch-day values; fractional values are rejected.
 
 ## Public API / Surface Area
 The SPI is intentionally small:

@@ -87,21 +87,10 @@ class LogicalCoercionsTest {
   }
 
   @Test
-  void coercesTimeNumericValuesWithCanonicalUnitHeuristics() {
+  void coercesTimeFromIsoString() {
     LogicalType timeType = LogicalType.of(LogicalKind.TIME);
-
-    Object fromSecondsString = LogicalCoercions.coerceStatValue(timeType, "3661");
-    Object fromMillisString = LogicalCoercions.coerceStatValue(timeType, "3661000");
-    Object fromMicrosString = LogicalCoercions.coerceStatValue(timeType, "3661000000");
-    Object fromNanosString = LogicalCoercions.coerceStatValue(timeType, "3661000000000");
-    Object fromNumber = LogicalCoercions.coerceStatValue(timeType, 3661L);
-
-    LocalTime expected = LocalTime.of(1, 1, 1);
-    assertEquals(expected, fromSecondsString);
-    assertEquals(expected, fromMillisString);
-    assertEquals(expected, fromMicrosString);
-    assertEquals(expected, fromNanosString);
-    assertEquals(expected, fromNumber);
+    Object fromIso = LogicalCoercions.coerceStatValue(timeType, "01:01:01");
+    assertEquals(LocalTime.of(1, 1, 1), fromIso);
   }
 
   @Test

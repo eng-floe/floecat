@@ -195,6 +195,27 @@ class LogicalTypeTest {
     assertThat(LogicalType.decimal(38, 0).toString()).isEqualTo("DECIMAL(38,0)");
   }
 
+  @Test
+  void temporalPrecisionIsRenderedWhenPresent() {
+    LogicalType t = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
+    assertThat(t.temporalPrecision()).isEqualTo(3);
+    assertThat(t.toString()).isEqualTo("TIMESTAMP(3)");
+  }
+
+  @Test
+  void temporalPrecisionRejectsNonTemporalKinds() {
+    assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.INT, 3))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void temporalPrecisionRejectsOutOfRange() {
+    assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.TIME, -1))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.TIME, 7))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
   // ---------------------------------------------------------------------------
   // equals() / hashCode()
   // ---------------------------------------------------------------------------
@@ -219,5 +240,12 @@ class LogicalTypeTest {
     assertThat(c.hashCode()).isEqualTo(d.hashCode());
 
     assertThat(c).isNotEqualTo(LogicalType.of(LogicalKind.DOUBLE));
+  }
+
+  @Test
+  void temporalPrecisionAffectsEquality() {
+    LogicalType a = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
+    LogicalType b = LogicalType.temporal(LogicalKind.TIMESTAMP, 6);
+    assertThat(a).isNotEqualTo(b);
   }
 }

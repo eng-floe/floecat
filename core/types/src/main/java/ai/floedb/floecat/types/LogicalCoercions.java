@@ -164,57 +164,51 @@ public final class LogicalCoercions {
       }
       case TIME -> {
         if (v instanceof LocalTime t0) {
-          return TemporalCoercions.truncateToMicros(t0);
-        }
-        if (v instanceof Number n) {
-          long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
-          return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
+          return TemporalCoercions.truncateToTemporalPrecision(t0, t.temporalPrecision());
         }
         String s = v.toString();
         try {
-          return TemporalCoercions.truncateToMicros(LocalTime.parse(s));
+          return TemporalCoercions.truncateToTemporalPrecision(
+              LocalTime.parse(s), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }
-        long nv = Long.parseLong(s);
-        long dayNanos = TemporalCoercions.timeNanosOfDay(nv);
-        return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
+        throw new IllegalArgumentException(
+            "TIME value must be LocalTime or ISO HH:mm:ss[.nnn] String but was: " + s);
       }
       case TIMESTAMP -> {
         if (v instanceof LocalDateTime ts) {
-          return TemporalCoercions.truncateToMicros(ts);
+          return TemporalCoercions.truncateToTemporalPrecision(ts, t.temporalPrecision());
         }
         if (v instanceof Instant i) {
-          return TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
+          return TemporalCoercions.truncateToTemporalPrecision(
+              LocalDateTime.ofInstant(i, ZoneOffset.UTC), t.temporalPrecision());
         }
         String s = v.toString();
         try {
-          return TemporalCoercions.parseTimestampNoTz(s);
+          return TemporalCoercions.truncateToTemporalPrecision(
+              TemporalCoercions.parseTimestampNoTz(s), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }
-        try {
-          return TemporalCoercions.localDateTimeFromNumber(Long.parseLong(s));
-        } catch (NumberFormatException e) {
-          throw new IllegalArgumentException(
-              "TIMESTAMP value must be LocalDateTime, Instant, numeric seconds/millis/micros/nanos,"
-                  + " or ISO local date-time string but was: "
-                  + s,
-              e);
-        }
+        throw new IllegalArgumentException(
+            "TIMESTAMP value must be LocalDateTime, Instant, or ISO local date-time string but was: "
+                + s);
       }
       case TIMESTAMPTZ -> {
         // TIMESTAMPTZ is always UTC-normalised and coerced as Instant.
         if (v instanceof Instant i) {
-          return TemporalCoercions.truncateToMicros(i);
+          return TemporalCoercions.truncateToTemporalPrecision(i, t.temporalPrecision());
         }
         String s = v.toString();
         try {
-          return TemporalCoercions.truncateToMicros(Instant.parse(s));
+          return TemporalCoercions.truncateToTemporalPrecision(
+              Instant.parse(s), t.temporalPrecision());
         } catch (Exception ignore) {
           // fall through
         }
-        return TemporalCoercions.instantFromNumber(Long.parseLong(s));
+        throw new IllegalArgumentException(
+            "TIMESTAMPTZ value must be Instant or ISO-8601 String but was: " + s);
       }
       case UUID -> {
         if (v instanceof UUID u) {

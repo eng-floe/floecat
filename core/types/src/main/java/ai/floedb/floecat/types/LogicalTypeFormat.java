@@ -28,8 +28,8 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>{@link #format(LogicalType)} — converts a {@code LogicalType} to its canonical string. For
- *       non-decimal kinds this is the enum name (e.g. {@code "INT"}); for DECIMAL: {@code
- *       "DECIMAL(p,s)"}.
+ *       non-decimal kinds this is the enum name (e.g. {@code "INT"}), optionally with a temporal
+ *       precision suffix (e.g. {@code "TIMESTAMP(3)"}); for DECIMAL: {@code "DECIMAL(p,s)"}.
  *   <li>{@link #parse(String)} — parses a type string (canonical name, SQL alias, or parameterised
  *       form) back to a {@code LogicalType}. Case-insensitive and whitespace-normalised.
  *       Parameterised non-DECIMAL forms are accepted only for known SQL spellings where parameters
@@ -63,6 +63,13 @@ public final class LogicalTypeFormat {
     if (t.isDecimal()) {
       return "DECIMAL(" + t.precision() + "," + t.scale() + ")";
     }
+    Integer temporalPrecision = t.temporalPrecision();
+    if (temporalPrecision != null
+        && (t.kind() == LogicalKind.TIME
+            || t.kind() == LogicalKind.TIMESTAMP
+            || t.kind() == LogicalKind.TIMESTAMPTZ)) {
+      return t.kind().name() + "(" + temporalPrecision + ")";
+    }
     return t.kind().name();
   }
 
@@ -89,6 +96,11 @@ public final class LogicalTypeFormat {
     if (withParams.matches()) {
       String candidateBase = withParams.group(1).trim();
       String params = withParams.group(2).trim();
+      Integer temporalPrecision = parseTemporalPrecision(candidateBase, params);
+      if (temporalPrecision != null) {
+        LogicalKind temporalKind = LogicalKind.fromName(candidateBase);
+        return LogicalType.temporal(temporalKind, temporalPrecision);
+      }
       validateNonDecimalParameters(s, candidateBase, params);
       baseName = candidateBase;
     } else if (normalized.indexOf('(') >= 0 || normalized.indexOf(')') >= 0) {
@@ -135,6 +147,37 @@ public final class LogicalTypeFormat {
                   + "\" (type does not accept parameters: "
                   + baseName
                   + ")");
+    }
+  }
+
+  private static Integer parseTemporalPrecision(String baseName, String params) {
+    switch (baseName) {
+      case "TIME", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ" -> {
+        if (!INTEGER_PARAM_RE.matcher(params).matches()) {
+          throw new IllegalArgumentException(
+              "Unrecognized logical type: \""
+                  + baseName
+                  + "("
+                  + params
+                  + ")\""
+                  + " (invalid temporal precision parameter)");
+        }
+        int precision = Integer.parseInt(params.trim());
+        if (precision < 0 || precision > LogicalType.MAX_TEMPORAL_PRECISION) {
+          throw new IllegalArgumentException(
+              "Unrecognized logical type: \""
+                  + baseName
+                  + "("
+                  + params
+                  + ")\" (temporal precision must be 0.."
+                  + LogicalType.MAX_TEMPORAL_PRECISION
+                  + ")");
+        }
+        return precision;
+      }
+      default -> {
+        return null;
+      }
     }
   }
 }

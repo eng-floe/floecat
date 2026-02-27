@@ -32,8 +32,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  *   <li>Round-trip: {@code parse(format(t)) == t} for all canonical kinds
  *   <li>DECIMAL format and parse with precision and scale
  *   <li>Bare {@code DECIMAL} without parameters is rejected
- *   <li>Parameterised aliases ({@code VARCHAR(10)}, {@code TIMESTAMP(6)}) are stripped to their
- *       canonical base type
+ *   <li>Parameterised aliases ({@code VARCHAR(10)}) are stripped to their canonical base type;
+ *       temporal precisions ({@code TIMESTAMP(6)}) are preserved
  *   <li>Case-insensitive and whitespace-normalised parsing
  *   <li>Unknown type strings are rejected with a clear error
  * </ul>
@@ -59,6 +59,16 @@ class LogicalTypeFormatTest {
     assertThat(LogicalTypeFormat.format(LogicalType.decimal(10, 2))).isEqualTo("DECIMAL(10,2)");
     assertThat(LogicalTypeFormat.format(LogicalType.decimal(38, 0))).isEqualTo("DECIMAL(38,0)");
     assertThat(LogicalTypeFormat.format(LogicalType.decimal(1, 1))).isEqualTo("DECIMAL(1,1)");
+  }
+
+  @Test
+  void formatTemporalIncludesPrecisionWhenPresent() {
+    assertThat(LogicalTypeFormat.format(LogicalType.temporal(LogicalKind.TIME, 3)))
+        .isEqualTo("TIME(3)");
+    assertThat(LogicalTypeFormat.format(LogicalType.temporal(LogicalKind.TIMESTAMP, 6)))
+        .isEqualTo("TIMESTAMP(6)");
+    assertThat(LogicalTypeFormat.format(LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 0)))
+        .isEqualTo("TIMESTAMPTZ(0)");
   }
 
   // ---------------------------------------------------------------------------
@@ -115,12 +125,20 @@ class LogicalTypeFormatTest {
 
   @Test
   void parseStripsParametersFromKnownBaseTypes() {
-    // VARCHAR(255) → STRING; TIMESTAMP(6) → TIMESTAMP; CHAR(10) → STRING
+    // VARCHAR(255) → STRING; CHAR(10) → STRING
     assertThat(LogicalTypeFormat.parse("VARCHAR(255)").kind()).isEqualTo(LogicalKind.STRING);
     assertThat(LogicalTypeFormat.parse("VARCHAR(MAX)").kind()).isEqualTo(LogicalKind.STRING);
     assertThat(LogicalTypeFormat.parse("CHAR(10)").kind()).isEqualTo(LogicalKind.STRING);
-    assertThat(LogicalTypeFormat.parse("TIMESTAMP(6)").kind()).isEqualTo(LogicalKind.TIMESTAMP);
-    assertThat(LogicalTypeFormat.parse("TIME(6)").kind()).isEqualTo(LogicalKind.TIME);
+    assertThat(LogicalTypeFormat.parse("TIMESTAMP(6)").temporalPrecision()).isEqualTo(6);
+    assertThat(LogicalTypeFormat.parse("TIME(6)").temporalPrecision()).isEqualTo(6);
+    assertThat(LogicalTypeFormat.parse("TIMESTAMP WITH TIME ZONE(3)").temporalPrecision())
+        .isEqualTo(3);
+  }
+
+  @Test
+  void parseTemporalPrecisionRoundTrips() {
+    LogicalType t = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
+    assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(t))).isEqualTo(t);
   }
 
   // ---------------------------------------------------------------------------
@@ -188,6 +206,9 @@ class LogicalTypeFormatTest {
     assertThatThrownBy(() -> LogicalTypeFormat.parse("TIMESTAMP(bad)"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("invalid temporal precision parameter");
+    assertThatThrownBy(() -> LogicalTypeFormat.parse("TIME(9)"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("temporal precision must be 0..");
   }
 
   @Test

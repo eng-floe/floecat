@@ -199,36 +199,31 @@ public final class LogicalComparators {
       case TIME:
         {
           if (v instanceof LocalTime t0) {
-            return TemporalCoercions.truncateToMicros(t0);
+            return TemporalCoercions.truncateToTemporalPrecision(t0, t.temporalPrecision());
           }
 
           if (v instanceof CharSequence s) {
-            return TemporalCoercions.truncateToMicros(LocalTime.parse(s.toString()));
+            return TemporalCoercions.truncateToTemporalPrecision(
+                LocalTime.parse(s.toString()), t.temporalPrecision());
           }
 
-          if (v instanceof Number n) {
-            long dayNanos = TemporalCoercions.timeNanosOfDay(Int64Coercions.checkedLong(n));
-            return TemporalCoercions.truncateToMicros(LocalTime.ofNanoOfDay(dayNanos));
-          }
           throw typeErr("TIME", v);
         }
 
       case TIMESTAMP:
         {
           if (v instanceof LocalDateTime ts) {
-            return TemporalCoercions.truncateToMicros(ts);
+            return TemporalCoercions.truncateToTemporalPrecision(ts, t.temporalPrecision());
           }
 
           if (v instanceof Instant i) {
-            return TemporalCoercions.truncateToMicros(LocalDateTime.ofInstant(i, ZoneOffset.UTC));
+            return TemporalCoercions.truncateToTemporalPrecision(
+                LocalDateTime.ofInstant(i, ZoneOffset.UTC), t.temporalPrecision());
           }
 
           if (v instanceof CharSequence s) {
-            return TemporalCoercions.parseTimestampNoTz(s.toString());
-          }
-
-          if (v instanceof Number n) {
-            return TemporalCoercions.localDateTimeFromNumber(Int64Coercions.checkedLong(n));
+            return TemporalCoercions.truncateToTemporalPrecision(
+                TemporalCoercions.parseTimestampNoTz(s.toString()), t.temporalPrecision());
           }
 
           throw typeErr("TIMESTAMP", v);
@@ -238,15 +233,12 @@ public final class LogicalComparators {
         {
           // TIMESTAMPTZ is always UTC-normalised and compared as Instant.
           if (v instanceof Instant i) {
-            return TemporalCoercions.truncateToMicros(i);
+            return TemporalCoercions.truncateToTemporalPrecision(i, t.temporalPrecision());
           }
 
           if (v instanceof CharSequence s) {
-            return TemporalCoercions.truncateToMicros(Instant.parse(s.toString()));
-          }
-
-          if (v instanceof Number n) {
-            return TemporalCoercions.instantFromNumber(Int64Coercions.checkedLong(n));
+            return TemporalCoercions.truncateToTemporalPrecision(
+                Instant.parse(s.toString()), t.temporalPrecision());
           }
 
           throw typeErr("TIMESTAMPTZ", v);
