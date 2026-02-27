@@ -22,11 +22,18 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.extensions.floedb.engine.FloeTypeMapper;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintResolver;
 import ai.floedb.floecat.extensions.floedb.proto.FloeColumnSpecific;
+import ai.floedb.floecat.extensions.floedb.proto.FloeDecorationFailureCode;
 import ai.floedb.floecat.extensions.floedb.proto.FloeRelationSpecific;
+import ai.floedb.floecat.extensions.floedb.utils.ColumnTypeResolutionException;
+import ai.floedb.floecat.extensions.floedb.utils.InvalidColumnLogicalTypeException;
+import ai.floedb.floecat.extensions.floedb.utils.MissingColumnLogicalTypeException;
+import ai.floedb.floecat.extensions.floedb.utils.MissingSystemMetadataException;
 import ai.floedb.floecat.extensions.floedb.utils.MissingSystemOidException;
 import ai.floedb.floecat.extensions.floedb.utils.ScannerUtils;
+import ai.floedb.floecat.extensions.floedb.utils.UnmappedColumnTypeException;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint;
+import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -34,6 +41,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
@@ -41,6 +49,7 @@ import ai.floedb.floecat.systemcatalog.spi.types.TypeResolver;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 /** Decorator that attaches Floe engine-specific column metadata. */
@@ -49,10 +58,12 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
   private static final Logger LOG = Logger.getLogger(FloeEngineSpecificDecorator.class);
   private static final String RESOLVER_KEY = "floe.typeResolver";
   private static final String RELATION_OID_KEY = "floe.relOid";
-
-  private final EngineTypeMapper typeMapper = new FloeTypeMapper();
+  private static final String RELATION_HINT_KEY =
+      "ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator.relationHint";
   private static final String COLUMN_HINTS_KEY =
       "ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator.columnHints";
+
+  private final EngineTypeMapper typeMapper = new FloeTypeMapper();
   private final EngineHintPersistence persistence;
 
   public FloeEngineSpecificDecorator(EngineHintPersistence persistence) {
@@ -93,18 +104,31 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
               schema,
               column.logicalType());
       column.builder().addEngineSpecific(toEngineSpecific(normalizedKind, attribute));
-      bufferColumnHint(
-          relation, relation.relationId(), column.id(), COLUMN.type(), attribute.toByteArray());
+      if (column.id() > 0) {
+        bufferColumnHint(
+            relation, relation.relationId(), column.id(), COLUMN.type(), attribute.toByteArray());
+      } else if (LOG.isDebugEnabled()) {
+        LOG.debugf("Skipping column hint for %s: column id missing or zero", relation.relationId());
+      }
+    } catch (MissingColumnLogicalTypeException e) {
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_LOGICAL_TYPE_MISSING, e);
+    } catch (InvalidColumnLogicalTypeException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID, e);
+    } catch (UnmappedColumnTypeException e) {
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_TYPE_MAPPING_MISSING, e);
+    } catch (ColumnTypeResolutionException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (MissingSystemOidException e) {
-      throw e;
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_MISSING_OID, e);
+    } catch (MissingSystemMetadataException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
+    } catch (SecurityException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED, e);
     } catch (RuntimeException e) {
-      LOG.warnf(
-          e,
-          "Failed to decorate column %s.%s for engine %s@%s",
-          relation.relationId(),
-          schema.getName(),
-          engineContext.engineKind(),
-          engineContext.engineVersion());
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     }
   }
 
@@ -122,19 +146,64 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
       FloeRelationSpecific relationSpecific =
           FloeHintResolver.relationSpecific(relation.resolutionContext(), relation.node());
       builder.addEngineSpecific(toEngineSpecific(normalizedKind, relationSpecific));
-      persistRelationHint(engineContext, relation.relationId(), relationSpecific, RELATION.type());
+      stageRelationHint(relation, RELATION.type(), relationSpecific.toByteArray());
+    } catch (MissingColumnLogicalTypeException e) {
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_LOGICAL_TYPE_MISSING, e);
+    } catch (InvalidColumnLogicalTypeException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_LOGICAL_TYPE_INVALID, e);
+    } catch (UnmappedColumnTypeException e) {
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_TYPE_MAPPING_MISSING, e);
+    } catch (ColumnTypeResolutionException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     } catch (MissingSystemOidException e) {
-      throw e; // SYSTEM objects must not silently degrade
+      throw decorationFailure(
+          FloeDecorationFailureCode.FLOE_DECORATION_FAILURE_CODE_MISSING_OID, e);
+    } catch (MissingSystemMetadataException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
+    } catch (SecurityException e) {
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_PERMISSION_DENIED, e);
     } catch (RuntimeException e) {
-      LOG.warnf(
-          e,
-          "Failed to decorate relation %s for engine %s@%s",
-          relation.relationId(),
-          engineContext.engineKind(),
-          engineContext.engineVersion());
-    } finally {
-      flushColumnHints(engineContext, relation, relation.relationId());
+      throw decorationFailure(ColumnFailureCode.COLUMN_FAILURE_CODE_INTERNAL_ERROR, e);
     }
+  }
+
+  @Override
+  public void completeRelation(
+      EngineContext ctx,
+      RelationDecoration relation,
+      boolean commitRelationHints,
+      boolean commitColumnHints,
+      Set<Long> committedColumnIds) {
+    if (relation == null) {
+      return;
+    }
+    ResourceId relationId = relation.relationId();
+    if (!commitRelationHints && !commitColumnHints) {
+      clearStagedHints(relation);
+      return;
+    }
+
+    StagedRelationHint relationHint = relation.attribute(RELATION_HINT_KEY);
+    if (commitRelationHints && relationHint != null) {
+      persistHint(ctx, relationId, relationHint.payload(), relationHint.payloadType());
+    }
+
+    @SuppressWarnings("unchecked")
+    List<ColumnHint> columnHints = (List<ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
+    if (commitColumnHints && columnHints != null && !columnHints.isEmpty()) {
+      List<ColumnHint> toPersist = columnHints;
+      if (committedColumnIds != null && !committedColumnIds.isEmpty()) {
+        toPersist =
+            columnHints.stream()
+                .filter(hint -> committedColumnIds.contains(hint.columnId()))
+                .toList();
+      }
+      persistColumnHints(ctx, relationId, toPersist);
+    }
+
+    clearStagedHints(relation);
   }
 
   private static int relationOid(RelationDecoration relation) {
@@ -231,14 +300,6 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
         .build();
   }
 
-  private void persistRelationHint(
-      EngineContext ctx,
-      ResourceId relationId,
-      FloeRelationSpecific relationSpecific,
-      String payloadType) {
-    persistHint(ctx, relationId, relationSpecific.toByteArray(), payloadType);
-  }
-
   private void persistHint(
       EngineContext ctx, ResourceId relationId, byte[] payload, String payloadType) {
     if (persistence == null || persistence == EngineHintPersistence.NOOP) {
@@ -250,6 +311,29 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     } catch (RuntimeException e) {
       LOG.debugf(e, "Failed to persist relation engine hint for relation %s", relationId);
     }
+  }
+
+  private void persistColumnHints(
+      EngineContext ctx,
+      ResourceId relationId,
+      List<EngineHintPersistence.ColumnHint> columnHints) {
+    if (columnHints == null || columnHints.isEmpty()) {
+      return;
+    }
+    if (persistence == null || persistence == EngineHintPersistence.NOOP) {
+      return;
+    }
+    try {
+      persistence.persistColumnHints(
+          relationId, ctx.normalizedKind(), ctx.normalizedVersion(), columnHints);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Failed to persist column engine hints for relation %s", relationId);
+    }
+  }
+
+  private static void stageRelationHint(
+      RelationDecoration relation, String payloadType, byte[] payload) {
+    relation.attribute(RELATION_HINT_KEY, new StagedRelationHint(payloadType, payload));
   }
 
   private void bufferColumnHint(
@@ -273,36 +357,20 @@ public final class FloeEngineSpecificDecorator implements EngineMetadataDecorato
     hints.add(new ColumnHint(payloadType, columnId, payload));
   }
 
-  private void flushColumnHints(
-      EngineContext ctx, RelationDecoration relation, ResourceId relationId) {
-    if (relationId == null) {
-      return;
-    }
-    @SuppressWarnings("unchecked")
-    List<EngineHintPersistence.ColumnHint> hints =
-        (List<EngineHintPersistence.ColumnHint>) relation.attribute(COLUMN_HINTS_KEY);
-    if (hints == null || hints.isEmpty()) {
-      return;
-    }
-    persistColumnHints(ctx, relationId, hints);
+  private static void clearStagedHints(RelationDecoration relation) {
+    relation.attribute(RELATION_HINT_KEY, null);
     relation.attribute(COLUMN_HINTS_KEY, null);
   }
 
-  private void persistColumnHints(
-      EngineContext ctx,
-      ResourceId relationId,
-      List<EngineHintPersistence.ColumnHint> columnHints) {
-    if (columnHints == null || columnHints.isEmpty()) {
-      return;
-    }
-    if (persistence == null || persistence == EngineHintPersistence.NOOP) {
-      return;
-    }
-    try {
-      persistence.persistColumnHints(
-          relationId, ctx.normalizedKind(), ctx.normalizedVersion(), columnHints);
-    } catch (RuntimeException e) {
-      LOG.debugf(e, "Failed to persist column engine hints for relation %s", relationId);
-    }
+  private static DecorationException decorationFailure(
+      ColumnFailureCode coreCode, RuntimeException cause) {
+    return new DecorationException(coreCode, cause.getMessage(), cause);
   }
+
+  private static DecorationException decorationFailure(
+      FloeDecorationFailureCode extensionCode, RuntimeException cause) {
+    return new DecorationException(extensionCode.getNumber(), cause.getMessage(), cause);
+  }
+
+  private record StagedRelationHint(String payloadType, byte[] payload) {}
 }

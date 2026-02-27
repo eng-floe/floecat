@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi.decorator;
 
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import java.util.Set;
 
 /**
  * Engine metadata decoration hook exposed by {@link
@@ -38,4 +39,25 @@ public interface EngineMetadataDecorator {
   default void decorateType(EngineContext ctx, TypeDecoration type) {}
 
   default void decorateFunction(EngineContext ctx, FunctionDecoration fn) {}
+
+  /**
+   * Lifecycle callback with an explicit set of ready column IDs to commit.
+   *
+   * <p>Precedence rules:
+   *
+   * <p>- If {@code commitColumnHints} is {@code false}, implementations should not persist any
+   * staged column hints and should ignore {@code committedColumnIds}.
+   *
+   * <p>- If {@code commitColumnHints} is {@code true} and {@code committedColumnIds} is non-empty,
+   * implementations should only persist staged column hints for matching IDs.
+   *
+   * <p>- If {@code commitColumnHints} is {@code true} and {@code committedColumnIds} is empty,
+   * implementations may persist all staged column hints.
+   */
+  default void completeRelation(
+      EngineContext ctx,
+      RelationDecoration rel,
+      boolean commitRelationHints,
+      boolean commitColumnHints,
+      Set<Long> committedColumnIds) {}
 }

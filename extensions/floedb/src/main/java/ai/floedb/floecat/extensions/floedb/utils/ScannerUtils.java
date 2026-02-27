@@ -87,7 +87,7 @@ public final class ScannerUtils {
     OidPolicy policy = oidPolicy(id);
     if (ctx == null) {
       if (policy == OidPolicy.REQUIRE) {
-        throw new MissingSystemOidException(
+        throw new MissingSystemMetadataException(
             "Missing OID for SYSTEM object id="
                 + id
                 + " payloadType="
@@ -110,7 +110,7 @@ public final class ScannerUtils {
     OidPolicy policy = oidPolicy(id);
     if (ctx == null) {
       if (policy == OidPolicy.REQUIRE) {
-        throw new MissingSystemOidException(
+        throw new MissingSystemMetadataException(
             "Missing array field for SYSTEM object id="
                 + id
                 + " payloadType="
@@ -280,7 +280,7 @@ public final class ScannerUtils {
       return resolved.get();
     }
     if (policy == OidPolicy.REQUIRE) {
-      throw new MissingSystemOidException(
+      throw new MissingSystemMetadataException(
           "Missing array field for SYSTEM object id=" + id + " payloadType=" + descriptor.type());
     }
     return new int[0];

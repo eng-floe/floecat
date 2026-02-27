@@ -57,7 +57,7 @@ message TableColumnStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 
   /**
-   * Column IDs as returned by UserObjectsService ColumnInfo.id (stable column_id).
+   * Column IDs as returned by UserObjectsService ColumnResult.column_id (stable column_id).
    * Duplicates are deduped server-side and column_ids must be positive.
    */
   repeated int64 column_ids = 2;

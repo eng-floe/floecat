@@ -150,7 +150,9 @@ class UserObjectsServiceIT {
     assertEquals(RelationKind.RELATION_KIND_TABLE, relation.getKind());
     assertEquals(tbl.getResourceId(), relation.getRelationId());
     assertEquals(1, relation.getColumnsCount());
-    assertEquals("id", relation.getColumns(0).getName());
+    assertEquals("id", relation.getColumns(0).getColumnName());
+    assertTrue(relation.getColumns(0).hasColumn());
+    assertEquals("id", relation.getColumns(0).getColumn().getName());
 
     UserObjectsBundleChunk end = chunks.get(2);
     assertTrue(end.hasEnd());

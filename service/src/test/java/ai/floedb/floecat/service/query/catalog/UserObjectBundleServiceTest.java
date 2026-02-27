@@ -25,10 +25,16 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.query.rpc.ColumnFailureCode;
+import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.ColumnResult;
+import ai.floedb.floecat.query.rpc.ColumnStatus;
+import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
@@ -49,16 +55,20 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
+import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
+import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -82,6 +92,13 @@ class UserObjectBundleServiceTest {
       ResourceId.newBuilder()
           .setAccountId("acct")
           .setId("TABLE_B")
+          .setKind(ResourceKind.RK_TABLE)
+          .build();
+
+  private static final ResourceId TABLE_C =
+      ResourceId.newBuilder()
+          .setAccountId("acct")
+          .setId("TABLE_C")
           .setKind(ResourceKind.RK_TABLE)
           .build();
 
@@ -662,7 +679,7 @@ class UserObjectBundleServiceTest {
   void decoratorSkippedWhenHeadersMissing() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations));
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             overlay,
@@ -695,7 +712,7 @@ class UserObjectBundleServiceTest {
   void decoratorInvokedWhenHeadersPresent() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations));
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             overlay,
@@ -719,30 +736,566 @@ class UserObjectBundleServiceTest {
     Context context =
         Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
     Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
     try {
-      decoratedService.stream("cid", ctx, List.of(candidate))
-          .collect()
-          .asList()
-          .await()
-          .indefinitely();
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
     } finally {
       context.detach(previous);
     }
 
     assertThat(columnDecorations.get()).isGreaterThan(0);
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.hasColumn());
+  }
+
+  @Test
+  void decoratorMissingPayloadMarksColumnsFailed() {
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, false, false));
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(columnDecorations.get()).isGreaterThan(0);
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure()
+                        .getCode()
+                        .equals(
+                            ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING));
+  }
+
+  @Test
+  void decoratorExceptionPropagatesAsPerColumnFailure() {
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, false, true));
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(columnDecorations.get()).isGreaterThan(0);
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure()
+                        .getCode()
+                        .equals(ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED)
+                    && c.getFailure()
+                        .getMessage()
+                        .equals(
+                            "This column type is not supported by the engine metadata decorator."));
+    assertThat(relation.getColumns(0).getFailure().getMessage())
+        .doesNotContain("test unsupported type");
+  }
+
+  @Test
+  void decoratorNumericExtensionCodePropagatesAsUnknownEnumValue() {
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateColumn(EngineContext ec, ColumnDecoration columnDecoration) {
+                    columnDecorations.incrementAndGet();
+                    throw new DecorationException(1201, "engine extension failure");
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(columnDecorations.get()).isGreaterThan(0);
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure().getCode()
+                        == ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION
+                    && c.getFailure().getExtensionCodeValue() == 1201
+                    && c.getFailure().getMessage().equals("engine extension failure"));
+  }
+
+  @Test
+  void decoratorProviderEmptyMarksColumnsDecoratorUnavailable() {
+    EngineMetadataDecoratorProvider provider = ignored -> Optional.empty();
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure().getCode()
+                        == ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void schemaMismatchPathMarksAllColumnsFailed() throws Exception {
+    Method decorateColumns =
+        UserObjectBundleService.class.getDeclaredMethod(
+            "decorateColumns",
+            List.class,
+            List.class,
+            ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration.class,
+            Optional.class,
+            EngineContext.class,
+            boolean.class,
+            ResourceId.class);
+    decorateColumns.setAccessible(true);
+
+    List<ColumnInfo> columns =
+        List.of(
+            ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
+            ColumnInfo.newBuilder().setId(12).setName("c2").setOrdinal(2).build());
+    List<SchemaColumn> pruned =
+        List.of(SchemaColumn.newBuilder().setId(11).setName("c1").setOrdinal(1).build());
+    ResourceId relationId = TABLE_A;
+
+    List<ColumnResult> results =
+        (List<ColumnResult>)
+            decorateColumns.invoke(
+                service,
+                columns,
+                pruned,
+                null,
+                Optional.empty(),
+                EngineContext.of("pg", "16.0"),
+                true,
+                relationId);
+
+    assertThat(results).hasSize(2);
+    assertThat(results)
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure().getCode()
+                        == ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH
+                    && c.getFailure().getDetailsMap().get("relation_id").equals(relationId.getId())
+                    && c.getFailure().getMessage().contains("Column/schema mismatch"));
+  }
+
+  @Test
+  void mixedReadyFailedColumnsCommitOnlyReadyColumnIds() {
+    List<SchemaColumn> schema =
+        List.of(
+            SchemaColumn.newBuilder()
+                .setId(101)
+                .setName("c_ready")
+                .setLogicalType("INT32")
+                .setNullable(true)
+                .setOrdinal(1)
+                .build(),
+            SchemaColumn.newBuilder()
+                .setId(102)
+                .setName("c_failed")
+                .setLogicalType("INT32")
+                .setNullable(true)
+                .setOrdinal(2)
+                .build());
+    overlay.registerTable(
+        TABLE_C, schema, NameRef.newBuilder().setCatalog("cat").setName("c").build());
+
+    AtomicReference<Boolean> commitRelationHints = new AtomicReference<>();
+    AtomicReference<Boolean> commitColumnHints = new AtomicReference<>();
+    AtomicReference<Set<Long>> committedColumnIds = new AtomicReference<>();
+    EngineMetadataDecoratorProvider provider =
+        ignored ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateColumn(EngineContext ec, ColumnDecoration columnDecoration) {
+                    if ("c_ready".equals(columnDecoration.builder().getName())) {
+                      columnDecoration
+                          .builder()
+                          .addEngineSpecific(
+                              EngineSpecific.newBuilder()
+                                  .setEngineKind(ec.normalizedKind())
+                                  .setPayloadType("test.column")
+                                  .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
+                                  .build());
+                    }
+                  }
+
+                  @Override
+                  public void completeRelation(
+                      EngineContext ec,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration rel,
+                      boolean commitRelation,
+                      boolean commitColumns,
+                      Set<Long> columnIds) {
+                    commitRelationHints.set(commitRelation);
+                    commitColumnHints.set(commitColumns);
+                    committedColumnIds.set(columnIds);
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_C))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .anyMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.getColumnId() == 101);
+    assertThat(relation.getColumnsList())
+        .anyMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.getColumnId() == 102
+                    && c.getFailure().getCode()
+                        == ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING);
+    assertThat(commitRelationHints.get()).isTrue();
+    assertThat(commitColumnHints.get()).isTrue();
+    assertThat(committedColumnIds.get()).containsExactly(101L);
+  }
+
+  @Test
+  void relationDecorationFailureSkipsHintCommitForRelationAndColumns() {
+    AtomicReference<Boolean> commitRelationHints = new AtomicReference<>();
+    AtomicReference<Boolean> commitColumnHints = new AtomicReference<>();
+    AtomicReference<Set<Long>> committedColumnIds = new AtomicReference<>();
+    AtomicInteger columnDecorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        ctx ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateRelation(
+                      EngineContext ec,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration relation) {
+                    throw new RuntimeException("relation decoration failed");
+                  }
+
+                  @Override
+                  public void decorateColumn(EngineContext ec, ColumnDecoration columnDecoration) {
+                    columnDecorations.incrementAndGet();
+                    columnDecoration
+                        .builder()
+                        .addEngineSpecific(
+                            EngineSpecific.newBuilder()
+                                .setEngineKind(ec.normalizedKind())
+                                .setPayloadType("test.column")
+                                .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
+                                .build());
+                  }
+
+                  @Override
+                  public void completeRelation(
+                      EngineContext ec,
+                      ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration rel,
+                      boolean commitRelation,
+                      boolean commitColumns,
+                      Set<Long> columnIds) {
+                    commitRelationHints.set(commitRelation);
+                    commitColumnHints.set(commitColumns);
+                    committedColumnIds.set(columnIds);
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    assertThat(columnDecorations.get()).isGreaterThan(0);
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK && c.hasColumn());
+    assertThat(commitRelationHints.get()).isFalse();
+    assertThat(commitColumnHints.get()).isFalse();
+    assertThat(committedColumnIds.get()).isEmpty();
+  }
+
+  @Test
+  void nonDecorationExceptionDoesNotExposeExceptionClassInFailureDetails() {
+    EngineMetadataDecoratorProvider provider =
+        ctx ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateColumn(EngineContext ec, ColumnDecoration columnDecoration) {
+                    throw new RuntimeException("internal backend error");
+                  }
+                });
+    UserObjectBundleService decoratedService =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    EngineContext engineContext = EngineContext.of("pg", "16.0");
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engineContext);
+    Context previous = context.attach();
+    List<UserObjectsBundleChunk> chunks;
+    try {
+      chunks =
+          decoratedService.stream("cid", ctx, List.of(candidate))
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+    } finally {
+      context.detach(previous);
+    }
+
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.getColumnsList())
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && !c.getFailure().getDetailsMap().containsKey("exception"));
   }
 
   private static final class CountingDecorator implements EngineMetadataDecorator {
 
     private final AtomicInteger columnDecorations;
+    private final boolean emitPayload;
+    private final boolean throwError;
 
-    private CountingDecorator(AtomicInteger columnDecorations) {
+    private CountingDecorator(
+        AtomicInteger columnDecorations, boolean emitPayload, boolean throwError) {
       this.columnDecorations = columnDecorations;
+      this.emitPayload = emitPayload;
+      this.throwError = throwError;
     }
 
     @Override
     public void decorateColumn(EngineContext ctx, ColumnDecoration columnDecoration) {
       columnDecorations.incrementAndGet();
+      if (throwError) {
+        throw new DecorationException(
+            ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED, "test unsupported type");
+      }
+      if (emitPayload) {
+        columnDecoration
+            .builder()
+            .addEngineSpecific(
+                EngineSpecific.newBuilder()
+                    .setEngineKind(ctx.normalizedKind())
+                    .setPayloadType("test.column")
+                    .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
+                    .build());
+      }
     }
   }
 
