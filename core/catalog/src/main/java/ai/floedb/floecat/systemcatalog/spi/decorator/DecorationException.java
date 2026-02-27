@@ -62,7 +62,7 @@ public final class DecorationException extends RuntimeException {
     if (extensionCodeValue <= 0) {
       throw new IllegalArgumentException("A positive extension code must be provided");
     }
-    this.code = null;
+    this.code = ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_EXTENSION;
     this.extensionCodeValue = extensionCodeValue;
     this.details = details == null ? Map.of() : Map.copyOf(details);
   }
