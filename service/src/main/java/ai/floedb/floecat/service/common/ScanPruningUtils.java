@@ -204,7 +204,7 @@ public final class ScanPruningUtils {
       return true;
     }
 
-    if (!LogicalComparators.isOrderable(type)) {
+    if (!LogicalComparators.isStatsOrderable(type)) {
       return true;
     }
 

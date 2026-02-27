@@ -192,7 +192,7 @@ public final class ValueEncoders {
       case JSON:
         // JSON has no meaningful min/max ordering semantics.
         throw new IllegalArgumentException(
-            "min/max encoding is unsupported for non-orderable type " + t.kind().name());
+            "min/max encoding is unsupported for non-stats-orderable type " + t.kind().name());
       case INTERVAL:
         // INTERVAL is encoded as Base64 of its 12-byte wire representation (months/days/millis).
         return Base64.getEncoder().encodeToString(asIntervalBytes(value));

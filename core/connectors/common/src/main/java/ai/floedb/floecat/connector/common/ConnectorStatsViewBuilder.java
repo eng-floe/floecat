@@ -98,7 +98,7 @@ public final class ConnectorStatsViewBuilder {
 
       String min = null;
       String max = null;
-      if (lt != null && LogicalComparators.isOrderable(lt)) {
+      if (lt != null && LogicalComparators.isStatsOrderable(lt)) {
         if (agg.min() != null) min = ValueEncoders.encodeToString(lt, agg.min());
         if (agg.max() != null) max = ValueEncoders.encodeToString(lt, agg.max());
       }

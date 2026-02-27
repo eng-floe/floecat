@@ -61,7 +61,7 @@ public class ScanPruningUtilsTest {
             .setColumnName(col)
             .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type));
 
-    if (LogicalComparators.isOrderable(type)) {
+    if (LogicalComparators.isStatsOrderable(type)) {
       cs.setMin(LogicalTypeProtoAdapter.encodeValue(type, min))
           .setMax(LogicalTypeProtoAdapter.encodeValue(type, max));
     }

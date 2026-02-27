@@ -154,7 +154,7 @@ public final class LogicalTypeProtoAdapter {
    * @param a first encoded value (null treated as less than everything)
    * @param b second encoded value (null treated as less than everything)
    * @return negative, zero, or positive per {@link Comparable#compareTo} contract
-   * @throws IllegalArgumentException if the type is not orderable
+   * @throws IllegalArgumentException if the type is not stats-orderable
    */
   public static int compareEncoded(LogicalType type, String a, String b) {
     Object va = decodeValue(type, a);

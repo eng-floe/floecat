@@ -49,14 +49,14 @@ class LogicalComparatorsTest {
 
   @Test
   void exposesOrderableClassification() {
-    assertTrue(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.INT)));
-    assertTrue(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.STRING)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.JSON)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.INTERVAL)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.ARRAY)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.MAP)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.STRUCT)));
-    assertFalse(LogicalComparators.isOrderable(LogicalType.of(LogicalKind.VARIANT)));
+    assertTrue(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.INT)));
+    assertTrue(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.STRING)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.JSON)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.INTERVAL)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.ARRAY)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.MAP)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.STRUCT)));
+    assertFalse(LogicalComparators.isStatsOrderable(LogicalType.of(LogicalKind.VARIANT)));
   }
 
   @Test

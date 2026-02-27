@@ -168,7 +168,7 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
   `0 ≤ scale ≤ precision`. There is no global DECIMAL precision cap in the core model; connectors
   enforce their own ceilings (for example Iceberg/Delta cap at 38) at schema-parse time. Non-decimal
   kinds reject precision/scale altogether.
-- **Non-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
+- **Non-stats-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
   `VARIANT`) have no meaningful min/max statistics. `LogicalComparators.normalize()` returns
   `null` and `ValueEncoders.encodeToString` throws for JSON/complex kinds, so connectors should
   leave bounds unset.

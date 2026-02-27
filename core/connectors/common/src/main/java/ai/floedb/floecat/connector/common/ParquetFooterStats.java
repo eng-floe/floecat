@@ -54,7 +54,7 @@ public final class ParquetFooterStats {
     public Object max = null;
 
     void mergeMin(Object v, LogicalType lt) {
-      if (lt != null && !LogicalComparators.isOrderable(lt)) {
+      if (lt != null && !LogicalComparators.isStatsOrderable(lt)) {
         return;
       }
       if (v == null) {
@@ -79,7 +79,7 @@ public final class ParquetFooterStats {
     }
 
     void mergeMax(Object v, LogicalType lt) {
-      if (lt != null && !LogicalComparators.isOrderable(lt)) {
+      if (lt != null && !LogicalComparators.isStatsOrderable(lt)) {
         return;
       }
       if (v == null) {

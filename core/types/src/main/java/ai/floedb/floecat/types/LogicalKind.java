@@ -90,8 +90,8 @@ public enum LogicalKind {
     return !isComplex();
   }
 
-  /** Returns true iff values of this kind can be meaningfully ordered. */
-  public boolean isOrderable() {
+  /** Returns true iff values of this kind can be meaningfully ordered for stats (min/max). */
+  public boolean isStatsOrderable() {
     return switch (this) {
       case BOOLEAN,
           INT,

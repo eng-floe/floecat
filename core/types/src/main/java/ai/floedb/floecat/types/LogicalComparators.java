@@ -38,25 +38,25 @@ import java.util.UUID;
  * <p><b>Complex and semi-structured types</b> ({@link LogicalKind#INTERVAL}, {@link
  * LogicalKind#JSON}, {@link LogicalKind#ARRAY}, {@link LogicalKind#MAP}, {@link
  * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) have no meaningful min/max ordering. {@link
- * #isOrderable(LogicalType)} returns {@code false} for these kinds, and {@link
+ * #isStatsOrderable(LogicalType)} returns {@code false} for these kinds, and {@link
  * #normalize(LogicalType, Object)} returns {@code null} rather than throwing.
  */
 public final class LogicalComparators {
 
   /**
-   * Returns {@code true} iff values of the given type can be meaningfully ordered.
+   * Returns {@code true} iff values of the given type can be meaningfully ordered for stats.
    *
-   * <p>All scalar numeric, string, binary, UUID, and temporal types (except INTERVAL) are
-   * orderable. Complex and semi-structured types are not.
+   * <p>All scalar numeric, string, binary, UUID, and temporal types (except INTERVAL) are orderable
+   * for stats. Complex and semi-structured types are not.
    *
    * @param t the logical type to test (null → {@code false})
    * @return {@code true} if the type is orderable
    */
-  public static boolean isOrderable(LogicalType t) {
+  public static boolean isStatsOrderable(LogicalType t) {
     if (t == null) {
       return false;
     }
-    return t.kind().isOrderable();
+    return t.kind().isStatsOrderable();
   }
 
   /**
@@ -86,7 +86,7 @@ public final class LogicalComparators {
       return 1;
     }
 
-    if (!isOrderable(t)) {
+    if (!isStatsOrderable(t)) {
       String kind = (t == null) ? "<null>" : t.kind().name();
       throw new IllegalArgumentException("Logical type is not orderable: " + kind);
     }
@@ -125,9 +125,12 @@ public final class LogicalComparators {
    *
    * @param t the logical type
    * @param v the raw value (may be a Java primitive wrapper, String, or byte array)
-   * @return normalised value, or {@code null} if the kind is not orderable
+   * @return normalised value, or {@code null} if the kind is not stats-orderable
    */
   public static Object normalize(LogicalType t, Object v) {
+    if (!isStatsOrderable(t)) {
+      return null;
+    }
     switch (t.kind()) {
       case BOOLEAN:
         return (Boolean) v;
