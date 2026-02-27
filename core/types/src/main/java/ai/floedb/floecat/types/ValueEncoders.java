@@ -194,7 +194,14 @@ public final class ValueEncoders {
       case STRING:
         return asUtf8String(value);
       case UUID:
-        return ((UUID) value).toString();
+        if (value instanceof UUID u) {
+          return u.toString();
+        }
+        if (value instanceof CharSequence s) {
+          return UUID.fromString(s.toString()).toString();
+        }
+        throw new IllegalArgumentException(
+            "UUID value must be UUID or String but was: " + value.getClass().getName());
       case BINARY:
         return Base64.getEncoder().encodeToString(asBytes(value));
       case DECIMAL:

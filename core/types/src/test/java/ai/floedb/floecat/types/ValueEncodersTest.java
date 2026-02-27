@@ -160,6 +160,9 @@ class ValueEncodersTest {
     UUID uuid = UUID.fromString("f47ac10b-58cc-4372-a567-0e02b2c3d479");
     assertEquals(
         uuid.toString(), ValueEncoders.encodeToString(LogicalType.of(LogicalKind.UUID), uuid));
+    assertEquals(
+        uuid.toString(),
+        ValueEncoders.encodeToString(LogicalType.of(LogicalKind.UUID), uuid.toString()));
   }
 
   @Test
