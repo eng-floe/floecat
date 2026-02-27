@@ -165,15 +165,11 @@ public final class ArrowConversion {
       LocalTime truncated = TemporalCoercions.truncateToMicros(time);
       return truncated.toNanoOfDay() / 1_000L;
     }
-    if (value instanceof Number number) {
-      long dayNanos = TemporalCoercions.timeNanosOfDay(number.longValue());
-      return Math.floorDiv(dayNanos, 1_000L);
-    }
     if (value instanceof CharSequence text) {
       LocalTime parsed = LocalTime.parse(text.toString());
       return TemporalCoercions.truncateToMicros(parsed).toNanoOfDay() / 1_000L;
     }
-    throw new IllegalArgumentException("TIME value must be LocalTime, Number, or ISO time string");
+    throw new IllegalArgumentException("TIME value must be LocalTime or ISO time string");
   }
 
   private static long toTimestampMicrosNoTz(Object value) {
@@ -187,39 +183,25 @@ public final class ArrowConversion {
       Instant instant = truncated.toInstant(ZoneOffset.UTC);
       return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
-    if (value instanceof Number number) {
-      LocalDateTime local = TemporalCoercions.localDateTimeFromNumber(number.longValue());
+    if (value instanceof CharSequence text) {
+      String raw = text.toString();
+      LocalDateTime local = TemporalCoercions.parseTimestampNoTz(raw);
       Instant instant = local.toInstant(ZoneOffset.UTC);
       return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
-    if (value instanceof CharSequence text) {
-      String raw = text.toString();
-      try {
-        LocalDateTime local = TemporalCoercions.parseTimestampNoTz(raw);
-        Instant instant = local.toInstant(ZoneOffset.UTC);
-        return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
-      } catch (RuntimeException ignored) {
-        LocalDateTime local = TemporalCoercions.localDateTimeFromNumber(Long.parseLong(raw));
-        Instant instant = local.toInstant(ZoneOffset.UTC);
-        return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
-      }
-    }
     throw new IllegalArgumentException(
-        "TIMESTAMP value must be Instant, LocalDateTime, Number, or ISO local/instant string");
+        "TIMESTAMP value must be Instant, LocalDateTime, or ISO local/instant string");
   }
 
   private static long toTimestampMicrosTz(Object value) {
     Instant instant;
     if (value instanceof Instant i) {
       instant = TemporalCoercions.truncateToMicros(i);
-    } else if (value instanceof Number number) {
-      instant = TemporalCoercions.instantFromNumber(number.longValue());
     } else if (value instanceof CharSequence text) {
       instant =
           TemporalCoercions.truncateToMicros(TemporalCoercions.parseZonedInstant(text.toString()));
     } else {
-      throw new IllegalArgumentException(
-          "TIMESTAMPTZ value must be Instant, Number, or ISO instant string");
+      throw new IllegalArgumentException("TIMESTAMPTZ value must be Instant or ISO instant string");
     }
     return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
   }

@@ -68,7 +68,20 @@ public final class ArrowSchemaUtil {
       case INT -> new ArrowType.Int(64, true);
       case FLOAT -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
       case DOUBLE -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-      case DECIMAL -> new ArrowType.Decimal(logicalType.precision(), logicalType.scale(), 128);
+      case DECIMAL -> {
+        int precision = logicalType.precision();
+        int scale = logicalType.scale();
+        int bitWidth;
+        if (precision <= 38) {
+          bitWidth = 128;
+        } else if (precision <= 76) {
+          bitWidth = 256;
+        } else {
+          throw new IllegalArgumentException(
+              "DECIMAL precision " + precision + " exceeds Arrow decimal support (max 76)");
+        }
+        yield new ArrowType.Decimal(precision, scale, bitWidth);
+      }
       case STRING, JSON -> new ArrowType.Utf8();
       case DATE -> new ArrowType.Date(DateUnit.DAY);
       case TIME -> new ArrowType.Time(TimeUnit.MICROSECOND, 64);
