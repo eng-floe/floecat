@@ -96,10 +96,15 @@ public final class LogicalTypeFormat {
     if (withParams.matches()) {
       String candidateBase = withParams.group(1).trim();
       String params = withParams.group(2).trim();
-      Integer temporalPrecision = parseTemporalPrecision(candidateBase, params);
+      LogicalKind candidateKind = null;
+      try {
+        candidateKind = LogicalKind.fromName(candidateBase);
+      } catch (IllegalArgumentException ignored) {
+        // Defer unknown-type handling to the main resolution path below.
+      }
+      Integer temporalPrecision = parseTemporalPrecision(candidateKind, candidateBase, params);
       if (temporalPrecision != null) {
-        LogicalKind temporalKind = LogicalKind.fromName(candidateBase);
-        return LogicalType.temporal(temporalKind, temporalPrecision);
+        return LogicalType.temporal(candidateKind, temporalPrecision);
       }
       validateNonDecimalParameters(s, candidateBase, params);
       baseName = candidateBase;
@@ -150,34 +155,34 @@ public final class LogicalTypeFormat {
     }
   }
 
-  private static Integer parseTemporalPrecision(String baseName, String params) {
-    switch (baseName) {
-      case "TIME", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ" -> {
-        if (!INTEGER_PARAM_RE.matcher(params).matches()) {
-          throw new IllegalArgumentException(
-              "Unrecognized logical type: \""
-                  + baseName
-                  + "("
-                  + params
-                  + ")\""
-                  + " (invalid temporal precision parameter)");
-        }
-        int precision = Integer.parseInt(params.trim());
-        if (precision < 0 || precision > LogicalType.MAX_TEMPORAL_PRECISION) {
-          throw new IllegalArgumentException(
-              "Unrecognized logical type: \""
-                  + baseName
-                  + "("
-                  + params
-                  + ")\" (temporal precision must be 0.."
-                  + LogicalType.MAX_TEMPORAL_PRECISION
-                  + ")");
-        }
-        return precision;
-      }
-      default -> {
-        return null;
-      }
+  private static Integer parseTemporalPrecision(
+      LogicalKind candidateKind, String baseName, String params) {
+    if (candidateKind == null
+        || (candidateKind != LogicalKind.TIME
+            && candidateKind != LogicalKind.TIMESTAMP
+            && candidateKind != LogicalKind.TIMESTAMPTZ)) {
+      return null;
     }
+    if (!INTEGER_PARAM_RE.matcher(params).matches()) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \""
+              + baseName
+              + "("
+              + params
+              + ")\""
+              + " (invalid temporal precision parameter)");
+    }
+    int precision = Integer.parseInt(params.trim());
+    if (precision < 0 || precision > LogicalType.MAX_TEMPORAL_PRECISION) {
+      throw new IllegalArgumentException(
+          "Unrecognized logical type: \""
+              + baseName
+              + "("
+              + params
+              + ")\" (temporal precision must be 0.."
+              + LogicalType.MAX_TEMPORAL_PRECISION
+              + ")");
+    }
+    return precision;
   }
 }

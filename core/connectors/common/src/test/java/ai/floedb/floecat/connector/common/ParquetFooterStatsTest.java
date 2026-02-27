@@ -20,6 +20,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.TemporalCoercions;
+import java.lang.reflect.Method;
+import java.time.LocalTime;
+import org.apache.parquet.schema.LogicalTypeAnnotation;
+import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class ParquetFooterStatsTest {
@@ -50,5 +55,33 @@ class ParquetFooterStatsTest {
 
     assertThat(agg.min).isEqualTo(2L);
     assertThat(agg.max).isEqualTo(12L);
+  }
+
+  @Test
+  void timeStatsDropOutOfRangeValues() throws Exception {
+    Object lta = timeLogicalTypeAnnotation(TimeUnit.MICROS);
+    Method m =
+        ParquetFooterStats.class.getDeclaredMethod("timeStatValue", Object.class, Object.class);
+    m.setAccessible(true);
+
+    long nanosPerDay = TemporalCoercions.NANOS_PER_DAY;
+    Object outOfRange = m.invoke(null, lta, nanosPerDay);
+    assertThat(outOfRange).isNull();
+
+    Object inRange = m.invoke(null, lta, nanosPerDay - 1);
+    assertThat(inRange).isEqualTo(LocalTime.ofNanoOfDay(nanosPerDay - 1));
+  }
+
+  private static Object timeLogicalTypeAnnotation(TimeUnit unit) throws Exception {
+    for (Method method : LogicalTypeAnnotation.class.getMethods()) {
+      if (!method.getName().equals("timeType")) {
+        continue;
+      }
+      Class<?>[] params = method.getParameterTypes();
+      if (params.length == 2 && params[0] == boolean.class && params[1] == TimeUnit.class) {
+        return method.invoke(null, false, unit);
+      }
+    }
+    throw new IllegalStateException("Unable to locate LogicalTypeAnnotation.timeType");
   }
 }

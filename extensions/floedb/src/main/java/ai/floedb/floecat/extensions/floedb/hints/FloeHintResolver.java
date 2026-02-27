@@ -49,6 +49,7 @@ import java.util.Optional;
 
 /** Computation-only helper that produces Floe-specific metadata hints. */
 public final class FloeHintResolver {
+  static final int VARHDRSZ = 4;
 
   private FloeHintResolver() {}
 
@@ -428,14 +429,24 @@ public final class FloeHintResolver {
     }
   }
 
-  private static int deriveTypmod(LogicalType logical) {
+  static int deriveTypmod(LogicalType logical) {
     if (logical == null) {
       return -1;
     }
-    if (logical.isDecimal()) {
-      return (logical.precision() << 16) | logical.scale();
+
+    switch (logical.kind()) {
+      case DECIMAL:
+        return (logical.precision() << 16) | logical.scale();
+      case TIMESTAMP, TIMESTAMPTZ, TIME:
+        {
+          // For temporal types, we encode the precision in typmod as (precision + VARHDRSZ)
+          Integer p = logical.temporalPrecision();
+          return (p == null) ? -1 : (p + VARHDRSZ);
+        }
+
+      default:
+        return -1;
     }
-    return -1;
   }
 
   private static <T extends Message> Optional<T> payload(

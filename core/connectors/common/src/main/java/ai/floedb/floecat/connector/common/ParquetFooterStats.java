@@ -248,7 +248,11 @@ public final class ParquetFooterStats {
     }
     long raw = n.longValue();
     long nanos = toTimeNanos(raw, timeAnno.getUnit());
-    return LocalTime.ofNanoOfDay(Math.floorMod(nanos, TemporalCoercions.NANOS_PER_DAY));
+    if (nanos < 0 || nanos >= TemporalCoercions.NANOS_PER_DAY) {
+      // Invalid time-of-day; drop stats rather than wrapping to a different value.
+      return null;
+    }
+    return LocalTime.ofNanoOfDay(nanos);
   }
 
   private static Object timestampStatValue(Object lta, Object v, boolean adjustedToUtc) {
@@ -270,6 +274,8 @@ public final class ParquetFooterStats {
     if (adjustedToUtc) {
       return instant;
     }
+    // Parquet TIMESTAMP without UTC normalization is encoded as epoch-based counts.
+    // We interpret those counts as UTC wall-clock when constructing LocalDateTime.
     return LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
   }
 

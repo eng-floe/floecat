@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.common.rpc.TemporalUnit;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import java.util.List;
@@ -70,6 +71,7 @@ class IcebergSchemaMapperTest {
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
     assertThat(col.getSourceType().getEngineKind()).isEqualTo("iceberg");
     assertThat(col.getSourceType().getDeclaredType()).isEqualTo(sourceType.toString());
+    assertThat(col.getSourceType().getTemporalUnit()).isEqualTo(TemporalUnit.TU_MICROS);
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -78,6 +80,7 @@ class IcebergSchemaMapperTest {
     SchemaColumn col =
         singleColumn(Types.NestedField.optional(1, "ts_ntz", Types.TimestampType.withoutZone()));
     assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
+    assertThat(col.getSourceType().getTemporalUnit()).isEqualTo(TemporalUnit.TU_MICROS);
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -122,6 +125,8 @@ class IcebergSchemaMapperTest {
     assertThat(desc.getColumns(5).getLogicalType()).isEqualTo("UUID");
     assertThat(desc.getColumns(6).getLogicalType()).isEqualTo("DATE");
     assertThat(desc.getColumns(7).getLogicalType()).isEqualTo("TIME");
+    assertThat(desc.getColumns(7).getSourceType().getTemporalUnit())
+        .isEqualTo(TemporalUnit.TU_MICROS);
   }
 
   @Test

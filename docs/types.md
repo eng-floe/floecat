@@ -71,7 +71,8 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale, temporalPrecision)`. Canonical `DECIMAL` semantics are
+  stores `(kind, precision, scale, temporalPrecision)`. `temporalPrecision` is optional (unset means
+  default microsecond precision). Canonical `DECIMAL` semantics are
   `1 ≤ precision ≤ 38` and `0 ≤ scale ≤ precision`. TIME/TIMESTAMP/TIMESTAMPTZ may carry a
   fractional‑second precision (0..6). Connectors and consumers are responsible for enforcing
   source-format compatibility while preserving the canonical max precision contract. All other

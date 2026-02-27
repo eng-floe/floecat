@@ -154,4 +154,27 @@ class FloeHintResolverTypesTest {
   void nullLogicalTypeReturnsFalse() {
     assertThat(FloeHintResolver.passByValue(null)).isFalse();
   }
+
+  // ---------------------------------------------------------------------------
+  // deriveTypmod
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void deriveTypmodEncodesDecimalPrecisionAndScale() throws Exception {
+    int typmod = FloeHintResolver.deriveTypmod(LogicalType.decimal(10, 2));
+    assertThat(typmod).isEqualTo((10 << 16) | 2);
+  }
+
+  @Test
+  void deriveTypmodEncodesTemporalPrecision() throws Exception {
+    int typmod = FloeHintResolver.deriveTypmod(LogicalType.temporal(LogicalKind.TIMESTAMP, 3));
+    assertThat(typmod).isEqualTo(FloeHintResolver.VARHDRSZ + 3);
+  }
+
+  @Test
+  void deriveTypmodReturnsMinusOneWhenUnavailable() throws Exception {
+    assertThat(FloeHintResolver.deriveTypmod(null)).isEqualTo(-1);
+    assertThat(FloeHintResolver.deriveTypmod(LogicalType.of(LogicalKind.STRING))).isEqualTo(-1);
+    assertThat(FloeHintResolver.deriveTypmod(LogicalType.of(LogicalKind.TIMESTAMP))).isEqualTo(-1);
+  }
 }

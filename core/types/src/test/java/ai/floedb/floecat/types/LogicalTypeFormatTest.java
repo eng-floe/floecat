@@ -131,8 +131,9 @@ class LogicalTypeFormatTest {
     assertThat(LogicalTypeFormat.parse("CHAR(10)").kind()).isEqualTo(LogicalKind.STRING);
     assertThat(LogicalTypeFormat.parse("TIMESTAMP(6)").temporalPrecision()).isEqualTo(6);
     assertThat(LogicalTypeFormat.parse("TIME(6)").temporalPrecision()).isEqualTo(6);
-    assertThat(LogicalTypeFormat.parse("TIMESTAMP WITH TIME ZONE(3)").temporalPrecision())
-        .isEqualTo(3);
+    LogicalType timestamptz = LogicalTypeFormat.parse("TIMESTAMP WITH TIME ZONE(3)");
+    assertThat(timestamptz.kind()).isEqualTo(LogicalKind.TIMESTAMPTZ);
+    assertThat(timestamptz.temporalPrecision()).isEqualTo(3);
   }
 
   @Test

@@ -71,11 +71,19 @@ precision. Numeric epoch values are rejected for `TIME`, `TIMESTAMP`, and `TIMES
 connector reads Parquet/Delta/Iceberg stats, convert numeric values using the source metadata’s
 explicit unit before calling `ValueEncoders.encodeToString`.
 
+Schema mappers should also populate `SourceType.temporal_unit` for TIME/TIMESTAMP columns when the
+source format exposes a unit (for example Parquet logical annotations, or the fixed microsecond
+units used by Iceberg and Delta). Leave it unset when unknown.
+
 If your connector provides zoned timestamp strings, either map them to `TIMESTAMPTZ` or enable
 conversion for `TIMESTAMP` by setting `floecat.timestamp_no_tz.policy=CONVERT_TO_SESSION_ZONE` and
 `floecat.session.timezone=<IANA zone>` (or the corresponding `FLOECAT_*` env vars).
 
 `DATE` continues to accept numeric epoch-day values; fractional values are rejected.
+
+For Parquet `TIMESTAMP(isAdjustedToUTC=false)` stats, FloeCat interprets the epoch counts as UTC
+wall-clock when constructing a `LocalDateTime` (i.e., no session-zone shift is applied). If you want
+session-zone semantics, convert explicitly before encoding stats.
 
 ## Public API / Surface Area
 The SPI is intentionally small:
