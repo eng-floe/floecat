@@ -365,7 +365,8 @@ public class TransactionCommitService {
               removedSnapshotIds(plan.updates())));
     }
 
-    if (!isCommitAccepted(currentState)) {
+    boolean applied = isCommitAccepted(currentState);
+    if (!applied) {
       if (currentState == TransactionState.TS_OPEN) {
         try {
           transactionClient.prepareTransaction(
@@ -397,7 +398,10 @@ public class TransactionCommitService {
             commitResponse != null && commitResponse.hasTransaction()
                 ? commitResponse.getTransaction().getState()
                 : TransactionState.TS_UNSPECIFIED;
-        if (!isCommitAccepted(commitState)) {
+        if (isCommitAccepted(commitState)) {
+          applied = true;
+          // swallow and continue to post-commit side effects
+        } else {
           if (isDeterministicFailedState(commitState)) {
             return IcebergErrorResponses.failure(
                 "transaction commit did not reach applied state",
@@ -405,12 +409,13 @@ public class TransactionCommitService {
                 Response.Status.CONFLICT);
           }
           if (waitForAppliedState(txId)) {
-            return Response.noContent().build();
+            applied = true;
+          } else {
+            return IcebergErrorResponses.failure(
+                "transaction commit did not reach applied state",
+                "CommitStateUnknownException",
+                Response.Status.SERVICE_UNAVAILABLE);
           }
-          return IcebergErrorResponses.failure(
-              "transaction commit did not reach applied state",
-              "CommitStateUnknownException",
-              Response.Status.SERVICE_UNAVAILABLE);
         }
       } catch (StatusRuntimeException commitFailure) {
         if (commitFailure.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
@@ -423,43 +428,41 @@ public class TransactionCommitService {
         }
         if (isRetryableCommitAbort(commitFailure)) {
           if (waitForAppliedState(txId)) {
-            return Response.noContent().build();
+            applied = true;
+            // swallow and continue to post-commit side effects
+          } else {
+            return IcebergErrorResponses.failure(
+                "transaction commit failed",
+                "CommitStateUnknownException",
+                Response.Status.SERVICE_UNAVAILABLE);
           }
+        } else if (commitFailure.getStatus().getCode() == Status.Code.UNAVAILABLE) {
           return IcebergErrorResponses.failure(
               "transaction commit failed",
               "CommitStateUnknownException",
               Response.Status.SERVICE_UNAVAILABLE);
-        }
-        if (commitFailure.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed",
-              "CommitStateUnknownException",
-              Response.Status.SERVICE_UNAVAILABLE);
-        }
-        if (commitFailure.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
+        } else if (commitFailure.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
           return IcebergErrorResponses.failure(
               "transaction commit failed", "UnauthorizedException", Response.Status.UNAUTHORIZED);
-        }
-        if (commitFailure.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
+        } else if (commitFailure.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
           return IcebergErrorResponses.failure(
               "transaction commit failed", "ForbiddenException", Response.Status.FORBIDDEN);
-        }
-        if (commitFailure.getStatus().getCode() == Status.Code.UNKNOWN) {
+        } else if (commitFailure.getStatus().getCode() == Status.Code.UNKNOWN) {
           return IcebergErrorResponses.failure(
               "transaction commit failed",
               "CommitStateUnknownException",
               Response.Status.BAD_GATEWAY);
-        }
-        if (commitFailure.getStatus().getCode() == Status.Code.DEADLINE_EXCEEDED) {
+        } else if (commitFailure.getStatus().getCode() == Status.Code.DEADLINE_EXCEEDED) {
           return IcebergErrorResponses.failure(
               "transaction commit failed",
               "CommitStateUnknownException",
               Response.Status.GATEWAY_TIMEOUT);
+        } else {
+          return IcebergErrorResponses.failure(
+              "transaction commit failed",
+              "CommitStateUnknownException",
+              Response.Status.INTERNAL_SERVER_ERROR);
         }
-        return IcebergErrorResponses.failure(
-            "transaction commit failed",
-            "CommitStateUnknownException",
-            Response.Status.INTERNAL_SERVER_ERROR);
       } catch (RuntimeException commitFailure) {
         return IcebergErrorResponses.failure(
             "transaction commit failed",
@@ -468,8 +471,23 @@ public class TransactionCommitService {
       }
     }
 
+    if (!applied) {
+      return IcebergErrorResponses.failure(
+          "transaction commit did not reach applied state",
+          "CommitStateUnknownException",
+          Response.Status.SERVICE_UNAVAILABLE);
+    }
+
     for (var target : syncTargets) {
-      sideEffectService.pruneRemovedSnapshots(target.tableId(), target.removedSnapshotIds());
+      try {
+        sideEffectService.pruneRemovedSnapshots(target.tableId(), target.removedSnapshotIds());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Post-commit snapshot pruning failed for %s.%s in tx; backend apply already committed",
+            String.join(".", target.namespacePath()),
+            target.tableName());
+      }
       try {
         sideEffectService.runPostCommitStatsSyncAttempt(
             tableSupport, target.namespacePath(), target.tableName(), target.table());

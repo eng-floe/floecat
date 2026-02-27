@@ -333,7 +333,10 @@ test: $(PROTO_JAR) keycloak-up
 .PHONY: test-localstack
 test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	@bash -c 'set -euo pipefail; \
-	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
+	  cleanup() { \
+	    $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; \
+	    $(MAKE) --no-print-directory localstack-down >/dev/null 2>&1 || true; \
+	  }; \
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
