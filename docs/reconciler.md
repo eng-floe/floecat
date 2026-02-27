@@ -53,6 +53,14 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Job leasing** – `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
   running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort interval.
   Failed jobs are retried with backoff up to configured attempt limits before terminal failure.
+- **Durable pointer model** – Durable reconcile queue pointers (`/reconcile/jobs/by-id`,
+  `/accounts/by-id/reconcile/jobs/by-id`, `/accounts/by-id/reconcile/jobs/ready`, and
+  `/reconcile/dedupe`) are blob-backed and store the current reconcile job JSON blob URI. When a
+  job state transition writes a new canonical blob version, the store CAS-updates lookup/ready/dedupe
+  pointers to the same blob URI.
+- **GC ownership** – `ReconcileJobGc` remains responsible for reconcile lifecycle cleanup (terminal-state
+  queue/dedupe cleanup and retention-based deletion of old durable job records). `PointerGc` handles
+  structural orphan cleanup, but it does not enforce reconcile retention/state policy.
 
 ### Backend selection
 - `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
