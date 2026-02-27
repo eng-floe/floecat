@@ -17,29 +17,23 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitStageResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.CommitOperationTracker.OperationKey;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.google.protobuf.FieldMask;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -47,154 +41,92 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableCommitService {
   private static final Logger LOG = Logger.getLogger(TableCommitService.class);
 
-  @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitSideEffectService sideEffectService;
-  @Inject StageMaterializationService stageMaterializationService;
-  @Inject CommitStageResolver stageResolver;
   @Inject CommitResponseBuilder responseBuilder;
-  @Inject TableUpdatePlanner tableUpdatePlanner;
   @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;
   @Inject TableFormatSupport tableFormatSupport;
-  @Inject AccountContext accountContext;
-  @Inject CommitOperationTracker commitOperationTracker;
+  @Inject TransactionCommitService transactionCommitService;
 
   public Response commit(CommitCommand command) {
-    OperationKey operationKey = operationKey(command);
-    if (operationKey == null || commitOperationTracker == null) {
-      return doCommit(command, null);
+    if (command == null) {
+      return IcebergErrorResponses.validation("Request body is required");
     }
-    return commitOperationTracker.execute(
-        operationKey, command.request(), () -> doCommit(command, operationKey));
-  }
-
-  private Response doCommit(CommitCommand command, OperationKey operationKey) {
-    String prefix = command.prefix();
-    String namespace = command.namespace();
-    List<String> namespacePath = command.namespacePath();
-    String table = command.table();
-    ResourceId catalogId = command.catalogId();
-    ResourceId namespaceId = command.namespaceId();
-    String idempotencyKey = command.idempotencyKey();
-    String stageId = command.stageId();
-    String transactionId = command.transactionId();
     TableRequests.Commit req = command.request();
-    TableGatewaySupport tableSupport = command.tableSupport();
-
-    CommitStageResolver.StageResolution stageResolution = stageResolver.resolve(command);
-    if (stageResolution.hasError()) {
-      return stageResolution.error();
+    if (req == null) {
+      return IcebergErrorResponses.validation("Request body is required");
     }
-    ResourceId tableId = stageResolution.tableId();
-    Supplier<Table> tableSupplier = createTableSupplier(stageResolution.stagedTable(), tableId);
-    Table currentTable = tableSupplier.get();
-    if (isDeltaReadOnlyCommitBlocked(currentTable)) {
+
+    Table preCommitTable = loadCurrentTable(command);
+    if (isDeltaReadOnlyCommitBlocked(preCommitTable)) {
       return IcebergErrorResponses.conflict(
           "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
     }
 
-    TableUpdatePlanner.UpdatePlan updatePlan =
-        tableUpdatePlanner.planUpdates(command, tableSupplier, tableId);
-    if (updatePlan.hasError()) {
-      return updatePlan.error();
-    }
-    markStep(operationKey, "PLAN_OK");
+    TransactionCommitRequest txRequest =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new TableIdentifierDto(command.namespacePath(), command.table()),
+                    req.requirements(),
+                    req.updates())));
 
-    Response snapshotError =
-        snapshotMetadataService.applySnapshotUpdates(
-            tableSupport,
-            tableId,
-            namespacePath,
-            table,
-            tableSupplier,
-            req.updates(),
-            idempotencyKey);
-    if (snapshotError != null) {
-      return snapshotError;
+    Response txResponse =
+        transactionCommitService.commit(
+            command.prefix(), command.idempotencyKey(), txRequest, command.tableSupport());
+    if (txResponse == null
+        || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+      return txResponse;
     }
-    markStep(operationKey, "SNAPSHOT_CORE_OK");
 
-    Table committedTable =
-        applyTableUpdates(tableSupplier, tableId, updatePlan.spec(), updatePlan.mask());
-    markStep(operationKey, "TABLE_CORE_OK");
-    Map<String, String> ioProps =
-        committedTable == null
-            ? Map.of()
-            : FileIoFactory.filterIoProperties(committedTable.getPropertiesMap());
-    LOG.infof("Commit table io props namespace=%s.%s props=%s", namespace, table, ioProps);
-    StageCommitResult stageMaterialization = stageResolution.stageCommitResult();
+    return buildCommitResponse(command, req);
+  }
+
+  private Response buildCommitResponse(CommitCommand command, TableRequests.Commit req) {
+    ResourceId tableId =
+        tableLifecycleService.resolveTableId(
+            command.catalogName(), command.namespacePath(), command.table());
+    Table committedTable = tableLifecycleService.getTable(tableId);
+    TableGatewaySupport tableSupport = command.tableSupport();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
-    Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
-    CommitTableResponseDto stageAwareResponse =
-        responseBuilder.buildInitialResponse(
-            table, committedTable, tableId, stageMaterialization, req, tableSupport, metadata);
-    if (LOG.isDebugEnabled() && stageAwareResponse != null) {
-      TableMetadataView debugMeta = stageAwareResponse.metadata();
-      Long debugLastSeq = debugMeta == null ? null : debugMeta.lastSequenceNumber();
-      String debugPropSeq =
-          debugMeta == null || debugMeta.properties() == null
-              ? null
-              : debugMeta.properties().get("last-sequence-number");
-      LOG.debugf(
-          "Commit response sequence debug namespace=%s table=%s reqSeq=%s metaSeq=%s propSeq=%s",
-          namespace, table, responseBuilder.maxSequenceNumber(req), debugLastSeq, debugPropSeq);
-    }
-    var sideEffects =
-        sideEffectService.finalizeCommitResponse(
-            namespace, table, tableId, committedTable, stageAwareResponse, false);
-    if (sideEffects.hasError()) {
-      return sideEffects.error();
-    }
-    CommitTableResponseDto responseDto = sideEffects.response();
 
-    ResourceId connectorId =
-        sideEffectService.synchronizeConnector(
-            tableSupport,
-            prefix,
-            namespacePath,
-            namespaceId,
-            catalogId,
-            table,
-            committedTable,
-            responseDto == null ? null : responseDto.metadata(),
-            responseDto == null ? null : responseDto.metadataLocation(),
-            idempotencyKey);
-    syncExternalSnapshotsIfNeeded(
-        tableSupport,
-        tableId,
-        namespacePath,
-        table,
-        committedTable,
-        responseDto,
-        req,
-        idempotencyKey);
-    syncSnapshotMetadataFromCommit(
-        tableSupport, tableId, namespacePath, table, committedTable, responseDto, idempotencyKey);
-    runConnectorSync(tableSupport, connectorId, namespacePath, table);
-    markStep(operationKey, "METADATA_SYNC_TRIGGERED");
+    Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
+    CommitTableResponseDto initialResponse =
+        responseBuilder.buildInitialResponse(
+            command.table(), committedTable, tableId, null, req, tableSupport, metadata);
+
+    CommitTableResponseDto responseDto = initialResponse;
+    if (!responseBuilder.containsSnapshotUpdates(req)) {
+      syncExternalSnapshotsIfNeeded(
+          tableSupport,
+          tableId,
+          command.namespacePath(),
+          command.table(),
+          committedTable,
+          responseDto,
+          req,
+          command.idempotencyKey());
+      syncSnapshotMetadataFromCommit(
+          tableSupport,
+          tableId,
+          command.namespacePath(),
+          command.table(),
+          committedTable,
+          responseDto,
+          command.idempotencyKey());
+    }
 
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
-            table,
-            committedTable,
-            tableId,
-            stageMaterialization,
-            req,
-            tableSupport,
-            removedSnapshotIds);
-    if (responseDto != null && responseDto.metadataLocation() != null) {
-      finalResponse =
-          responseBuilder.preferRequestedMetadata(finalResponse, responseDto.metadataLocation());
-    }
+            command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
     if (finalResponse == null
         || finalResponse.metadata() == null
         || finalResponse.metadataLocation() == null
@@ -205,82 +137,21 @@ public class TableCommitService {
           Response.Status.INTERNAL_SERVER_ERROR);
     }
 
-    Response.ResponseBuilder builder = Response.ok(finalResponse);
-    TableMetadataView finalMetadata = finalResponse == null ? null : finalResponse.metadata();
-    Long finalSnapshotId = finalMetadata == null ? null : finalMetadata.currentSnapshotId();
-    int finalSnapshotCount =
-        finalMetadata == null || finalMetadata.snapshots() == null
-            ? 0
-            : finalMetadata.snapshots().size();
-    LOG.infof(
-        "Commit response for %s.%s tableId=%s currentSnapshot=%s snapshotCount=%d",
-        namespace,
-        table,
-        committedTable.hasResourceId() ? committedTable.getResourceId().getId() : "<missing>",
-        finalSnapshotId == null ? "<null>" : finalSnapshotId,
-        finalSnapshotCount);
-    logStageCommit(
-        stageMaterialization,
-        nonBlank(
-            stageResolution.materializedStageId(),
-            stageMaterializationService.resolveStageId(stageId, transactionId)),
-        namespace,
-        table,
-        finalResponse == null ? null : finalResponse.metadata());
-    markStep(operationKey, "RESPONSE_BUILT");
-    return builder.build();
+    return Response.ok(finalResponse).build();
   }
 
-  private void markStep(OperationKey key, String step) {
-    if (key == null || commitOperationTracker == null) {
-      return;
+  private Table loadCurrentTable(CommitCommand command) {
+    try {
+      ResourceId tableId =
+          tableLifecycleService.resolveTableId(
+              command.catalogName(), command.namespacePath(), command.table());
+      return tableLifecycleService.getTable(tableId);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return null;
+      }
+      throw e;
     }
-    commitOperationTracker.markStep(key, step);
-  }
-
-  private OperationKey operationKey(CommitCommand command) {
-    String operationId = nonBlank(command.transactionId(), command.idempotencyKey());
-    if (operationId == null || operationId.isBlank()) {
-      return null;
-    }
-    String accountId = accountContext == null ? null : accountContext.getAccountId();
-    if (accountId == null || accountId.isBlank()) {
-      return null;
-    }
-    String scope =
-        "table:"
-            + command.prefix()
-            + ":"
-            + command.catalogName()
-            + ":"
-            + String.join(".", command.namespacePath())
-            + "."
-            + command.table();
-    return new OperationKey(accountId, scope, operationId.trim());
-  }
-
-  private void logStageCommit(
-      StageCommitResult stageMaterialization,
-      String stageId,
-      String namespace,
-      String table,
-      TableMetadataView metadata) {
-    if (stageMaterialization == null) {
-      return;
-    }
-    Table staged = stageMaterialization.table();
-    String tableId =
-        staged != null && staged.hasResourceId() ? staged.getResourceId().getId() : "<missing>";
-    String snapshotStr =
-        metadata == null || metadata.currentSnapshotId() == null
-            ? "<null>"
-            : metadata.currentSnapshotId().toString();
-    int snapshotCount =
-        metadata == null || metadata.snapshots() == null ? 0 : metadata.snapshots().size();
-    LOG.infof(
-        "Stage commit satisfied for %s.%s tableId=%s stageId=%s currentSnapshot=%s"
-            + " snapshotCount=%d",
-        namespace, table, tableId, stageId, snapshotStr, snapshotCount);
   }
 
   private void syncExternalSnapshotsIfNeeded(
@@ -388,33 +259,11 @@ public class TableCommitService {
     return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
   }
 
-  public MaterializeMetadataResult materializeMetadata(
-      String namespace,
-      ResourceId tableId,
-      String table,
-      Table tableRecord,
-      TableMetadataView metadata,
-      String metadataLocation) {
-    return sideEffectService.materializeMetadata(
-        namespace, tableId, table, tableRecord, metadata, metadataLocation);
-  }
-
   public void runConnectorSync(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName) {
-    if (LOG.isDebugEnabled()) {
-      String namespace =
-          namespacePath == null
-              ? "<missing>"
-              : (namespacePath.isEmpty() ? "<empty>" : String.join(".", namespacePath));
-      String connector =
-          connectorId == null || connectorId.getId().isBlank() ? "<missing>" : connectorId.getId();
-      LOG.debugf(
-          "Connector sync request namespace=%s table=%s connectorId=%s",
-          namespace, tableName == null ? "<missing>" : tableName, connector);
-    }
     try {
       sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
     } catch (Throwable e) {
@@ -443,37 +292,6 @@ public class TableCommitService {
       String transactionId,
       TableRequests.Commit request,
       TableGatewaySupport tableSupport) {}
-
-  private Supplier<Table> createTableSupplier(Table stagedTable, ResourceId tableId) {
-    return new Supplier<>() {
-      private Table cached = stagedTable;
-
-      @Override
-      public Table get() {
-        if (cached == null) {
-          cached = tableLifecycleService.getTable(tableId);
-        }
-        return cached;
-      }
-    };
-  }
-
-  private Table applyTableUpdates(
-      Supplier<Table> tableSupplier,
-      ResourceId tableId,
-      TableSpec.Builder spec,
-      FieldMask.Builder mask) {
-    if (mask.getPathsCount() == 0) {
-      return tableSupplier.get();
-    }
-    UpdateTableRequest.Builder updateRequest =
-        UpdateTableRequest.newBuilder().setTableId(tableId).setSpec(spec).setUpdateMask(mask);
-    return tableLifecycleService.updateTable(updateRequest.build());
-  }
-
-  private static String nonBlank(String primary, String fallback) {
-    return primary != null && !primary.isBlank() ? primary : fallback;
-  }
 
   private boolean isDeltaReadOnlyCommitBlocked(Table table) {
     if (table == null || tableFormatSupport == null || config == null) {

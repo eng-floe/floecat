@@ -31,6 +31,7 @@ import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
+import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
 import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -56,6 +58,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.LinkedHashMap;
@@ -194,19 +197,29 @@ public class TableGatewaySupport {
     return config.connectorIntegrationEnabled();
   }
 
+  public Connector loadConnector(ResourceId connectorId) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return null;
+    }
+    var response =
+        connectorClient.getConnector(
+            GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+    if (response == null || !response.hasConnector()) {
+      LOG.warnf("Connector lookup returned empty response for %s", connectorId.getId());
+      return null;
+    }
+    return response.getConnector();
+  }
+
   public void updateConnectorMetadata(ResourceId connectorId, String metadataLocation) {
     if (connectorId == null || metadataLocation == null || metadataLocation.isBlank()) {
       return;
     }
     try {
-      var response =
-          connectorClient.getConnector(
-              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
-      if (response == null || !response.hasConnector()) {
-        LOG.warnf("Connector lookup returned empty response for %s", connectorId.getId());
+      Connector existing = loadConnector(connectorId);
+      if (existing == null) {
         return;
       }
-      Connector existing = response.getConnector();
       Map<String, String> props = new LinkedHashMap<>(existing.getPropertiesMap());
       props.put("external.metadata-location", metadataLocation);
       props.put("iceberg.source", "filesystem");
@@ -597,6 +610,113 @@ public class TableGatewaySupport {
     return response.getConnector().getResourceId();
   }
 
+  public Connector buildConnectorForTransactionCreate(
+      String prefix,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String tableName,
+      ResourceId tableId,
+      ResourceId connectorId,
+      String metadataLocation,
+      String tableLocation,
+      Map<String, String> ioProperties) {
+    if (connectorId == null
+        || connectorId.getId().isBlank()
+        || tableId == null
+        || tableId.getId().isBlank()
+        || catalogId == null
+        || catalogId.getId().isBlank()
+        || namespaceId == null
+        || namespaceId.getId().isBlank()
+        || tableName == null
+        || tableName.isBlank()) {
+      return null;
+    }
+    NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
+    SourceSelector source =
+        SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setTableId(tableId)
+            .setTableDisplayName(tableName)
+            .build();
+    String namespaceFq = String.join(".", namespacePath);
+    var now = Timestamps.fromMillis(System.currentTimeMillis());
+
+    IcebergGatewayConfig.RegisterConnectorTemplate template = connectorTemplateFor(prefix);
+    if (template != null && template.uri() != null && !template.uri().isBlank()) {
+      String displayName =
+          template
+              .displayName()
+              .orElseGet(
+                  () ->
+                      "register:"
+                          + prefix
+                          + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
+                          + "."
+                          + tableName);
+      Map<String, String> props = new LinkedHashMap<>();
+      if (template.properties() != null && !template.properties().isEmpty()) {
+        props.putAll(template.properties());
+      }
+      props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(template.captureStatistics()));
+      Connector.Builder builder =
+          Connector.newBuilder()
+              .setResourceId(connectorId)
+              .setDisplayName(displayName)
+              .setKind(ConnectorKind.CK_ICEBERG)
+              .setUri(template.uri())
+              .setSource(source)
+              .setDestination(dest)
+              .setAuth(
+                  template
+                      .auth()
+                      .map(this::toAuthConfig)
+                      .orElse(AuthConfig.newBuilder().setScheme("none").build()))
+              .putAllProperties(props)
+              .setState(ConnectorState.CS_ACTIVE)
+              .setCreatedAt(now)
+              .setUpdatedAt(now);
+      template.description().ifPresent(builder::setDescription);
+      return builder.build();
+    }
+
+    String displayName =
+        "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
+    String connectorUri =
+        (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("external.metadata-location", metadataLocation);
+    props.put("iceberg.source", "filesystem");
+    props.put("external.table-name", tableName);
+    props.put("external.namespace", namespaceFq);
+    props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
+    if (ioProperties != null && !ioProperties.isEmpty()) {
+      ioProperties.forEach(
+          (k, v) -> {
+            if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
+              props.put(k, v.trim());
+            }
+          });
+    }
+    return Connector.newBuilder()
+        .setResourceId(connectorId)
+        .setDisplayName(displayName)
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setUri(connectorUri)
+        .setSource(source)
+        .setDestination(dest)
+        .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+        .putAllProperties(props)
+        .setState(ConnectorState.CS_ACTIVE)
+        .setCreatedAt(now)
+        .setUpdatedAt(now)
+        .build();
+  }
+
   public void updateTableUpstream(
       ResourceId tableId,
       List<String> namespacePath,
@@ -624,8 +744,27 @@ public class TableGatewaySupport {
 
   public void runSyncMetadataCapture(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
+    runSyncCapture(connectorId, namespacePath, tableName, false, false);
+  }
+
+  public SyncCaptureResponse runSyncMetadataCaptureStrict(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
+    return runSyncCapture(connectorId, namespacePath, tableName, false, true);
+  }
+
+  public void runSyncStatisticsCapture(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
+    runSyncCapture(connectorId, namespacePath, tableName, true, false);
+  }
+
+  private SyncCaptureResponse runSyncCapture(
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      boolean includeStatistics,
+      boolean strict) {
     if (connectorId == null || tableName == null || tableName.isBlank()) {
-      return;
+      return SyncCaptureResponse.getDefaultInstance();
     }
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
@@ -634,7 +773,7 @@ public class TableGatewaySupport {
           SyncCaptureRequest.newBuilder()
               .setConnectorId(connectorId)
               .setDestinationTableDisplayName(tableName)
-              .setIncludeStatistics(false);
+              .setIncludeStatistics(includeStatistics);
       if (namespacePath != null && !namespacePath.isEmpty()) {
         request.addDestinationNamespacePaths(
             NamespacePath.newBuilder().addAllSegments(namespacePath).build());
@@ -649,12 +788,24 @@ public class TableGatewaySupport {
           response.getTablesScanned(),
           response.getTablesChanged(),
           response.getErrors());
+      if (strict && response.getErrors() > 0) {
+        throw new RuntimeException(
+            "sync capture reported errors="
+                + response.getErrors()
+                + " for connector="
+                + connectorId.getId());
+      }
+      return response;
     } catch (Throwable e) {
+      if (strict) {
+        throw e instanceof RuntimeException runtime ? runtime : new RuntimeException(e);
+      }
       LOG.warnf(
           e,
           "Sync metadata capture failed for connector %s table %s",
           connectorId.getId(),
           tableName);
+      return SyncCaptureResponse.getDefaultInstance();
     }
   }
 

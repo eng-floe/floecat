@@ -133,6 +133,33 @@ class TableMetadataBuilderTest {
   }
 
   @Test
+  void currentSnapshotFallsBackToMainRefWhenMissing() {
+    TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
+    Table table =
+        fixture.table().toBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
+            .build();
+    Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
+    long current = fixture.metadata().getCurrentSnapshotId();
+    IcebergMetadata metadata =
+        fixture.metadata().toBuilder()
+            .setCurrentSnapshotId(-1L)
+            .putRefs(
+                "main", IcebergRef.newBuilder().setSnapshotId(current).setType("branch").build())
+            .build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog("orders", table, props, metadata, fixture.snapshots());
+
+    assertEquals(current, view.currentSnapshotId());
+    assertEquals(Long.toString(current), view.properties().get("current-snapshot-id"));
+    @SuppressWarnings("unchecked")
+    Map<String, Object> mainRef = (Map<String, Object>) view.refs().get("main");
+    assertNotNull(mainRef);
+    assertEquals(current, ((Number) mainRef.get("snapshot-id")).longValue());
+  }
+
+  @Test
   void refsNormalizeLegacyMaxReferenceAgeKeyFromProperties() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
     Table table =

@@ -52,6 +52,8 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -743,6 +745,30 @@ public class ReconcilerService {
 
   private static String fq(List<String> segments) {
     return String.join(".", segments);
+  }
+
+  private String snapshotPointerById(String accountId, String tableId, long snapshotId) {
+    return "/accounts/"
+        + encodePathSegment(accountId)
+        + "/tables/"
+        + encodePathSegment(tableId)
+        + "/snapshots/by-id/"
+        + String.format("%019d", snapshotId);
+  }
+
+  private String snapshotPointerByTime(
+      String accountId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
+    long inverted = Long.MAX_VALUE - Math.max(0L, upstreamCreatedAtMs);
+    return "/accounts/"
+        + encodePathSegment(accountId)
+        + "/tables/"
+        + encodePathSegment(tableId)
+        + "/snapshots/by-time/"
+        + String.format("%019d-%019d", inverted, snapshotId);
+  }
+
+  private String encodePathSegment(String value) {
+    return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
   }
 
   private ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {

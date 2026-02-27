@@ -30,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -45,9 +46,13 @@ public class TableUpdatePlanner {
 
   @Inject CommitRequirementService commitRequirementService;
   @Inject TablePropertyService tablePropertyService;
+  @Inject SnapshotMetadataService snapshotMetadataService;
 
   public UpdatePlan planUpdates(
-      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -64,7 +69,7 @@ public class TableUpdatePlanner {
         commitRequirementService.validateRequirements(
             command.tableSupport(),
             req.requirements(),
-            tableSupplier,
+            requirementTableSupplier,
             this::validationError,
             this::conflictError);
     if (requirementError != null) {
@@ -92,12 +97,85 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
       mask.addPaths("properties");
     }
     return UpdatePlan.success(spec, mask);
+  }
+
+  public UpdatePlan planUpdates(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planUpdates(command, tableSupplier, tableSupplier, tableId);
+  }
+
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      ResourceId tableId) {
+    TableRequests.Commit req = command.request();
+    TableSpec.Builder spec = TableSpec.newBuilder();
+    FieldMask.Builder mask = FieldMask.newBuilder();
+    if (req == null) {
+      return UpdatePlan.failure(spec, mask, validationError("Request body is required"));
+    }
+    if (req.requirements() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("requirements are required"));
+    }
+    if (req.updates() == null) {
+      return UpdatePlan.failure(spec, mask, validationError("updates are required"));
+    }
+    Response requirementError =
+        commitRequirementService.validateRequirements(
+            command.tableSupport(),
+            req.requirements(),
+            requirementTableSupplier,
+            this::validationError,
+            this::conflictError);
+    if (requirementError != null) {
+      return UpdatePlan.failure(spec, mask, requirementError);
+    }
+    Map<String, String> mergedProps = null;
+    if (tablePropertyService.hasPropertyUpdates(req)) {
+      if (mergedProps == null) {
+        mergedProps = tablePropertyService.ensurePropertyMap(tableSupplier, null);
+      }
+      Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
+      if (updateError != null) {
+        return UpdatePlan.failure(spec, mask, updateError);
+      }
+    }
+    Response locationError =
+        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
+    if (locationError != null) {
+      return UpdatePlan.failure(spec, mask, locationError);
+    }
+    String unsupported = unsupportedUpdateAction(req);
+    if (unsupported != null) {
+      return UpdatePlan.failure(
+          spec, mask, validationError("unsupported commit update action: " + unsupported));
+    }
+    Response snapshotValidation = snapshotMetadataService.validateSnapshotUpdates(req.updates());
+    if (snapshotValidation != null) {
+      return UpdatePlan.failure(spec, mask, snapshotValidation);
+    }
+    mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    mergedProps = stripFileIoProperties(mergedProps);
+    if (mergedProps != null) {
+      spec.clearProperties().putAllProperties(mergedProps);
+      mask.addPaths("properties");
+    }
+    return UpdatePlan.success(spec, mask);
+  }
+
+  public UpdatePlan planTransactionUpdates(
+      TableCommitService.CommitCommand command, Supplier<Table> tableSupplier, ResourceId tableId) {
+    return planTransactionUpdates(command, tableSupplier, tableSupplier, tableId);
   }
 
   public record UpdatePlan(TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
@@ -131,9 +209,12 @@ public class TableUpdatePlanner {
       return null;
     }
     for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        return "<missing>";
+      }
       String action = asString(update == null ? null : update.get("action"));
-      if (action == null) {
-        continue;
+      if (action == null || action.isBlank()) {
+        return "<missing>";
       }
       if (!"set-properties".equals(action)
           && !"remove-properties".equals(action)
@@ -280,6 +361,101 @@ public class TableUpdatePlanner {
       }
     }
     return targetProps;
+  }
+
+  private Map<String, String> applyTableDefinitionPropertyUpdates(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps =
+        mergedProps == null
+            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
+            : mergedProps;
+    boolean mutated = false;
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if ("upgrade-format-version".equals(action)) {
+        Integer version = asInteger(update.get("format-version"));
+        if (version != null && version > 0) {
+          targetProps.put("format-version", Integer.toString(version));
+          mutated = true;
+        }
+      } else if ("add-schema".equals(action)) {
+        Integer lastColumnId = asInteger(update.get("last-column-id"));
+        if (lastColumnId != null && lastColumnId >= 0) {
+          targetProps.put("last-column-id", Integer.toString(lastColumnId));
+          mutated = true;
+        }
+      } else if ("set-current-schema".equals(action)) {
+        Integer schemaId = asInteger(update.get("schema-id"));
+        if (schemaId != null && schemaId >= 0) {
+          targetProps.put("current-schema-id", Integer.toString(schemaId));
+          mutated = true;
+        }
+      } else if ("add-spec".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> spec =
+            update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (spec != null) {
+          Integer partitionFieldMax = maxPartitionFieldId(spec);
+          if (partitionFieldMax != null && partitionFieldMax >= 0) {
+            targetProps.put("last-partition-id", Integer.toString(partitionFieldMax));
+            mutated = true;
+          }
+        }
+      } else if ("set-default-spec".equals(action)) {
+        Integer specId = asInteger(update.get("spec-id"));
+        if (specId != null && specId >= 0) {
+          targetProps.put("default-spec-id", Integer.toString(specId));
+          mutated = true;
+        }
+      } else if ("set-default-sort-order".equals(action)) {
+        Integer orderId = asInteger(update.get("sort-order-id"));
+        if (orderId != null && orderId >= 0) {
+          targetProps.put("default-sort-order-id", Integer.toString(orderId));
+          mutated = true;
+        }
+      } else if ("set-location".equals(action)) {
+        String location = asString(update.get("location"));
+        if (location != null && !location.isBlank()) {
+          targetProps.put("location", location);
+          mutated = true;
+        }
+      }
+    }
+    if (!mutated) {
+      return mergedProps;
+    }
+    return targetProps;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Integer maxPartitionFieldId(Map<String, Object> spec) {
+    if (spec == null || spec.isEmpty()) {
+      return null;
+    }
+    Object rawFields = spec.get("fields");
+    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+      return 0;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
+        continue;
+      }
+      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("field-id"));
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max == null ? 0 : max;
   }
 
   private Map<String, Map<String, Object>> loadStoredRefs(

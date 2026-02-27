@@ -7,7 +7,7 @@ This module (`protocol-gateway/iceberg-rest`) implements the Apache Iceberg REST
 ## Scope and Goals
 
 - **Protocol adapter:** expose the official Iceberg REST catalog surface while reusing Floecat’s authentication, tenancy, logging, and connector infrastructure.
-- **Parity with Iceberg REST spec:** support namespace CRUD, table CRUD/commit/register, view CRUD/commit, scan planning (`/plan` + `/tasks`), table-level credentials, and transactional commit via staged payloads.
+- **Parity with Iceberg REST spec:** support namespace CRUD, table CRUD/commit/register, view CRUD/commit, scan planning (`/plan` + `/tasks`), table-level credentials, and transactional commit via Iceberg table-change payloads.
 - **Single catalog focus:** one Floecat catalog per REST prefix (multi-catalog ACID transactions remain out of scope).
 - **Reusability:** keep Iceberg-specific plumbing isolated, allowing additional protocols to reuse the same staging, metadata, and connector services.
 
@@ -25,12 +25,12 @@ Non-goals for the current release:
 | --- | --- | --- |
 | `/v1/config` | Gateway config only | Synthesizes prefixes, default properties, supported endpoints; `warehouse` is optional and defaults to the configured prefix. |
 | Namespace CRUD | `NamespaceService` | Includes property mutation and existence checks (HEAD); create returns 200 with `CreateNamespaceResponse`. |
-| Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create/commit leverage staged metadata plus `TableService`. Register imports Iceberg metadata via `TableMetadataImportService`. |
+| Table CRUD, commit, register | `TableService`, `SnapshotService`, connector services | Stage-create uses staged metadata; commit delegates to transactional commit orchestration. Register imports Iceberg metadata via `TableMetadataImportService`. |
 | Table rename/move | `TableService.UpdateTable` | Uses field masks for namespace + display name changes. |
 | `/tables/{table}/plan`, `/tasks` | `QueryService`, `PlanTaskManager` | Runs synchronous planning, persists result, and exposes per-task payloads; failures return error responses (not 200). |
 | `/tables/{table}/credentials` | `ConnectorClient` + gateway defaults | Returns vended credentials based on access delegation mode (defaults to gateway config). |
 | `/tables/{table}/metrics` | Logging only | Validates payloads; wiring to `TableStatisticsService` is future work (spec has no stats surface). |
-| `/tables/rename`, `/transactions/commit` | Table services + staging store | Replays staged payloads per Iceberg semantics; idempotent request replay, no cross-table ACID. |
+| `/tables/rename`, `/transactions/commit` | Table services + transaction service | Validates requirement/update payloads and commits all table changes in one backend transaction (with idempotent replay). |
 | View CRUD/commit/rename | `ViewService` + `ViewMetadataService` | Maintains Iceberg view schemas, versions, and summaries. |
 | `/oauth/tokens` | Disabled | Floecat uses existing auth headers; endpoint returns OAuth error `unsupported_grant_type` (400). |
 | `/register-view` | `ViewService` + `ViewMetadataService` | Registers an Iceberg view from a metadata location. |
@@ -71,7 +71,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
 4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` updates connector records and resolves storage credentials returned to clients. Post-commit connector sync/reconcile triggers are invoked directly and enqueue durable reconcile jobs in the service-side `ReconcileJobStore`. Snapshot format metadata is backfilled directly from the committed `metadata.json`.
+6. **Connectors & credentials:** `TableCommitSideEffectService` resolves connector IDs and runs best-effort post-commit sync calls (stats capture, reconcile trigger, snapshot pruning where applicable). These side effects happen after backend apply and do not change commit success/failure once core apply is complete.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -97,15 +97,15 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
 
 ### Commit (`POST /tables/{table}`)
-1. Resolve catalog/table IDs. If table is missing but exactly one staged entry exists, implicitly use that stage-id; otherwise require the client to provide `stage-id`.
-2. `CommitStageResolver` fetches/validates the staged payload (assert-create, assert-current-schema, etc.) and either returns a resolved table ID or synthesizes a new table via `StageCommitProcessor`.
-3. `TableUpdatePlanner` diff’s the incoming requirements/updates against the current table metadata, building a `TableSpec` + `FieldMask` for catalog updates. Snapshot changes fan out through `SnapshotMetadataService`.
-4. `TableCommitService` sends the update, materializes metadata files via `MaterializeMetadataService`, tags the commit with the final metadata location, and logs stage outcomes.
-5. `TableCommitSideEffectService` syncs connector metadata (create/update external connectors, update table upstream). Post-core reconcile/sync actions are invoked directly and rely on the durable reconciler job store for retry and recovery.
-6. Response: `CommitTableResponseDto` containing the resolved metadata location, metadata view, config overrides, and storage credentials. ETags include the metadata location and representation selector (`snapshots=all|refs`) so clients can safely cache per response shape.
+1. Resolve catalog/namespace/table context and reject unsupported commit modes (for example Delta read-only tables).
+2. Wrap the table commit payload into a single-entry `TransactionCommitRequest` and delegate to `TransactionCommitService`.
+3. `TransactionCommitService` begins/loads a backend transaction, validates idempotency + request-hash replay semantics, validates requirements/updates, and plans table/snapshot pointer changes with optimistic preconditions.
+4. Metadata materialization and `metadata-location` update are prepared before backend apply so pointer updates commit atomically with table state.
+5. Backend `prepareTransaction` + `commitTransaction` apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.
+6. The table endpoint then builds and returns `CommitTableResponseDto` (HTTP 200) from committed state.
 
 Idempotency behavior:
-- `Iceberg-Transaction-Id` is used as the primary replay key; `Idempotency-Key` is fallback when transaction id is absent.
+- `Idempotency-Key` is the request replay key used by commit orchestration.
 - Same key + same payload replays the prior response.
 - Same key + different payload returns `409 Conflict`.
 - `IN_PROGRESS` records are guarded with timeout; stale records can be retried.
@@ -113,7 +113,13 @@ Idempotency behavior:
 
 ### `/transactions/commit`
 
-Receives Iceberg’s transaction payload (list of table changes referencing stage-ids). The gateway replays each staged change sequentially using the same path as per-table commits. Requirements (assert stage, schema, snapshot refs, etc.) are enforced per change. The endpoint is idempotent but **does not** offer multi-table ACID guarantees or cross-table rollback.
+Receives Iceberg’s transaction payload (`table-changes` with `identifier`, `requirements`, `updates`).
+The gateway validates each change, builds one backend transaction containing all table and snapshot
+pointer mutations, and commits atomically. The endpoint returns:
+
+- `204` only when backend state is `TS_APPLIED`.
+- `409` for deterministic conflicts/failed preconditions.
+- `5xx` when commit state is unknown.
 
 ---
 
@@ -194,8 +200,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 ## Commit Guarantees (Current)
 
 - **Single-table core state:** synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.
-- **Post-core side effects (connector sync/reconcile trigger):** eventual consistency with retries. These are not atomic with the core commit.
-- **Multi-table `/transactions/commit`:** sequential staged replay with idempotent request handling; no true cross-table atomic commit/rollback yet.
+- **Post-core side effects (stats sync/reconcile trigger/snapshot prune):** best-effort after backend apply. These are not atomic with the core commit.
+- **Multi-table `/transactions/commit`:** atomic backend transaction across all table changes in one request.
 
 ---
 
@@ -224,8 +230,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   and `aws.profile_path` when clients expect AWS SDK profile-based access.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
-- **Multi-table ACID:** `/transactions/commit` replays staged changes sequentially without cross-table rollback.
-- **Durability of side-effect orchestration:** current retry queue is gateway-managed; long-term durable orchestration is planned to move to a service-owned queue/store.
+- **Multi-table ACID scope:** atomic within a single `/transactions/commit` backend transaction; request validation rejects duplicate table identifiers.
+- **Side-effect orchestration:** post-commit sync/prune actions are best-effort and can lag committed table state.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---

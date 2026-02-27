@@ -27,7 +27,7 @@ import jakarta.ws.rs.core.Response;
 public class NamespaceDeleteService {
   @Inject NamespaceClient namespaceClient;
 
-  public Response delete(NamespaceRequestContext namespaceContext) {
+  public Response delete(NamespaceRequestContext namespaceContext, String idempotencyKey) {
     namespaceClient.deleteNamespace(
         DeleteNamespaceRequest.newBuilder()
             .setNamespaceId(namespaceContext.namespaceId())

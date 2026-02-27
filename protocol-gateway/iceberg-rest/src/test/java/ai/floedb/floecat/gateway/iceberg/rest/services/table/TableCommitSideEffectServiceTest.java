@@ -16,162 +16,34 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService.MaterializeResult;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 class TableCommitSideEffectServiceTest {
-  private static final TrinoFixtureTestSupport.Fixture FIXTURE =
-      TrinoFixtureTestSupport.simpleFixture();
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
-  private final MaterializeMetadataService materializeMetadataService =
-      mock(MaterializeMetadataService.class);
-  private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
-
-  @BeforeEach
-  void setUp() {
-    service.materializeMetadataService = materializeMetadataService;
-    service.tableLifecycleService = tableLifecycleService;
-  }
 
   @Test
-  void materializeMetadataUpdatesTableProperties() throws Exception {
-    TableMetadataView metadata =
-        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-    TableMetadataView materialized =
-        metadata.withMetadataLocation(
-            "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json");
-    when(materializeMetadataService.materialize(
-            "cat.db",
-            "orders",
-            metadata,
-            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json"))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", materialized));
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
-                    .build())
-            .build();
-    MaterializeMetadataResult result =
-        service.materializeMetadata(
-            "cat.db",
-            tableId,
-            "orders",
-            table,
-            metadata,
-            "s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-
-    assertNull(result.error());
-    assertSame(materialized, result.metadata());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json", result.metadataLocation());
-
-    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableLifecycleService).updateTable(captor.capture());
-    UpdateTableRequest request = captor.getValue();
-    assertEquals(tableId, request.getTableId());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-abc.metadata.json",
-        request.getSpec().getPropertiesOrThrow("metadata-location"));
-  }
-
-  @Test
-  void materializeMetadataSkipsWhenNoLocationProvided() throws Exception {
-    TableMetadataView base =
-        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-    Map<String, String> props = new LinkedHashMap<>(base.properties());
-    props.remove("metadata-location");
-    props.remove("location");
-    // No metadata-location, no table location, no upstream URI — truly no location
-    // available so materialization cannot derive a target and should skip cleanly.
-    TableMetadataView noLocation =
-        new TableMetadataView(
-            base.formatVersion(),
-            base.tableUuid(),
-            null,
-            null,
-            base.lastUpdatedMs(),
-            props,
-            base.lastColumnId(),
-            base.currentSchemaId(),
-            base.defaultSpecId(),
-            base.lastPartitionId(),
-            base.defaultSortOrderId(),
-            base.currentSnapshotId(),
-            base.lastSequenceNumber(),
-            base.schemas(),
-            base.partitionSpecs(),
-            base.sortOrders(),
-            base.refs(),
-            base.snapshotLog(),
-            base.metadataLog(),
-            base.statistics(),
-            base.partitionStatistics(),
-            base.snapshots());
-    when(materializeMetadataService.materialize("cat.db", "orders", noLocation, null))
-        .thenReturn(new MaterializeResult(null, noLocation));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", null, "orders", null, noLocation, null);
-
-    assertNull(result.error());
-    assertSame(noLocation, result.metadata());
-    assertNull(result.metadataLocation());
-    verify(tableLifecycleService, never()).updateTable(any());
-  }
-
-  @Test
-  void runConnectorSyncIfPossibleTriggersCaptureAndReconcile() {
+  void runConnectorSyncTriggersCaptureAndReconcile() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
-    List<String> namespacePath = List.of("db1", "nested");
 
-    service.runConnectorSync(tableSupport, connectorId, namespacePath, "orders");
+    service.runConnectorSync(tableSupport, connectorId, List.of("db"), "orders");
 
-    verify(tableSupport).runSyncMetadataCapture(connectorId, namespacePath, "orders");
-    verify(tableSupport).triggerScopedReconcile(connectorId, namespacePath, "orders");
+    verify(tableSupport).runSyncMetadataCapture(connectorId, List.of("db"), "orders");
+    verify(tableSupport).triggerScopedReconcile(connectorId, List.of("db"), "orders");
   }
 
   @Test
-  void runConnectorSyncIfPossibleSkipsBlankIds() {
+  void runConnectorSyncSkipsBlankConnectorIds() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     ResourceId emptyId = ResourceId.newBuilder().setId("").build();
 
@@ -182,268 +54,13 @@ class TableCommitSideEffectServiceTest {
   }
 
   @Test
-  void applyMaterializationResultUpdatesMetadataAndLocation() throws Exception {
-    TableMetadataView original = metadata("s3://orig/location");
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
-
-    TableMetadataView materialized = original.withMetadataLocation("s3://new/location");
-    MaterializeMetadataResult materializedResult =
-        MaterializeMetadataResult.success(materialized, "s3://new/location");
-
-    CommitTableResponseDto updated =
-        service.applyMaterializationResult(response, materializedResult);
-
-    assertEquals("s3://new/location", updated.metadataLocation());
-    assertSame(materialized, updated.metadata());
-  }
-
-  @Test
-  void applyMaterializationResultPreservesLocationWhenResultIsBlank() throws Exception {
-    TableMetadataView original = metadata("s3://orig/location");
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
-    MaterializeMetadataResult materializedResult =
-        MaterializeMetadataResult.success(original, null);
-
-    CommitTableResponseDto updated =
-        service.applyMaterializationResult(response, materializedResult);
-
-    assertEquals("s3://orig/location", updated.metadataLocation());
-    assertSame(original, updated.metadata());
-  }
-
-  @Test
-  void applyMaterializationResultReturnsOriginalWhenUnchanged() throws Exception {
-    TableMetadataView original = metadata("s3://orig/location");
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", original);
-    MaterializeMetadataResult materializedResult =
-        MaterializeMetadataResult.success(original, "s3://orig/location");
-
-    CommitTableResponseDto result =
-        service.applyMaterializationResult(response, materializedResult);
-
-    assertSame(response, result);
-  }
-
-  @Test
-  void synchronizeConnectorUsesMetadataViewWhenLocationMissing() {
+  void runConnectorStatsSyncSkipsWhenConnectorIntegrationDisabled() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    TableMetadataView metadata = metadata("s3://metadata/location");
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setConnectorId(ResourceId.newBuilder().setId("connector-1").build())
-                    .build())
-            .build();
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
+    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
 
-    service.synchronizeConnector(
-        tableSupport,
-        "core",
-        List.of("db"),
-        ResourceId.newBuilder().setId("ns").build(),
-        ResourceId.newBuilder().setId("cat").build(),
-        "orders",
-        table,
-        metadata,
-        null,
-        "idem");
+    service.runConnectorStatsSyncAttempt(tableSupport, connectorId, List.of("db"), "orders");
 
-    verify(tableSupport).updateConnectorMetadata(any(), eq("s3://metadata/location"));
-  }
-
-  @Test
-  void finalizeCommitResponseMaterializationAndSynchronizesConnector() throws Exception {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setUri("s3://existing/location")
-                    .build())
-            .build();
-    TableMetadataView metadata = metadata("s3://orig/location");
-    TableMetadataView materialized =
-        metadata.withMetadataLocation("s3://orig/metadata/00001-new.metadata.json");
-    when(materializeMetadataService.materialize("cat.db", "orders", metadata, "s3://orig/location"))
-        .thenReturn(
-            new MaterializeResult("s3://orig/metadata/00001-new.metadata.json", materialized));
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
-
-    TableCommitSideEffectService.PostCommitResult result =
-        service.finalizeCommitResponse(
-            "cat.db", "orders", table.getResourceId(), table, response, false);
-
-    assertNull(result.error());
-    assertEquals(
-        "s3://orig/metadata/00001-new.metadata.json", result.response().metadataLocation());
-  }
-
-  @Test
-  void finalizeCommitResponseSkipsMaterializationWhenRequested() throws Exception {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
-            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG).build())
-            .build();
-    TableMetadataView metadata = metadata("s3://orig/location");
-    CommitTableResponseDto response = new CommitTableResponseDto("s3://orig/location", metadata);
-
-    TableCommitSideEffectService.PostCommitResult result =
-        service.finalizeCommitResponse(
-            "cat.db", "orders", table.getResourceId(), table, response, true);
-
-    assertNull(result.error());
-    assertSame(response, result.response());
-    verify(materializeMetadataService, never()).materialize(any(), any(), any(), any());
-  }
-
-  @Test
-  void materializeMetadataDerivesLocationFromTableWhenMissing() throws Exception {
-    // Simulate a gRPC connector-driven table: has a location property but NO
-    // metadata-location. Both the explicit param and metadata.metadataLocation()
-    // are null — this is the bug scenario where materialization silently skips.
-    TableMetadataView base =
-        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-    Map<String, String> props = new LinkedHashMap<>(base.properties());
-    props.remove("metadata-location");
-    props.put("location", "s3://warehouse/tables/orders");
-    TableMetadataView noMetadataLocation =
-        new TableMetadataView(
-            base.formatVersion(),
-            base.tableUuid(),
-            "s3://warehouse/tables/orders",
-            null,
-            base.lastUpdatedMs(),
-            props,
-            base.lastColumnId(),
-            base.currentSchemaId(),
-            base.defaultSpecId(),
-            base.lastPartitionId(),
-            base.defaultSortOrderId(),
-            base.currentSnapshotId(),
-            base.lastSequenceNumber(),
-            base.schemas(),
-            base.partitionSpecs(),
-            base.sortOrders(),
-            base.refs(),
-            base.snapshotLog(),
-            base.metadataLog(),
-            base.statistics(),
-            base.partitionStatistics(),
-            base.snapshots());
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("location", "s3://warehouse/tables/orders")
-            .build();
-    // The derived metadata-location directory should be passed to materialize
-    TableMetadataView materialized =
-        noMetadataLocation.withMetadataLocation(
-            "s3://warehouse/tables/orders/metadata/00001-new.metadata.json");
-    when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            eq(noMetadataLocation),
-            eq("s3://warehouse/tables/orders/metadata/")))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", tableId, "orders", table, noMetadataLocation, null);
-
-    assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
-        result.metadataLocation(),
-        "metadata-location must be derived from table location for first commit");
-
-    // Verify that updateTableMetadataProperties was called to persist it
-    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableLifecycleService).updateTable(captor.capture());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
-        captor.getValue().getSpec().getPropertiesOrThrow("metadata-location"));
-  }
-
-  @Test
-  void materializeMetadataDerivesLocationFromUpstreamUri() throws Exception {
-    // Same scenario but the location comes from the table's upstream URI
-    TableMetadataView base =
-        metadata("s3://warehouse/tables/orders/metadata/00000-abc.metadata.json");
-    Map<String, String> props = new LinkedHashMap<>(base.properties());
-    props.remove("metadata-location");
-    TableMetadataView noMetadataLocation =
-        new TableMetadataView(
-            base.formatVersion(),
-            base.tableUuid(),
-            null,
-            null,
-            base.lastUpdatedMs(),
-            props,
-            base.lastColumnId(),
-            base.currentSchemaId(),
-            base.defaultSpecId(),
-            base.lastPartitionId(),
-            base.defaultSortOrderId(),
-            base.currentSnapshotId(),
-            base.lastSequenceNumber(),
-            base.schemas(),
-            base.partitionSpecs(),
-            base.sortOrders(),
-            base.refs(),
-            base.snapshotLog(),
-            base.metadataLog(),
-            base.statistics(),
-            base.partitionStatistics(),
-            base.snapshots());
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .setUri("s3://warehouse/tables/orders")
-                    .build())
-            .build();
-    TableMetadataView materialized =
-        noMetadataLocation.withMetadataLocation(
-            "s3://warehouse/tables/orders/metadata/00001-new.metadata.json");
-    when(materializeMetadataService.materialize(
-            eq("cat.db"),
-            eq("orders"),
-            eq(noMetadataLocation),
-            eq("s3://warehouse/tables/orders/metadata/")))
-        .thenReturn(
-            new MaterializeResult(
-                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", materialized));
-
-    MaterializeMetadataResult result =
-        service.materializeMetadata("cat.db", tableId, "orders", table, noMetadataLocation, null);
-
-    assertNull(result.error());
-    assertEquals(
-        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
-        result.metadataLocation(),
-        "metadata-location must be derived from upstream URI for first commit");
-  }
-
-  private TableMetadataView metadata(String metadataLocation) {
-    TableMetadataView base =
-        TableMetadataBuilder.fromCatalog(
-            "orders",
-            FIXTURE.table(),
-            new LinkedHashMap<>(FIXTURE.table().getPropertiesMap()),
-            FIXTURE.metadata(),
-            FIXTURE.snapshots());
-    return base.withMetadataLocation(metadataLocation);
+    verify(tableSupport, never()).runSyncStatisticsCapture(any(), any(), any());
   }
 }

@@ -745,7 +745,7 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables")
         .then()
         .statusCode(200)
-        .body("metadata.'format-version'", equalTo(1))
+        .body("metadata.'format-version'", equalTo(2))
         .body("metadata.'partition-specs'[0].'spec-id'", equalTo(0))
         .body("metadata.'sort-orders'[0].'order-id'", equalTo(0));
   }
@@ -782,7 +782,9 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200)
         .body("metadata.'format-version'", equalTo(2))
-        .body("'metadata-location'", equalTo(differentMetadata.getMetadataLocation()));
+        .body(
+            "'metadata-location'",
+            equalTo(created.getPropertiesOrDefault("metadata-location", null)));
   }
 
   @Test
@@ -1400,7 +1402,12 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200);
 
-    given().when().delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(204);
+    given()
+        .header("Idempotency-Key", "017F22E2-79B0-7CC3-98C4-DC0C0C07398F")
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1")
+        .then()
+        .statusCode(204);
   }
 
   @Test

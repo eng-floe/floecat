@@ -4,7 +4,7 @@
 The `service/` module is the authoritative runtime for Floecat. It hosts the Quarkus gRPC server,
 implements every public API from [`proto/`](proto.md), manages multi-account security contexts,
 translates requests into pointer/blob mutations, assembles execution scan bundles, and operates background
-tasks such as idempotency + CAS blob GC and repository seeding.
+tasks such as idempotency/CAS/pointer/transaction/reconcile-job GC and repository seeding.
 
 It is structured for testability: each gRPC service delegates to repository abstractions, which in
 turn encapsulate storage backends. Tests such as
@@ -25,7 +25,8 @@ query lifecycle / scan bundle logic.
 │  │                ViewRepository, SnapshotRepository, StatsRepository,     │
 │  │                ConnectorRepository, AccountRepository,                   │
 │  │                IdempotencyRepositoryImpl)                               │
-│  └─ GC & Bootstrap (IdempotencyGc, CasBlobGc, SeedRunner)                  │
+│  └─ GC & Bootstrap (IdempotencyGc, CasBlobGc, PointerGc, TransactionGc,    │
+│                  ReconcileJobGc, SeedRunner)                                │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,7 +46,8 @@ query lifecycle / scan bundle logic.
   `QueryServiceImpl`).
 - `service/query/graph` – MetadataGraph cache + immutable node models shared by planners/executors
   (see [`docs/metadata-graph.md`](metadata-graph.md)).
-- `service/gc` – Scheduled cleanup of stale idempotency entries.
+- `service/gc` – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
+  artifacts, and durable reconcile jobs.
 - `service/bootstrap` – Optional seeding of demo accounts and catalog data.
 - `service/metrics` – `ServiceTelemetryInterceptor` + `StorageUsageMetrics` for Micrometer integration.
 
@@ -128,7 +130,10 @@ configured location, caches them by engine kind, and exposes them through
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
 idempotency records in slices to avoid starvation. `CasBlobGc` enumerates blob prefixes and removes
-CAS blobs with no remaining pointers once they exceed the configured min-age. `SeedRunner`
+CAS blobs with no remaining pointers once they exceed the configured min-age. `PointerGc` removes
+orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
+intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
+terminal jobs. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding now runs two reconcile passes per fixture scope:

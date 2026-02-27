@@ -81,8 +81,8 @@ class ReconcileJobGcTest {
         historyBlob,
         "{\"old\":true}".getBytes(StandardCharsets.UTF_8),
         "application/json; charset=UTF-8");
-    putPointer(dedupePointer, Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-    putPointer(readyPointer, Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    putPointer(dedupePointer, canonicalBlob);
+    putPointer(readyPointer, canonicalBlob);
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
@@ -114,7 +114,9 @@ class ReconcileJobGcTest {
     String staleReadyKey =
         Keys.reconcileReadyPointerByDue(
             System.currentTimeMillis(), ACCOUNT_ID, "lane-stale", jobId + "-stale");
-    putPointer(staleReadyKey, Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    String canonicalBlob =
+        pointers.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).orElseThrow().getBlobUri();
+    putPointer(staleReadyKey, canonicalBlob);
 
     var result = gc.runReadySlice("");
 
@@ -148,7 +150,7 @@ class ReconcileJobGcTest {
         record.toString().getBytes(StandardCharsets.UTF_8),
         "application/json; charset=UTF-8");
     putPointer(canonicalKey, blobUri);
-    putPointer(lookupKey, canonicalKey);
+    putPointer(lookupKey, blobUri);
     return blobUri;
   }
 

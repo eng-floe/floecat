@@ -53,16 +53,22 @@ public abstract class KvPointerStore implements PointerStore {
   }
 
   @Override
+  public boolean compareAndSetBatch(List<CasOp> ops) {
+    return pointers.compareAndSetBatch(ops).await().indefinitely();
+  }
+
+  @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-
     Optional<String> token =
         (pageToken == null || pageToken.isBlank()) ? Optional.empty() : Optional.of(pageToken);
 
     var page = pointers.listByPrefix(prefix, limit, token).await().indefinitely();
 
-    nextTokenOut.setLength(0);
-    page.nextToken().ifPresent(nextTokenOut::append);
+    if (nextTokenOut != null) {
+      nextTokenOut.setLength(0);
+      page.nextToken().ifPresent(nextTokenOut::append);
+    }
 
     return List.copyOf(page.items());
   }

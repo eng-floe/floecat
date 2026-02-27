@@ -157,6 +157,45 @@ class TableUpdatePlannerTest {
     verify(propertyService, never()).applyPropertyUpdates(any(), any());
   }
 
+  @Test
+  void planUpdatesPersistsTableDefinitionProperties() {
+    when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
+    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of("action", "upgrade-format-version", "format-version", 2),
+                Map.of(
+                    "action", "add-schema", "last-column-id", 2, "schema", Map.of("schema-id", 0)),
+                Map.of("action", "set-current-schema", "schema-id", 0),
+                Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
+                Map.of("action", "set-default-spec", "spec-id", 0),
+                Map.of("action", "set-default-sort-order", "sort-order-id", 0),
+                Map.of(
+                    "action",
+                    "set-location",
+                    "location",
+                    "s3://floecat/iceberg/duckdb_mutation_smoke")));
+
+    TableUpdatePlanner.UpdatePlan plan =
+        planner.planUpdates(
+            command(request),
+            tableSupplier(),
+            ResourceId.newBuilder().setId("cat:db:orders").build());
+
+    assertFalse(plan.hasError());
+    Map<String, String> props = plan.spec().build().getPropertiesMap();
+    assertEquals("2", props.get("format-version"));
+    assertEquals("2", props.get("last-column-id"));
+    assertEquals("0", props.get("current-schema-id"));
+    assertEquals("0", props.get("last-partition-id"));
+    assertEquals("0", props.get("default-spec-id"));
+    assertEquals("0", props.get("default-sort-order-id"));
+    assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", props.get("location"));
+  }
+
   private Supplier<Table> tableSupplier() {
     Table table = Table.newBuilder().putProperties("existing", "value").build();
     return () -> table;

@@ -165,19 +165,14 @@ public class ReconcileJobGc {
         }
         scanned++;
 
-        String canonicalKey = dedupe.getBlobUri();
-        Pointer canonical = pointerStore.get(canonicalKey).orElse(null);
-        if (canonical == null) {
+        JsonNode record = readRecordByBlobUri(dedupe.getBlobUri());
+        if (record == null) {
           if (pointerStore.compareAndDelete(dedupe.getKey(), dedupe.getVersion())) {
             dedupeDeleted++;
           }
           continue;
         }
 
-        JsonNode record = readRecord(canonical);
-        if (record == null) {
-          continue;
-        }
         if (TERMINAL_STATES.contains(text(record, "state"))) {
           if (pointerStore.compareAndDelete(dedupe.getKey(), dedupe.getVersion())) {
             dedupeDeleted++;
@@ -229,17 +224,11 @@ public class ReconcileJobGc {
         }
         scanned++;
 
-        String canonicalKey = ready.getBlobUri();
-        Pointer canonical = pointerStore.get(canonicalKey).orElse(null);
-        if (canonical == null) {
+        JsonNode record = readRecordByBlobUri(ready.getBlobUri());
+        if (record == null) {
           if (pointerStore.compareAndDelete(ready.getKey(), ready.getVersion())) {
             deleted++;
           }
-          continue;
-        }
-
-        JsonNode record = readRecord(canonical);
-        if (record == null) {
           continue;
         }
 
@@ -264,7 +253,11 @@ public class ReconcileJobGc {
   }
 
   private JsonNode readRecord(Pointer canonical) {
-    byte[] payload = blobStore.get(canonical.getBlobUri());
+    return readRecordByBlobUri(canonical.getBlobUri());
+  }
+
+  private JsonNode readRecordByBlobUri(String blobUri) {
+    byte[] payload = blobStore.get(blobUri);
     if (payload == null || payload.length == 0) {
       return null;
     }

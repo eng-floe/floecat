@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.api.request;
 
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
@@ -34,8 +35,13 @@ public final class TableRequests {
       @JsonProperty("stage-create") Boolean stageCreate) {}
 
   public record Commit(
+      @JsonProperty("identifier") TableIdentifierDto identifier,
       @JsonProperty("requirements") List<Map<String, Object>> requirements,
-      @JsonProperty("updates") List<Map<String, Object>> updates) {}
+      @JsonProperty("updates") List<Map<String, Object>> updates) {
+    public Commit(List<Map<String, Object>> requirements, List<Map<String, Object>> updates) {
+      this(null, requirements, updates);
+    }
+  }
 
   public record Register(
       String name,

@@ -41,6 +41,8 @@ public class TablePropertyService {
     if (props == null || props.isEmpty()) {
       return;
     }
+    // Per REST contract, clients cannot override metadata-location in commit updates.
+    // The service computes and publishes pointer changes atomically during commit.
     if (props.remove("metadata-location") != null) {
       LOG.debug("Ignored commit metadata-location property override");
     }
@@ -151,12 +153,6 @@ public class TablePropertyService {
       return null;
     }
     UpstreamRef upstream = existing.getUpstream();
-    if (!upstream.hasConnectorId() || upstream.getConnectorId().getId().isBlank()) {
-      LOG.debug(
-          "Skipping set-location update for table without upstream connector (will be applied once"
-              + " connector is registered)");
-      return null;
-    }
     UpstreamRef.Builder builder = upstream.toBuilder().setUri(location);
     spec.setUpstream(builder.build());
     mask.addPaths("upstream.uri");

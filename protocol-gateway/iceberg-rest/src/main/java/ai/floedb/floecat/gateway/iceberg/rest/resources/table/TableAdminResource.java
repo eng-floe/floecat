@@ -20,6 +20,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
@@ -49,6 +50,7 @@ public class TableAdminResource {
   @Inject Config mpConfig;
   @Inject TableRenameService tableRenameService;
   @Inject TransactionCommitService transactionCommitService;
+  @Inject CommitTrafficLogger commitTrafficLogger;
   @Inject TableClient tableClient;
   @Inject SnapshotClient snapshotClient;
   @Inject ConnectorClient connectorClient;
@@ -75,9 +77,12 @@ public class TableAdminResource {
   public Response commitTransaction(
       @PathParam("prefix") String prefix,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
-      @HeaderParam("Iceberg-Transaction-Id") String transactionId,
       @NotNull @Valid TransactionCommitRequest request) {
-    return transactionCommitService.commit(
-        prefix, idempotencyKey, transactionId, request, tableSupport);
+    String path = String.format("/v1/%s/transactions/commit", prefix);
+    commitTrafficLogger.logRequest("POST", path, request);
+    Response response =
+        transactionCommitService.commit(prefix, idempotencyKey, request, tableSupport);
+    commitTrafficLogger.logResponse("POST", path, response.getStatus(), response.getEntity());
+    return response;
   }
 }

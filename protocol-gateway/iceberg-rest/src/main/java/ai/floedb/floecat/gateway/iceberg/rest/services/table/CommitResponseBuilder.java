@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersionForSnapshots;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -123,6 +124,7 @@ public class CommitResponseBuilder {
         preferRequestedMetadata(stageAwareResponse, resolveRequestedMetadataLocation(req));
     stageAwareResponse = preferRequestedSequence(stageAwareResponse, req);
     stageAwareResponse = preferSnapshotSequence(stageAwareResponse, req);
+    stageAwareResponse = mergeTableDefinitionUpdates(stageAwareResponse, req);
     return mergeSnapshotUpdates(stageAwareResponse, req);
   }
 
@@ -154,7 +156,138 @@ public class CommitResponseBuilder {
     }
     finalResponse = normalizeMetadataLocation(finalResponse);
     finalResponse = preferRequestedMetadata(finalResponse, resolveRequestedMetadataLocation(req));
+    finalResponse = mergeTableDefinitionUpdates(finalResponse, req);
     return finalResponse;
+  }
+
+  public CommitTableResponseDto mergeTableDefinitionUpdates(
+      CommitTableResponseDto response, TableRequests.Commit req) {
+    if (response == null || response.metadata() == null || req == null || req.updates() == null) {
+      return response;
+    }
+    TableMetadataView metadata = response.metadata();
+    Integer formatVersion = metadata.formatVersion();
+    Integer lastColumnId = metadata.lastColumnId();
+    Integer currentSchemaId = metadata.currentSchemaId();
+    Integer defaultSpecId = metadata.defaultSpecId();
+    Integer defaultSortOrderId = metadata.defaultSortOrderId();
+    String tableLocation = metadata.location();
+    List<Map<String, Object>> schemas =
+        metadata.schemas() == null ? new ArrayList<>() : new ArrayList<>(metadata.schemas());
+    List<Map<String, Object>> partitionSpecs =
+        metadata.partitionSpecs() == null
+            ? new ArrayList<>()
+            : new ArrayList<>(metadata.partitionSpecs());
+    List<Map<String, Object>> sortOrders =
+        metadata.sortOrders() == null ? new ArrayList<>() : new ArrayList<>(metadata.sortOrders());
+
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if ("upgrade-format-version".equals(action)) {
+        Integer requested = asInteger(update.get("format-version"));
+        if (requested != null) {
+          formatVersion = requested;
+        }
+      } else if ("set-location".equals(action)) {
+        String requestedLocation = asString(update.get("location"));
+        if (requestedLocation != null && !requestedLocation.isBlank()) {
+          tableLocation = requestedLocation;
+        }
+      } else if ("add-schema".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> schema =
+            update.get("schema") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (schema != null && !schema.isEmpty()) {
+          upsertById(schemas, new LinkedHashMap<>(schema), "schema-id");
+        }
+        Integer reqLastColumn = asInteger(update.get("last-column-id"));
+        if (reqLastColumn != null) {
+          lastColumnId = reqLastColumn;
+        }
+      } else if ("set-current-schema".equals(action)) {
+        Integer schemaId = asInteger(update.get("schema-id"));
+        if (schemaId != null) {
+          currentSchemaId = schemaId;
+        }
+      } else if ("add-spec".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> spec =
+            update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (spec != null && !spec.isEmpty()) {
+          upsertById(partitionSpecs, new LinkedHashMap<>(spec), "spec-id");
+        }
+      } else if ("set-default-spec".equals(action)) {
+        Integer specId = asInteger(update.get("spec-id"));
+        if (specId != null) {
+          defaultSpecId = specId;
+        }
+      } else if ("add-sort-order".equals(action)) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> sortOrder =
+            update.get("sort-order") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+        if (sortOrder != null && !sortOrder.isEmpty()) {
+          upsertById(sortOrders, new LinkedHashMap<>(sortOrder), "order-id");
+        }
+      } else if ("set-default-sort-order".equals(action)) {
+        Integer sortOrderId = asInteger(update.get("sort-order-id"));
+        if (sortOrderId != null) {
+          defaultSortOrderId = sortOrderId;
+        }
+      }
+    }
+    schemas = dedupeById(schemas, "schema-id");
+    partitionSpecs = dedupeById(partitionSpecs, "spec-id");
+    sortOrders = dedupeById(sortOrders, "order-id");
+
+    Map<String, String> props =
+        metadata.properties() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(metadata.properties());
+    props.put("format-version", Integer.toString(formatVersion));
+    if (lastColumnId != null) {
+      props.put("last-column-id", Integer.toString(lastColumnId));
+    }
+    if (currentSchemaId != null) {
+      props.put("current-schema-id", Integer.toString(currentSchemaId));
+    }
+    if (defaultSpecId != null) {
+      props.put("default-spec-id", Integer.toString(defaultSpecId));
+    }
+    if (defaultSortOrderId != null) {
+      props.put("default-sort-order-id", Integer.toString(defaultSortOrderId));
+    }
+    if (tableLocation != null && !tableLocation.isBlank()) {
+      props.put("location", tableLocation);
+    }
+
+    TableMetadataView updated =
+        new TableMetadataView(
+            formatVersion,
+            metadata.tableUuid(),
+            tableLocation,
+            metadata.metadataLocation(),
+            metadata.lastUpdatedMs(),
+            Map.copyOf(props),
+            lastColumnId,
+            currentSchemaId,
+            defaultSpecId,
+            metadata.lastPartitionId(),
+            defaultSortOrderId,
+            metadata.currentSnapshotId(),
+            metadata.lastSequenceNumber(),
+            List.copyOf(schemas),
+            List.copyOf(partitionSpecs),
+            List.copyOf(sortOrders),
+            metadata.refs(),
+            metadata.snapshotLog(),
+            metadata.metadataLog(),
+            metadata.statistics(),
+            metadata.partitionStatistics(),
+            metadata.snapshots());
+    return commitResponse(updated);
   }
 
   public CommitTableResponseDto preferStageMetadata(
@@ -235,11 +368,19 @@ public class CommitResponseBuilder {
     if (response == null || response.metadata() == null) {
       return response;
     }
-    Long latestSequence = maxSequenceNumber(req);
-    if (latestSequence == null || latestSequence <= 0) {
+    Long requestedSequence = maxSequenceNumber(req);
+    if (requestedSequence == null || requestedSequence <= 0) {
       return response;
     }
     TableMetadataView metadata = response.metadata();
+    Long existingSequence = metadata.lastSequenceNumber();
+    Long latestSequence =
+        existingSequence == null
+            ? requestedSequence
+            : Math.max(existingSequence, requestedSequence);
+    if (existingSequence != null && existingSequence >= latestSequence) {
+      return response;
+    }
     Map<String, String> props =
         metadata.properties() == null
             ? new LinkedHashMap<>()
@@ -347,16 +488,11 @@ public class CommitResponseBuilder {
     List<Map<String, Object>> updatedSnapshots =
         merged.isEmpty() ? List.of() : List.copyOf(merged.values());
     Long requestSequence = maxSequenceNumber(req);
-    Long maxSequence =
-        requestSequence != null && requestSequence > 0
-            ? requestSequence
-            : maxSequenceFromSnapshots(updatedSnapshots);
+    Long snapshotSequence = maxSequenceFromSnapshots(updatedSnapshots);
+    Long existingSequence = metadata.lastSequenceNumber();
+    Long maxSequence = maxNonNull(snapshotSequence, requestSequence, existingSequence);
     Integer formatVersion = metadata.formatVersion();
-    if (requestSequence != null && requestSequence > 0) {
-      if (formatVersion == null || formatVersion < 2) {
-        formatVersion = 2;
-      }
-    }
+    formatVersion = normalizeFormatVersionForSnapshots(formatVersion, requestSequence);
     Long currentSnapshotId =
         metadata.currentSnapshotId() == null ? latestSnapshotId(updatedSnapshots) : null;
     Map<String, String> props =
@@ -503,6 +639,20 @@ public class CommitResponseBuilder {
     return max;
   }
 
+  private Long maxNonNull(Long... values) {
+    Long max = null;
+    if (values == null) {
+      return null;
+    }
+    for (Long value : values) {
+      if (value == null || value <= 0) {
+        continue;
+      }
+      max = max == null ? value : Math.max(max, value);
+    }
+    return max;
+  }
+
   private Long parseLong(Object value) {
     if (value == null) {
       return null;
@@ -519,6 +669,67 @@ public class CommitResponseBuilder {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private Integer asInteger(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    String text = value.toString();
+    if (text.isBlank()) {
+      return null;
+    }
+    try {
+      return Integer.parseInt(text);
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  private void upsertById(
+      List<Map<String, Object>> entries, Map<String, Object> candidate, String idKey) {
+    if (entries == null || candidate == null || candidate.isEmpty()) {
+      return;
+    }
+    Object candidateId = candidate.get(idKey);
+    if (candidateId == null) {
+      entries.add(candidate);
+      return;
+    }
+    for (int i = 0; i < entries.size(); i++) {
+      Map<String, Object> existing = entries.get(i);
+      if (existing == null) {
+        continue;
+      }
+      if (Objects.equals(existing.get(idKey), candidateId)) {
+        entries.set(i, candidate);
+        return;
+      }
+    }
+    entries.add(candidate);
+  }
+
+  private List<Map<String, Object>> dedupeById(List<Map<String, Object>> entries, String idKey) {
+    if (entries == null || entries.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>();
+    Set<Object> ids = new LinkedHashSet<>();
+    for (int i = entries.size() - 1; i >= 0; i--) {
+      Map<String, Object> entry = entries.get(i);
+      if (entry == null || entry.isEmpty()) {
+        continue;
+      }
+      Object id = entry.get(idKey);
+      if (id != null && !ids.add(id)) {
+        continue;
+      }
+      out.add(0, entry);
+    }
+    return out;
   }
 
   @SuppressWarnings("unchecked")

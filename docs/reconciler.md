@@ -10,9 +10,10 @@ block gRPC threads. The service triggers reconciliations via `Connectors.Trigger
 creates jobs in the reconciler’s store.
 
 ## Architecture & Responsibilities
-- **`ReconcileJobStore`** – Interface abstracting job persistence and leasing. The default
-  implementation (`InMemoryReconcileJobStore`) keeps jobs in-memory (separate stores can be added for
-  persistent or distributed queues).
+- **`ReconcileJobStore`** – Interface abstracting job persistence and leasing. In service runtime,
+  the default is the durable implementation (`DurableReconcileJobStore`) selected by
+  `floecat.reconciler.job-store=durable`; in-memory (`InMemoryReconcileJobStore`) remains available
+  for lightweight/local usage when `floecat.reconciler.job-store=memory`.
 - **`ReconcilerScheduler`** – Quarkus scheduled bean that polls the job store, leases a job,
   transitions it to running, invokes `ReconcilerService` in phases, and records success/failure stats.
 - **`ReconcilerService`** – Core orchestration:
@@ -49,8 +50,17 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
   job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
   success.
-- **Job leasing** – `InMemoryReconcileJobStore` tracks leased IDs to avoid double processing and only
-  transitions jobs to `JS_SUCCEEDED`/`JS_FAILED` after `ReconcilerScheduler` finishes the run.
+- **Job leasing** – `DurableReconcileJobStore` leases from persisted ready pointers, marks jobs
+  running/succeeded/failed through CAS updates, and reclaims expired leases on a best-effort interval.
+  Failed jobs are retried with backoff up to configured attempt limits before terminal failure.
+- **Durable pointer model** – Durable reconcile queue pointers (`/reconcile/jobs/by-id`,
+  `/accounts/by-id/reconcile/jobs/by-id`, `/accounts/by-id/reconcile/jobs/ready`, and
+  `/reconcile/dedupe`) are blob-backed and store the current reconcile job JSON blob URI. When a
+  job state transition writes a new canonical blob version, the store CAS-updates lookup/ready/dedupe
+  pointers to the same blob URI.
+- **GC ownership** – `ReconcileJobGc` remains responsible for reconcile lifecycle cleanup (terminal-state
+  queue/dedupe cleanup and retention-based deletion of old durable job records). `PointerGc` handles
+  structural orphan cleanup, but it does not enforce reconcile retention/state policy.
 
 ### Backend selection
 - `floecat.reconciler.backend` (default `local`) selects which backend implementation `ReconcilerService`
@@ -80,8 +90,14 @@ uses an `AtomicBoolean` guard to prevent concurrent runs within the same instanc
 
 ## Configuration & Extensibility
 - Scheduling cadence via `reconciler.pollEvery` (defaults to `1s`).
-- Swap out `ReconcileJobStore` for persistent backends by providing a CDI alternative and wiring it
-  in `ConnectorsImpl` (job ID references must remain stable for `GetReconcileJob`).
+- Job store selection:
+  - `floecat.reconciler.job-store=durable` (service default) uses persisted queue records plus
+    retry/lease tuning via:
+    `floecat.reconciler.job-store.max-attempts`, `base-backoff-ms`, `max-backoff-ms`, `lease-ms`,
+    `reclaim-interval-ms`, and `ready-scan-limit`.
+  - `floecat.reconciler.job-store=memory` uses the in-memory queue implementation.
+- Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
+  references must remain stable for `GetReconcileJob`).
 - Extend `ReconcilerService` to support partial selection (for example column filters) by inspecting
   `SourceSelector.columns`.
 - Add health checks/metrics by tapping into `ReconcileJobStore` stats or `MeterRegistry` in the

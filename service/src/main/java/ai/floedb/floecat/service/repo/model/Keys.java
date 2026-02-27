@@ -40,6 +40,7 @@ public final class Keys {
   public static final String SEG_STATS = "/stats/";
   public static final String SEG_IDEMPOTENCY = "/idempotency/";
   public static final String SEG_MARKERS = "/markers/";
+  public static final String SEG_TRANSACTIONS = "/transactions/";
 
   private static String req(String name, String v) {
     if (v == null || v.isBlank()) {
@@ -71,6 +72,10 @@ public final class Keys {
 
   private static String encode(String s) {
     return URLEncoder.encode(Objects.requireNonNull(s, "encode value"), StandardCharsets.UTF_8);
+  }
+
+  public static String encodeSegment(String s) {
+    return encode(s);
   }
 
   private static String joinPathSegments(List<String> segments) {
@@ -129,6 +134,86 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String sha = req("sha256", sha256);
     return String.format("/accounts/%s/account/%s.pb", encode(tid), encode(sha));
+  }
+
+  // ===== Transactions =====
+
+  public static String transactionPointerById(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return "/accounts/" + encode(tid) + "/transactions/by-id/" + encode(tx);
+  }
+
+  public static String transactionPointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/transactions/by-id/";
+  }
+
+  public static String transactionBlobUri(String accountId, String txId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/transactions/%s/transaction/%s.pb", encode(tid), encode(tx), encode(sha));
+  }
+
+  public static String transactionBlobPrefix(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return String.format("/accounts/%s/transactions/%s/transaction/", encode(tid), encode(tx));
+  }
+
+  public static String transactionIntentPointerByTarget(String accountId, String targetPointerKey) {
+    String tid = req("account_id", accountId);
+    String key = req("target_pointer_key", targetPointerKey);
+    return "/accounts/" + encode(tid) + "/transactions/by-target/" + encode(key);
+  }
+
+  public static String transactionIntentPointerByTargetPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/transactions/by-target/";
+  }
+
+  public static String transactionIntentPointerByTx(
+      String accountId, String txId, String targetPointerKey) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    String key = req("target_pointer_key", targetPointerKey);
+    return "/accounts/" + encode(tid) + "/transactions/" + encode(tx) + "/intents/" + encode(key);
+  }
+
+  public static String transactionIntentPointerByTxPrefix(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return "/accounts/" + encode(tid) + "/transactions/" + encode(tx) + "/intents/";
+  }
+
+  public static String transactionIntentBlobUri(String accountId, String txId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/transactions/%s/intent/%s.pb", encode(tid), encode(tx), encode(sha));
+  }
+
+  public static String transactionIntentBlobPrefix(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return String.format("/accounts/%s/transactions/%s/intent/", encode(tid), encode(tx));
+  }
+
+  public static String transactionObjectBlobUri(String accountId, String txId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/transactions/%s/objects/%s.bin", encode(tid), encode(tx), encode(sha));
+  }
+
+  public static String transactionObjectBlobPrefix(String accountId, String txId) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    return String.format("/accounts/%s/transactions/%s/objects/", encode(tid), encode(tx));
   }
 
   // ===== Catalog =====

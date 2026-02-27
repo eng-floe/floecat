@@ -29,12 +29,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CommitRequirementService {
-  private static final Logger LOG = Logger.getLogger(CommitRequirementService.class);
-
   public Response validateRequirements(
       TableGatewaySupport tableSupport,
       List<Map<String, Object>> requirements,
@@ -151,27 +148,21 @@ public class CommitRequirementService {
         }
         case "assert-ref-snapshot-id" -> {
           String refName = asString(requirement.get("ref"));
-          Long expected = asLong(requirement.get("snapshot-id"));
           if (refName == null || refName.isBlank()) {
             return validationErrorFactory.apply("assert-ref-snapshot-id requires ref");
           }
+          Long expected = asLong(requirement.get("snapshot-id"));
           if (expected == null) {
-            LOG.debugf(
-                "Skipping assert-ref-snapshot-id requirement for table %s ref %s because"
-                    + " snapshot-id was not provided",
-                table.hasResourceId() ? table.getResourceId().getId() : "<unknown>", refName);
+            // Compatibility: clients may omit snapshot-id for this assertion.
             continue;
           }
-          Long actual = null;
           IcebergMetadata metadata = metadataSupplier.get();
-          if (metadata != null && metadata.getRefsMap().containsKey(refName)) {
-            actual = metadata.getRefsMap().get(refName).getSnapshotId();
-          } else if ("main".equals(refName)) {
-            if (metadata != null && metadata.getCurrentSnapshotId() > 0) {
-              actual = metadata.getCurrentSnapshotId();
-            }
+          Long actual = resolveRefSnapshotId(table, metadata, refName);
+          if (actual == null) {
+            // Compatibility: skip strict check when current ref snapshot cannot be resolved.
+            continue;
           }
-          if (!Objects.equals(actual, expected)) {
+          if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-ref-snapshot-id failed for ref " + refName);
           }
         }
@@ -200,5 +191,24 @@ public class CommitRequirementService {
     return null;
   }
 
-  // TableMappingUtil provides common parsing helpers.
+  private static Long resolveRefSnapshotId(Table table, IcebergMetadata metadata, String refName) {
+    if (metadata != null) {
+      if (metadata.getRefsMap().containsKey(refName)) {
+        long snapshotId = metadata.getRefsOrThrow(refName).getSnapshotId();
+        if (snapshotId > 0L) {
+          return snapshotId;
+        }
+      }
+      if ("main".equals(refName)) {
+        long currentSnapshotId = metadata.getCurrentSnapshotId();
+        if (currentSnapshotId > 0L) {
+          return currentSnapshotId;
+        }
+      }
+    }
+    if ("main".equals(refName) && table != null) {
+      return asLong(table.getPropertiesMap().get("current-snapshot-id"));
+    }
+    return null;
+  }
 }

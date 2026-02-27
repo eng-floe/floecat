@@ -38,6 +38,8 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asL
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maybeInt;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersion;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersionForSnapshots;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -86,8 +88,13 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    String propertyMetadataLocation = MetadataLocationUtil.metadataLocation(props);
+    // The catalog pointer (table property) is the source of truth for current metadata location.
+    // Snapshot payload metadata is used as fallback only when pointer data is unavailable.
+    if (propertyMetadataLocation != null && !propertyMetadataLocation.isBlank()) {
+      metadataLocation = propertyMetadataLocation;
+    } else if (metadataLocation == null || metadataLocation.isBlank()) {
+      metadataLocation = propertyMetadataLocation;
     }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
     location = resolveTableLocation(location, metadataLocation);
@@ -131,12 +138,7 @@ public final class TableMetadataBuilder {
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
             : null;
-    if (formatVersion == null || formatVersion < 1) {
-      formatVersion = maybeInt(props.get("format-version"));
-    }
-    if (formatVersion == null || formatVersion < 1) {
-      formatVersion = 1;
-    }
+    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(props.get("format-version")));
     if (tableUuid == null) {
       String candidate = props.get("table-uuid");
       if (candidate != null && !candidate.isBlank()) {
@@ -246,13 +248,15 @@ public final class TableMetadataBuilder {
     if (lastSequenceNumber == null || lastSequenceNumber < 0) {
       lastSequenceNumber = 0L;
     }
-    if (maxSnapshotSequence != null
-        && maxSnapshotSequence > 0
-        && (formatVersion == null || formatVersion < 2)) {
-      formatVersion = 2;
-    }
+    formatVersion = normalizeFormatVersionForSnapshots(formatVersion, maxSnapshotSequence);
     Map<String, Object> refs = refs(metadata);
     refs = mergePropertyRefs(props, refs);
+    if (currentSnapshotId == null || currentSnapshotId < 0) {
+      Long mainRefSnapshotId = mainRefSnapshotId(refs);
+      if (mainRefSnapshotId != null && snapshotIds.contains(mainRefSnapshotId)) {
+        currentSnapshotId = mainRefSnapshotId;
+      }
+    }
     refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
     syncProperty(props, "table-uuid", tableUuid);
     syncOrRemove(props, "current-snapshot-id", currentSnapshotId);
@@ -349,10 +353,7 @@ public final class TableMetadataBuilder {
     if (defaultSortOrderId == null) {
       throw new IllegalArgumentException("write-order requires sort-order-id");
     }
-    Integer formatVersion = maybeInt(props.get("format-version"));
-    if (formatVersion == null || formatVersion < 1) {
-      formatVersion = 1;
-    }
+    Integer formatVersion = normalizeFormatVersion(maybeInt(props.get("format-version")), null);
     props.putIfAbsent("format-version", formatVersion.toString());
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
@@ -658,12 +659,21 @@ public final class TableMetadataBuilder {
             out.put(name, Map.copyOf(ref));
           });
     }
-    if (currentSnapshotId == null || currentSnapshotId < 0) {
-      out.remove("main");
-      return out;
+    if (currentSnapshotId != null && currentSnapshotId >= 0) {
+      out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
     }
-    out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
     return out;
+  }
+
+  private static Long mainRefSnapshotId(Map<String, Object> refs) {
+    if (refs == null || refs.isEmpty()) {
+      return null;
+    }
+    Object main = refs.get("main");
+    if (!(main instanceof Map<?, ?> map)) {
+      return null;
+    }
+    return asLong(map.get("snapshot-id"));
   }
 
   private static String nextMetadataFileName() {

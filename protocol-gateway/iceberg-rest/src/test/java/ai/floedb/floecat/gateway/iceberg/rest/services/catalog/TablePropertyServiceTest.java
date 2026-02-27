@@ -124,7 +124,7 @@ class TablePropertyServiceTest {
   }
 
   @Test
-  void applyLocationUpdateSkipsWithoutConnector() {
+  void applyLocationUpdateAppliesWithoutConnector() {
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
     Table table =
@@ -140,8 +140,8 @@ class TablePropertyServiceTest {
             List.of(Map.of("action", "set-location", "location", "s3://new/location")));
 
     assertNull(response);
-    assertTrue(mask.getPathsList().isEmpty(), "expected location update to be skipped");
-    assertFalse(spec.hasUpstream(), "upstream should not be mutated without connector");
+    assertEquals(List.of("upstream.uri"), mask.getPathsList());
+    assertEquals("s3://new/location", spec.getUpstream().getUri());
   }
 
   @Test

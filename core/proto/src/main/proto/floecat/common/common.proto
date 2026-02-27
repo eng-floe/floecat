@@ -40,6 +40,7 @@ enum ResourceKind {
   RK_CAST = 12;
   RK_COLLATION = 13;
   RK_AGGREGATE = 14;
+  RK_TRANSACTION = 15;
 }
 
 message ResourceId {
@@ -169,7 +170,7 @@ message IdempotencyKey {
 }
 
 message Precondition {
-  int64 expected_version = 1;
+  optional int64 expected_version = 1;
   string expected_etag = 2;
 }
 

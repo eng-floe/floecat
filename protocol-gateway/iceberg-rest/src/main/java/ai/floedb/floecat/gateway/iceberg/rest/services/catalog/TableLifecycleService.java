@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -105,9 +106,11 @@ public class TableLifecycleService {
   }
 
   public Table getTable(ResourceId tableId) {
-    return tableClient
-        .getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
-        .getTable();
+    return getTableResponse(tableId).getTable();
+  }
+
+  public GetTableResponse getTableResponse(ResourceId tableId) {
+    return tableClient.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
   }
 
   public Table updateTable(UpdateTableRequest request) {

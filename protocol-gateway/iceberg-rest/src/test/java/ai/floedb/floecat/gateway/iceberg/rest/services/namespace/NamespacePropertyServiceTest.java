@@ -57,6 +57,7 @@ class NamespacePropertyServiceTest {
     Response response =
         service.update(
             namespaceContext(),
+            null,
             new NamespacePropertiesRequest(List.of(), Map.of("polaris.internal", "x")));
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
@@ -71,6 +72,7 @@ class NamespacePropertyServiceTest {
     Response response =
         service.update(
             namespaceContext(),
+            null,
             new NamespacePropertiesRequest(List.of("polaris.internal"), Map.of()));
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
@@ -83,6 +85,7 @@ class NamespacePropertyServiceTest {
     Response response =
         service.update(
             namespaceContext(),
+            null,
             new NamespacePropertiesRequest(List.of("owner"), Map.of("owner", "team-a")));
 
     assertEquals(422, response.getStatus());
@@ -115,7 +118,7 @@ class NamespacePropertyServiceTest {
     NamespacePropertiesRequest request =
         new NamespacePropertiesRequest(List.of("region", "missing", "missing"), updates);
 
-    Response response = service.update(namespaceContext(), request);
+    Response response = service.update(namespaceContext(), null, request);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();
@@ -149,7 +152,7 @@ class NamespacePropertyServiceTest {
     when(namespaceClient.updateNamespace(any()))
         .thenReturn(UpdateNamespaceResponse.newBuilder().setNamespace(existing).build());
 
-    Response response = service.update(namespaceContext(), null);
+    Response response = service.update(namespaceContext(), null, null);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     NamespacePropertiesResponse body = (NamespacePropertiesResponse) response.getEntity();

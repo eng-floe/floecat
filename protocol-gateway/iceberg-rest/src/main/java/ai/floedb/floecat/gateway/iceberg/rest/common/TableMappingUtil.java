@@ -108,4 +108,24 @@ public final class TableMappingUtil {
     }
     return (second == null || second.isBlank()) ? null : second;
   }
+
+  public static Integer normalizeFormatVersion(Integer candidate, Integer fallback) {
+    Integer resolved = candidate;
+    if (resolved == null || resolved < 1) {
+      resolved = fallback;
+    }
+    if (resolved == null || resolved < 1) {
+      return 2;
+    }
+    return resolved;
+  }
+
+  public static Integer normalizeFormatVersionForSnapshots(
+      Integer formatVersion, Long sequenceNumber) {
+    Integer resolved = normalizeFormatVersion(formatVersion, null);
+    if (sequenceNumber != null && sequenceNumber > 0 && resolved < 2) {
+      return 2;
+    }
+    return resolved;
+  }
 }

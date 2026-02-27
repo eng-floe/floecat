@@ -31,6 +31,7 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HEAD;
+import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -87,17 +88,22 @@ public class NamespaceResource {
   }
 
   @POST
-  public Response create(@PathParam("prefix") String prefix, NamespaceRequests.Create req) {
+  public Response create(
+      @PathParam("prefix") String prefix,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
+      NamespaceRequests.Create req) {
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);
-    return namespaceCreateService.create(catalogContext, uriInfo, req);
+    return namespaceCreateService.create(catalogContext, uriInfo, idempotencyKey, req);
   }
 
   @Path("/{namespace}")
   @DELETE
   public Response delete(
-      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
+      @PathParam("prefix") String prefix,
+      @PathParam("namespace") String namespace,
+      @HeaderParam("Idempotency-Key") String idempotencyKey) {
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return namespaceDeleteService.delete(namespaceContext);
+    return namespaceDeleteService.delete(namespaceContext, idempotencyKey);
   }
 
   @Path("/{namespace}/properties")
@@ -105,8 +111,9 @@ public class NamespaceResource {
   public Response updateProperties(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
       NamespacePropertiesRequest req) {
     NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return namespacePropertyService.update(namespaceContext, req);
+    return namespacePropertyService.update(namespaceContext, idempotencyKey, req);
   }
 }
