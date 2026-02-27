@@ -25,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
@@ -59,11 +60,17 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
     given()
         .body("{\"namespace\":[\"analytics\"]}")
         .header("Content-Type", "application/json")
+        .header("Idempotency-Key", "017F22E2-79B0-7CC3-98C4-DC0C0C07398F")
         .when()
         .post("/v1/foo/namespaces")
         .then()
         .statusCode(200)
         .body("namespace[0]", equalTo("analytics"));
+
+    ArgumentCaptor<CreateNamespaceRequest> req =
+        ArgumentCaptor.forClass(CreateNamespaceRequest.class);
+    verify(namespaceStub).createNamespace(req.capture());
+    assertEquals("017F22E2-79B0-7CC3-98C4-DC0C0C07398F", req.getValue().getIdempotency().getKey());
   }
 
   @Test

@@ -198,24 +198,25 @@ public class TableResource {
     return tablePlanOrchestrationService.plan(tableContext, rawRequest, tableSupport);
   }
 
-  @Path("/tables/{table}/plan/{planId}")
+  @Path("/tables/{table}/plan/{plan-id}")
   @GET
   public Response fetchPlan(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @PathParam("planId") String planId) {
+      @PathParam("plan-id") String planId) {
     requestContextFactory.table(prefix, namespace, table);
     return tablePlanOrchestrationService.fetchPlan(planId);
   }
 
-  @Path("/tables/{table}/plan/{planId}")
+  @Path("/tables/{table}/plan/{plan-id}")
   @DELETE
   public Response cancelPlan(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
-      @PathParam("planId") String planId) {
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
+      @PathParam("plan-id") String planId) {
     requestContextFactory.table(prefix, namespace, table);
     return tablePlanOrchestrationService.cancelPlan(planId);
   }

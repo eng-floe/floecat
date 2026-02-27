@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.namespace;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespaceRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
@@ -36,7 +37,10 @@ public class NamespaceCreateService {
   @Inject NamespaceClient namespaceClient;
 
   public Response create(
-      CatalogRequestContext catalogContext, UriInfo uriInfo, NamespaceRequests.Create req) {
+      CatalogRequestContext catalogContext,
+      UriInfo uriInfo,
+      String idempotencyKey,
+      NamespaceRequests.Create req) {
     if (req == null || req.namespace() == null || req.namespace().isEmpty()) {
       return IcebergErrorResponses.validation("Namespace name must be provided");
     }
@@ -61,11 +65,13 @@ public class NamespaceCreateService {
       }
     }
 
-    Namespace created =
-        namespaceClient
-            .createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build())
-            .getNamespace();
+    CreateNamespaceRequest.Builder request = CreateNamespaceRequest.newBuilder().setSpec(spec);
+    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+      request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
+    }
+    Namespace created = namespaceClient.createNamespace(request.build()).getNamespace();
 
     return Response.ok(NamespaceResponseMapper.toInfo(created)).build();
   }
+
 }

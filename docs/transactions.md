@@ -1,11 +1,13 @@
 # Transactions (gRPC Core)
 
-This document describes Floecat's core gRPC transaction mechanism used for multi-table commits.
-It is the backend used by Iceberg REST `POST /v1/{prefix}/transactions/commit`.
+This document describes Floecat's core gRPC transaction mechanism used for Iceberg REST commits.
+It is the backend used by both:
+- `POST /v1/{prefix}/transactions/commit` (multi-table)
+- `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}` (single-table commit)
 
 ## Overview
 
-Transactions provide optimistic, pointer-CAS-based multi-table commit:
+Transactions provide optimistic, pointer-CAS-based atomic commit across one or more tables:
 
 - `BeginTransaction` creates a transaction in `TS_OPEN`.
 - `PrepareTransaction` validates changes, writes intent records, then moves to `TS_PREPARED`.
@@ -132,6 +134,17 @@ The Iceberg REST gateway uses this gRPC flow as follows:
 7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
 8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
 
+## REST Single-Table Commit Bridge (Current Behavior)
+
+Single-table commit uses the same backend transaction flow as multi-table commit, with a single
+planned table change:
+
+1. `TableCommitService` forwards the incoming table commit request to `TransactionCommitService`.
+2. `TransactionCommitService` runs begin/prepare/commit against the same gRPC transaction APIs
+   described above, using one `table-change` entry.
+3. Atomicity guarantees are therefore identical at the backend CAS/apply layer; only the REST
+   request/response envelope differs (single-table commit returns table metadata in its response).
+
 ## Failure and Concurrency Notes
 
 - Prepare may write blobs before intent creation; blob cleanup is intentionally skipped because blobs are content-addressed and may be shared.
@@ -146,3 +159,4 @@ The Iceberg REST gateway uses this gRPC flow as follows:
 - Intent applier: `service/src/main/java/ai/floedb/floecat/service/transaction/impl/TransactionIntentApplierSupport.java`
 - Intent repo: `service/src/main/java/ai/floedb/floecat/service/repo/impl/TransactionIntentRepository.java`
 - REST bridge: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/TransactionCommitService.java`
+- Single-table entrypoint: `protocol-gateway/iceberg-rest/src/main/java/ai/floedb/floecat/gateway/iceberg/rest/services/table/TableCommitService.java`

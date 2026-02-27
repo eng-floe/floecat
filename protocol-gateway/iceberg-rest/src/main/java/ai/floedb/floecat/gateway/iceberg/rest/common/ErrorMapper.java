@@ -66,6 +66,8 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
       case INVALID_ARGUMENT -> Response.Status.BAD_REQUEST;
       case PERMISSION_DENIED -> Response.Status.FORBIDDEN;
       case UNAUTHENTICATED -> Response.Status.UNAUTHORIZED;
+      case UNIMPLEMENTED -> Response.Status.NOT_ACCEPTABLE;
+      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED -> Response.Status.SERVICE_UNAVAILABLE;
       default -> Response.Status.INTERNAL_SERVER_ERROR;
     };
   }
@@ -104,6 +106,8 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
       case INVALID_ARGUMENT -> "ValidationException";
       case PERMISSION_DENIED -> "ForbiddenException";
       case UNAUTHENTICATED -> "UnauthorizedException";
+      case UNIMPLEMENTED -> "UnsupportedOperationException";
+      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED -> "ServiceUnavailableException";
       default -> status.getCode().name();
     };
   }

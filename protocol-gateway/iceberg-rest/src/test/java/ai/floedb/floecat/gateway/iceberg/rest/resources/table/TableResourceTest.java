@@ -1402,7 +1402,12 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200);
 
-    given().when().delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1").then().statusCode(204);
+    given()
+        .header("Idempotency-Key", "017F22E2-79B0-7CC3-98C4-DC0C0C07398F")
+        .when()
+        .delete("/v1/foo/namespaces/db/tables/orders/plan/plan-1")
+        .then()
+        .statusCode(204);
   }
 
   @Test

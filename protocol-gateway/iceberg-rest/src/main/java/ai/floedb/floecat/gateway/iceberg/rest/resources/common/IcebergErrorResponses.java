@@ -62,7 +62,7 @@ public final class IcebergErrorResponses {
 
   public static Response unsupported(String message) {
     return error(
-        message, "UnsupportedOperationException", Response.Status.NOT_IMPLEMENTED.getStatusCode());
+        message, "UnsupportedOperationException", Response.Status.NOT_ACCEPTABLE.getStatusCode());
   }
 
   public static Response failure(String message, String type, Response.Status status) {
@@ -89,6 +89,14 @@ public final class IcebergErrorResponses {
       case UNAUTHENTICATED -> {
         httpStatus = Response.Status.UNAUTHORIZED;
         type = "UnauthorizedException";
+      }
+      case UNIMPLEMENTED -> {
+        httpStatus = Response.Status.NOT_ACCEPTABLE;
+        type = "UnsupportedOperationException";
+      }
+      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED -> {
+        httpStatus = Response.Status.SERVICE_UNAVAILABLE;
+        type = "ServiceUnavailableException";
       }
       default -> {
         httpStatus = Response.Status.INTERNAL_SERVER_ERROR;
