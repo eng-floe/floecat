@@ -187,6 +187,7 @@ class LogicalTypeTest {
     assertThat(LogicalType.of(LogicalKind.TIMESTAMPTZ).toString()).isEqualTo("TIMESTAMPTZ");
     assertThat(LogicalType.of(LogicalKind.ARRAY).toString()).isEqualTo("ARRAY");
     assertThat(LogicalType.of(LogicalKind.JSON).toString()).isEqualTo("JSON");
+    assertThat(LogicalType.of(LogicalKind.INTERVAL).toString()).isEqualTo("INTERVAL");
   }
 
   @Test
@@ -200,6 +201,23 @@ class LogicalTypeTest {
     LogicalType t = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
     assertThat(t.temporalPrecision()).isEqualTo(3);
     assertThat(t.toString()).isEqualTo("TIMESTAMP(3)");
+  }
+
+  @Test
+  void intervalQualifierIsRenderedWhenPresent() {
+    LogicalType t = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
+    assertThat(t.intervalQualifier()).isEqualTo(IntervalQualifier.YEAR_MONTH);
+    assertThat(t.toString()).isEqualTo("INTERVAL YEAR TO MONTH");
+  }
+
+  @Test
+  void intervalQualifierPresenceIsPreserved() {
+    LogicalType unset = LogicalType.of(LogicalKind.INTERVAL);
+    assertThat(unset.intervalQualifier()).isNull();
+
+    LogicalType explicit = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+    assertThat(explicit.intervalQualifier()).isEqualTo(IntervalQualifier.UNSPECIFIED);
+    assertThat(unset).isNotEqualTo(explicit);
   }
 
   @Test
@@ -246,6 +264,13 @@ class LogicalTypeTest {
   void temporalPrecisionAffectsEquality() {
     LogicalType a = LogicalType.temporal(LogicalKind.TIMESTAMP, 3);
     LogicalType b = LogicalType.temporal(LogicalKind.TIMESTAMP, 6);
+    assertThat(a).isNotEqualTo(b);
+  }
+
+  @Test
+  void intervalQualifierAffectsEquality() {
+    LogicalType a = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
+    LogicalType b = LogicalType.interval(IntervalQualifier.DAY_TIME);
     assertThat(a).isNotEqualTo(b);
   }
 }

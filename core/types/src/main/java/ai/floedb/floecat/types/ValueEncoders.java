@@ -194,8 +194,7 @@ public final class ValueEncoders {
         throw new IllegalArgumentException(
             "min/max encoding is unsupported for non-stats-orderable type " + t.kind().name());
       case INTERVAL:
-        // INTERVAL is encoded as Base64 of its 12-byte wire representation (months/days/millis).
-        return Base64.getEncoder().encodeToString(asIntervalBytes(value));
+        return encodeInterval(t, value);
       case ARRAY:
       case MAP:
       case STRUCT:
@@ -248,6 +247,7 @@ public final class ValueEncoders {
       case BINARY:
         return Base64.getDecoder().decode(encoded);
       case INTERVAL:
+        return decodeInterval(t, encoded);
       case ARRAY:
       case MAP:
       case STRUCT:
@@ -319,25 +319,79 @@ public final class ValueEncoders {
         "BINARY value must be byte[] or ByteBuffer: " + v.getClass());
   }
 
-  private static byte[] asIntervalBytes(Object v) {
-    byte[] bytes;
-    if (v instanceof byte[] arr) {
-      bytes = arr;
-    } else if (v instanceof ByteBuffer bb) {
-      ByteBuffer dup = bb.duplicate();
-      bytes = new byte[dup.remaining()];
-      dup.get(bytes);
-    } else if (v instanceof LogicalComparators.ByteArrayComparable cmp) {
-      bytes = cmp.copy();
-    } else {
-      throw new IllegalArgumentException(
-          "INTERVAL value must be byte[] or ByteBuffer, not " + v.getClass());
+  private static String encodeInterval(LogicalType t, Object value) {
+    IntervalQualifier qualifier =
+        t.intervalQualifier() == null ? IntervalQualifier.UNSPECIFIED : t.intervalQualifier();
+    if (value instanceof CharSequence cs) {
+      return normalizeIntervalString(cs.toString(), qualifier);
     }
-    if (bytes.length != 12) {
-      throw new IllegalArgumentException(
-          "INTERVAL value must be exactly 12 bytes (months/days/millis), got " + bytes.length);
+    if (value instanceof java.time.Period p) {
+      if (qualifier == IntervalQualifier.DAY_TIME) {
+        throw new IllegalArgumentException(
+            "INTERVAL DAY TO SECOND does not accept year-month values");
+      }
+      if (qualifier == IntervalQualifier.YEAR_MONTH && p.getDays() != 0) {
+        throw new IllegalArgumentException(
+            "INTERVAL YEAR TO MONTH must not include day components");
+      }
+      return p.toString();
     }
-    return bytes;
+    if (value instanceof java.time.Duration d) {
+      if (qualifier == IntervalQualifier.YEAR_MONTH) {
+        throw new IllegalArgumentException(
+            "INTERVAL YEAR TO MONTH does not accept day-time values");
+      }
+      return d.toString();
+    }
+    throw new IllegalArgumentException(
+        "INTERVAL value must be ISO-8601 String, Period, or Duration but was: "
+            + value.getClass().getName());
+  }
+
+  private static Object decodeInterval(LogicalType t, String encoded) {
+    IntervalQualifier qualifier =
+        t.intervalQualifier() == null ? IntervalQualifier.UNSPECIFIED : t.intervalQualifier();
+    String raw = encoded.trim();
+    if (raw.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must not be blank");
+    }
+    return switch (qualifier) {
+      case YEAR_MONTH -> normalizeYearMonthInterval(raw);
+      case DAY_TIME -> java.time.Duration.parse(raw).toString();
+      case UNSPECIFIED -> normalizeIntervalString(raw, qualifier);
+    };
+  }
+
+  private static String normalizeIntervalString(String raw, IntervalQualifier qualifier) {
+    String trimmed = raw.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must not be blank");
+    }
+    if (qualifier == IntervalQualifier.UNSPECIFIED) {
+      return normalizeIntervalAuto(trimmed);
+    }
+    if (qualifier == IntervalQualifier.YEAR_MONTH) {
+      return normalizeYearMonthInterval(trimmed);
+    }
+    java.time.Duration d = java.time.Duration.parse(trimmed);
+    return d.toString();
+  }
+
+  private static String normalizeYearMonthInterval(String raw) {
+    java.time.Period p = java.time.Period.parse(raw);
+    if (p.getDays() != 0) {
+      throw new IllegalArgumentException("INTERVAL YEAR TO MONTH must not include day components");
+    }
+    return p.toString();
+  }
+
+  private static String normalizeIntervalAuto(String raw) {
+    try {
+      return normalizeYearMonthInterval(raw);
+    } catch (RuntimeException ignore) {
+      // fall through to duration parsing
+    }
+    return java.time.Duration.parse(raw).toString();
   }
 
   private static String asUtf8String(Object v) {

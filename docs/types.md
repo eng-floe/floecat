@@ -47,6 +47,15 @@ resolved via `LogicalKind.fromName(String)`.
 > **Note:** The Floe spec decode matrix v1 has these two entries inverted. The implementation
 > applies the semantically correct mapping and records the discrepancy in code comments.
 
+### Interval qualifiers
+`INTERVAL` remains a single logical kind with an optional qualifier:
+- `INTERVAL YEAR TO MONTH` → qualifier `YEAR_MONTH`
+- `INTERVAL DAY TO SECOND` → qualifier `DAY_TIME`
+- Plain `INTERVAL` → qualifier `UNSPECIFIED` (explicit) or absent (unset)
+
+Stats encoding (when present) uses ISO‑8601 duration strings. Engine‑native interval layouts are
+carried via overlays/hints, not FloeCat core types.
+
 #### Precision + parsing
 - Canonical `TIME`, `TIMESTAMP`, and `TIMESTAMPTZ` are microsecond precision. Inputs with
   higher precision are truncated to micros for stats encoding/comparison.
@@ -71,14 +80,15 @@ carrying their own paths (e.g. `address.city`, `items[]`, `tags{}`).
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`
-  stores `(kind, precision, scale, temporalPrecision)`. `temporalPrecision` is optional (unset means
-  default microsecond precision). Canonical `DECIMAL` semantics are
+  stores `(kind, precision, scale, temporalPrecision, intervalQualifier)`. `temporalPrecision` is
+  optional (unset means default microsecond precision). `intervalQualifier` is optional and only
+  applies to `INTERVAL`. Canonical `DECIMAL` semantics are
   `precision ≥ 1` and `0 ≤ scale ≤ precision` with no global precision ceiling in the core model.
   Connector-specific constraints apply (for example Iceberg/Delta cap precision at 38, while other
   sources may allow larger values). TIME/TIMESTAMP/TIMESTAMPTZ may carry a fractional‑second
   precision (0..6). All other kinds reject parameters.
 - **`LogicalTypeProtoAdapter`** – Converts between the protobuf `ai.floedb.floecat.types.LogicalType`
-  wire message and the JVM `LogicalType`, preserving kind/precision/scale.
+  wire message and the JVM `LogicalType`, preserving kind/precision/scale/interval qualifiers.
 - **`LogicalCoercions`** – Coerces raw stat values to the canonical Java type for a given kind (e.g.
   any `Number` → `Long` for `INT`, string → `LocalDateTime` for `TIMESTAMP` (timezone‑naive policy),
   string → `Instant` for `TIMESTAMPTZ`).
@@ -171,7 +181,7 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
 - **Non-stats-orderable types** – `INTERVAL`, `JSON`, and complex kinds (`ARRAY`, `MAP`, `STRUCT`,
   `VARIANT`) have no meaningful min/max statistics. `LogicalComparators.normalize()` returns
   `null` and `ValueEncoders.encodeToString` throws for JSON/complex kinds, so connectors should
-  leave bounds unset.
+  leave bounds unset. `INTERVAL` encodings can be stored but are ignored by stats comparisons.
 - **Comparators** – `LogicalComparators` provides specialised comparators for lexical ordering of
   encoded min/max values so histogram builders can operate on encoded strings.
 - **Encoders** – `ValueEncoders` normalises values before storing them in stats to guarantee

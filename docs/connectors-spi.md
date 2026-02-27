@@ -58,7 +58,9 @@ field was populated (even when the string itself is empty). In brief:
   * Null/NAN counts are optional (`null_count`, `nan_count`); set them only when the connector can
     report a value so downstream planners can distinguish “unknown” from zero.
   * Non-orderable types (`INTERVAL`, `JSON`, `ARRAY`, `MAP`, `STRUCT`, `VARIANT`) should leave
-    `min`/`max` unset.
+    `min`/`max` unset. FloeCat treats `INTERVAL` as non‑stats‑orderable; if you still emit bounds,
+    encode them as ISO‑8601 duration strings and expect them to be stored but ignored by pruning
+    comparisons.
 
 Helpers such as `ValueEncoders.encodeToString` already follow these rules; reuse them when converting
 native column values to strings so stats stay portable across languages.

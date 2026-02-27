@@ -142,6 +142,17 @@ class LogicalTypeFormatTest {
     assertThat(LogicalTypeFormat.parse(LogicalTypeFormat.format(t))).isEqualTo(t);
   }
 
+  @Test
+  void parseIntervalQualifiers() {
+    LogicalType ym = LogicalTypeFormat.parse("INTERVAL YEAR TO MONTH");
+    assertThat(ym.kind()).isEqualTo(LogicalKind.INTERVAL);
+    assertThat(ym.intervalQualifier()).isEqualTo(IntervalQualifier.YEAR_MONTH);
+
+    LogicalType dt = LogicalTypeFormat.parse("INTERVAL DAY TO SECOND");
+    assertThat(dt.kind()).isEqualTo(LogicalKind.INTERVAL);
+    assertThat(dt.intervalQualifier()).isEqualTo(IntervalQualifier.DAY_TIME);
+  }
+
   // ---------------------------------------------------------------------------
   // parse() — case and whitespace normalisation
   // ---------------------------------------------------------------------------

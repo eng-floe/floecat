@@ -182,29 +182,61 @@ class ValueEncodersTest {
   }
 
   @Test
-  void intervalBinaryEncodingRoundTrips() {
-    LogicalType intervalType = LogicalType.of(LogicalKind.INTERVAL);
-    byte[] payload = new byte[] {1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0};
+  void intervalYearMonthEncodingRoundTrips() {
+    LogicalType intervalType = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
+    java.time.Period period = java.time.Period.of(1, 2, 0);
 
-    String encoded = ValueEncoders.encodeToString(intervalType, payload);
+    String encoded = ValueEncoders.encodeToString(intervalType, period);
     Object decoded = ValueEncoders.decodeFromString(intervalType, encoded);
 
-    assertEquals(Base64.getEncoder().encodeToString(payload), encoded);
-    assertTrue(decoded instanceof byte[]);
-    assertEquals(payload.length, ((byte[]) decoded).length);
-    for (int i = 0; i < payload.length; i++) {
-      assertEquals(payload[i], ((byte[]) decoded)[i]);
-    }
+    assertEquals("P1Y2M", encoded);
+    assertTrue(decoded instanceof String);
+    assertEquals("P1Y2M", decoded);
   }
 
   @Test
-  void intervalEncodingRejectsNonBinaryAndWrongWidth() {
-    LogicalType intervalType = LogicalType.of(LogicalKind.INTERVAL);
-    assertThrows(
-        IllegalArgumentException.class, () -> ValueEncoders.encodeToString(intervalType, "1 day"));
+  void intervalDayTimeEncodingRoundTrips() {
+    LogicalType intervalType = LogicalType.interval(IntervalQualifier.DAY_TIME);
+    java.time.Duration duration = java.time.Duration.ofHours(1).plusMinutes(2);
+
+    String encoded = ValueEncoders.encodeToString(intervalType, duration);
+    Object decoded = ValueEncoders.decodeFromString(intervalType, encoded);
+
+    assertEquals("PT1H2M", encoded);
+    assertTrue(decoded instanceof String);
+    assertEquals("PT1H2M", decoded);
+  }
+
+  @Test
+  void intervalEncodingRejectsMismatchedQualifiers() {
+    LogicalType yearMonth = LogicalType.interval(IntervalQualifier.YEAR_MONTH);
+    LogicalType dayTime = LogicalType.interval(IntervalQualifier.DAY_TIME);
+
     assertThrows(
         IllegalArgumentException.class,
-        () -> ValueEncoders.encodeToString(intervalType, new byte[] {1, 2, 3}));
+        () -> ValueEncoders.encodeToString(yearMonth, java.time.Duration.ofSeconds(1)));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(dayTime, java.time.Period.ofMonths(1)));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(yearMonth, java.time.Period.ofDays(1)));
+  }
+
+  @Test
+  void intervalEncodingAcceptsUnspecifiedStrings() {
+    LogicalType intervalType = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+    String encoded = ValueEncoders.encodeToString(intervalType, "P1Y2M3DT4H");
+    assertEquals("P1Y2M3DT4H", encoded);
+    assertEquals("P1Y2M3DT4H", ValueEncoders.decodeFromString(intervalType, encoded));
+  }
+
+  @Test
+  void intervalEncodingRejectsNonIsoStrings() {
+    LogicalType intervalType = LogicalType.interval(IntervalQualifier.UNSPECIFIED);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ValueEncoders.encodeToString(intervalType, "not-an-interval"));
   }
 
   @Test

@@ -22,8 +22,9 @@ import java.util.Objects;
  * Immutable representation of a FloeCat canonical logical type.
  *
  * <p>A {@code LogicalType} carries a {@link LogicalKind} plus optional {@code precision}/{@code
- * scale} (for DECIMAL) or {@code temporalPrecision} (for TIME/TIMESTAMP/TIMESTAMPTZ). Other kinds
- * reject parameters. Parameters are absent (null) for kinds that do not accept them.
+ * scale} (for DECIMAL), {@code temporalPrecision} (for TIME/TIMESTAMP/TIMESTAMPTZ), or {@code
+ * intervalQualifier} (for INTERVAL). Other kinds reject parameters. Parameters are absent (null)
+ * for kinds that do not accept them.
  *
  * <p><b>DECIMAL precision contract:</b> {@code LogicalType} enforces only {@code precision ≥ 1} and
  * {@code 0 ≤ scale ≤ precision}. No upper bound on precision is enforced here — that is a
@@ -41,6 +42,7 @@ import java.util.Objects;
  * <ul>
  *   <li>{@link #of(LogicalKind)} — for all non-decimal kinds without temporal precision
  *   <li>{@link #temporal(LogicalKind, Integer)} — for TIME/TIMESTAMP/TIMESTAMPTZ with precision
+ *   <li>{@link #interval(IntervalQualifier)} — for INTERVAL with optional qualifier
  *   <li>{@link #decimal(int, int)} — for DECIMAL
  * </ul>
  *
@@ -54,9 +56,14 @@ public final class LogicalType {
   public final Integer precision;
   public final Integer scale;
   public final Integer temporalPrecision;
+  public final IntervalQualifier intervalQualifier;
 
   private LogicalType(
-      LogicalKind kind, Integer precision, Integer scale, Integer temporalPrecision) {
+      LogicalKind kind,
+      Integer precision,
+      Integer scale,
+      Integer temporalPrecision,
+      IntervalQualifier intervalQualifier) {
     this.kind = Objects.requireNonNull(kind, "kind");
     if (kind == LogicalKind.DECIMAL) {
       if (precision == null || scale == null || precision < 1 || scale < 0 || scale > precision) {
@@ -69,6 +76,9 @@ public final class LogicalType {
       }
       if (temporalPrecision != null) {
         throw new IllegalArgumentException("temporal precision is not allowed for DECIMAL");
+      }
+      if (intervalQualifier != null) {
+        throw new IllegalArgumentException("interval qualifier is not allowed for DECIMAL");
       }
     } else if (kind == LogicalKind.TIME
         || kind == LogicalKind.TIMESTAMP
@@ -85,14 +95,25 @@ public final class LogicalType {
                 + MAX_TEMPORAL_PRECISION
                 + ")");
       }
-    } else {
+      if (intervalQualifier != null) {
+        throw new IllegalArgumentException("interval qualifier is not allowed for " + kind.name());
+      }
+    } else if (kind == LogicalKind.INTERVAL) {
       if (precision != null || scale != null || temporalPrecision != null) {
+        throw new IllegalArgumentException("type parameters are not supported for INTERVAL");
+      }
+    } else {
+      if (precision != null
+          || scale != null
+          || temporalPrecision != null
+          || intervalQualifier != null) {
         throw new IllegalArgumentException("type parameters are not supported for " + kind.name());
       }
     }
     this.precision = precision;
     this.scale = scale;
     this.temporalPrecision = temporalPrecision;
+    this.intervalQualifier = intervalQualifier;
   }
 
   /**
@@ -103,7 +124,7 @@ public final class LogicalType {
    * @throws IllegalArgumentException if {@code kind} is DECIMAL (use {@link #decimal} instead)
    */
   public static LogicalType of(LogicalKind kind) {
-    return new LogicalType(kind, null, null, null);
+    return new LogicalType(kind, null, null, null, null);
   }
 
   /**
@@ -115,7 +136,17 @@ public final class LogicalType {
    * @throws IllegalArgumentException if the kind is not temporal or precision is out of range
    */
   public static LogicalType temporal(LogicalKind kind, Integer temporalPrecision) {
-    return new LogicalType(kind, null, null, temporalPrecision);
+    return new LogicalType(kind, null, null, temporalPrecision, null);
+  }
+
+  /**
+   * Creates an INTERVAL logical type with an optional qualifier.
+   *
+   * @param qualifier interval qualifier (null or UNSPECIFIED means unqualified)
+   * @return a new INTERVAL {@code LogicalType}
+   */
+  public static LogicalType interval(IntervalQualifier qualifier) {
+    return new LogicalType(LogicalKind.INTERVAL, null, null, null, qualifier);
   }
 
   /**
@@ -127,7 +158,7 @@ public final class LogicalType {
    * @throws IllegalArgumentException if the precision/scale constraints are violated
    */
   public static LogicalType decimal(int precision, int scale) {
-    return new LogicalType(LogicalKind.DECIMAL, precision, scale, null);
+    return new LogicalType(LogicalKind.DECIMAL, precision, scale, null, null);
   }
 
   public LogicalKind kind() {
@@ -144,6 +175,10 @@ public final class LogicalType {
 
   public Integer temporalPrecision() {
     return temporalPrecision;
+  }
+
+  public IntervalQualifier intervalQualifier() {
+    return intervalQualifier;
   }
 
   public int temporalPrecisionOrDefault() {
@@ -193,11 +228,12 @@ public final class LogicalType {
     return kind == that.kind
         && Objects.equals(precision, that.precision)
         && Objects.equals(scale, that.scale)
-        && Objects.equals(temporalPrecision, that.temporalPrecision);
+        && Objects.equals(temporalPrecision, that.temporalPrecision)
+        && intervalQualifier == that.intervalQualifier;
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(kind, precision, scale, temporalPrecision);
+    return Objects.hash(kind, precision, scale, temporalPrecision, intervalQualifier);
   }
 }

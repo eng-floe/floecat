@@ -21,6 +21,11 @@ option java_package = "ai.floedb.floecat.types.rpc";
 option java_outer_classname = "LogicalTypeProto";
 
 message LogicalType {
+  enum IntervalQualifier {
+    IQ_UNSPECIFIED = 0;
+    IQ_YEAR_MONTH = 1;
+    IQ_DAY_TIME = 2;
+  }
   enum Kind {
     TK_UNSPECIFIED = 0;
     TK_BOOLEAN = 1;
@@ -48,6 +53,8 @@ message LogicalType {
   int32 scale = 3;
   // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..6). Unset means default.
   optional int32 temporal_precision = 4;
+  // Qualifier for INTERVAL types (optional).
+  optional IntervalQualifier interval_qualifier = 5;
   map<string,string> params = 99;
 }
 
@@ -63,6 +70,6 @@ message ScalarValue {
     int64 time  = 8;
     int64 ts = 9;       // TIMESTAMP: micros since epoch from LocalDateTime interpreted in UTC (timezone-naive semantic; no UTC normalisation)
     int64 tstz = 10;     // TIMESTAMPTZ: microseconds-since-epoch UTC
-    bytes interval = 11; // INTERVAL: 12 bytes — months(4) + days(4) + millis(4)
+    string interval = 11; // INTERVAL: ISO-8601 duration string
   }
 }
