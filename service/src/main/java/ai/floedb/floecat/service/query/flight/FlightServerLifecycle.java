@@ -58,6 +58,12 @@ public class FlightServerLifecycle {
   @ConfigProperty(name = "floecat.flight.tls", defaultValue = "false")
   boolean flightTls;
 
+  @ConfigProperty(name = "floecat.flight.bind-host", defaultValue = "0.0.0.0")
+  String flightBindHost;
+
+  @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost")
+  String flightAdvertisedHost;
+
   // Auth config — same properties as BlockingInboundContextInterceptor
   @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
   boolean validateAccount;
@@ -97,7 +103,7 @@ public class FlightServerLifecycle {
       throw new IllegalStateException(
           "Arrow Flight TLS is not yet supported; set floecat.flight.tls=false");
     }
-    Location location = Location.forGrpcInsecure("0.0.0.0", flightPort);
+    Location location = Location.forGrpcInsecure(flightBindHost, flightPort);
     try {
       server =
           FlightServer.builder(allocatorProvider.allocator(), location, producer)
@@ -106,7 +112,9 @@ public class FlightServerLifecycle {
                   new InboundContextFlightMiddleware.Factory(contextHelper))
               .build();
       server.start();
-      LOG.infof("Arrow Flight server started on port %d (authMode=%s)", flightPort, authMode);
+      LOG.infof(
+          "Arrow Flight server started on %s:%d (advertised=%s, authMode=%s)",
+          flightBindHost, flightPort, flightAdvertisedHost, authMode);
     } catch (IOException e) {
       throw new UncheckedIOException(
           "Failed to start Arrow Flight server on port " + flightPort, e);
