@@ -305,11 +305,21 @@ message ViewDefinition {
   /** Canonical SQL definition of the view. */
   string canonical_sql = 1;
 
-  /** Dialect used to produce the canonical SQL. */
+  /** Dialect used to produce the canonical SQL (e.g. "spark", "trino", "ansi"). */
   string dialect = 2;
 
-  /** Base relations that the view depends on. */
-  repeated ai.floedb.floecat.common.ResourceId base_relations = 3;
+  /**
+   * Names of relations this view directly depends on, exactly as defined in the canonical SQL.
+   * For example, if the view is defined as `SELECT ... FROM a JOIN b`, this would contain
+   * the NameRefs for "a" and "b", without any qualification or search_path expansion. 
+   *
+   * This is the planner-facing form of View.base_relations (which stores
+   * the same information as plain "catalog.schema.table" strings).
+   *
+   * Field 3 previously held repeated ResourceId; that type has been
+   * superseded. Field number 3 is retained for the new NameRef type.
+   */
+  repeated ai.floedb.floecat.common.NameRef base_relations = 3;
 
   /** Search path as captured when the view was created. */
   repeated string creation_search_path = 4;
