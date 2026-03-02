@@ -236,7 +236,12 @@ public class UserObjectBundleService {
       return SnapshotSet.getDefaultInstance();
     }
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
-    var resolution = inputResolver.resolveInputs(correlationId, List.of(input), asOfDefault);
+    var resolution =
+        inputResolver.resolveInputs(
+            correlationId,
+            List.of(input),
+            asOfDefault,
+            Optional.of(ctx.getQueryDefaultCatalogId()));
     SnapshotSet incoming = resolution.snapshotSet();
     return incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
   }

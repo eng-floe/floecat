@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -188,7 +189,7 @@ public class NodeLoader {
         view.getSql(),
         "",
         List.<SchemaColumn>of(),
-        List.<ResourceId>of(),
+        List.<NameRef>of(),
         List.of(),
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),

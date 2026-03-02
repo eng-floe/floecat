@@ -43,6 +43,7 @@ import jakarta.inject.Singleton;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.jboss.logging.Logger;
 
 /**
@@ -87,7 +88,10 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                   // Resolve inputs → resolved ids + snapshot pins (tables and/or view base tables)
                   var rr =
                       inputResolver.resolveInputs(
-                          correlationId(), request.getInputsList(), asOfDefault);
+                          correlationId(),
+                          request.getInputsList(),
+                          asOfDefault,
+                          Optional.of(ctx.getQueryDefaultCatalogId()));
 
                   List<SnapshotPin> pins = rr.snapshotSet().getPinsList();
 

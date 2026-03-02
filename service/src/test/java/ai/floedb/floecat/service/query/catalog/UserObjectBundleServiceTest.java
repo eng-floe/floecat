@@ -328,7 +328,10 @@ class UserObjectBundleServiceTest {
         new QueryInputResolver() {
           @Override
           public ResolutionResult resolveInputs(
-              String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), SnapshotSet.getDefaultInstance(), null);
           }

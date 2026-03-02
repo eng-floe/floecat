@@ -334,7 +334,10 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public ResolutionResult resolveInputs(
-        String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId) {
       calls.add(new ArrayList<>(inputs));
       ResourceId rid = inputs.get(0).getTableId();
       SnapshotPin pin =
