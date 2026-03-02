@@ -44,8 +44,6 @@ class FloeTypeMapperTest {
     lookup =
         new FakeTypeLookup(
             Map.ofEntries(
-                Map.entry("pg_catalog.int2", type("int2")),
-                Map.entry("pg_catalog.int4", type("int4")),
                 Map.entry("pg_catalog.int8", type("int8")),
                 Map.entry("pg_catalog.float4", type("float4")),
                 Map.entry("pg_catalog.float8", type("float8")),
@@ -56,7 +54,10 @@ class FloeTypeMapperTest {
                 Map.entry("pg_catalog.uuid", type("uuid")),
                 Map.entry("pg_catalog.date", type("date")),
                 Map.entry("pg_catalog.time", type("time")),
-                Map.entry("pg_catalog.timestamp", type("timestamp"))));
+                Map.entry("pg_catalog.timestamp", type("timestamp")),
+                Map.entry("pg_catalog.timestamptz", type("timestamptz")),
+                Map.entry("pg_catalog.interval", type("interval")),
+                Map.entry("pg_catalog.jsonb", type("jsonb"))));
   }
 
   @Test
@@ -65,28 +66,43 @@ class FloeTypeMapperTest {
   }
 
   @Test
-  void mapsInt16() {
-    assertMapped(LogicalType.of(LogicalKind.INT16), "int2");
+  void mapsInt() {
+    // All integer sizes collapse to canonical INT (64-bit) → pg int8.
+    assertMapped(LogicalType.of(LogicalKind.INT), "int8");
   }
 
   @Test
-  void mapsInt32() {
-    assertMapped(LogicalType.of(LogicalKind.INT32), "int4");
+  void mapsFloat() {
+    assertMapped(LogicalType.of(LogicalKind.FLOAT), "float4");
   }
 
   @Test
-  void mapsInt64() {
-    assertMapped(LogicalType.of(LogicalKind.INT64), "int8");
+  void mapsDouble() {
+    assertMapped(LogicalType.of(LogicalKind.DOUBLE), "float8");
   }
 
   @Test
-  void mapsFloat32() {
-    assertMapped(LogicalType.of(LogicalKind.FLOAT32), "float4");
+  void mapsTimestamptz() {
+    assertMapped(LogicalType.of(LogicalKind.TIMESTAMPTZ), "timestamptz");
   }
 
   @Test
-  void mapsFloat64() {
-    assertMapped(LogicalType.of(LogicalKind.FLOAT64), "float8");
+  void mapsInterval() {
+    assertMapped(LogicalType.of(LogicalKind.INTERVAL), "interval");
+  }
+
+  @Test
+  void mapsJson() {
+    assertMapped(LogicalType.of(LogicalKind.JSON), "jsonb");
+  }
+
+  @Test
+  void mapsComplexTypesToBytea() {
+    // Complex types not yet supported by the execution engine; surface as raw bytes.
+    assertMapped(LogicalType.of(LogicalKind.ARRAY), "bytea");
+    assertMapped(LogicalType.of(LogicalKind.MAP), "bytea");
+    assertMapped(LogicalType.of(LogicalKind.STRUCT), "bytea");
+    assertMapped(LogicalType.of(LogicalKind.VARIANT), "bytea");
   }
 
   @Test
@@ -125,7 +141,15 @@ class FloeTypeMapperTest {
   }
 
   @Test
-  void unsupportedKindReturnsEmpty() {
+  void decimalPrecisionAbove38IsUnsupported() {
+    Optional<TypeNode> result = mapper.resolve(LogicalType.decimal(39, 0), lookup);
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void whenTypeLookupCannotFindPgTypeResolveReturnsEmpty() {
+    // BINARY is a supported kind (maps to bytea), but if the TypeLookup has no entry for
+    // pg_catalog.bytea — e.g. in a minimal catalog — resolve() must return empty rather than throw.
     Optional<TypeNode> result =
         mapper.resolve(LogicalType.of(LogicalKind.BINARY), new FakeTypeLookup(Map.of()));
     assertThat(result).isEmpty();

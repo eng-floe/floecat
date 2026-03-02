@@ -193,7 +193,7 @@ class DeltaManifestMaterializerTest {
             .addColumns(
                 ColumnStats.newBuilder()
                     .setColumnId(1)
-                    .setLogicalType("INT64")
+                    .setLogicalType("INT")
                     .setValueCount(50)
                     .setNullCount(2)
                     .setMin("10")

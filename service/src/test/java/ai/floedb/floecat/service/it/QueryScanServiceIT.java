@@ -322,15 +322,13 @@ class QueryScanServiceIT {
 
   private void attachConnectorToTable(ResourceId tableId, Connector connector) {
 
+    var existing =
+        table.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
     var upstream =
-        UpstreamRef.newBuilder()
+        existing.getUpstream().toBuilder()
             .setConnectorId(connector.getResourceId())
             .setUri("dummy://ignored")
             .setTableDisplayName(connector.getDisplayName() + "_src")
-            .setFormat(TableFormat.TF_ICEBERG)
-            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-            .addNamespacePath("examples")
-            .addNamespacePath("iceberg")
             .build();
 
     var spec = TableSpec.newBuilder().setUpstream(upstream).build();

@@ -17,6 +17,8 @@
 package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -24,7 +26,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
@@ -54,22 +58,43 @@ public final class ArrowSchemaUtil {
   }
 
   private static ArrowType arrowType(String logicalType) {
-    if (logicalType == null) {
-      return new ArrowType.Utf8();
-    }
-    String normalized = logicalType.toUpperCase(Locale.ROOT).trim();
-    if (normalized.endsWith("[]")) {
-      return new ArrowType.Utf8();
-    }
-    return switch (normalized) {
-      case "INT", "INTEGER" -> new ArrowType.Int(32, true);
-      case "BIGINT" -> new ArrowType.Int(64, true);
-      case "SMALLINT" -> new ArrowType.Int(16, true);
-      case "FLOAT", "FLOAT4", "REAL" -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-      case "DOUBLE", "FLOAT8" -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-      case "BOOLEAN", "BOOL" -> ArrowType.Bool.INSTANCE;
-      default -> new ArrowType.Utf8();
+    LogicalType parsed = LogicalTypeFormat.parse(requireNonBlank(logicalType));
+    return arrowType(parsed);
+  }
+
+  private static ArrowType arrowType(LogicalType logicalType) {
+    return switch (logicalType.kind()) {
+      case BOOLEAN -> ArrowType.Bool.INSTANCE;
+      case INT -> new ArrowType.Int(64, true);
+      case FLOAT -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+      case DOUBLE -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+      case DECIMAL -> ArrowDecimalTypes.decimalType(logicalType.precision(), logicalType.scale());
+      case STRING, JSON -> new ArrowType.Utf8();
+      case DATE -> new ArrowType.Date(DateUnit.DAY);
+      case TIME -> new ArrowType.Time(TimeUnit.MICROSECOND, 64);
+      case TIMESTAMP -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
+      case TIMESTAMPTZ -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+      case UUID -> new ArrowType.FixedSizeBinary(16);
+      case BINARY -> new ArrowType.Binary();
+      case INTERVAL ->
+          throw new IllegalArgumentException(
+              "INTERVAL has no stable Arrow representation; omit or cast to STRING/BINARY");
+      case ARRAY, MAP, STRUCT, VARIANT ->
+          throw new IllegalArgumentException(
+              "Complex logical types are not supported in Arrow schema mapping: "
+                  + logicalType.kind().name());
     };
+  }
+
+  private static String requireNonBlank(String logicalType) {
+    if (logicalType == null) {
+      throw new IllegalArgumentException("Logical type must not be null");
+    }
+    String normalized = logicalType.trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("Logical type must not be blank");
+    }
+    return normalized;
   }
 
   /** Normalize the user-requested projection list so it can be compared case-insensitively. */

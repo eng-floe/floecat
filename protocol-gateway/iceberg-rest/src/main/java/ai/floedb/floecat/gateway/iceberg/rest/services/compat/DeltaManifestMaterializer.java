@@ -891,16 +891,21 @@ public class DeltaManifestMaterializer {
     }
     return switch (normalized) {
       case "BOOLEAN" -> Types.BooleanType.get();
-      case "INT16", "SMALLINT", "INT32", "INT", "INTEGER" -> Types.IntegerType.get();
-      case "INT64", "BIGINT", "LONG" -> Types.LongType.get();
-      case "FLOAT32", "FLOAT", "REAL" -> Types.FloatType.get();
-      case "FLOAT64", "DOUBLE" -> Types.DoubleType.get();
+      // Canonical INT is 64-bit; all source-format integer aliases collapse here.
+      case "INT" -> Types.LongType.get();
+      case "FLOAT" -> Types.FloatType.get();
+      case "DOUBLE" -> Types.DoubleType.get();
       case "DATE" -> Types.DateType.get();
       case "TIME" -> Types.TimeType.get();
-      case "TIMESTAMP" -> Types.TimestampType.withZone();
-      case "STRING", "TEXT", "VARCHAR", "CHAR" -> Types.StringType.get();
-      case "BINARY", "VARBINARY" -> Types.BinaryType.get();
+      // Canonical TIMESTAMP = timezone-naive (no UTC normalisation) → Iceberg withoutZone().
+      // Canonical TIMESTAMPTZ = UTC-normalised → Iceberg withZone().
+      case "TIMESTAMP" -> Types.TimestampType.withoutZone();
+      case "TIMESTAMPTZ" -> Types.TimestampType.withZone();
+      case "STRING" -> Types.StringType.get();
+      case "BINARY" -> Types.BinaryType.get();
       case "UUID" -> Types.UUIDType.get();
+      // INTERVAL, JSON, and complex types have no direct Iceberg primitive equivalent.
+      case "INTERVAL", "JSON", "ARRAY", "MAP", "STRUCT", "VARIANT" -> Types.BinaryType.get();
       default -> null;
     };
   }

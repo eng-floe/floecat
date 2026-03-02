@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Shared utilities for CSV -> PBtxt generators for FloeCat system catalog objects.
+Shared utilities for CSV -> PBtxt generators for Floecat system catalog objects.
 """
 
 from __future__ import annotations
