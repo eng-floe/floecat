@@ -17,6 +17,7 @@
 package ai.floedb.floecat.flight;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,12 +27,14 @@ import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.Context;
 import java.util.Collection;
@@ -157,6 +160,58 @@ class SystemTableFlightProducerBaseTest {
   }
 
   @Test
+  void getFlightInfoWithTranslatedTableIdKeepsCallerAccount() {
+    ResourceId canonical =
+        SystemNodeRegistry.resourceId("floe-demo", ResourceKind.RK_TABLE, TABLE_NAME);
+    ResourceId callerHint = canonical.toBuilder().setAccountId("caller-account").build();
+    producer.registerTableId(canonical, TABLE_NAME);
+    producer.setContext(makeContext("header"));
+
+    FlightDescriptor descriptor = descriptorWithTargetId(callerHint, "header");
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+
+    assertNotNull(info);
+    assertEquals(1, producer.getFlightInfoSuccessCount());
+    assertNotNull(producer.lastResolvedId());
+    assertEquals(callerHint.getAccountId(), producer.lastResolvedId().getAccountId());
+  }
+
+  @Test
+  void getFlightInfoWithTranslatedTableIdUsesCanonicalResolverIdWhenAvailable() throws Exception {
+    ResourceId canonical =
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, TABLE_NAME);
+    ResourceId callerHint = canonical.toBuilder().setAccountId("caller-account").build();
+    producer.registerTableId(callerHint, TABLE_NAME);
+    producer.registerResolvedTableId(TABLE_NAME, canonical);
+    producer.setContext(makeContext("header"));
+
+    FlightDescriptor descriptor = descriptorWithTargetId(callerHint, "header");
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+
+    assertNotNull(info);
+    Ticket ticket = info.getEndpoints().get(0).getTicket();
+    SystemTableFlightTicket wrapped = SystemTableFlightTicket.parseFrom(ticket.getBytes());
+    SystemTableFlightCommand encoded = SystemTableFlightCommand.parseFrom(wrapped.getCmd());
+    assertTrue(encoded.hasTarget());
+    assertTrue(encoded.getTarget().hasId());
+    assertEquals(canonical, encoded.getTarget().getId());
+  }
+
+  @Test
+  void generatedIdFallbackRejectsIdsForNonEffectiveEngineKind() {
+    producer.setContext(makeContext("header", EngineContext.of("floedb", "")));
+    ResourceId fallbackCandidate =
+        SystemNodeRegistry.resourceId("floecat_internal", ResourceKind.RK_TABLE, TABLE_NAME);
+    ResourceId callerHint = fallbackCandidate.toBuilder().setAccountId("caller-account").build();
+
+    FlightDescriptor descriptor = descriptorWithTargetId(callerHint, "header");
+    FlightRuntimeException err =
+        assertThrows(
+            FlightRuntimeException.class, () -> producer.getFlightInfo(callContext, descriptor));
+    assertEquals(CallStatus.NOT_FOUND.code(), err.status().code());
+  }
+
+  @Test
   void getStreamTicketVersionMismatch() throws InterruptedException {
     producer.setContext(makeContext("header"));
     SystemTableFlightCommand command =
@@ -184,6 +239,25 @@ class SystemTableFlightProducerBaseTest {
   void getStreamNameOnlyTicketSucceedsWithoutIdResolution() throws InterruptedException {
     producer.setContext(makeContext("header"));
     FlightDescriptor descriptor = descriptorWithQueryId("header");
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+    Ticket ticket = info.getEndpoints().get(0).getTicket();
+
+    CapturingStreamListener listener = new CapturingStreamListener();
+    producer.getStream(callContext, ticket, listener);
+
+    assertTrue(listener.awaitCompleted());
+    assertTrue(producer.awaitStreamSuccessHook());
+    assertNull(listener.rawError());
+    assertEquals(1, producer.getStreamSuccessCount());
+  }
+
+  @Test
+  void getStreamIdTargetSucceedsWithDeterministicIdResolution() throws InterruptedException {
+    producer.setContext(makeContext("header", EngineContext.of("floedb", "")));
+    ResourceId deterministic =
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, TABLE_NAME);
+    ResourceId callerHint = deterministic.toBuilder().setAccountId("caller-account").build();
+    FlightDescriptor descriptor = descriptorWithTargetId(callerHint, "header");
     FlightInfo info = producer.getFlightInfo(callContext, descriptor);
     Ticket ticket = info.getEndpoints().get(0).getTicket();
 
@@ -254,15 +328,81 @@ class SystemTableFlightProducerBaseTest {
             .build();
     FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
 
-    assertTrue(producer.supportsDescriptor(descriptor));
+    assertTrue(producer.supportsDescriptor(callContext, descriptor));
     FlightInfo info = producer.getFlightInfo(callContext, descriptor);
     assertNotNull(info);
     assertTrue(producer.supportsTicket(info.getEndpoints().get(0).getTicket()));
   }
 
+  @Test
+  void resolvesIdTargetUsingDeterministicSystemIdWhenResolverHookIsAbsent() {
+    producer.setContext(makeContext("header", EngineContext.of("floedb", "")));
+    ResourceId deterministic =
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, TABLE_NAME);
+    ResourceId callerHint = deterministic.toBuilder().setAccountId("caller-account").build();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(callerHint).build())
+            .setQueryId("header")
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    assertTrue(producer.supportsDescriptor(callContext, descriptor));
+    FlightInfo info = producer.getFlightInfo(callContext, descriptor);
+    assertNotNull(info);
+  }
+
+  @Test
+  void multiTableProducerResolvesIdUsingDeterministicMapping() {
+    MultiTableProducer multi = new MultiTableProducer(allocator, executor);
+    multi.setContext(makeContext("header", EngineContext.of("floedb", "")));
+    ResourceId deterministic =
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, MultiTableProducer.TABLE_B);
+    ResourceId callerHint = deterministic.toBuilder().setAccountId("caller-account").build();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(callerHint).build())
+            .setQueryId("header")
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    assertTrue(multi.supportsDescriptor(callContext, descriptor));
+    FlightInfo info = multi.getFlightInfo(callContext, descriptor);
+    assertNotNull(info);
+    assertEquals(MultiTableProducer.TABLE_B, multi.lastSchemaTableName());
+  }
+
+  @Test
+  void multiTableProducerRejectsUnknownId() {
+    MultiTableProducer multi = new MultiTableProducer(allocator, executor);
+    multi.setContext(makeContext("header", EngineContext.of("floedb", "")));
+    ResourceId unknownId =
+        ResourceId.newBuilder()
+            .setAccountId("caller-account")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("ffffffff-ffff-4fff-8fff-ffffffffffff")
+            .build();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(unknownId).build())
+            .setQueryId("header")
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    assertFalse(multi.supportsDescriptor(descriptor));
+    FlightRuntimeException err =
+        assertThrows(
+            FlightRuntimeException.class, () -> multi.getFlightInfo(callContext, descriptor));
+    assertEquals(CallStatus.NOT_FOUND.code(), err.status().code());
+  }
+
   private ResolvedCallContext makeContext(String queryId) {
+    return makeContext(queryId, EngineContext.empty());
+  }
+
+  private ResolvedCallContext makeContext(String queryId, EngineContext engineContext) {
     return new ResolvedCallContext(
-        PrincipalContext.getDefaultInstance(), queryId, "corr", EngineContext.empty(), null, null);
+        PrincipalContext.getDefaultInstance(), queryId, "corr", engineContext, null, null);
   }
 
   private FlightDescriptor descriptorWithQueryId(String queryId) {
@@ -278,10 +418,20 @@ class SystemTableFlightProducerBaseTest {
     return FlightDescriptor.command(builder.build().toByteArray());
   }
 
+  private FlightDescriptor descriptorWithTargetId(ResourceId id, String queryId) {
+    SystemTableFlightCommand.Builder builder =
+        SystemTableFlightCommand.newBuilder().setTarget(SystemTableTarget.newBuilder().setId(id));
+    if (queryId != null && !queryId.isBlank()) {
+      builder.setQueryId(queryId);
+    }
+    return FlightDescriptor.command(builder.build().toByteArray());
+  }
+
   private static final class TestProducer extends SystemTableFlightProducerBase {
 
     private ResolvedCallContext context = ResolvedCallContext.unauthenticated();
     private final Map<String, String> resolvedNamesById = new HashMap<>();
+    private final Map<String, ResourceId> resolvedIdsByName = new HashMap<>();
     private final CountDownLatch buildPlanLatch = new CountDownLatch(1);
     private final CountDownLatch streamSuccessHookLatch = new CountDownLatch(1);
     private final CountDownLatch streamErrorHookLatch = new CountDownLatch(1);
@@ -291,6 +441,7 @@ class SystemTableFlightProducerBaseTest {
     private final AtomicInteger getStreamErrorCount = new AtomicInteger();
     private volatile String observedMdcQueryId;
     private volatile String observedGrpcQueryId;
+    private volatile ResourceId lastResolvedId;
 
     TestProducer(BufferAllocator allocator, FlightExecutor executor) {
       super(allocator, executor);
@@ -298,6 +449,10 @@ class SystemTableFlightProducerBaseTest {
 
     void registerTableId(ResourceId id, String tableName) {
       resolvedNamesById.put(id.getId(), tableName);
+    }
+
+    void registerResolvedTableId(String tableName, ResourceId id) {
+      resolvedIdsByName.put(tableName, id);
     }
 
     void setContext(ResolvedCallContext context) {
@@ -345,11 +500,12 @@ class SystemTableFlightProducerBaseTest {
 
     @Override
     protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
-      return Optional.empty();
+      return Optional.ofNullable(resolvedIdsByName.get(NameRefUtil.canonical(name)));
     }
 
     @Override
     protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
+      lastResolvedId = id;
       return Optional.ofNullable(resolvedNamesById.get(id.getId()));
     }
 
@@ -389,6 +545,10 @@ class SystemTableFlightProducerBaseTest {
       return getStreamErrorCount.get();
     }
 
+    ResourceId lastResolvedId() {
+      return lastResolvedId;
+    }
+
     @Override
     protected void onGetFlightInfoSuccess(
         ResolvedCallContext context, String tableName, long elapsedNanos) {
@@ -413,6 +573,63 @@ class SystemTableFlightProducerBaseTest {
         ResolvedCallContext context, String tableName, Throwable error, long elapsedNanos) {
       getStreamErrorCount.incrementAndGet();
       streamErrorHookLatch.countDown();
+    }
+  }
+
+  private static final class MultiTableProducer extends SystemTableFlightProducerBase {
+
+    private static final String TABLE_A = "sys.alpha";
+    private static final String TABLE_B = "sys.beta";
+
+    private ResolvedCallContext context = ResolvedCallContext.unauthenticated();
+    private volatile String lastSchemaTableName;
+
+    MultiTableProducer(BufferAllocator allocator, FlightExecutor executor) {
+      super(allocator, executor);
+    }
+
+    void setContext(ResolvedCallContext context) {
+      this.context = context;
+    }
+
+    String lastSchemaTableName() {
+      return lastSchemaTableName;
+    }
+
+    @Override
+    protected ResolvedCallContext resolveCallContext(CallContext context) {
+      return this.context;
+    }
+
+    @Override
+    protected Collection<String> tableNames(ResolvedCallContext context) {
+      return List.of(TABLE_A, TABLE_B);
+    }
+
+    @Override
+    protected List<SchemaColumn> schemaColumns(
+        String tableName,
+        Optional<ResourceId> tableId,
+        SystemTableFlightCommand command,
+        ResolvedCallContext context) {
+      lastSchemaTableName = tableName;
+      return List.of(COLUMN);
+    }
+
+    @Override
+    protected ArrowScanPlan buildPlan(
+        String tableName,
+        Optional<ResourceId> tableId,
+        SystemTableFlightCommand command,
+        ResolvedCallContext context,
+        BufferAllocator allocator,
+        BooleanSupplier cancelled) {
+      return ArrowScanPlan.of(SCHEMA, Stream.empty());
+    }
+
+    @Override
+    protected Location selfLocation() {
+      return Location.forGrpcInsecure("localhost", 0);
     }
   }
 

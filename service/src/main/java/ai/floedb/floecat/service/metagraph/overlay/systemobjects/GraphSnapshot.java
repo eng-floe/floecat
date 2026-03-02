@@ -24,6 +24,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
