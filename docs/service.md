@@ -71,8 +71,8 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
-  wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
-  `SyncCapture` maps to reconciler capture modes:
+  wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
+  `CaptureNow` maps to reconciler capture modes:
   - `include_statistics=false` -> `METADATA_ONLY_CORE`
   - `include_statistics=true` -> `STATS_ONLY_ASYNC`
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,

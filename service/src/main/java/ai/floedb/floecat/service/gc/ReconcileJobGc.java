@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -40,6 +41,7 @@ public class ReconcileJobGc {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
+  @Inject ReconcilerSettingsStore settings;
 
   public record AccountResult(
       int scanned,
@@ -62,8 +64,12 @@ public class ReconcileJobGc {
     final long sliceMillis =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.slice-millis", Long.class).orElse(4000L);
     final long retentionMs =
-        cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
-            .orElse(7L * 24L * 60L * 60L * 1000L);
+        Math.max(
+            1L,
+            settings != null
+                ? settings.finishedJobRetentionMs()
+                : cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
+                    .orElse(7L * 24L * 60L * 60L * 1000L));
 
     final long nowMs = System.currentTimeMillis();
     final long deadline = nowMs + sliceMillis;

@@ -16,23 +16,74 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
+import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 public interface ReconcileJobStore {
-  String enqueue(String accountId, String connectorId, boolean fullRescan, ReconcileScope scope);
+  String enqueue(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope);
 
-  Optional<ReconcileJob> get(String jobId);
+  Optional<ReconcileJob> get(String accountId, String jobId);
+
+  default Optional<ReconcileJob> get(String jobId) {
+    return get(null, jobId);
+  }
+
+  ReconcileJobPage list(
+      String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
+
+  QueueStats queueStats();
 
   Optional<LeasedJob> leaseNext();
 
   void markRunning(String jobId, long startedAtMs);
 
-  void markProgress(String jobId, long scanned, long changed, long errors, String message);
+  void markProgress(
+      String jobId,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message);
 
-  void markSucceeded(String jobId, long finishedAtMs, long scanned, long changed);
+  void markSucceeded(
+      String jobId,
+      long finishedAtMs,
+      long scanned,
+      long changed,
+      long snapshotsProcessed,
+      long statsProcessed);
 
   void markFailed(
-      String jobId, long finishedAtMs, String message, long scanned, long changed, long errors);
+      String jobId,
+      long finishedAtMs,
+      String message,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
+
+  Optional<ReconcileJob> cancel(String accountId, String jobId, String reason);
+
+  boolean isCancellationRequested(String jobId);
+
+  void markCancelled(
+      String jobId,
+      long finishedAtMs,
+      String message,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed);
 
   final class ReconcileJob {
     public final String jobId;
@@ -46,6 +97,9 @@ public interface ReconcileJobStore {
     public final long tablesChanged;
     public final long errors;
     public final boolean fullRescan;
+    public final CaptureMode captureMode;
+    public final long snapshotsProcessed;
+    public final long statsProcessed;
     public final ReconcileScope scope;
 
     public ReconcileJob(
@@ -60,6 +114,9 @@ public interface ReconcileJobStore {
         long tablesChanged,
         long errors,
         boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
         ReconcileScope scope) {
       this.jobId = jobId;
       this.accountId = accountId;
@@ -72,6 +129,9 @@ public interface ReconcileJobStore {
       this.tablesChanged = tablesChanged;
       this.errors = errors;
       this.fullRescan = fullRescan;
+      this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
+      this.snapshotsProcessed = snapshotsProcessed;
+      this.statsProcessed = statsProcessed;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
     }
   }
@@ -81,6 +141,7 @@ public interface ReconcileJobStore {
     public final String accountId;
     public final String connectorId;
     public final boolean fullRescan;
+    public final CaptureMode captureMode;
     public final ReconcileScope scope;
 
     public LeasedJob(
@@ -88,12 +149,38 @@ public interface ReconcileJobStore {
         String accountId,
         String connectorId,
         boolean fullRescan,
+        CaptureMode captureMode,
         ReconcileScope scope) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
+      this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
+    }
+  }
+
+  final class ReconcileJobPage {
+    public final List<ReconcileJob> jobs;
+    public final String nextPageToken;
+
+    public ReconcileJobPage(List<ReconcileJob> jobs, String nextPageToken) {
+      this.jobs = jobs == null ? List.of() : List.copyOf(jobs);
+      this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  final class QueueStats {
+    public final long queued;
+    public final long running;
+    public final long cancelling;
+    public final long oldestQueuedCreatedAtMs;
+
+    public QueueStats(long queued, long running, long cancelling, long oldestQueuedCreatedAtMs) {
+      this.queued = Math.max(0L, queued);
+      this.running = Math.max(0L, running);
+      this.cancelling = Math.max(0L, cancelling);
+      this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
     }
   }
 }

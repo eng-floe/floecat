@@ -19,17 +19,64 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.MetricType;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcilerScheduler {
+  private static final MetricId RECONCILE_JOBS =
+      new MetricId("floecat.service.reconcile.jobs.total", MetricType.COUNTER, "", "v1", "service");
+  private static final MetricId RECONCILE_JOB_LATENCY =
+      new MetricId(
+          "floecat.service.reconcile.job.latency", MetricType.TIMER, "ms", "v1", "service");
+  private static final MetricId RECONCILE_SNAPSHOTS_PROCESSED =
+      new MetricId(
+          "floecat.service.reconcile.snapshots_processed.total",
+          MetricType.COUNTER,
+          "",
+          "v1",
+          "service");
+  private static final MetricId RECONCILE_STATS_PROCESSED =
+      new MetricId(
+          "floecat.service.reconcile.stats_processed.total",
+          MetricType.COUNTER,
+          "",
+          "v1",
+          "service");
+  private static final MetricId RECONCILE_TABLES_SCANNED =
+      new MetricId(
+          "floecat.service.reconcile.tables_scanned.total",
+          MetricType.COUNTER,
+          "",
+          "v1",
+          "service");
+  private static final MetricId RECONCILE_TABLES_CHANGED =
+      new MetricId(
+          "floecat.service.reconcile.tables_changed.total",
+          MetricType.COUNTER,
+          "",
+          "v1",
+          "service");
+  private static final MetricId RECONCILE_ERRORS =
+      new MetricId(
+          "floecat.service.reconcile.errors.total", MetricType.COUNTER, "", "v1", "service");
+
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
+  @Inject ReconcileCancellationRegistry cancellations;
+  @Inject Observability observability;
+  private static final Logger LOG = Logger.getLogger(ReconcilerScheduler.class);
 
   private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -45,8 +92,13 @@ public class ReconcilerScheduler {
       if (lease == null) {
         return;
       }
+      cancellations.register(lease.jobId, Thread.currentThread());
+      long started = System.currentTimeMillis();
 
       jobs.markRunning(lease.jobId, System.currentTimeMillis());
+      jobs.markProgress(lease.jobId, 0, 0, 0, 0, 0, "Running reconcile");
+      BooleanSupplier cancelRequested =
+          () -> Thread.currentThread().isInterrupted() || jobs.isCancellationRequested(lease.jobId);
 
       try {
         var connectorId =
@@ -62,50 +114,127 @@ public class ReconcilerScheduler {
                 .setSubject("reconciler.scheduler")
                 .setCorrelationId("reconciler-job-" + lease.jobId)
                 .build();
+        if (cancelRequested.getAsBoolean()) {
+          long now = System.currentTimeMillis();
+          jobs.markCancelled(lease.jobId, now, "Cancelled", 0, 0, 0, 0, 0);
+          emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
+          return;
+        }
         var result =
             reconcilerService.reconcile(
                 principal,
                 connectorId,
                 lease.fullRescan,
                 lease.scope,
-                CaptureMode.METADATA_ONLY_CORE);
-        if (!result.ok()) {
-          jobs.markFailed(
+                lease.captureMode,
+                null,
+                cancelRequested,
+                (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) ->
+                    jobs.markProgress(
+                        lease.jobId,
+                        scanned,
+                        changed,
+                        errors,
+                        snapshotsProcessed,
+                        statsProcessed,
+                        message));
+        if (result.cancelled() || cancelRequested.getAsBoolean()) {
+          long now = System.currentTimeMillis();
+          jobs.markCancelled(
               lease.jobId,
-              System.currentTimeMillis(),
+              now,
               result.message(),
               result.scanned,
               result.changed,
-              result.errors);
+              result.errors,
+              result.snapshotsProcessed,
+              result.statsProcessed);
+          emitOutcome(
+              lease,
+              "cancelled",
+              now - started,
+              result.scanned,
+              result.changed,
+              result.errors,
+              result.snapshotsProcessed,
+              result.statsProcessed,
+              null);
           return;
         }
-        var statsResult =
-            reconcilerService.reconcile(
-                principal,
-                connectorId,
-                lease.fullRescan,
-                lease.scope,
-                CaptureMode.STATS_ONLY_ASYNC);
-
-        long finished = System.currentTimeMillis();
-        if (statsResult.ok()) {
-          jobs.markSucceeded(
-              lease.jobId,
-              finished,
-              Math.max(result.scanned, statsResult.scanned),
-              Math.max(result.changed, statsResult.changed));
-        } else {
+        if (!result.ok()) {
+          long now = System.currentTimeMillis();
           jobs.markFailed(
               lease.jobId,
-              finished,
-              statsResult.message(),
-              Math.max(result.scanned, statsResult.scanned),
-              Math.max(result.changed, statsResult.changed),
-              statsResult.errors);
+              now,
+              result.message(),
+              result.scanned,
+              result.changed,
+              result.errors,
+              result.snapshotsProcessed,
+              result.statsProcessed);
+          emitOutcome(
+              lease,
+              "failed",
+              now - started,
+              result.scanned,
+              result.changed,
+              result.errors,
+              result.snapshotsProcessed,
+              result.statsProcessed,
+              null);
+          return;
         }
+        long finished = System.currentTimeMillis();
+        long totalSnapshots = result.snapshotsProcessed;
+        long totalStats = result.statsProcessed;
+        if (result.cancelled() || cancelRequested.getAsBoolean()) {
+          jobs.markCancelled(
+              lease.jobId,
+              finished,
+              result.message(),
+              result.scanned,
+              result.changed,
+              result.errors,
+              totalSnapshots,
+              totalStats);
+          emitOutcome(
+              lease,
+              "cancelled",
+              finished - started,
+              result.scanned,
+              result.changed,
+              result.errors,
+              totalSnapshots,
+              totalStats,
+              null);
+          return;
+        }
+        jobs.markSucceeded(
+            lease.jobId, finished, result.scanned, result.changed, totalSnapshots, totalStats);
+        emitOutcome(
+            lease,
+            "succeeded",
+            finished - started,
+            result.scanned,
+            result.changed,
+            result.errors,
+            totalSnapshots,
+            totalStats,
+            null);
       } catch (Exception e) {
-        var msg = describeFailure(e);
-        jobs.markFailed(lease.jobId, System.currentTimeMillis(), msg, 0, 0, 1);
+        if (Thread.currentThread().isInterrupted() || jobs.isCancellationRequested(lease.jobId)) {
+          long now = System.currentTimeMillis();
+          jobs.markCancelled(lease.jobId, now, "Cancelled", 0, 0, 0, 0, 0);
+          emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
+          Thread.interrupted();
+        } else {
+          var msg = describeFailure(e);
+          long now = System.currentTimeMillis();
+          jobs.markFailed(lease.jobId, now, msg, 0, 0, 1, 0, 0);
+          emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e));
+        }
+      } finally {
+        cancellations.unregister(lease.jobId, Thread.currentThread());
       }
     } finally {
       running.set(false);
@@ -145,5 +274,92 @@ public class ReconcilerScheduler {
       return cls;
     }
     return cls + ": " + msg;
+  }
+
+  private void emitOutcome(
+      ReconcileJobStore.LeasedJob lease,
+      String result,
+      long durationMs,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String reason) {
+    observeOutcome(
+        lease,
+        result,
+        durationMs,
+        tablesScanned,
+        tablesChanged,
+        errors,
+        snapshotsProcessed,
+        statsProcessed,
+        reason);
+    LOG.infof(
+        "Reconcile job outcome account=%s connector=%s result=%s duration_ms=%d snapshots_processed=%d stats_processed=%d",
+        lease.accountId,
+        lease.connectorId,
+        result,
+        Math.max(0L, durationMs),
+        Math.max(0L, snapshotsProcessed),
+        Math.max(0L, statsProcessed));
+  }
+
+  private void observeOutcome(
+      ReconcileJobStore.LeasedJob lease,
+      String result,
+      long durationMs,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String reason) {
+    if (observability == null) {
+      return;
+    }
+    Tag[] tags = outcomeTags(lease, result, reason);
+    observability.counter(RECONCILE_JOBS, 1.0, tags);
+    observability.timer(RECONCILE_JOB_LATENCY, Duration.ofMillis(Math.max(0L, durationMs)), tags);
+    observability.counter(RECONCILE_TABLES_SCANNED, Math.max(0L, tablesScanned), tags);
+    observability.counter(RECONCILE_TABLES_CHANGED, Math.max(0L, tablesChanged), tags);
+    observability.counter(RECONCILE_ERRORS, Math.max(0L, errors), tags);
+    observability.counter(RECONCILE_SNAPSHOTS_PROCESSED, Math.max(0L, snapshotsProcessed), tags);
+    observability.counter(RECONCILE_STATS_PROCESSED, Math.max(0L, statsProcessed), tags);
+  }
+
+  private static Tag[] outcomeTags(
+      ReconcileJobStore.LeasedJob lease, String result, String reason) {
+    String mode = lease != null && lease.fullRescan ? "full" : "incremental";
+    if (reason == null || reason.isBlank()) {
+      return new Tag[] {
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "job_execute"),
+        Tag.of(TagKey.RESULT, result),
+        Tag.of(TagKey.MODE, mode)
+      };
+    }
+    return new Tag[] {
+      Tag.of(TagKey.COMPONENT, "service"),
+      Tag.of(TagKey.OPERATION, "job_execute"),
+      Tag.of(TagKey.RESULT, result),
+      Tag.of(TagKey.MODE, mode),
+      Tag.of(TagKey.REASON, reason)
+    };
+  }
+
+  private static String normalizeReason(Throwable t) {
+    if (t == null) {
+      return "unknown";
+    }
+    String simple = t.getClass().getSimpleName();
+    if (simple == null || simple.isBlank()) {
+      return "runtime_exception";
+    }
+    return simple
+        .replaceAll("([a-z])([A-Z])", "$1_$2")
+        .replaceAll("[^A-Za-z0-9_]+", "_")
+        .toLowerCase(java.util.Locale.ROOT);
   }
 }

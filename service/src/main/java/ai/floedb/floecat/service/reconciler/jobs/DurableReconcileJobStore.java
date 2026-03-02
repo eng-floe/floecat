@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -108,10 +109,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public String enqueue(
-      String accountId, String connectorId, boolean fullRescan, ReconcileScope incomingScope) {
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope incomingScope) {
     ReconcileScope scope = incomingScope == null ? ReconcileScope.empty() : incomingScope;
     String laneKey = laneKey(connectorId, scope);
-    String dedupeKey = dedupeKey(accountId, connectorId, fullRescan, scope);
+    String dedupeKey = dedupeKey(accountId, connectorId, fullRescan, captureMode, scope);
     String dedupePointerKey = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
 
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
@@ -136,7 +141,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
       StoredReconcileJob record =
           StoredReconcileJob.queued(
-              jobId, accountId, connectorId, fullRescan, scope, laneKey, dedupeKey, now, readyKey);
+              jobId,
+              accountId,
+              connectorId,
+              fullRescan,
+              captureMode,
+              scope,
+              laneKey,
+              dedupeKey,
+              now,
+              readyKey);
 
       try {
         blobStore.put(
@@ -182,12 +196,111 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public Optional<ReconcileJob> get(String jobId) {
+  public Optional<ReconcileJob> get(String accountId, String jobId) {
     var loaded = loadByAnyAccount(jobId);
     if (loaded.isEmpty()) {
       return Optional.empty();
     }
+    if (accountId != null
+        && !accountId.isBlank()
+        && !accountId.equals(loaded.get().record.accountId)) {
+      return Optional.empty();
+    }
     return Optional.of(toPublicJob(loaded.get().record));
+  }
+
+  @Override
+  public ReconcileJobPage list(
+      String accountId,
+      int pageSize,
+      String pageToken,
+      String connectorId,
+      java.util.Set<String> states) {
+    int limit = Math.max(1, pageSize);
+    String token = pageToken == null ? "" : pageToken;
+    List<ReconcileJob> out = new java.util.ArrayList<>(limit);
+    String nextToken = "";
+    while (out.size() < limit) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(
+              Keys.reconcileJobPointerByIdPrefix(accountId), Math.max(limit * 2, 64), token, next);
+      if (pointers.isEmpty()) {
+        break;
+      }
+      for (int i = 0; i < pointers.size(); i++) {
+        Pointer ptr = pointers.get(i);
+        var rec = readRecord(ptr);
+        if (rec.isEmpty()) {
+          continue;
+        }
+        var job = toPublicJob(rec.get());
+        if (connectorId != null && !connectorId.isBlank() && !connectorId.equals(job.connectorId)) {
+          continue;
+        }
+        if (states != null && !states.isEmpty() && !states.contains(job.state)) {
+          continue;
+        }
+        out.add(job);
+        if (out.size() >= limit) {
+          boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
+          nextToken = hasMore ? ptr.getKey() : "";
+          break;
+        }
+      }
+      if (out.size() >= limit) {
+        break;
+      }
+      nextToken = next.toString();
+      if (nextToken.isBlank()) {
+        break;
+      }
+      token = nextToken;
+    }
+    return new ReconcileJobPage(out, nextToken);
+  }
+
+  @Override
+  public QueueStats queueStats() {
+    long queued = 0L;
+    long running = 0L;
+    long cancelling = 0L;
+    long oldestQueued = 0L;
+    String token = "";
+    int pages = 0;
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(
+              Keys.reconcileJobLookupPointerByIdPrefix(), 256, token, next);
+      if (pointers.isEmpty()) {
+        break;
+      }
+      for (Pointer ptr : pointers) {
+        var rec = readRecordByBlobUri(ptr.getBlobUri());
+        if (rec.isEmpty() || rec.get().state == null) {
+          continue;
+        }
+        switch (rec.get().state) {
+          case "JS_QUEUED" -> {
+            queued++;
+            long created = Math.max(0L, rec.get().createdAtMs);
+            if (created > 0L && (oldestQueued == 0L || created < oldestQueued)) {
+              oldestQueued = created;
+            }
+          }
+          case "JS_RUNNING" -> running++;
+          case "JS_CANCELLING" -> cancelling++;
+          default -> {}
+        }
+      }
+      token = next.toString();
+      pages++;
+      if (token.isBlank() || pages >= 10_000) {
+        break;
+      }
+    }
+    return new QueueStats(queued, running, cancelling, oldestQueued);
   }
 
   @Override
@@ -219,13 +332,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void markProgress(String jobId, long scanned, long changed, long errors, String message) {
+  public void markProgress(
+      String jobId,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed,
+      String message) {
     mutateByJobId(
         jobId,
         existing -> {
+          if (isTerminalState(existing.state)) {
+            return existing;
+          }
           existing.tablesScanned = scanned;
           existing.tablesChanged = changed;
           existing.errors = errors;
+          existing.snapshotsProcessed = snapshotsProcessed;
+          existing.statsProcessed = statsProcessed;
           if (message != null && !message.isBlank()) {
             existing.message = message;
           }
@@ -234,10 +359,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void markSucceeded(String jobId, long finishedAtMs, long scanned, long changed) {
+  public void markSucceeded(
+      String jobId,
+      long finishedAtMs,
+      long scanned,
+      long changed,
+      long snapshotsProcessed,
+      long statsProcessed) {
     mutateByJobId(
         jobId,
         existing -> {
+          if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
+            return existing;
+          }
           existing.state = "JS_SUCCEEDED";
           existing.message = "Succeeded";
           if (existing.startedAtMs <= 0L) {
@@ -246,6 +380,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.finishedAtMs = finishedAtMs;
           existing.tablesScanned = scanned;
           existing.tablesChanged = changed;
+          existing.snapshotsProcessed = snapshotsProcessed;
+          existing.statsProcessed = statsProcessed;
           existing.leaseOwner = null;
           existing.leaseExpiresAtMs = 0L;
           clearReadyPointer(existing.readyPointerKey);
@@ -257,14 +393,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public void markFailed(
-      String jobId, long finishedAtMs, String message, long scanned, long changed, long errors) {
+      String jobId,
+      long finishedAtMs,
+      String message,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
     mutateByJobId(
         jobId,
         existing -> {
+          if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
+            return existing;
+          }
           existing.attempt = Math.max(0, existing.attempt) + 1;
           existing.tablesScanned = scanned;
           existing.tablesChanged = changed;
           existing.errors = errors;
+          existing.snapshotsProcessed = snapshotsProcessed;
+          existing.statsProcessed = statsProcessed;
           existing.lastError = message == null ? "Failed" : message;
           existing.leaseOwner = null;
           existing.leaseExpiresAtMs = 0L;
@@ -299,6 +447,97 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             existing.finishedAtMs = finishedAtMs;
             clearDedupeIfOwned(existing);
           }
+          return existing;
+        });
+  }
+
+  @Override
+  public Optional<ReconcileJob> cancel(String accountId, String jobId, String reason) {
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return Optional.empty();
+    }
+    if (accountId != null
+        && !accountId.isBlank()
+        && !accountId.equals(loaded.get().record.accountId)) {
+      return Optional.empty();
+    }
+    mutateByCanonicalPointer(
+        loaded.get().canonicalPointerKey,
+        existing -> {
+          if (isTerminalState(existing.state)) {
+            return existing;
+          }
+          if ("JS_RUNNING".equals(existing.state)) {
+            existing.state = "JS_CANCELLING";
+            existing.message = (reason == null || reason.isBlank()) ? "Cancelling" : reason;
+            existing.updatedAtMs = System.currentTimeMillis();
+            return existing;
+          }
+          existing.state = "JS_CANCELLED";
+          existing.message = (reason == null || reason.isBlank()) ? "Cancelled" : reason;
+          long now = System.currentTimeMillis();
+          if (existing.startedAtMs <= 0L) {
+            existing.startedAtMs = now;
+          }
+          existing.finishedAtMs = now;
+          existing.leaseOwner = null;
+          existing.leaseExpiresAtMs = 0L;
+          clearReadyPointer(existing.readyPointerKey);
+          existing.readyPointerKey = null;
+          clearDedupeIfOwned(existing);
+          return existing;
+        });
+    var post = get(accountId, jobId);
+    if (post.isPresent()
+        && ("JS_CANCELLED".equals(post.get().state) || "JS_CANCELLING".equals(post.get().state))) {
+      return post;
+    }
+    return Optional.empty();
+  }
+
+  @Override
+  public boolean isCancellationRequested(String jobId) {
+    var job = get(null, jobId);
+    if (job.isEmpty()) {
+      return false;
+    }
+    String state = job.get().state;
+    return "JS_CANCELLING".equals(state) || "JS_CANCELLED".equals(state);
+  }
+
+  @Override
+  public void markCancelled(
+      String jobId,
+      long finishedAtMs,
+      String message,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    mutateByJobId(
+        jobId,
+        existing -> {
+          if (isTerminalState(existing.state)) {
+            return existing;
+          }
+          existing.state = "JS_CANCELLED";
+          existing.message = message == null || message.isBlank() ? "Cancelled" : message;
+          if (existing.startedAtMs <= 0L) {
+            existing.startedAtMs = finishedAtMs;
+          }
+          existing.finishedAtMs = finishedAtMs;
+          existing.tablesScanned = scanned;
+          existing.tablesChanged = changed;
+          existing.errors = errors;
+          existing.snapshotsProcessed = snapshotsProcessed;
+          existing.statsProcessed = statsProcessed;
+          existing.leaseOwner = null;
+          existing.leaseExpiresAtMs = 0L;
+          clearReadyPointer(existing.readyPointerKey);
+          existing.readyPointerKey = null;
+          clearDedupeIfOwned(existing);
           return existing;
         });
   }
@@ -478,6 +717,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 current.accountId,
                 current.connectorId,
                 current.fullRescan,
+                current.captureMode(),
                 current.toScope()));
       }
 
@@ -667,6 +907,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         stored.tablesChanged,
         stored.errors,
         stored.fullRescan,
+        stored.captureMode(),
+        stored.snapshotsProcessed,
+        stored.statsProcessed,
         stored.toScope());
   }
 
@@ -856,7 +1099,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private static String dedupeKey(
-      String accountId, String connectorId, boolean fullRescan, ReconcileScope scope) {
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope) {
     String namespaces =
         scope.destinationNamespacePaths().stream()
             .map(path -> String.join(".", path))
@@ -872,6 +1119,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         + connectorId
         + "|"
         + (fullRescan ? "full" : "incr")
+        + "|"
+        + (captureMode == null ? CaptureMode.METADATA_AND_STATS.name() : captureMode.name())
         + "|"
         + namespaces
         + "|"
@@ -916,6 +1165,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String accountId;
     public String connectorId;
     public boolean fullRescan;
+    public String captureMode;
 
     public List<List<String>> destinationNamespacePaths = List.of();
     public String destinationTableDisplayName;
@@ -928,6 +1178,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public long tablesScanned;
     public long tablesChanged;
     public long errors;
+    public long snapshotsProcessed;
+    public long statsProcessed;
 
     public int attempt;
     public long nextAttemptAtMs;
@@ -949,6 +1201,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         String accountId,
         String connectorId,
         boolean fullRescan,
+        CaptureMode captureMode,
         ReconcileScope scope,
         String laneKey,
         String dedupeKey,
@@ -959,6 +1212,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.accountId = accountId;
       rec.connectorId = connectorId;
       rec.fullRescan = fullRescan;
+      rec.captureMode = (captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode).name();
       rec.destinationNamespacePaths = scope.destinationNamespacePaths();
       rec.destinationTableDisplayName = scope.destinationTableDisplayName();
       rec.destinationTableColumns = scope.destinationTableColumns();
@@ -972,6 +1226,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.createdAtMs = now;
       rec.updatedAtMs = now;
       return rec;
+    }
+
+    CaptureMode captureMode() {
+      if (captureMode == null || captureMode.isBlank()) {
+        return CaptureMode.METADATA_AND_STATS;
+      }
+      try {
+        return CaptureMode.valueOf(captureMode);
+      } catch (IllegalArgumentException ignored) {
+        return CaptureMode.METADATA_AND_STATS;
+      }
     }
 
     ReconcileScope toScope() {

@@ -53,8 +53,6 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -98,6 +96,11 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 
 @QuarkusTest
 @QuarkusTestResource(value = RealServiceTestResource.class, restrictToAnnotatedClass = true)
@@ -1780,16 +1783,25 @@ class IcebergRestFixtureIT {
           awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(20));
       Assertions.assertNotNull(connector, "Connector should be created for trino_test");
 
-      withConnectorsClient(
+      withReconcileControlClient(
           stub -> {
-            stub.syncCapture(
-                SyncCaptureRequest.newBuilder()
-                    .setConnectorId(connector.getResourceId())
-                    .setIncludeStatistics(true)
+            // The fixture table is already mirrored by registration. Use stats-only capture to
+            // backfill statistics for the known current snapshot, then kick off a full async job.
+            stub.captureNow(
+                CaptureNowRequest.newBuilder()
+                    .setScope(
+                        CaptureScope.newBuilder()
+                            .setConnectorId(connector.getResourceId())
+                            .build())
+                    .setMode(CaptureMode.CM_STATS_ONLY)
                     .build());
-            stub.triggerReconcile(
-                TriggerReconcileRequest.newBuilder()
-                    .setConnectorId(connector.getResourceId())
+            stub.startCapture(
+                StartCaptureRequest.newBuilder()
+                    .setScope(
+                        CaptureScope.newBuilder()
+                            .setConnectorId(connector.getResourceId())
+                            .build())
+                    .setMode(CaptureMode.CM_METADATA_AND_STATS)
                     .setFullRescan(true)
                     .build());
             return null;
@@ -2429,6 +2441,12 @@ class IcebergRestFixtureIT {
     return withServiceClient("Connectors", ConnectorsGrpc::newBlockingStub, fn);
   }
 
+  private <T> T withReconcileControlClient(
+      Function<ReconcileControlGrpc.ReconcileControlBlockingStub, T> fn) {
+    return withServiceClient(
+        "ReconcileControl", ReconcileControlGrpc::newBlockingStub, fn);
+  }
+
   private <T> T withDirectoryClient(
       Function<DirectoryServiceGrpc.DirectoryServiceBlockingStub, T> fn) {
     return withServiceClient("Directory", DirectoryServiceGrpc::newBlockingStub, fn);
@@ -2501,16 +2519,22 @@ class IcebergRestFixtureIT {
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
-      GetTableStatsResponse response =
-          withStatisticsClient(
-              stub ->
-                  stub.getTableStats(
-                      GetTableStatsRequest.newBuilder()
-                          .setTableId(tableId)
-                          .setSnapshot(snapshotRef)
-                          .build()));
-      if (response.hasStats() && response.getStats().getRowCount() > 0) {
-        return response.getStats();
+      try {
+        GetTableStatsResponse response =
+            withStatisticsClient(
+                stub ->
+                    stub.getTableStats(
+                        GetTableStatsRequest.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshot(snapshotRef)
+                            .build()));
+        if (response.hasStats() && response.getStats().getRowCount() > 0) {
+          return response.getStats();
+        }
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
+        }
       }
       try {
         TimeUnit.MILLISECONDS.sleep(200);

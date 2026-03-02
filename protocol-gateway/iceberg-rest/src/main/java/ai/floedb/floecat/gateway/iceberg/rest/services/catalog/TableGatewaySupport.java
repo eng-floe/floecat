@@ -39,9 +39,6 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -55,6 +52,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
@@ -744,41 +746,40 @@ public class TableGatewaySupport {
 
   public void runSyncMetadataCapture(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
-    runSyncCapture(connectorId, namespacePath, tableName, false, false);
+    runSyncCapture(
+        connectorId, namespacePath, tableName, CaptureMode.CM_METADATA_ONLY, false, false);
   }
 
-  public SyncCaptureResponse runSyncMetadataCaptureStrict(
+  public CaptureNowResponse runSyncMetadataCaptureStrict(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
-    return runSyncCapture(connectorId, namespacePath, tableName, false, true);
+    return runSyncCapture(
+        connectorId, namespacePath, tableName, CaptureMode.CM_METADATA_ONLY, false, true);
   }
 
   public void runSyncStatisticsCapture(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
-    runSyncCapture(connectorId, namespacePath, tableName, true, false);
+    runSyncCapture(connectorId, namespacePath, tableName, CaptureMode.CM_STATS_ONLY, false, false);
   }
 
-  private SyncCaptureResponse runSyncCapture(
+  private CaptureNowResponse runSyncCapture(
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName,
-      boolean includeStatistics,
+      CaptureMode mode,
+      boolean fullRescan,
       boolean strict) {
     if (connectorId == null || tableName == null || tableName.isBlank()) {
-      return SyncCaptureResponse.getDefaultInstance();
+      return CaptureNowResponse.getDefaultInstance();
     }
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     try {
-      SyncCaptureRequest.Builder request =
-          SyncCaptureRequest.newBuilder()
-              .setConnectorId(connectorId)
-              .setDestinationTableDisplayName(tableName)
-              .setIncludeStatistics(includeStatistics);
-      if (namespacePath != null && !namespacePath.isEmpty()) {
-        request.addDestinationNamespacePaths(
-            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-      }
-      var response = connectorClient.syncCapture(request.build());
+      CaptureNowRequest.Builder request =
+          CaptureNowRequest.newBuilder()
+              .setScope(captureScope(connectorId, namespacePath, tableName))
+              .setMode(mode)
+              .setFullRescan(fullRescan);
+      var response = connectorClient.captureNow(request.build());
       LOG.infof(
           "Triggered sync metadata capture connector=%s namespace=%s table=%s scanned=%d changed=%d"
               + " errors=%d",
@@ -805,7 +806,7 @@ public class TableGatewaySupport {
           "Sync metadata capture failed for connector %s table %s",
           connectorId.getId(),
           tableName);
-      return SyncCaptureResponse.getDefaultInstance();
+      return CaptureNowResponse.getDefaultInstance();
     }
   }
 
@@ -814,16 +815,12 @@ public class TableGatewaySupport {
     String namespaceFq =
         namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
     try {
-      TriggerReconcileRequest.Builder request =
-          TriggerReconcileRequest.newBuilder()
-              .setConnectorId(connectorId)
-              .setFullRescan(false)
-              .setDestinationTableDisplayName(tableName);
-      if (namespacePath != null && !namespacePath.isEmpty()) {
-        request.addDestinationNamespacePaths(
-            NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-      }
-      var response = connectorClient.triggerReconcile(request.build());
+      StartCaptureRequest.Builder request =
+          StartCaptureRequest.newBuilder()
+              .setScope(captureScope(connectorId, namespacePath, tableName))
+              .setMode(CaptureMode.CM_METADATA_AND_STATS)
+              .setFullRescan(false);
+      var response = connectorClient.startCapture(request.build());
       LOG.infof(
           "Triggered reconcile job connector=%s namespace=%s table=%s jobId=%s",
           connectorId == null ? "<missing>" : connectorId.getId(),
@@ -837,6 +834,19 @@ public class TableGatewaySupport {
           connectorId == null ? "<missing>" : connectorId.getId(),
           tableName);
     }
+  }
+
+  private static CaptureScope captureScope(
+      ResourceId connectorId, List<String> namespacePath, String tableName) {
+    CaptureScope.Builder builder =
+        CaptureScope.newBuilder()
+            .setConnectorId(connectorId == null ? ResourceId.getDefaultInstance() : connectorId)
+            .setDestinationTableDisplayName(tableName == null ? "" : tableName);
+    if (namespacePath != null && !namespacePath.isEmpty()) {
+      builder.addDestinationNamespacePaths(
+          NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+    }
+    return builder.build();
   }
 
   private AuthConfig toAuthConfig(IcebergGatewayConfig.AuthTemplate template) {

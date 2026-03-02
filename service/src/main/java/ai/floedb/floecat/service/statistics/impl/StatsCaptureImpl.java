@@ -133,31 +133,22 @@ public class StatsCaptureImpl extends BaseServiceImpl implements StatsCapture {
                           table.getDisplayName(),
                           request.getDestinationTableColumnsList());
 
-                  var metadataResult =
+                  var captureResult =
                       reconcilerService.reconcile(
                           principalContext,
                           connectorId,
                           false,
                           scope,
-                          CaptureMode.METADATA_ONLY_CORE);
-                  ensureReconcileSuccess("metadata", metadataResult);
-
-                  var statsResult =
-                      reconcilerService.reconcile(
-                          principalContext,
-                          connectorId,
-                          false,
-                          scope,
-                          CaptureMode.STATS_ONLY_ASYNC);
-                  ensureReconcileSuccess("stats", statsResult);
+                          CaptureMode.METADATA_AND_STATS);
+                  ensureReconcileSuccess("analyze", captureResult);
 
                   return AnalyzeTableResponse.newBuilder()
-                      .setMetadataTablesScanned(metadataResult.scanned)
-                      .setMetadataTablesChanged(metadataResult.changed)
-                      .setMetadataErrors(metadataResult.errors)
-                      .setStatsTablesScanned(statsResult.scanned)
-                      .setStatsTablesChanged(statsResult.changed)
-                      .setStatsErrors(statsResult.errors)
+                      .setMetadataTablesScanned(captureResult.scanned)
+                      .setMetadataTablesChanged(captureResult.changed)
+                      .setMetadataErrors(captureResult.errors)
+                      .setStatsTablesScanned(captureResult.scanned)
+                      .setStatsTablesChanged(captureResult.changed)
+                      .setStatsErrors(captureResult.errors)
                       .build();
                 }),
             correlationId())

@@ -460,24 +460,214 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
-    "name": "floecat.service.reconcile.sync_capture.total",
+    "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "SyncCapture request outcomes by trigger type.",
+    "description": "CancelReconcileJob request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.capture_now.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "CaptureNow request outcomes by trigger type.",
     "requiredTags": ["component", "operation", "result", "trigger"],
     "allowedTags": ["component", "operation", "reason", "result", "trigger"]
   },
   {
-    "name": "floecat.service.reconcile.trigger.total",
+    "name": "floecat.service.reconcile.errors.total",
     "type": "COUNTER",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "TriggerReconcile request outcomes by trigger type.",
+    "description": "Errors recorded by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.get_job.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "GetReconcileJob request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.get_settings.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "GetReconcilerSettings request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.job.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job terminal latency by execution mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.cancelling",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of reconcile jobs waiting for cancellation.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.queued",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of queued reconcile jobs.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.running",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of running reconcile jobs.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.jobs.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job terminal outcomes by execution mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.list_jobs.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "ListReconcileJobs request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.enqueue.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner enqueue decisions by mode.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.tick.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner tick latency.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.planner.ticks.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Automatic reconcile planner tick outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.queue.oldest_age",
+    "type": "GAUGE",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Age in milliseconds of the oldest queued reconcile job.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.snapshots_processed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Snapshots processed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.start_capture.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "StartCapture request outcomes by trigger type.",
     "requiredTags": ["component", "operation", "result", "trigger"],
     "allowedTags": ["component", "operation", "reason", "result", "trigger"]
+  },
+  {
+    "name": "floecat.service.reconcile.stats_processed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Statistics payloads processed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.tables_changed.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Tables changed by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.tables_scanned.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Tables scanned by reconcile jobs.",
+    "requiredTags": ["component", "mode", "operation", "result"],
+    "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.update_settings.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "UpdateReconcilerSettings request outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "reason", "result"]
   },
   {
     "name": "floecat.service.storage.account.bytes",

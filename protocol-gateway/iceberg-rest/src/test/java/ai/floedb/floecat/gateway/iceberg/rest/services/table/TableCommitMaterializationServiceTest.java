@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
@@ -89,7 +90,11 @@ class TableCommitMaterializationServiceTest {
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
                     .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                    .setConnectorId(
+                        ResourceId.newBuilder()
+                            .setId("conn-1")
+                            .setKind(ResourceKind.RK_CONNECTOR)
+                            .build())
                     .build())
             .build();
     MaterializeMetadataResult result =

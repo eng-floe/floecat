@@ -90,6 +90,21 @@ abstract class DeltaConnector implements FloecatConnector {
       String tableName,
       ResourceId destinationTableId,
       Set<String> includeColumns) {
+    return enumerateSnapshotsWithStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        includeColumns,
+        FloecatConnector.SnapshotEnumerationOptions.full(true));
+  }
+
+  @Override
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      FloecatConnector.SnapshotEnumerationOptions options) {
 
     final String tableRoot = storageLocation(namespaceFq, tableName);
 
@@ -97,6 +112,12 @@ abstract class DeltaConnector implements FloecatConnector {
     final Snapshot snapshot = table.getLatestSnapshot(engine);
 
     final long version = snapshot.getVersion();
+    boolean includeStatistics = options == null || options.includeStatistics();
+    boolean fullRescan = options == null || options.fullRescan();
+    Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
+    if (!fullRescan && knownSnapshotIds.contains(version)) {
+      return List.of();
+    }
     final long createdMs = snapshot.getTimestamp(engine);
     final long parent = Math.max(0L, version - 1L);
 
@@ -119,86 +140,70 @@ abstract class DeltaConnector implements FloecatConnector {
     List<FloecatConnector.ColumnStatsView> cStats = List.of();
     List<FloecatConnector.FileColumnStatsView> fileStats = List.of();
 
-    EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
-    if (engineOut.hasInlineDeletionVectors()) {
-      throw new UnsupportedOperationException(
-          "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+    if (includeStatistics) {
+      EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
+      if (engineOut.hasInlineDeletionVectors()) {
+        throw new UnsupportedOperationException(
+            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+      }
+      var result = engineOut.result();
+      var logicalTypes = engineOut.logicalTypes();
+
+      tStats =
+          ConnectorStatsViewBuilder.toTableStats(
+              destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
+
+      var positions =
+          LogicalSchemaMapper.buildColumnOrdinals(
+              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
+
+      cStats =
+          ConnectorStatsViewBuilder.toColumnStatsView(
+              result.columns(),
+              name -> name,
+              name -> name,
+              name -> positions.getOrDefault(name, 0),
+              name -> 0,
+              name -> {
+                var lt = logicalTypes.get(name);
+                return (lt != null) ? lt : nameToType.get(name);
+              },
+              result.totalRowCount());
+
+      var mutableFiles =
+          new ArrayList<FloecatConnector.FileColumnStatsView>(
+              ConnectorStatsViewBuilder.toFileColumnStatsView(
+                  result.files(),
+                  name -> name,
+                  name -> name,
+                  name -> positions.getOrDefault(name, 0),
+                  name -> 0,
+                  name -> {
+                    var lt = logicalTypes.get(name);
+                    return (lt != null) ? lt : nameToType.get(name);
+                  }));
+
+      for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
+        String dvPath =
+            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+        long rowCount = dv.getCardinality();
+        long sizeBytes = dv.getSizeInBytes();
+        mutableFiles.add(
+            new FloecatConnector.FileColumnStatsView(
+                dvPath,
+                "",
+                rowCount,
+                sizeBytes,
+                FileContent.FC_POSITION_DELETES,
+                "",
+                0,
+                List.of(),
+                null,
+                List.of()));
+      }
+
+      fileStats = List.copyOf(mutableFiles);
     }
-    var result = engineOut.result();
-    var logicalTypes = engineOut.logicalTypes();
-
-    // TableStats (needs engine result)
-    tStats =
-        ConnectorStatsViewBuilder.toTableStats(
-            destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
-
-    // Pre-compute ordinals for ALL columns (top-level + nested).
-    //
-    // TODAY: Delta/Parquet stats only expose top-level columns (e.g., "id", "user").
-    // Nested columns like "user.name" are not in result.columns() due to Parquet footer
-    // limitation.
-    //
-    // FUTURE: When Delta adds nested column stats support, result.columns() will include
-    // paths like "user.name". The generic lookup positions.getOrDefault(name, 0) will
-    // automatically resolve them with zero code changes needed here.
-    var positions =
-        LogicalSchemaMapper.buildColumnOrdinals(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
-
-    // ColumnStatsView: Populate ColumnRef(name, physicalPath, ordinal, fieldId) for reconciler.
-    // Reconciler uses these to deterministically compute column_id via CID_PATH_ORDINAL.
-    // Generic lookup: name -> positions.getOrDefault(name, 0) works for TODAY's top-level columns
-    // and will automatically support FUTURE nested columns when Delta adds stats for them.
-    cStats =
-        ConnectorStatsViewBuilder.toColumnStatsView(
-            result.columns(), // TODAY: top-level only. FUTURE: will include nested paths.
-            name -> name,
-            name -> name, // Delta: physical path == name (both top and nested, if added)
-            name ->
-                positions.getOrDefault(
-                    name, 0), // Pre-computed for all paths; handles both today and future
-            name -> 0, // Delta has no stable format field-id
-            name -> {
-              var lt = logicalTypes.get(name);
-              return (lt != null) ? lt : nameToType.get(name);
-            },
-            result.totalRowCount());
-
-    // File column stats: Same future-ready pattern as table stats.
-    var mutableFiles =
-        new ArrayList<FloecatConnector.FileColumnStatsView>(
-            ConnectorStatsViewBuilder.toFileColumnStatsView(
-                result.files(),
-                name -> name,
-                name -> name, // Delta: physical path == name (top-level today, nested in future)
-                name -> positions.getOrDefault(name, 0), // Generic lookup handles evolution
-                name -> 0, // Delta has no stable format field-id
-                name -> {
-                  var lt = logicalTypes.get(name);
-                  return (lt != null) ? lt : nameToType.get(name);
-                }));
-
-    // Add deletion vectors as file entries with no per-column stats.
-    for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
-      String dvPath =
-          (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
-      long rowCount = dv.getCardinality();
-      long sizeBytes = dv.getSizeInBytes();
-      mutableFiles.add(
-          new FloecatConnector.FileColumnStatsView(
-              dvPath,
-              "",
-              rowCount,
-              sizeBytes,
-              FileContent.FC_POSITION_DELETES,
-              "",
-              0,
-              List.of(),
-              null,
-              List.of()));
-    }
-
-    fileStats = List.copyOf(mutableFiles);
 
     return List.of(
         new SnapshotBundle(

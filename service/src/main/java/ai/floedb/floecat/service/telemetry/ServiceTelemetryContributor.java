@@ -41,6 +41,16 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER);
     Set<String> reconcileAllowed =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER, TagKey.REASON);
+    Set<String> reconcileRequestRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> reconcileRequestAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.REASON);
+    Set<String> reconcileExecutionRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE);
+    Set<String> reconcileExecutionAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
+    Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
 
     add(
         defs,
@@ -86,16 +96,130 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Current number of in-flight Flight streams.");
     add(
         defs,
-        ServiceMetrics.Reconcile.SYNC_CAPTURE,
+        ServiceMetrics.Reconcile.CAPTURE_NOW,
         reconcileRequired,
         reconcileAllowed,
-        "SyncCapture request outcomes by trigger type.");
+        "CaptureNow request outcomes by trigger type.");
     add(
         defs,
-        ServiceMetrics.Reconcile.TRIGGER,
+        ServiceMetrics.Reconcile.START_CAPTURE,
         reconcileRequired,
         reconcileAllowed,
-        "TriggerReconcile request outcomes by trigger type.");
+        "StartCapture request outcomes by trigger type.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.GET_JOB,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "GetReconcileJob request outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LIST_JOBS,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "ListReconcileJobs request outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.CANCEL_JOB,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "CancelReconcileJob request outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.GET_SETTINGS,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "GetReconcilerSettings request outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.UPDATE_SETTINGS,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "UpdateReconcilerSettings request outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.JOBS,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Reconcile job terminal outcomes by execution mode.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.JOB_LATENCY,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Reconcile job terminal latency by execution mode.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.SNAPSHOTS_PROCESSED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Snapshots processed by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.STATS_PROCESSED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Statistics payloads processed by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.TABLES_SCANNED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Tables scanned by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.TABLES_CHANGED,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Tables changed by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.ERRORS,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Errors recorded by reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.JOBS_QUEUED,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of queued reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.JOBS_RUNNING,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of running reconcile jobs.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.JOBS_CANCELLING,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of reconcile jobs waiting for cancellation.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Age in milliseconds of the oldest queued reconcile job.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.PLANNER_TICKS,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "Automatic reconcile planner tick outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY,
+        reconcileRequestRequired,
+        reconcileRequestAllowed,
+        "Automatic reconcile planner tick latency.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.PLANNER_ENQUEUE,
+        reconcileExecutionRequired,
+        reconcileExecutionAllowed,
+        "Automatic reconcile planner enqueue decisions by mode.");
     return Collections.unmodifiableMap(defs);
   }
 

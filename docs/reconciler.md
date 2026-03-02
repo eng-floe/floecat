@@ -6,7 +6,7 @@ reconciliation jobs, leases work to workers, instantiates connectors via the SPI
 service’s gRPC APIs to create tables, snapshots, statistics, and scan bundles.
 
 This component decouples connector execution from the main service so that long-running scans do not
-block gRPC threads. The service triggers reconciliations via `Connectors.TriggerReconcile`, which
+block gRPC threads. The service submits capture jobs via `ReconcileControl.StartCapture`, which
 creates jobs in the reconciler’s store.
 
 ## Architecture & Responsibilities
@@ -33,7 +33,7 @@ creates jobs in the reconciler’s store.
 ## Public API / Surface Area
 While the reconciler itself runs as an internal Quarkus app, it exposes behaviour through the
 connector RPCs:
-- `Connectors.TriggerReconcile(connector_id, full_rescan)` – Enqueues a job via `ReconcileJobStore`.
+- `ReconcileControl.StartCapture(connector_id, full_rescan)` – Enqueues a job via `ReconcileJobStore`.
 - `Connectors.GetReconcileJob(job_id)` – Reads job status, mirroring the store’s fields
   (`state`, `message`, `tables_scanned`, `tables_changed`, `errors`).
 
@@ -71,7 +71,7 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 
 ## Data Flow & Lifecycle
 ```
-Connector TriggerReconcile → ReconcileJobStore.enqueue
+Connector StartCapture → ReconcileJobStore.enqueue
   → ReconcilerScheduler.pollOnce
       → jobs.leaseNext (returns account + connector IDs)
       → markRunning

@@ -39,7 +39,9 @@ Databricks SQL execution, and custom file readers for S3.
   Delta Kernel, and returns a `TableDescriptor` containing location, partition keys, and properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Delta snapshots, optionally samples Parquet files to
   produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
-  per-file stats (row count/size plus per-column metrics when available).
+  per-file stats (row count/size plus per-column metrics when available). In incremental mode, if
+  Floecat already has the latest Delta version ingested, the connector returns no bundles and skips
+  the upstream stats pass.
 
 ## Important Internal Details
 

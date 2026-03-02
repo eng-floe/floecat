@@ -45,6 +45,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -158,8 +159,26 @@ public abstract class IcebergConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Set<String> includeColumns,
       boolean includeStatistics) {
+    return enumerateSnapshotsWithStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        includeColumns,
+        FloecatConnector.SnapshotEnumerationOptions.full(includeStatistics));
+  }
+
+  @Override
+  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      FloecatConnector.SnapshotEnumerationOptions options) {
     Table table = loadTable(namespaceFq, tableName);
     IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
+    boolean includeStatistics = options == null || options.includeStatistics();
+    boolean fullRescan = options == null || options.fullRescan();
+    Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
 
     final Set<Integer> includeIds;
     if (!includeStatistics) {
@@ -174,7 +193,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
 
     List<SnapshotBundle> out = new ArrayList<>();
-    for (Snapshot snapshot : table.snapshots()) {
+    for (Snapshot snapshot : snapshotsToEnumerate(table, fullRescan, knownSnapshotIds)) {
       long snapshotId = snapshot.snapshotId();
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
@@ -344,6 +363,29 @@ public abstract class IcebergConnector implements FloecatConnector {
               metadataAttachments));
     }
     return out;
+  }
+
+  private List<Snapshot> snapshotsToEnumerate(
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds) {
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      List<Snapshot> snapshots = new ArrayList<>();
+      for (Snapshot snapshot : table.snapshots()) {
+        snapshots.add(snapshot);
+      }
+      return snapshots;
+    }
+    List<Snapshot> incremental = new ArrayList<>();
+    for (Snapshot snapshot : table.snapshots()) {
+      if (snapshot == null || knownSnapshotIds.contains(snapshot.snapshotId())) {
+        continue;
+      }
+      incremental.add(snapshot);
+    }
+    incremental.sort(
+        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
+            .thenComparingLong(Snapshot::timestampMillis)
+            .thenComparingLong(Snapshot::snapshotId));
+    return incremental;
   }
 
   protected boolean isSingleTableMode() {

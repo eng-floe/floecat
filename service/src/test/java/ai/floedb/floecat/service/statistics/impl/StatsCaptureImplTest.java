@@ -74,7 +74,7 @@ class StatsCaptureImplTest {
   }
 
   @Test
-  void analyzeTableRunsMetadataThenStats() {
+  void analyzeTableRunsMetadataAndStatsTogether() {
     ResourceId connectorId = rid("acct", "connector-1", ResourceKind.RK_CONNECTOR);
     ResourceId tableId = rid("acct", "table-1", ResourceKind.RK_TABLE);
     ResourceId namespaceId = rid("acct", "ns-1", ResourceKind.RK_NAMESPACE);
@@ -99,8 +99,7 @@ class StatsCaptureImplTest {
 
     when(reconcilerService.reconcile(
             any(), any(), anyBoolean(), any(ReconcileScope.class), any(CaptureMode.class)))
-        .thenReturn(new ReconcilerService.Result(1, 1, 0, null))
-        .thenReturn(new ReconcilerService.Result(1, 0, 0, null));
+        .thenReturn(new ReconcilerService.Result(1, 1, 0, 3, 8, null));
 
     var response =
         service
@@ -112,7 +111,7 @@ class StatsCaptureImplTest {
     assertEquals(1L, response.getMetadataTablesChanged());
     assertEquals(0L, response.getMetadataErrors());
     assertEquals(1L, response.getStatsTablesScanned());
-    assertEquals(0L, response.getStatsTablesChanged());
+    assertEquals(1L, response.getStatsTablesChanged());
     assertEquals(0L, response.getStatsErrors());
   }
 

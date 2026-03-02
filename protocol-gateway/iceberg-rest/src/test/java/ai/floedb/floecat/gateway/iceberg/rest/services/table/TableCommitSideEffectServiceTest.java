@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -34,7 +35,8 @@ class TableCommitSideEffectServiceTest {
   void runConnectorSyncTriggersCaptureAndReconcile() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
 
     service.runConnectorSync(tableSupport, connectorId, List.of("db"), "orders");
 
@@ -57,7 +59,8 @@ class TableCommitSideEffectServiceTest {
   void runConnectorStatsSyncSkipsWhenConnectorIntegrationDisabled() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
 
     service.runConnectorStatsSyncAttempt(tableSupport, connectorId, List.of("db"), "orders");
 

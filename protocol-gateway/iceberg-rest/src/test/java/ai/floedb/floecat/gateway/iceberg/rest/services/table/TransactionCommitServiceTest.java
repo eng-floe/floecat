@@ -32,6 +32,7 @@ import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
@@ -441,7 +442,12 @@ class TransactionCommitServiceTest {
   @Test
   void commitWithConnectorRunsPostCommitStatsSyncWithoutConnectorTxChanges() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
     Table tableWithConnector =
         Table.newBuilder()
             .setResourceId(tableId)

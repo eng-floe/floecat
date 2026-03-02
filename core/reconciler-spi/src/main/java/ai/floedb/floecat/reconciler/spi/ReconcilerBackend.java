@@ -31,6 +31,7 @@ import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /** Front door used by the reconciler regardless of deployment mode. */
 public interface ReconcilerBackend {
@@ -46,6 +47,8 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId, SnapshotRef ref, Optional<Timestamp> asOf);
 
   Optional<Snapshot> fetchSnapshot(ReconcileContext ctx, ResourceId tableId, long snapshotId);
+
+  Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId);
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 

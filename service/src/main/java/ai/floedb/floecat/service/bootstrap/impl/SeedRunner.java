@@ -653,18 +653,8 @@ public class SeedRunner {
       try {
         var result =
             reconcileWithSeedAuth(
-                connectorId, scope, ReconcilerService.CaptureMode.METADATA_ONLY_CORE);
+                connectorId, scope, ReconcilerService.CaptureMode.METADATA_AND_STATS);
         if (result.ok()) {
-          var statsResult =
-              reconcileWithSeedAuth(
-                  connectorId, scope, ReconcilerService.CaptureMode.STATS_ONLY_ASYNC);
-          if (!statsResult.ok()) {
-            LOG.warnf(
-                statsResult.error,
-                "Stats capture pass failed for fixture table %s: %s",
-                tableName,
-                statsResult.message());
-          }
           LOG.infov(
               "Populated fixture table {0} (scanned={1}, changed={2})",
               tableName, result.scanned, result.changed);
