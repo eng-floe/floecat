@@ -46,7 +46,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -194,8 +193,6 @@ public class ReconcilerService {
             ? stored.getDestination().toBuilder()
             : DestinationTarget.newBuilder();
 
-    FieldMask.Builder dmaskB = FieldMask.newBuilder();
-
     final SourceSelector source =
         stored.hasSource() ? stored.getSource() : SourceSelector.getDefaultInstance();
     final DestinationTarget dest =
@@ -248,7 +245,6 @@ public class ReconcilerService {
       if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
-        dmaskB.addAllPaths(List.of("destination.namespace_id", "destination.namespace"));
       }
 
       final List<String> tables =
@@ -323,7 +319,6 @@ public class ReconcilerService {
           if (singleTableMode && !destB.hasTableId()) {
             destB.setTableId(destTableId);
             destB.clearTableDisplayName();
-            dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
           boolean includeCoreMetadata =
@@ -345,10 +340,16 @@ public class ReconcilerService {
                   destTableId,
                   includeSelectors,
                   new FloecatConnector.SnapshotEnumerationOptions(
-                      includeStats, fullRescan, enumerationKnownSnapshotIds));
+                      includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
           var bundles =
               filterBundlesForMode(
-                  upstreamBundles, fullRescan, knownSnapshotIds, targetSnapshotIds, progressOut);
+                  upstreamBundles,
+                  fullRescan,
+                  includeCoreMetadata,
+                  includeStats,
+                  knownSnapshotIds,
+                  targetSnapshotIds,
+                  progressOut);
 
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
@@ -372,7 +373,9 @@ public class ReconcilerService {
                   statsProcessed);
           snapshotsProcessed += ingestCounts.snapshotsProcessed;
           statsProcessed += ingestCounts.statsProcessed;
-          changed++;
+          if (tableChanged(bundles)) {
+            changed++;
+          }
           progressOut.onProgress(
               scanned,
               changed,
@@ -417,8 +420,7 @@ public class ReconcilerService {
       }
 
       DestinationTarget updated = destB.build();
-      FieldMask dMask = dmaskB.build();
-      if (!updated.equals(stored.getDestination()) && dMask.getPathsCount() > 0) {
+      if (!updated.equals(stored.getDestination())) {
         try {
           backend.updateConnectorDestination(ctx, stored.getResourceId(), updated);
         } catch (RuntimeException e) {
@@ -645,6 +647,8 @@ public class ReconcilerService {
   private List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
+      boolean includeCoreMetadata,
+      boolean includeStats,
       Set<Long> existingSnapshotIds,
       Set<Long> targetSnapshotIds,
       ProgressListener progress) {
@@ -655,6 +659,12 @@ public class ReconcilerService {
 
     List<FloecatConnector.SnapshotBundle> scoped =
         filterBundlesForSnapshotScope(bundles, targetSnapshotIds, progress);
+    if (includeStats) {
+      return scoped;
+    }
+    if (!includeCoreMetadata) {
+      return scoped;
+    }
     if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
       return scoped;
     }
@@ -724,6 +734,10 @@ public class ReconcilerService {
       return Set.of();
     }
     return Set.copyOf(knownSnapshotIds);
+  }
+
+  private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
+    return bundles != null && !bundles.isEmpty();
   }
 
   private static <T> void applyField(

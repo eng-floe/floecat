@@ -283,7 +283,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     for (var row : rows) {
       byte[] bytes = blobsMap.get(row.getBlobUri());
       if (bytes == null) {
-        continue;
+        var after = pointerStore.get(row.getKey()).orElse(null);
+        if (after == null || !Objects.equals(after.getBlobUri(), row.getBlobUri())) {
+          continue;
+        }
+        throw new CorruptionException("dangling pointer, missing blob: " + row.getBlobUri(), null);
       }
 
       try {

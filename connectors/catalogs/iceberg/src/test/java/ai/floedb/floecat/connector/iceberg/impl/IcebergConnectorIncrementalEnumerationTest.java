@@ -59,14 +59,51 @@ class IcebergConnectorIncrementalEnumerationTest {
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
-            "snapshotsToEnumerate", Table.class, boolean.class, Set.class);
+            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
     List<Snapshot> snapshots =
-        (List<Snapshot>) method.invoke(connector, table, false, Set.of(100L, 200L));
+        (List<Snapshot>) method.invoke(connector, table, false, Set.of(100L, 200L), Set.of());
 
     assertEquals(List.of(300L, 250L), snapshots.stream().map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumerateFullRescanStillHonorsExplicitSnapshotScope() throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+
+    Snapshot latest = snapshot(300L, 3L, 3000L, 200L);
+    Snapshot target = snapshot(200L, 2L, 2000L, 100L);
+    Snapshot earlier = snapshot(100L, 1L, 1000L, null);
+    Table table = table(List.of(latest, target, earlier), latest);
+
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    List<Snapshot> snapshots =
+        (List<Snapshot>) method.invoke(connector, table, true, Set.of(), Set.of(200L));
+
+    assertEquals(List.of(200L), snapshots.stream().map(Snapshot::snapshotId).toList());
   }
 
   private static Snapshot snapshot(

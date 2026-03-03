@@ -55,7 +55,7 @@ public final class ReconcileScope {
         destinationSnapshotIds == null
             ? List.of()
             : destinationSnapshotIds.stream()
-                .filter(id -> id != null && id > 0L)
+                .filter(id -> id != null && id >= 0L)
                 .distinct()
                 .toList();
   }

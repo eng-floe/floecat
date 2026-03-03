@@ -320,7 +320,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -351,7 +351,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, true, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -372,11 +372,11 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, Set.of(10L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(11L);
+        .containsExactly(10L, 11L);
   }
 
   @Test
@@ -396,7 +396,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, Set.of(11L), Set.of(11L, 12L));
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L), Set.of(11L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -422,6 +422,22 @@ class ReconcilerServiceTest {
     assertThat(fullRescan).isEmpty();
   }
 
+  @Test
+  void tableChangedIsFalseWhenNoBundlesRemain() throws Exception {
+    assertThat(invokeTableChanged(List.of())).isFalse();
+  }
+
+  @Test
+  void tableChangedIsTrueWhenBundlesRemain() throws Exception {
+    assertThat(
+            invokeTableChanged(
+                List.of(
+                    new FloecatConnector.SnapshotBundle(
+                        11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                        Map.of()))))
+        .isTrue();
+  }
+
   @SuppressWarnings("unchecked")
   private static Set<String> invokeEffectiveSelectors(ReconcileScope scope, SourceSelector source)
       throws Exception {
@@ -435,6 +451,8 @@ class ReconcilerServiceTest {
   private Object invokeFilterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
+      boolean includeCoreMetadata,
+      boolean includeStats,
       Set<Long> existingSnapshotIds,
       Set<Long> targetSnapshotIds)
       throws Exception {
@@ -442,6 +460,8 @@ class ReconcilerServiceTest {
         ReconcilerService.class.getDeclaredMethod(
             "filterBundlesForMode",
             List.class,
+            boolean.class,
+            boolean.class,
             boolean.class,
             Set.class,
             Set.class,
@@ -451,6 +471,8 @@ class ReconcilerServiceTest {
         service,
         bundles,
         fullRescan,
+        includeCoreMetadata,
+        includeStats,
         existingSnapshotIds,
         targetSnapshotIds,
         (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
@@ -463,5 +485,12 @@ class ReconcilerServiceTest {
             "knownSnapshotIdsForEnumeration", boolean.class, Set.class);
     method.setAccessible(true);
     return method.invoke(null, fullRescan, existingSnapshotIds);
+  }
+
+  private static boolean invokeTableChanged(List<FloecatConnector.SnapshotBundle> bundles)
+      throws Exception {
+    Method method = ReconcilerService.class.getDeclaredMethod("tableChanged", List.class);
+    method.setAccessible(true);
+    return (boolean) method.invoke(null, bundles);
   }
 }

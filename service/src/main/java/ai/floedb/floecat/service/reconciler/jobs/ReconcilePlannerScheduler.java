@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs;
 
+import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
@@ -32,6 +33,7 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,6 +52,7 @@ public class ReconcilePlannerScheduler {
 
   private final AtomicBoolean running = new AtomicBoolean(false);
   private final Map<String, Long> lastEnqueueMs = new ConcurrentHashMap<>();
+  private volatile PlannerCursor plannerCursor = PlannerCursor.start();
 
   @Scheduled(
       every = "{floecat.reconciler.auto.tick-every:30s}",
@@ -79,45 +82,13 @@ public class ReconcilePlannerScheduler {
               .orElse(200);
       long defaultIntervalMs = settings.defaultIntervalMs();
       ReconcileMode defaultMode = settings.defaultMode();
-
-      long now = System.currentTimeMillis();
-      long deadline = now + Math.max(1000L, maxTickMillis);
       if (defaultIntervalMs <= 0L) {
         result = "disabled";
         return;
       }
-
-      String accountToken = "";
-      while (System.currentTimeMillis() < deadline) {
-        StringBuilder accountNext = new StringBuilder();
-        var accountRows = accounts.list(accountsPageSize, accountToken, accountNext);
-        for (var account : accountRows) {
-          if (System.currentTimeMillis() >= deadline) {
-            break;
-          }
-          String connectorToken = "";
-          String accountId = account.getResourceId().getId();
-          while (System.currentTimeMillis() < deadline) {
-            StringBuilder connectorNext = new StringBuilder();
-            var connectorRows =
-                connectors.list(accountId, connectorsPageSize, connectorToken, connectorNext);
-            for (Connector connector : connectorRows) {
-              if (System.currentTimeMillis() >= deadline) {
-                break;
-              }
-              maybeEnqueue(connector, defaultIntervalMs, defaultMode);
-            }
-            connectorToken = connectorNext.toString();
-            if (connectorToken.isBlank()) {
-              break;
-            }
-          }
-        }
-        accountToken = accountNext.toString();
-        if (accountToken.isBlank()) {
-          break;
-        }
-      }
+      long deadline = nowMs() + Math.max(1000L, maxTickMillis);
+      runPlannerPass(
+          deadline, accountsPageSize, connectorsPageSize, defaultIntervalMs, defaultMode);
     } catch (RuntimeException e) {
       result = "error";
       reason = normalizeReason(e);
@@ -129,13 +100,115 @@ public class ReconcilePlannerScheduler {
     }
   }
 
+  void runPlannerPass(
+      long deadlineMs,
+      int accountsPageSize,
+      int connectorsPageSize,
+      long defaultIntervalMs,
+      ReconcileMode defaultMode) {
+    String accountToken = plannerCursor.accountToken();
+    while (nowMs() < deadlineMs) {
+      StringBuilder accountNext = new StringBuilder();
+      List<Account> accountRows;
+      try {
+        accountRows = accounts.list(accountsPageSize, accountToken, accountNext);
+      } catch (IllegalArgumentException e) {
+        if (accountToken.isBlank()) {
+          throw e;
+        }
+        LOG.debugf(e, "Resetting planner cursor after invalid account page token");
+        plannerCursor = PlannerCursor.start();
+        return;
+      }
+      if (accountRows.isEmpty()) {
+        plannerCursor = PlannerCursor.start();
+        return;
+      }
+      for (Account account : accountRows) {
+        if (nowMs() >= deadlineMs) {
+          plannerCursor = new PlannerCursor(accountToken);
+          return;
+        }
+        String accountId = account.getResourceId().getId();
+        processAccount(accountId, deadlineMs, connectorsPageSize, defaultIntervalMs, defaultMode);
+      }
+      if (accountNext.length() == 0) {
+        plannerCursor = PlannerCursor.start();
+        return;
+      }
+      accountToken = accountNext.toString();
+      plannerCursor = new PlannerCursor(accountToken);
+    }
+    plannerCursor = new PlannerCursor(accountToken);
+  }
+
+  private void processAccount(
+      String accountId,
+      long deadlineMs,
+      int connectorsPageSize,
+      long defaultIntervalMs,
+      ReconcileMode defaultMode) {
+    String connectorToken = "";
+    while (nowMs() < deadlineMs) {
+      StringBuilder connectorNext = new StringBuilder();
+      List<Connector> connectorRows;
+      try {
+        connectorRows =
+            connectors.list(accountId, connectorsPageSize, connectorToken, connectorNext);
+      } catch (IllegalArgumentException e) {
+        if (connectorToken.isBlank()) {
+          throw e;
+        }
+        LOG.debugf(
+            e,
+            "Stopping connector scan after invalid page token account=%s token=%s",
+            accountId,
+            connectorToken);
+        return;
+      }
+      if (connectorRows.isEmpty()) {
+        return;
+      }
+      for (Connector connector : connectorRows) {
+        if (nowMs() >= deadlineMs) {
+          return;
+        }
+        maybeEnqueue(connector, defaultIntervalMs, defaultMode);
+      }
+      if (connectorNext.length() == 0) {
+        return;
+      }
+      String nextToken = connectorNext.toString();
+      if (nextToken.equals(connectorToken)) {
+        LOG.warnf(
+            "Stopping connector scan after stagnant page token account=%s token=%s",
+            accountId, connectorToken);
+        return;
+      }
+      connectorToken = nextToken;
+    }
+  }
+
+  PlannerCursor plannerCursor() {
+    return plannerCursor;
+  }
+
+  long nowMs() {
+    return System.currentTimeMillis();
+  }
+
   private void maybeEnqueue(
       Connector connector, long defaultIntervalMs, ReconcileMode defaultMode) {
     if (connector == null || !connector.hasResourceId()) {
-      observePlannerEnqueue("skipped", "incremental", "missing_connector");
+      observePlannerEnqueue("skipped", "n_a", "missing_connector");
       return;
     }
-    String mode = modeValue(effectiveMode(connector, defaultMode));
+    if (isAutoPolicyDisabled(connector)) {
+      observePlannerEnqueue("skipped", "n_a", "policy_disabled");
+      return;
+    }
+    ReconcileMode effectiveMode = effectiveMode(connector, defaultMode);
+    String mode = modeValue(effectiveMode);
     if (connector.getState() != ConnectorState.CS_ACTIVE) {
       observePlannerEnqueue("skipped", mode, "inactive");
       return;
@@ -147,8 +220,8 @@ public class ReconcilePlannerScheduler {
     }
 
     String key = connector.getResourceId().getAccountId() + ":" + connector.getResourceId().getId();
-    boolean fullRescan = "full".equals(mode);
-    long now = System.currentTimeMillis();
+    boolean fullRescan = effectiveMode == ReconcileMode.RM_FULL;
+    long now = nowMs();
     long notBeforeMs = 0L;
     if (connector.hasPolicy() && connector.getPolicy().hasNotBefore()) {
       notBeforeMs =
@@ -193,6 +266,10 @@ public class ReconcilePlannerScheduler {
       }
     }
     return defaultIntervalMs;
+  }
+
+  private static boolean isAutoPolicyDisabled(Connector connector) {
+    return connector != null && connector.hasPolicy() && !connector.getPolicy().getEnabled();
   }
 
   private static ReconcileMode effectiveMode(Connector connector, ReconcileMode defaultMode) {
@@ -271,5 +348,15 @@ public class ReconcilePlannerScheduler {
         .replaceAll("([a-z])([A-Z])", "$1_$2")
         .replaceAll("[^A-Za-z0-9_]+", "_")
         .toLowerCase(java.util.Locale.ROOT);
+  }
+
+  record PlannerCursor(String accountToken) {
+    PlannerCursor {
+      accountToken = accountToken == null ? "" : accountToken;
+    }
+
+    static PlannerCursor start() {
+      return new PlannerCursor("");
+    }
   }
 }

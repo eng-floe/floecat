@@ -76,15 +76,6 @@ public class TableCommitSideEffectService {
     return new ConnectorSyncResult(captureOk, reconcileOk, false);
   }
 
-  public ConnectorSyncResult runConnectorStatsSyncAttempt(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName) {
-    return runConnectorStatsSyncAttempt(
-        tableSupport, connectorId, namespacePath, tableName, List.of());
-  }
-
   public ConnectorSyncResult runPostCommitStatsSyncAttempt(
       TableGatewaySupport tableSupport,
       List<String> namespacePath,
@@ -116,6 +107,9 @@ public class TableCommitSideEffectService {
       return ConnectorSyncResult.skippedResult();
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
+      return ConnectorSyncResult.skippedResult();
+    }
+    if (snapshotIds == null || snapshotIds.isEmpty()) {
       return ConnectorSyncResult.skippedResult();
     }
     boolean statsOk = true;

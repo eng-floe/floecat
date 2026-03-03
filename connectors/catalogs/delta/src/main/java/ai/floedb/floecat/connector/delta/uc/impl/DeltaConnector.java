@@ -107,125 +107,46 @@ abstract class DeltaConnector implements FloecatConnector {
       FloecatConnector.SnapshotEnumerationOptions options) {
 
     final String tableRoot = storageLocation(namespaceFq, tableName);
-
-    final Table table = Table.forPath(engine, tableRoot);
-    final Snapshot snapshot = table.getLatestSnapshot(engine);
-
-    final long version = snapshot.getVersion();
+    final Table table = loadTable(tableRoot);
     boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
-    if (!fullRescan && knownSnapshotIds.contains(version)) {
+    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
+    final Snapshot latestSnapshot = table.getLatestSnapshot(engine);
+    if (latestSnapshot == null) {
       return List.of();
     }
-    final long createdMs = snapshot.getTimestamp(engine);
-    final long parent = Math.max(0L, version - 1L);
+    final long latestVersion = latestSnapshot.getVersion();
 
-    final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
-    final String schemaJson = kernelSchema.toJson();
-    final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
-
-    final Set<String> includeNames =
-        (includeColumns == null || includeColumns.isEmpty())
-            ? new LinkedHashSet<>(nameToType.keySet())
-            : includeColumns.stream()
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-
-    // Always return at least the snapshot + schema; stats may be omitted.
-    TableStats tStats = null;
-
-    List<FloecatConnector.ColumnStatsView> cStats = List.of();
-    List<FloecatConnector.FileColumnStatsView> fileStats = List.of();
-
-    if (includeStatistics) {
-      EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
-      if (engineOut.hasInlineDeletionVectors()) {
-        throw new UnsupportedOperationException(
-            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
-      }
-      var result = engineOut.result();
-      var logicalTypes = engineOut.logicalTypes();
-
-      tStats =
-          ConnectorStatsViewBuilder.toTableStats(
-              destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
-
-      var positions =
-          LogicalSchemaMapper.buildColumnOrdinals(
-              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
-
-      cStats =
-          ConnectorStatsViewBuilder.toColumnStatsView(
-              result.columns(),
-              name -> name,
-              name -> name,
-              name -> positions.getOrDefault(name, 0),
-              name -> 0,
-              name -> {
-                var lt = logicalTypes.get(name);
-                return (lt != null) ? lt : nameToType.get(name);
-              },
-              result.totalRowCount());
-
-      var mutableFiles =
-          new ArrayList<FloecatConnector.FileColumnStatsView>(
-              ConnectorStatsViewBuilder.toFileColumnStatsView(
-                  result.files(),
-                  name -> name,
-                  name -> name,
-                  name -> positions.getOrDefault(name, 0),
-                  name -> 0,
-                  name -> {
-                    var lt = logicalTypes.get(name);
-                    return (lt != null) ? lt : nameToType.get(name);
-                  }));
-
-      for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
-        String dvPath =
-            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
-        long rowCount = dv.getCardinality();
-        long sizeBytes = dv.getSizeInBytes();
-        mutableFiles.add(
-            new FloecatConnector.FileColumnStatsView(
-                dvPath,
-                "",
-                rowCount,
-                sizeBytes,
-                FileContent.FC_POSITION_DELETES,
-                "",
-                0,
-                List.of(),
-                null,
-                List.of()));
-      }
-
-      fileStats = List.copyOf(mutableFiles);
+    List<Long> versions =
+        versionsToEnumerate(latestVersion, fullRescan, knownSnapshotIds, targetSnapshotIds);
+    if (versions.isEmpty()) {
+      return List.of();
     }
-
-    return List.of(
-        new SnapshotBundle(
-            version,
-            parent,
-            createdMs,
-            tStats,
-            cStats,
-            fileStats,
-            schemaJson,
-            partitionSpec,
-            0L,
-            null,
-            Map.of(),
-            0,
-            Map.of()));
+    List<SnapshotBundle> bundles = new ArrayList<>(versions.size());
+    for (long version : versions) {
+      Snapshot snapshot =
+          (version == latestVersion)
+              ? latestSnapshot
+              : table.getSnapshotAsOfVersion(engine, version);
+      if (snapshot == null) {
+        continue;
+      }
+      bundles.add(
+          buildSnapshotBundle(
+              tableRoot, destinationTableId, includeColumns, includeStatistics, version, snapshot));
+    }
+    return List.copyOf(bundles);
   }
 
   @Override
   public void close() {}
 
   protected abstract String storageLocation(String namespaceFq, String tableName);
+
+  protected Table loadTable(String tableRoot) {
+    return Table.forPath(engine, tableRoot);
+  }
 
   protected TableDescriptor describeFromDelta(
       String tableRoot, String namespaceFq, String tableName) {
@@ -319,6 +240,136 @@ abstract class DeltaConnector implements FloecatConnector {
     } catch (Exception e) {
       throw new RuntimeException("Delta stats compute failed (version " + version + ")", e);
     }
+  }
+
+  protected List<Long> versionsToEnumerate(
+      long latestVersion,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
+      return targetSnapshotIds.stream()
+          .filter(version -> version != null && version >= 0L)
+          .sorted()
+          .filter(version -> fullRescan || !knownSnapshotIds.contains(version))
+          .toList();
+    }
+    List<Long> versions = new ArrayList<>();
+    for (long version = 0L; version <= latestVersion; version++) {
+      if (!fullRescan && knownSnapshotIds.contains(version)) {
+        continue;
+      }
+      versions.add(version);
+    }
+    return List.copyOf(versions);
+  }
+
+  private SnapshotBundle buildSnapshotBundle(
+      String tableRoot,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      boolean includeStatistics,
+      long version,
+      Snapshot snapshot) {
+    final long createdMs = snapshot.getTimestamp(engine);
+    final long parent = Math.max(0L, version - 1L);
+
+    final StructType kernelSchema = snapshot.getSchema();
+    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final String schemaJson = kernelSchema.toJson();
+    final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
+
+    final Set<String> includeNames =
+        (includeColumns == null || includeColumns.isEmpty())
+            ? new LinkedHashSet<>(nameToType.keySet())
+            : includeColumns.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+    TableStats tStats = null;
+    List<FloecatConnector.ColumnStatsView> cStats = List.of();
+    List<FloecatConnector.FileColumnStatsView> fileStats = List.of();
+
+    if (includeStatistics) {
+      EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
+      if (engineOut.hasInlineDeletionVectors()) {
+        throw new UnsupportedOperationException(
+            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+      }
+      var result = engineOut.result();
+      var logicalTypes = engineOut.logicalTypes();
+
+      tStats =
+          ConnectorStatsViewBuilder.toTableStats(
+              destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
+
+      var positions =
+          LogicalSchemaMapper.buildColumnOrdinals(
+              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
+
+      cStats =
+          ConnectorStatsViewBuilder.toColumnStatsView(
+              result.columns(),
+              name -> name,
+              name -> name,
+              name -> positions.getOrDefault(name, 0),
+              name -> 0,
+              name -> {
+                var lt = logicalTypes.get(name);
+                return (lt != null) ? lt : nameToType.get(name);
+              },
+              result.totalRowCount());
+
+      var mutableFiles =
+          new ArrayList<FloecatConnector.FileColumnStatsView>(
+              ConnectorStatsViewBuilder.toFileColumnStatsView(
+                  result.files(),
+                  name -> name,
+                  name -> name,
+                  name -> positions.getOrDefault(name, 0),
+                  name -> 0,
+                  name -> {
+                    var lt = logicalTypes.get(name);
+                    return (lt != null) ? lt : nameToType.get(name);
+                  }));
+
+      for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
+        String dvPath =
+            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+        long rowCount = dv.getCardinality();
+        long sizeBytes = dv.getSizeInBytes();
+        mutableFiles.add(
+            new FloecatConnector.FileColumnStatsView(
+                dvPath,
+                "",
+                rowCount,
+                sizeBytes,
+                FileContent.FC_POSITION_DELETES,
+                "",
+                0,
+                List.of(),
+                null,
+                List.of()));
+      }
+
+      fileStats = List.copyOf(mutableFiles);
+    }
+
+    return new SnapshotBundle(
+        version,
+        parent,
+        createdMs,
+        tStats,
+        cStats,
+        fileStats,
+        schemaJson,
+        partitionSpec,
+        0L,
+        null,
+        Map.of(),
+        0,
+        Map.of());
   }
 
   protected Snapshot resolveSnapshot(Table table, long snapshotId, long asOfTime) {

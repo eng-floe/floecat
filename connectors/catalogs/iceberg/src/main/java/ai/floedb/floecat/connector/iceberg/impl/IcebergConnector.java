@@ -179,6 +179,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
+    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
 
     final Set<Integer> includeIds;
     if (!includeStatistics) {
@@ -193,7 +194,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
 
     List<SnapshotBundle> out = new ArrayList<>();
-    for (Snapshot snapshot : snapshotsToEnumerate(table, fullRescan, knownSnapshotIds)) {
+    for (Snapshot snapshot :
+        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds)) {
       long snapshotId = snapshot.snapshotId();
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
@@ -366,8 +368,9 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds) {
-    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
+    boolean hasTargetScope = targetSnapshotIds != null && !targetSnapshotIds.isEmpty();
+    if ((fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) && !hasTargetScope) {
       List<Snapshot> snapshots = new ArrayList<>();
       for (Snapshot snapshot : table.snapshots()) {
         snapshots.add(snapshot);
@@ -376,7 +379,14 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     List<Snapshot> incremental = new ArrayList<>();
     for (Snapshot snapshot : table.snapshots()) {
-      if (snapshot == null || knownSnapshotIds.contains(snapshot.snapshotId())) {
+      if (snapshot == null) {
+        continue;
+      }
+      long snapshotId = snapshot.snapshotId();
+      if (hasTargetScope && !targetSnapshotIds.contains(snapshotId)) {
+        continue;
+      }
+      if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
         continue;
       }
       incremental.add(snapshot);

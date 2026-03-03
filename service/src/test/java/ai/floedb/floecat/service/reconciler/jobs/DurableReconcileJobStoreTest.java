@@ -88,6 +88,20 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueuePreservesSnapshotScopeIncludingZero() {
+    store.init();
+    ReconcileScope scope =
+        ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of(), List.of(0L, 3L));
+
+    String jobId =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+
+    ReconcileJob job = store.get(jobId).orElseThrow();
+    assertEquals(List.of(0L, 3L), job.scope.destinationSnapshotIds());
+    assertTrue(job.scope.hasSnapshotFilter());
+  }
+
+  @Test
   void markFailedRequeuesAndEventuallyTransitionsToFailed() {
     System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
     System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "100");

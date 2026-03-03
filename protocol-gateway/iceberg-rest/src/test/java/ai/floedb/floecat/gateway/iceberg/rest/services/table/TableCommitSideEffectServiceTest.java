@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -63,9 +64,11 @@ class TableCommitSideEffectServiceTest {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
 
-    service.runConnectorStatsSyncAttempt(tableSupport, connectorId, List.of("db"), "orders");
+    service.runConnectorStatsSyncAttempt(
+        tableSupport, connectorId, List.of("db"), "orders", List.of(101L));
 
-    verify(tableSupport, never()).runSyncStatisticsCapture(any(), any(), any());
+    verify(tableSupport, never())
+        .runSyncStatisticsCapture(any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -86,5 +89,24 @@ class TableCommitSideEffectServiceTest {
     verify(tableSupport)
         .runSyncStatisticsCapture(
             eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(true));
+  }
+
+  @Test
+  void runPostCommitStatsSyncSkipsWhenNoSnapshotsWereCommitted() {
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
+    var tableWithConnector =
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setUpstream(
+                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder().setConnectorId(connectorId))
+            .build();
+
+    service.runPostCommitStatsSyncAttempt(
+        tableSupport, List.of("db"), "orders", tableWithConnector, List.of());
+
+    verify(tableSupport, never())
+        .runSyncStatisticsCapture(any(), any(), any(), any(), anyBoolean());
   }
 }
