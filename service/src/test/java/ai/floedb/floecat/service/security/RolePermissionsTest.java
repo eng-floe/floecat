@@ -46,7 +46,7 @@ class RolePermissionsTest {
           "catalog.write",
           "namespace.read",
           "namespace.write",
-          "connector.manage");
+          "connector.create");
   private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
 
   @Test

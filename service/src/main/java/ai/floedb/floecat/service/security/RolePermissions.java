@@ -52,7 +52,7 @@ public final class RolePermissions {
           "catalog.write",
           "namespace.read",
           "namespace.write",
-          "connector.manage");
+          "connector.create");
 
   private RolePermissions() {}
 

@@ -12,7 +12,7 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 | `administrator` | Full tenant-scoped administration of metadata and connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `system-objects.read` |
 | `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `system-objects.read` |
 | `platform-admin` (or configured value of `floecat.auth.platform-admin.role`) | Platform-level account management role from IdP. | `account.read`, `account.write` |
-| `init-account` | Bootstrap role used to initialize account/catalog/namespace state. | `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.manage` |
+| `init-account` | Bootstrap role used to initialize account + initial resources. | `account.write`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `connector.create` |
 | `system-objects` | Minimal role for SystemObjects/GetSystemObjects access. | `system-objects.read` |
 
 ## Behavior Notes
