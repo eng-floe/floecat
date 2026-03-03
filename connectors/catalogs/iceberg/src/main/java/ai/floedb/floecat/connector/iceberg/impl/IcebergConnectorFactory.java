@@ -122,6 +122,7 @@ final class IcebergConnectorFactory {
     if (cleanOpts != null && !cleanOpts.isEmpty()) {
       props.putAll(cleanOpts);
     }
+    normalizeAwsRegionProperties(props);
     return props;
   }
 
@@ -142,6 +143,7 @@ final class IcebergConnectorFactory {
 
         props.putIfAbsent("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
         props.putIfAbsent("s3.region", signingRegion);
+        props.putIfAbsent("client.region", signingRegion);
 
         AwsProfileSupport.applyProfileProperties(props, authProps);
       }
@@ -156,6 +158,24 @@ final class IcebergConnectorFactory {
 
       default -> throw new IllegalArgumentException("Unsupported auth scheme: " + authScheme);
     }
+  }
+
+  private static void normalizeAwsRegionProperties(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return;
+    }
+    String region = props.get("client.region");
+    if (region == null || region.isBlank()) {
+      region = props.get("s3.region");
+    }
+    if (region == null || region.isBlank()) {
+      region = props.get("aws.region");
+    }
+    if (region == null || region.isBlank()) {
+      return;
+    }
+    props.putIfAbsent("client.region", region);
+    props.putIfAbsent("s3.region", region);
   }
 
   static IcebergSource selectSource(Map<String, String> options) {
