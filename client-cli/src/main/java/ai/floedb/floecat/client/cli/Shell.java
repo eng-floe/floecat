@@ -133,8 +133,8 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
@@ -2059,8 +2059,7 @@ public class Shell implements Runnable {
           return;
         }
         boolean full = args.contains("--full");
-        CaptureMode mode =
-            parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
+        CaptureMode mode = parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
         String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
         List<String> destColumns =
@@ -2425,14 +2424,16 @@ public class Shell implements Runnable {
             ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
 
     var table =
-        tables.getTable(GetTableRequest.newBuilder().setTableId(resolved.getResourceId()).build())
+        tables
+            .getTable(GetTableRequest.newBuilder().setTableId(resolved.getResourceId()).build())
             .getTable();
     if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
       throw new IllegalArgumentException("table has no upstream connector");
     }
     var namespace =
         namespaces
-            .getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
+            .getNamespace(
+                GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
             .getNamespace();
     var scopePath = new ArrayList<>(namespace.getParentsList());
     if (!namespace.getDisplayName().isBlank()) {
@@ -2456,10 +2457,7 @@ public class Shell implements Runnable {
                 .build());
     out.printf(
         "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
-        fq,
-        response.getTablesScanned(),
-        response.getTablesChanged(),
-        response.getErrors());
+        fq, response.getTablesScanned(), response.getTablesChanged(), response.getErrors());
   }
 
   private void statsTable(List<String> args) {
