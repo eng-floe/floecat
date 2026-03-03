@@ -133,6 +133,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
@@ -145,8 +146,6 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
-import ai.floedb.floecat.statistics.rpc.AnalyzeTableRequest;
-import ai.floedb.floecat.statistics.rpc.StatsCaptureGrpc;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
@@ -318,10 +317,6 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
-
-  @Inject
-  @GrpcClient("floecat")
-  StatsCaptureGrpc.StatsCaptureBlockingStub statscapture;
 
   private ManagedChannel overrideChannel;
 
@@ -609,8 +604,9 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
-         analyze <tableFQ> [--columns c1,c2,...]
-             # Runs synchronous table-scoped reconcile (metadata pass, then stats pass).
+         analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
+             [--snapshot-ids id1,id2,...] [--full]
+             # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          query renew <query_id> [--ttl <seconds>]
          query end <query_id> [--commit|--abort]
@@ -637,6 +633,9 @@ public class Shell implements Runnable {
              [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
+             [--mode metadata-only|metadata-and-stats|stats-only]
+             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--snapshot-ids id1,id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
          connector cancel <jobId> [--reason <text>]
@@ -667,7 +666,6 @@ public class Shell implements Runnable {
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
-    statscapture = StatsCaptureGrpc.newBlockingStub(overrideChannel);
   }
 
   private void initAuthConfig() {
@@ -755,7 +753,6 @@ public class Shell implements Runnable {
     queryScan = queryScan.withInterceptors(authInterceptor);
     querySchema = querySchema.withInterceptors(authInterceptor);
     accounts = accounts.withInterceptors(authInterceptor);
-    statscapture = statscapture.withInterceptors(authInterceptor);
   }
 
   private void dispatch(String inputLine) {
@@ -2054,16 +2051,41 @@ public class Shell implements Runnable {
       }
       case "trigger" -> {
         if (args.size() < 2) {
-          out.println("usage: connector trigger <display_name|id> [--full]");
+          out.println(
+              "usage: connector trigger <display_name|id> [--full]"
+                  + " [--mode metadata-only|metadata-and-stats|stats-only]"
+                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]"
+                  + " [--snapshot-ids id1,id2,...]");
           return;
         }
         boolean full = args.contains("--full");
+        CaptureMode mode =
+            parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
+        String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
+        String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
+        List<String> destColumns =
+            csvList(Quotes.unquote(parseStringFlag(args, "--dest-cols", "")));
+        List<Long> snapshotIds =
+            parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
         ResourceId connectorId = resolveConnectorId(Quotes.unquote(args.get(1)));
+        CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
+        if (!destNs.isBlank()) {
+          scope.addDestinationNamespacePaths(toNsPath(destNs));
+        }
+        if (!destTable.isBlank()) {
+          scope.setDestinationTableDisplayName(destTable);
+        }
+        if (!destColumns.isEmpty()) {
+          scope.addAllDestinationTableColumns(destColumns);
+        }
+        if (!snapshotIds.isEmpty()) {
+          scope.addAllDestinationSnapshotIds(snapshotIds);
+        }
         var resp =
             reconcileControl.startCapture(
                 StartCaptureRequest.newBuilder()
-                    .setScope(CaptureScope.newBuilder().setConnectorId(connectorId).build())
-                    .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                    .setScope(scope.build())
+                    .setMode(mode)
                     .setFullRescan(full)
                     .build());
         out.println(resp.getJobId());
@@ -2380,37 +2402,64 @@ public class Shell implements Runnable {
     }
   }
 
-  // analyze runs a synchronous table-scoped reconcile pass for metadata and table stats.
+  // analyze runs a synchronous table-scoped CaptureNow call for metadata and table stats.
   private void cmdAnalyze(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: analyze <tableFQ> [--columns c1,c2,...]");
+      out.println(
+          "usage: analyze <tableFQ> [--columns c1,c2,...]"
+              + " [--mode metadata-only|metadata-and-stats|stats-only]"
+              + " [--snapshot-ids id1,id2,...] [--full]");
       return;
     }
 
     String fq = args.get(0);
     String columnsArg = Quotes.unquote(parseStringFlag(args, "--columns", ""));
     List<String> columns = csvList(columnsArg);
+    CaptureMode mode = parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
+    List<Long> snapshotIds =
+        parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
+    boolean full = args.contains("--full");
 
     var resolved =
         directory.resolveTable(
             ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
 
+    var table =
+        tables.getTable(GetTableRequest.newBuilder().setTableId(resolved.getResourceId()).build())
+            .getTable();
+    if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
+      throw new IllegalArgumentException("table has no upstream connector");
+    }
+    var namespace =
+        namespaces
+            .getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
+            .getNamespace();
+    var scopePath = new ArrayList<>(namespace.getParentsList());
+    if (!namespace.getDisplayName().isBlank()) {
+      scopePath.add(namespace.getDisplayName());
+    }
+
     var response =
-        statscapture.analyzeTable(
-            AnalyzeTableRequest.newBuilder()
-                .setTableId(resolved.getResourceId())
-                .addAllDestinationTableColumns(columns)
+        reconcileControl.captureNow(
+            CaptureNowRequest.newBuilder()
+                .setScope(
+                    CaptureScope.newBuilder()
+                        .setConnectorId(table.getUpstream().getConnectorId())
+                        .addDestinationNamespacePaths(
+                            NamespacePath.newBuilder().addAllSegments(scopePath).build())
+                        .setDestinationTableDisplayName(table.getDisplayName())
+                        .addAllDestinationTableColumns(columns)
+                        .addAllDestinationSnapshotIds(snapshotIds)
+                        .build())
+                .setMode(mode)
+                .setFullRescan(full)
                 .build());
     out.printf(
-        "analyze ok table=%s metadata(scanned=%d changed=%d errors=%d) "
-            + "stats(scanned=%d changed=%d errors=%d)%n",
+        "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
         fq,
-        response.getMetadataTablesScanned(),
-        response.getMetadataTablesChanged(),
-        response.getMetadataErrors(),
-        response.getStatsTablesScanned(),
-        response.getStatsTablesChanged(),
-        response.getStatsErrors());
+        response.getTablesScanned(),
+        response.getTablesChanged(),
+        response.getErrors());
   }
 
   private void statsTable(List<String> args) {
@@ -3784,6 +3833,18 @@ public class Shell implements Runnable {
     };
   }
 
+  private CaptureMode parseCaptureMode(String s) {
+    if (s == null || s.isBlank()) {
+      return CaptureMode.CM_METADATA_AND_STATS;
+    }
+    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+      case "METADATA_ONLY", "CM_METADATA_ONLY" -> CaptureMode.CM_METADATA_ONLY;
+      case "METADATA_AND_STATS", "CM_METADATA_AND_STATS" -> CaptureMode.CM_METADATA_AND_STATS;
+      case "STATS_ONLY", "CM_STATS_ONLY" -> CaptureMode.CM_STATS_ONLY;
+      default -> throw new IllegalArgumentException("invalid capture mode: " + s);
+    };
+  }
+
   private JobState parseJobState(String s) {
     if (s == null || s.isBlank()) {
       return JobState.JS_UNSPECIFIED;
@@ -3968,6 +4029,17 @@ public class Shell implements Runnable {
 
   private long parseLongFlag(List<String> a, String f, long d) {
     return parseFlag(a, f, d, Long::parseLong);
+  }
+
+  private List<Long> parseSnapshotIds(String s) {
+    if (s == null || s.isBlank()) {
+      return List.of();
+    }
+    var out = new ArrayList<Long>();
+    for (String token : csvList(s)) {
+      out.add(Long.parseUnsignedLong(token));
+    }
+    return out;
   }
 
   private <T, R> List<T> collectPages(

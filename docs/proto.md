@@ -29,8 +29,6 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.
 - **`account/account.proto`** – Account CRUD service for multi-tenancy.
-- **`statistics/statistics.proto`** – Staging schema for alternative stats pipelines (mirrors
-  `catalog/stats.proto` but with different versioning).
 
 ## Public API / Surface Area
 ### Core Services
