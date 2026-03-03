@@ -17,6 +17,7 @@
 package ai.floedb.floecat.arrow;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.ArrayList;
@@ -95,6 +96,80 @@ public final class ArrowSchemaUtil {
       throw new IllegalArgumentException("Logical type must not be blank");
     }
     return normalized;
+  }
+
+  public static String logicalType(Field field) {
+    Objects.requireNonNull(field, "field");
+    FieldType fieldType = field.getFieldType();
+    if (fieldType == null) {
+      throw new IllegalArgumentException("FieldType must not be null for " + field.getName());
+    }
+    return logicalType(fieldType.getType());
+  }
+
+  public static String logicalType(ArrowType arrowType) {
+    Objects.requireNonNull(arrowType, "arrowType");
+    LogicalType logical = logicalTypeFromArrowType(arrowType);
+    return LogicalTypeFormat.format(logical);
+  }
+
+  private static LogicalType logicalTypeFromArrowType(ArrowType arrowType) {
+    if (arrowType instanceof ArrowType.Bool) {
+      return LogicalType.of(LogicalKind.BOOLEAN);
+    }
+    if (arrowType instanceof ArrowType.Int) {
+      return LogicalType.of(LogicalKind.INT);
+    }
+    if (arrowType instanceof ArrowType.FloatingPoint) {
+      ArrowType.FloatingPoint fp = (ArrowType.FloatingPoint) arrowType;
+      FloatingPointPrecision precision = fp.getPrecision();
+      return LogicalType.of(
+          precision == FloatingPointPrecision.SINGLE ? LogicalKind.FLOAT : LogicalKind.DOUBLE);
+    }
+    if (arrowType instanceof ArrowType.Decimal) {
+      ArrowType.Decimal decimal = (ArrowType.Decimal) arrowType;
+      return LogicalType.decimal(decimal.getPrecision(), decimal.getScale());
+    }
+    if (arrowType instanceof ArrowType.Utf8) {
+      return LogicalType.of(LogicalKind.STRING);
+    }
+    if (arrowType instanceof ArrowType.Binary) {
+      return LogicalType.of(LogicalKind.BINARY);
+    }
+    if (arrowType instanceof ArrowType.FixedSizeBinary fixed) {
+      if (fixed.getByteWidth() == 16) {
+        return LogicalType.of(LogicalKind.UUID);
+      }
+      return LogicalType.of(LogicalKind.BINARY);
+    }
+    if (arrowType instanceof ArrowType.Date) {
+      return LogicalType.of(LogicalKind.DATE);
+    }
+    if (arrowType instanceof ArrowType.Time) {
+      ArrowType.Time time = (ArrowType.Time) arrowType;
+      return LogicalType.temporal(LogicalKind.TIME, temporalPrecision(time.getUnit()));
+    }
+    if (arrowType instanceof ArrowType.Timestamp) {
+      ArrowType.Timestamp timestamp = (ArrowType.Timestamp) arrowType;
+      LogicalKind kind =
+          (timestamp.getTimezone() == null || timestamp.getTimezone().isBlank())
+              ? LogicalKind.TIMESTAMP
+              : LogicalKind.TIMESTAMPTZ;
+      return LogicalType.temporal(kind, temporalPrecision(timestamp.getUnit()));
+    }
+    throw new IllegalArgumentException("Unsupported Arrow type: " + arrowType);
+  }
+
+  private static int temporalPrecision(TimeUnit unit) {
+    if (unit == null) {
+      return 0;
+    }
+    return switch (unit) {
+      case SECOND -> 0;
+      case MILLISECOND -> 3;
+      case MICROSECOND -> 6;
+      case NANOSECOND -> 9;
+    };
   }
 
   /** Normalize the user-requested projection list so it can be compared case-insensitively. */
