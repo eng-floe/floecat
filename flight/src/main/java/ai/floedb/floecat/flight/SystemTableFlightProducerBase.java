@@ -18,6 +18,7 @@ package ai.floedb.floecat.flight;
 
 import ai.floedb.floecat.arrow.ArrowBatchSerializer;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
+import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
@@ -442,7 +443,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       columns.add(
           SchemaColumn.newBuilder()
               .setName(field.getName())
-              .setLogicalType(field.getFieldType().getType().toString())
+              .setLogicalType(ArrowSchemaUtil.logicalType(field))
               .setFieldId(ordinal)
               .setNullable(field.isNullable())
               .setOrdinal(ordinal)
