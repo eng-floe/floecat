@@ -831,7 +831,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     var princpalContext = principalProvider.get();
                     var correlationId = princpalContext.getCorrelationId();
 
-                    authz.require(princpalContext, "connector.manage");
+                    authz.require(princpalContext, List.of("connector.manage", "connector.create"));
 
                     var connectorId = request.getConnectorId();
                     ensureKind(
