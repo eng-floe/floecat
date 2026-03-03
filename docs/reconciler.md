@@ -24,17 +24,18 @@ creates jobs in the reconciler’s store.
      destination IDs.
   5. Handles incremental vs full-rescan logic.
   6. Supports explicit capture modes:
-     - `METADATA_ONLY_CORE`: advances/creates table + snapshot core state (no stats write required).
-     - `STATS_ONLY_ASYNC`: writes stats only; does not advance existing table core state.
+     - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
+     - `STATS_ONLY`: writes stats only.
+     - `METADATA_AND_STATS`: ingests both metadata and stats in one pass.
 - **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors).
 - **`NameParts`** – Utility for parsing namespace/table names.
 
 ## Public API / Surface Area
 While the reconciler itself runs as an internal Quarkus app, it exposes behaviour through the
-connector RPCs:
+reconcile control RPCs:
 - `ReconcileControl.StartCapture(connector_id, full_rescan)` – Enqueues a job via `ReconcileJobStore`.
-- `Connectors.GetReconcileJob(job_id)` – Reads job status, mirroring the store’s fields
+- `ReconcileControl.GetReconcileJob(job_id)` – Reads job status, mirroring the store’s fields
   (`state`, `message`, `tables_scanned`, `tables_changed`, `errors`).
 
 Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every second).
@@ -45,7 +46,7 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   `ConnectorState` update or raises conflicts.
 - **Statistics ingestion** – Table stats plus column/file stats are streamed one request per item via
   `PutColumnStats` / `PutFileColumnStats`, keeping a single idempotency key per table/snapshot.
-- **Mode-aware behavior** – In `STATS_ONLY_ASYNC`, destination-table misses are treated as skip/no-op
+- **Mode-aware behavior** – In `STATS_ONLY`, destination-table misses are treated as skip/no-op
   rather than job-fatal errors.
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the
   job summary (`errors++`). The job proceeds to the next table, incrementing `scanned` regardless of
@@ -75,8 +76,7 @@ Connector StartCapture → ReconcileJobStore.enqueue
   → ReconcilerScheduler.pollOnce
       → jobs.leaseNext (returns account + connector IDs)
       → markRunning
-      → ReconcilerService.reconcile (METADATA_ONLY_CORE)
-      → ReconcilerService.reconcile (STATS_ONLY_ASYNC)
+      → ReconcilerService.reconcile (capture mode on leased job)
           → Connectors.GetConnector → ConnectorConfig
           → Ensure destination catalog/namespace/table
           → ConnectorFactory.create + try-with-resources
@@ -105,9 +105,8 @@ uses an `AtomicBoolean` guard to prevent concurrent runs within the same instanc
 
 ## Examples & Scenarios
 - **Full rescan** – Operator triggers `connector trigger demo-glue --full`. The job store enqueues a
-  full scan, scheduler leases it, runs `METADATA_ONLY_CORE` to ensure table/snapshot state, then runs
-  `STATS_ONLY_ASYNC` for stats enrichment. The job transitions to `JS_SUCCEEDED` once both phases
-  complete.
+  full scan, scheduler leases it, and runs the requested capture mode across the full upstream
+  history. The job transitions to `JS_SUCCEEDED` once the pass completes.
 - **Incremental run** – Without `--full`, `ReconcilerService` restricts its work to the connector’s
   configured `source.table` (if set) and only ingests new snapshots (parents already known via
   `SnapshotRepository`).

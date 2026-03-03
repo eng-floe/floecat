@@ -500,7 +500,63 @@ class TransactionCommitServiceTest {
                         && prepare.getChangesList().stream()
                             .noneMatch(change -> change.hasTargetPointerKey())));
     verify(sideEffectService)
-        .runPostCommitStatsSyncAttempt(tableSupport, List.of("db"), "orders", tableWithConnector);
+        .runPostCommitStatsSyncAttempt(
+            tableSupport, List.of("db"), "orders", tableWithConnector, List.of());
+  }
+
+  @Test
+  void commitWithConnectorAndAddSnapshotPassesSnapshotIdsToPostCommitStatsSync() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    Table tableWithConnector =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .putProperties("metadata-location", "s3://meta/new")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(tableWithConnector)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(sideEffectService)
+        .runPostCommitStatsSyncAttempt(
+            tableSupport, List.of("db"), "orders", tableWithConnector, List.of(123L));
   }
 
   @Test

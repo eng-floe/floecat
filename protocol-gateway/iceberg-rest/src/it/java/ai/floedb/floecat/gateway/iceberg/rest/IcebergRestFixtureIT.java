@@ -96,6 +96,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -1785,15 +1786,21 @@ class IcebergRestFixtureIT {
 
       withReconcileControlClient(
           stub -> {
-            // The fixture table is already mirrored by registration. Use stats-only capture to
-            // backfill statistics for the known current snapshot, then kick off a full async job.
+            // The fixture table is already mirrored by registration. Use a snapshot-scoped
+            // stats-only capture to backfill known fixture snapshots, then kick off a full async
+            // job.
             stub.captureNow(
                 CaptureNowRequest.newBuilder()
                     .setScope(
                         CaptureScope.newBuilder()
                             .setConnectorId(connector.getResourceId())
+                            .addDestinationNamespacePaths(
+                                NamespacePath.newBuilder().addSegments("iceberg").build())
+                            .setDestinationTableDisplayName("trino_test")
+                            .addAllDestinationSnapshotIds(fixtureSnapshotIds)
                             .build())
                     .setMode(CaptureMode.CM_STATS_ONLY)
+                    .setFullRescan(true)
                     .build());
             stub.startCapture(
                 StartCaptureRequest.newBuilder()

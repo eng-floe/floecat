@@ -58,4 +58,43 @@ class IcebergConnectorFactoryTest {
                     IcebergConnectorFactory.IcebergSource.REST, "s3://bucket/metadata.json"));
     assertTrue(ex.getMessage().contains("iceberg.source=filesystem"));
   }
+
+  @Test
+  void buildRestPropsMirrorsS3RegionIntoClientRegion() throws Exception {
+    var method =
+        IcebergConnectorFactory.class.getDeclaredMethod("buildRestProps", String.class, Map.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Map<String, String> props =
+        (Map<String, String>)
+            method.invoke(
+                null,
+                "https://glue.us-east-2.amazonaws.com/iceberg/",
+                Map.of("iceberg.source", "glue", "s3.region", "us-east-2"));
+
+    assertEquals("us-east-2", props.get("s3.region"));
+    assertEquals("us-east-2", props.get("client.region"));
+  }
+
+  @Test
+  void buildRestPropsPreservesExplicitClientRegion() throws Exception {
+    var method =
+        IcebergConnectorFactory.class.getDeclaredMethod("buildRestProps", String.class, Map.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Map<String, String> props =
+        (Map<String, String>)
+            method.invoke(
+                null,
+                "https://glue.us-east-2.amazonaws.com/iceberg/",
+                Map.of(
+                    "iceberg.source", "glue",
+                    "s3.region", "us-east-2",
+                    "client.region", "us-west-2"));
+
+    assertEquals("us-east-2", props.get("s3.region"));
+    assertEquals("us-west-2", props.get("client.region"));
+  }
 }

@@ -78,9 +78,9 @@ public class ReconcilerService {
   private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
 
   public enum CaptureMode {
-    METADATA_ONLY_CORE,
+    METADATA_ONLY,
     METADATA_AND_STATS,
-    STATS_ONLY_ASYNC
+    STATS_ONLY
   }
 
   @FunctionalInterface
@@ -327,16 +327,17 @@ public class ReconcilerService {
           }
 
           boolean includeCoreMetadata =
-              captureMode == CaptureMode.METADATA_ONLY_CORE
+              captureMode == CaptureMode.METADATA_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
           boolean includeStats =
-              captureMode == CaptureMode.STATS_ONLY_ASYNC
+              captureMode == CaptureMode.STATS_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
+          Set<Long> targetSnapshotIds =
+              scope.hasSnapshotFilter() ? Set.copyOf(scope.destinationSnapshotIds()) : Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
-              knownSnapshotIdsForEnumeration(
-                  fullRescan, knownSnapshotIds, includeCoreMetadata, includeStats);
+              knownSnapshotIdsForEnumeration(fullRescan, knownSnapshotIds);
           var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq,
@@ -347,12 +348,7 @@ public class ReconcilerService {
                       includeStats, fullRescan, enumerationKnownSnapshotIds));
           var bundles =
               filterBundlesForMode(
-                  upstreamBundles,
-                  fullRescan,
-                  knownSnapshotIds,
-                  includeCoreMetadata,
-                  includeStats,
-                  progressOut);
+                  upstreamBundles, fullRescan, knownSnapshotIds, targetSnapshotIds, progressOut);
 
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
@@ -517,7 +513,7 @@ public class ReconcilerService {
       String connectorUri,
       String sourceNsFq,
       String sourceTable) {
-    if (captureMode != CaptureMode.STATS_ONLY_ASYNC) {
+    if (captureMode != CaptureMode.STATS_ONLY) {
       return Optional.of(
           ensureTable(
               ctx,
@@ -650,27 +646,22 @@ public class ReconcilerService {
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
       Set<Long> existingSnapshotIds,
-      boolean includeCoreMetadata,
-      boolean includeStats,
+      Set<Long> targetSnapshotIds,
       ProgressListener progress) {
     if (bundles == null || bundles.isEmpty() || fullRescan) {
-      return bundles == null ? List.of() : bundles;
+      return filterBundlesForSnapshotScope(
+          bundles == null ? List.of() : bundles, targetSnapshotIds, progress);
     }
 
-    // Once a bundle has been enumerated for a stats-bearing run, defer duplicate suppression to
-    // statsAlreadyCaptured() during ingestion. Metadata-only incremental runs can safely prune
-    // already-mirrored snapshots here.
-    if (includeStats || !includeCoreMetadata) {
-      return bundles;
-    }
-
+    List<FloecatConnector.SnapshotBundle> scoped =
+        filterBundlesForSnapshotScope(bundles, targetSnapshotIds, progress);
     if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
-      return bundles;
+      return scoped;
     }
 
-    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(scoped.size());
     int skipped = 0;
-    for (FloecatConnector.SnapshotBundle bundle : bundles) {
+    for (FloecatConnector.SnapshotBundle bundle : scoped) {
       if (bundle == null) {
         continue;
       }
@@ -693,19 +684,45 @@ public class ReconcilerService {
     return filtered;
   }
 
+  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      Set<Long> targetSnapshotIds,
+      ProgressListener progress) {
+    if (bundles == null
+        || bundles.isEmpty()
+        || targetSnapshotIds == null
+        || targetSnapshotIds.isEmpty()) {
+      return bundles == null ? List.of() : bundles;
+    }
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
+    int skipped = 0;
+    for (FloecatConnector.SnapshotBundle bundle : bundles) {
+      if (bundle == null) {
+        continue;
+      }
+      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
+        skipped++;
+        continue;
+      }
+      filtered.add(bundle);
+    }
+    if (skipped > 0) {
+      progress.onProgress(
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
+    }
+    return filtered;
+  }
+
   private static Set<Long> knownSnapshotIdsForEnumeration(
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      boolean includeCoreMetadata,
-      boolean includeStats) {
+      boolean fullRescan, Set<Long> knownSnapshotIds) {
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return Set.of();
     }
-
-    if (!includeCoreMetadata) {
-      return Set.of();
-    }
-
     return Set.copyOf(knownSnapshotIds);
   }
 

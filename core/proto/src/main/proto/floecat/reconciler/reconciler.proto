@@ -27,6 +27,7 @@ message CaptureScope {
   repeated ai.floedb.floecat.connector.NamespacePath destination_namespace_paths = 2;
   string destination_table_display_name = 3;
   repeated string destination_table_columns = 4;
+  repeated uint64 destination_snapshot_ids = 5;
 }
 
 enum CaptureMode {

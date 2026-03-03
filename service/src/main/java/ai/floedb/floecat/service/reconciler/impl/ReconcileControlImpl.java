@@ -96,6 +96,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var connectorId =
                         scopedConnectorId(
                             pc.getAccountId(), connectorIdFromScope(request.getScope()), corr);
+                    validateSnapshotScope(request.getScope(), corr);
                     connectorRepo
                         .getById(connectorId)
                         .orElseThrow(
@@ -165,6 +166,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             principalContext.getAccountId(),
                             connectorIdFromScope(request.getScope()),
                             correlationId);
+                    validateSnapshotScope(request.getScope(), correlationId);
                     connectorRepo
                         .getById(connectorId)
                         .orElseThrow(
@@ -511,17 +513,35 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .map(List::copyOf)
             .toList();
     return ReconcileScope.of(
-        namespaces, scope.getDestinationTableDisplayName(), scope.getDestinationTableColumnsList());
+        namespaces,
+        scope.getDestinationTableDisplayName(),
+        scope.getDestinationTableColumnsList(),
+        scope.getDestinationSnapshotIdsList());
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {
     return scope == null ? ResourceId.getDefaultInstance() : scope.getConnectorId();
   }
 
+  private static void validateSnapshotScope(CaptureScope scope, String corr) {
+    if (scope == null || scope.getDestinationSnapshotIdsList().isEmpty()) {
+      return;
+    }
+    if (scope.getDestinationNamespacePathsCount() != 1) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "scope.destination_namespace_paths"));
+    }
+    if (scope.getDestinationTableDisplayName() == null
+        || scope.getDestinationTableDisplayName().isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "scope.destination_table_display_name"));
+    }
+  }
+
   private static CaptureMode mapCaptureMode(ai.floedb.floecat.reconciler.rpc.CaptureMode mode) {
     return switch (mode) {
-      case CM_METADATA_ONLY -> CaptureMode.METADATA_ONLY_CORE;
-      case CM_STATS_ONLY -> CaptureMode.STATS_ONLY_ASYNC;
+      case CM_METADATA_ONLY -> CaptureMode.METADATA_ONLY;
+      case CM_STATS_ONLY -> CaptureMode.STATS_ONLY;
       case CM_METADATA_AND_STATS, CM_UNSPECIFIED, UNRECOGNIZED -> CaptureMode.METADATA_AND_STATS;
     };
   }
@@ -672,7 +692,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return !scope.getDestinationNamespacePathsList().isEmpty()
         || (scope.getDestinationTableDisplayName() != null
             && !scope.getDestinationTableDisplayName().isBlank())
-        || !scope.getDestinationTableColumnsList().isEmpty();
+        || !scope.getDestinationTableColumnsList().isEmpty()
+        || !scope.getDestinationSnapshotIdsList().isEmpty();
   }
 
   private static String normalizeReason(Throwable t) {

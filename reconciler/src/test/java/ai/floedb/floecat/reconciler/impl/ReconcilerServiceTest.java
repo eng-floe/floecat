@@ -320,7 +320,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, Set.of(10L, 12L), true, false);
+            invokeFilterBundlesForMode(bundles, false, Set.of(10L, 12L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -351,7 +351,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, true, Set.of(10L, 12L), true, false);
+            invokeFilterBundlesForMode(bundles, true, Set.of(10L, 12L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -359,7 +359,7 @@ class ReconcilerServiceTest {
   }
 
   @Test
-  void filterBundlesForModeKeepsKnownSnapshotsWhenStatsAreIncluded() throws Exception {
+  void filterBundlesForModeSkipsKnownSnapshotsWhenStatsAreIncluded() throws Exception {
     List<FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new FloecatConnector.SnapshotBundle(
@@ -372,31 +372,53 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, Set.of(10L), true, true);
+            invokeFilterBundlesForMode(bundles, false, Set.of(10L), Set.of());
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 11L);
+        .containsExactly(11L);
   }
 
   @Test
-  void knownSnapshotIdsForEnumerationPrunesMetadataBearingIncrementalRuns() throws Exception {
+  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, false, Set.of(11L), Set.of(11L, 12L));
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(12L);
+  }
+
+  @Test
+  void knownSnapshotIdsForEnumerationPrunesAllIncrementalRuns() throws Exception {
     @SuppressWarnings("unchecked")
     Set<Long> metadataOnly =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L), true, false);
+        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
     @SuppressWarnings("unchecked")
     Set<Long> metadataAndStats =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L), true, true);
+        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
     @SuppressWarnings("unchecked")
-    Set<Long> statsOnly =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L), false, true);
+    Set<Long> statsOnly = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
     @SuppressWarnings("unchecked")
-    Set<Long> fullRescan =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(true, Set.of(10L, 11L), true, false);
+    Set<Long> fullRescan = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(true, Set.of(10L, 11L));
 
     assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
     assertThat(metadataAndStats).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(statsOnly).isEmpty();
+    assertThat(statsOnly).containsExactlyInAnyOrder(10L, 11L);
     assertThat(fullRescan).isEmpty();
   }
 
@@ -414,8 +436,7 @@ class ReconcilerServiceTest {
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
       Set<Long> existingSnapshotIds,
-      boolean includeCoreMetadata,
-      boolean includeStats)
+      Set<Long> targetSnapshotIds)
       throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
@@ -423,8 +444,7 @@ class ReconcilerServiceTest {
             List.class,
             boolean.class,
             Set.class,
-            boolean.class,
-            boolean.class,
+            Set.class,
             ReconcilerService.ProgressListener.class);
     method.setAccessible(true);
     return method.invoke(
@@ -432,25 +452,16 @@ class ReconcilerServiceTest {
         bundles,
         fullRescan,
         existingSnapshotIds,
-        includeCoreMetadata,
-        includeStats,
+        targetSnapshotIds,
         (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
   }
 
   private static Object invokeKnownSnapshotIdsForEnumeration(
-      boolean fullRescan,
-      Set<Long> existingSnapshotIds,
-      boolean includeCoreMetadata,
-      boolean includeStats)
-      throws Exception {
+      boolean fullRescan, Set<Long> existingSnapshotIds) throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
-            "knownSnapshotIdsForEnumeration",
-            boolean.class,
-            Set.class,
-            boolean.class,
-            boolean.class);
+            "knownSnapshotIdsForEnumeration", boolean.class, Set.class);
     method.setAccessible(true);
-    return method.invoke(null, fullRescan, existingSnapshotIds, includeCoreMetadata, includeStats);
+    return method.invoke(null, fullRescan, existingSnapshotIds);
   }
 }

@@ -362,6 +362,7 @@ public class TransactionCommitService {
               plan.tableName(),
               scopeTableIdWithAccount(plan.tableId(), accountId),
               tableForTx,
+              addedSnapshotIds(plan.updates()),
               removedSnapshotIds(plan.updates())));
     }
 
@@ -490,7 +491,11 @@ public class TransactionCommitService {
       }
       try {
         sideEffectService.runPostCommitStatsSyncAttempt(
-            tableSupport, target.namespacePath(), target.tableName(), target.table());
+            tableSupport,
+            target.namespacePath(),
+            target.tableName(),
+            target.table(),
+            target.addedSnapshotIds());
       } catch (RuntimeException e) {
         LOG.warnf(
             e,
@@ -509,6 +514,7 @@ public class TransactionCommitService {
       String tableName,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table,
+      List<Long> addedSnapshotIds,
       List<Long> removedSnapshotIds) {}
 
   private record SnapshotChangePlan(
@@ -748,6 +754,28 @@ public class TransactionCommitService {
       out.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
     }
     return out;
+  }
+
+  private List<Long> addedSnapshotIds(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return List.of();
+    }
+    List<Long> out = new ArrayList<>();
+    for (Map<String, Object> update : updates) {
+      String action = TableMappingUtil.asString(update == null ? null : update.get("action"));
+      if (!"add-snapshot".equals(action)) {
+        continue;
+      }
+      Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
+      if (snapshotMap == null || snapshotMap.isEmpty()) {
+        continue;
+      }
+      Long snapshotId = TableMappingUtil.asLong(snapshotMap.get("snapshot-id"));
+      if (snapshotId != null && snapshotId > 0L) {
+        out.add(snapshotId);
+      }
+    }
+    return out.isEmpty() ? List.of() : List.copyOf(out);
   }
 
   private List<Long> removedSnapshotIds(List<Map<String, Object>> updates) {

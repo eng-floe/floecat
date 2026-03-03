@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -530,6 +531,40 @@ class TableGatewaySupportTest {
     assertEquals(1, request.getScope().getDestinationNamespacePathsCount());
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
     assertFalse(request.getFullRescan());
+  }
+
+  @Test
+  void runSyncStatisticsCaptureIncludesExplicitSnapshotScope() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c4").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+
+    support.runSyncStatisticsCapture(
+        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L));
+
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertFalse(request.getFullRescan());
+  }
+
+  @Test
+  void runSyncStatisticsCaptureCanRequestFullRescanForExplicitSnapshotScope() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c5").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+
+    support.runSyncStatisticsCapture(
+        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L), true);
+
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertTrue(request.getFullRescan());
   }
 
   @Test

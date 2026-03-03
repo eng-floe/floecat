@@ -747,24 +747,61 @@ public class TableGatewaySupport {
   public void runSyncMetadataCapture(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
     runSyncCapture(
-        connectorId, namespacePath, tableName, CaptureMode.CM_METADATA_ONLY, false, false);
+        connectorId,
+        namespacePath,
+        tableName,
+        List.of(),
+        CaptureMode.CM_METADATA_ONLY,
+        false,
+        false);
   }
 
   public CaptureNowResponse runSyncMetadataCaptureStrict(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
     return runSyncCapture(
-        connectorId, namespacePath, tableName, CaptureMode.CM_METADATA_ONLY, false, true);
+        connectorId,
+        namespacePath,
+        tableName,
+        List.of(),
+        CaptureMode.CM_METADATA_ONLY,
+        false,
+        true);
   }
 
   public void runSyncStatisticsCapture(
       ResourceId connectorId, List<String> namespacePath, String tableName) {
-    runSyncCapture(connectorId, namespacePath, tableName, CaptureMode.CM_STATS_ONLY, false, false);
+    runSyncStatisticsCapture(connectorId, namespacePath, tableName, List.of());
+  }
+
+  public void runSyncStatisticsCapture(
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      List<Long> snapshotIds) {
+    runSyncStatisticsCapture(connectorId, namespacePath, tableName, snapshotIds, false);
+  }
+
+  public void runSyncStatisticsCapture(
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      List<Long> snapshotIds,
+      boolean fullRescan) {
+    runSyncCapture(
+        connectorId,
+        namespacePath,
+        tableName,
+        snapshotIds,
+        CaptureMode.CM_STATS_ONLY,
+        fullRescan,
+        false);
   }
 
   private CaptureNowResponse runSyncCapture(
       ResourceId connectorId,
       List<String> namespacePath,
       String tableName,
+      List<Long> snapshotIds,
       CaptureMode mode,
       boolean fullRescan,
       boolean strict) {
@@ -776,7 +813,7 @@ public class TableGatewaySupport {
     try {
       CaptureNowRequest.Builder request =
           CaptureNowRequest.newBuilder()
-              .setScope(captureScope(connectorId, namespacePath, tableName))
+              .setScope(captureScope(connectorId, namespacePath, tableName, snapshotIds))
               .setMode(mode)
               .setFullRescan(fullRescan);
       var response = connectorClient.captureNow(request.build());
@@ -817,7 +854,7 @@ public class TableGatewaySupport {
     try {
       StartCaptureRequest.Builder request =
           StartCaptureRequest.newBuilder()
-              .setScope(captureScope(connectorId, namespacePath, tableName))
+              .setScope(captureScope(connectorId, namespacePath, tableName, List.of()))
               .setMode(CaptureMode.CM_METADATA_AND_STATS)
               .setFullRescan(false);
       var response = connectorClient.startCapture(request.build());
@@ -837,7 +874,10 @@ public class TableGatewaySupport {
   }
 
   private static CaptureScope captureScope(
-      ResourceId connectorId, List<String> namespacePath, String tableName) {
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      List<Long> snapshotIds) {
     CaptureScope.Builder builder =
         CaptureScope.newBuilder()
             .setConnectorId(connectorId == null ? ResourceId.getDefaultInstance() : connectorId)
@@ -845,6 +885,9 @@ public class TableGatewaySupport {
     if (namespacePath != null && !namespacePath.isEmpty()) {
       builder.addDestinationNamespacePaths(
           NamespacePath.newBuilder().addAllSegments(namespacePath).build());
+    }
+    if (snapshotIds != null && !snapshotIds.isEmpty()) {
+      builder.addAllDestinationSnapshotIds(snapshotIds);
     }
     return builder.build();
   }
