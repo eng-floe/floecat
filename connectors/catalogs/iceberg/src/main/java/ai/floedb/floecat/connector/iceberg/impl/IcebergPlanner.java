@@ -24,6 +24,10 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -195,6 +199,7 @@ final class IcebergPlanner implements Planner<Integer> {
         dup.get(bytes);
         decoded = new String(bytes, StandardCharsets.UTF_8);
       }
+      decoded = canonicalizeDecodedBound(type, decoded);
       LogicalType logicalType = idToLogical.get(id);
       Object canonical =
           logicalType != null ? LogicalCoercions.coerceStatValue(logicalType, decoded) : decoded;
@@ -203,6 +208,33 @@ final class IcebergPlanner implements Planner<Integer> {
       }
     }
     return out.isEmpty() ? null : out;
+  }
+
+  static Object canonicalizeDecodedBound(Type type, Object decoded) {
+    if (type == null || decoded == null) {
+      return decoded;
+    }
+    if (type.typeId() == Type.TypeID.TIME && decoded instanceof Number n) {
+      long micros = n.longValue();
+      if (micros < 0 || micros >= 86_400_000_000L) {
+        return null;
+      }
+      return LocalTime.ofNanoOfDay(micros * 1_000L);
+    }
+    if (type.typeId() == Type.TypeID.TIMESTAMP && decoded instanceof Number n) {
+      Instant instant = instantFromMicros(n.longValue());
+      if (type instanceof Types.TimestampType ts && ts.shouldAdjustToUTC()) {
+        return instant;
+      }
+      return LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+    return decoded;
+  }
+
+  private static Instant instantFromMicros(long micros) {
+    long seconds = Math.floorDiv(micros, 1_000_000L);
+    long microsRemainder = Math.floorMod(micros, 1_000_000L);
+    return Instant.ofEpochSecond(seconds, microsRemainder * 1_000L);
   }
 
   private String partitionJson(PartitionSpec spec, StructLike partition) {

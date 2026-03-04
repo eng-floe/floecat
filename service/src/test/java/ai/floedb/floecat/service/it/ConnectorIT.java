@@ -618,6 +618,87 @@ public class ConnectorIT {
   }
 
   @Test
+  void icebergComplexFixtureGeneratesStats() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-complex", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-complex")
+            .setNamespace(NamespacePath.newBuilder().addSegments("sales").addSegments("us").build())
+            .setTableDisplayName("trino_types")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        "s3://floecat/sales/us/trino_types/metadata/00001-d751d7ce-209e-443e-9937-c25e2a08fc29.metadata.json");
+    props.put("external.namespace", "sales.us");
+    props.put("external.table-name", "trino_types");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-complex")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri("s3://floecat/sales/us/trino_types")
+                .setSource(source(List.of("sales", "us")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var job = runReconcile(conn.getResourceId(), true);
+    assertNotNull(job);
+    assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
+    assertTrue(job.fullRescan);
+    assertTrue(
+        job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
+    assertTrue(job.statsProcessed > 0, "expected complex fixture reconcile to generate stats");
+
+    var catId =
+        catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
+    var ns =
+        namespaces
+            .getByPath(accountId.getId(), catId.getId(), List.of("sales", "us"))
+            .orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_types")
+            .orElseThrow();
+
+    var fileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+
+    assertFalse(
+        fileResp.getFileColumnsList().isEmpty(), "expected file stats for complex iceberg fixture");
+
+    var columnNames =
+        fileResp.getFileColumnsList().stream()
+            .flatMap(f -> f.getColumnsList().stream())
+            .map(ColumnStats::getColumnName)
+            .collect(Collectors.toSet());
+    assertTrue(columnNames.contains("c_time"), "expected TIME column stats to be materialized");
+    assertTrue(columnNames.contains("c_ts"), "expected TIMESTAMP column stats to be materialized");
+    assertTrue(
+        columnNames.contains("c_tstz"), "expected TIMESTAMPTZ column stats to be materialized");
+  }
+
+  @Test
   void dummyConnectorRespectsDestinationTableDisplayName() throws Exception {
     var accountId = seedAccountId;
     TestSupport.createCatalog(catalogService, "cat-dest-table", "");
