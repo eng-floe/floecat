@@ -19,6 +19,7 @@ package ai.floedb.floecat.extensions.floedb;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogProvider;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintClearPolicy;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
@@ -64,6 +65,7 @@ import java.util.Optional;
 public abstract class FloeCatalogExtension implements EngineSystemCatalogExtension {
 
   private final FloeHintClearPolicy hintClearPolicy = new FloeHintClearPolicy();
+  private final PgCatalogProvider pgCatalogProvider = new PgCatalogProvider();
   @Inject EngineHintPersistence persistence;
 
   @Override
@@ -420,7 +422,7 @@ public abstract class FloeCatalogExtension implements EngineSystemCatalogExtensi
   @Override
   public Optional<SystemObjectScanner> provide(
       String scannerId, String engineKind, String engineVersion) {
-    return Optional.empty();
+    return pgCatalogProvider.provide(scannerId, engineKind, engineVersion);
   }
 
   @Override
