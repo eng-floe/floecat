@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ndv.NdvSketch;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import ai.floedb.floecat.types.ValueEncoders;
@@ -97,7 +98,7 @@ public final class ConnectorStatsViewBuilder {
 
       String min = null;
       String max = null;
-      if (lt != null) {
+      if (lt != null && LogicalComparators.isStatsOrderable(lt)) {
         if (agg.min() != null) min = ValueEncoders.encodeToString(lt, agg.min());
         if (agg.max() != null) max = ValueEncoders.encodeToString(lt, agg.max());
       }

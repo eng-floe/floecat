@@ -16,30 +16,40 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
-import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.connector.common.resolver.IcebergTypeMappings;
 import ai.floedb.floecat.types.LogicalType;
 import org.apache.iceberg.types.Type;
-import org.apache.iceberg.types.Types;
 
+/**
+ * Maps Iceberg native types to Floecat canonical {@link LogicalType}.
+ *
+ * <p><b>Module boundary note:</b> This mapper delegates to {@link IcebergTypeMappings} in {@code
+ * core/connectors/common} so that schema and stats paths share the exact same mapping and
+ * validation.
+ *
+ * <p><b>Timestamp semantics:</b> Iceberg {@code TimestampType.withZone()} is UTC-normalised →
+ * {@link ai.floedb.floecat.types.LogicalKind#TIMESTAMPTZ}. Iceberg {@code
+ * TimestampType.withoutZone()} is timezone-naive → {@link
+ * ai.floedb.floecat.types.LogicalKind#TIMESTAMP}.
+ *
+ * <p><b>Integer collapsing:</b> Both Iceberg {@code INTEGER} (32-bit) and {@code LONG} (64-bit)
+ * collapse to canonical {@link ai.floedb.floecat.types.LogicalKind#INT} (64-bit).
+ *
+ * <p><b>Complex types:</b> {@code LIST} → {@link ai.floedb.floecat.types.LogicalKind#ARRAY}, {@code
+ * MAP} → {@link ai.floedb.floecat.types.LogicalKind#MAP}, {@code STRUCT} → {@link
+ * ai.floedb.floecat.types.LogicalKind#STRUCT}. Element/value/field types are captured by child
+ * {@code SchemaColumn} rows with their own paths.
+ *
+ * <p><b>Unrecognised/unsupported types</b> fail fast with {@link IllegalArgumentException}.
+ */
 final class IcebergTypeMapper {
+  /**
+   * Converts an Iceberg {@link Type} to a Floecat canonical {@link LogicalType}.
+   *
+   * @param t an Iceberg type (never null)
+   * @return the corresponding canonical {@link LogicalType}
+   */
   static LogicalType toLogical(Type t) {
-    return switch (t.typeId()) {
-      case BOOLEAN -> LogicalType.of(LogicalKind.BOOLEAN);
-      case INTEGER -> LogicalType.of(LogicalKind.INT32);
-      case LONG -> LogicalType.of(LogicalKind.INT64);
-      case FLOAT -> LogicalType.of(LogicalKind.FLOAT32);
-      case DOUBLE -> LogicalType.of(LogicalKind.FLOAT64);
-      case DATE -> LogicalType.of(LogicalKind.DATE);
-      case TIME -> LogicalType.of(LogicalKind.TIME);
-      case TIMESTAMP -> LogicalType.of(LogicalKind.TIMESTAMP);
-      case STRING -> LogicalType.of(LogicalKind.STRING);
-      case BINARY -> LogicalType.of(LogicalKind.BINARY);
-      case UUID -> LogicalType.of(LogicalKind.UUID);
-      case DECIMAL -> {
-        var d = (Types.DecimalType) t;
-        yield LogicalType.decimal(d.precision(), d.scale());
-      }
-      default -> LogicalType.of(LogicalKind.BINARY);
-    };
+    return IcebergTypeMappings.toLogical(t);
   }
 }

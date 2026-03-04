@@ -19,11 +19,13 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import java.util.Locale;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 /**
  * DeltaSchemaMapper: Converts Delta Lake-formatted schema JSON to logical SchemaDescriptor.
@@ -31,8 +33,6 @@ import org.jboss.logging.Logger;
  * <p>Handles Delta's JSON metadata format with support for nested structures (struct, array, map).
  */
 final class DeltaSchemaMapper {
-
-  private static final Logger LOG = Logger.getLogger(DeltaSchemaMapper.class);
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private DeltaSchemaMapper() {}
@@ -51,10 +51,13 @@ final class DeltaSchemaMapper {
 
     try {
       JsonNode root = MAPPER.readTree(schemaJson);
+      JsonNode fields = root.get("fields");
+      if (fields == null || !fields.isArray()) {
+        throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
+      }
       walkDeltaStruct(cid_algo, sb, root, "", partitionKeys);
-
     } catch (Exception e) {
-      LOG.warn("Failed to parse Delta schema JSON; returning empty schema", e);
+      throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
 
     return sb.build();
@@ -90,8 +93,7 @@ final class DeltaSchemaMapper {
       int ordinal = i + 1; // 1-based ordinal within the parent struct
 
       String name = f.path("name").asText();
-      String logicalType =
-          f.path("type").isTextual() ? f.get("type").asText() : f.path("type").toString();
+      String logicalType = deltaTypeToCanonical(f.get("type"));
 
       boolean nullable = f.path("nullable").asBoolean(true);
 
@@ -156,4 +158,85 @@ final class DeltaSchemaMapper {
       }
     }
   }
+
+  /**
+   * Convert a Delta Lake type JSON node to its canonical logical-type string.
+   *
+   * <p>Delta types are either textual scalars (e.g. {@code "string"}, {@code "timestamp"}) or JSON
+   * objects for complex types ({@code {"type":"struct",...}}, {@code {"type":"array",...}}, {@code
+   * {"type":"map",...}}).
+   *
+   * <p>Timestamp semantics: Delta's {@code "timestamp"} is always UTC-stored → canonical {@code
+   * "TIMESTAMPTZ"}. Delta's {@code "timestamp_ntz"} is timezone-naive → canonical {@code
+   * "TIMESTAMP"}. Note: the spec decode matrix v1 has these inverted; the semantically correct
+   * mapping is applied here.
+   *
+   * <p>Integer aliases: {@code "byte"}, {@code "short"}, {@code "integer"}, {@code "long"} and
+   * their SQL synonyms all collapse to canonical {@code "INT"} (64-bit), consistent with {@link
+   * ai.floedb.floecat.types.LogicalKind}.
+   *
+   * <p>For {@code decimal(p,s)}, the raw Delta string (e.g. {@code "decimal(10,2)"}) is upper-cased
+   * and returned as-is; it is parseable by the canonical type parser.
+   *
+   * @param typeNode Delta "type" JSON node (may be textual or object)
+   * @return canonical logical-type string (never null)
+   */
+  private static String deltaTypeToCanonical(JsonNode typeNode) {
+    if (typeNode == null) {
+      throw new IllegalArgumentException("Delta field type is missing");
+    }
+
+    // Complex types are represented as JSON objects with a "type" discriminator.
+    if (typeNode.isObject()) {
+      return switch (typeNode.path("type").asText("")) {
+        case "struct" -> "STRUCT";
+        case "array" -> "ARRAY";
+        case "map" -> "MAP";
+        default ->
+            throw new IllegalArgumentException(
+                "Unrecognized Delta complex type: '" + typeNode.path("type").asText("") + "'");
+      };
+    }
+
+    // Scalar types are textual identifiers.
+    String raw = typeNode.asText("");
+    String lowerRaw = raw.toLowerCase(Locale.ROOT);
+    return switch (lowerRaw) {
+      case "boolean" -> "BOOLEAN";
+      // All integer sizes collapse to canonical INT (64-bit).
+      case "byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint" -> "INT";
+      case "float" -> "FLOAT";
+      case "double" -> "DOUBLE";
+      case "string" -> "STRING";
+      case "binary" -> "BINARY";
+      case "date" -> "DATE";
+      // Delta "timestamp" is UTC-stored → TIMESTAMPTZ.
+      // Delta "timestamp_ntz" is timezone-naive → TIMESTAMP.
+      // Note: the spec decode matrix v1 has these inverted; correct semantic mapping applied.
+      case "timestamp" -> "TIMESTAMPTZ";
+      case "timestamp_ntz" -> "TIMESTAMP";
+      case "interval" -> "INTERVAL";
+      default -> {
+        // decimal(p,s) arrives as e.g. "decimal(10,2)" — upper-case and pass through.
+        if (lowerRaw.startsWith("decimal")) {
+          yield canonicalDeltaDecimal(raw);
+        }
+        throw new IllegalArgumentException("Unrecognized Delta scalar type: '" + raw + "'");
+      }
+    };
+  }
+
+  private static String canonicalDeltaDecimal(String raw) {
+    final LogicalType logicalType;
+    try {
+      logicalType = LogicalTypeFormat.parse(raw);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid Delta decimal type: '" + raw + "'", e);
+    }
+    DecimalPrecisionConstraints.validateDecimalPrecision(
+        logicalType, "Delta", raw, MAX_DECIMAL_PRECISION);
+    return LogicalTypeFormat.format(logicalType);
+  }
+
+  private static final int MAX_DECIMAL_PRECISION = 38;
 }

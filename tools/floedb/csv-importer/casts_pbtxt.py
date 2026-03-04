@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate FloeCat PBtxt for SQL casts from pg_cast.csv (system only).
+Generate Floecat PBtxt for SQL casts from pg_cast.csv (system only).
 
 Emits blocks like:
 
