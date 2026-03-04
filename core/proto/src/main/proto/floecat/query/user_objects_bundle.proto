@@ -402,7 +402,7 @@ message ColumnResult {
   ColumnStatus status = 4;
 
   oneof outcome {
-    /** Present when status == READY. */
+    /** Present when status == OK. */
     ColumnInfo column = 10;
 
     /** Present when status == FAILED. */
