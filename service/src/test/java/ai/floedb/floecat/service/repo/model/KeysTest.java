@@ -13,45 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.storage.kv;
+
+package ai.floedb.floecat.service.repo.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
 
-public class KeysTest {
-
-  @Test
-  void join_prepends_leading_slash() {
-    assertEquals("/a/b", Keys.join("a", "b"));
-  }
-
-  @Test
-  void join_single_part() {
-    assertEquals("/a", Keys.join("a"));
-  }
-
-  @Test
-  void join_with_empty_parts() {
-    assertEquals("//b", Keys.join("", "b"));
-  }
-
-  @Test
-  void prefix_appends_trailing_slash() {
-    assertEquals("/a/", Keys.prefix("a"));
-  }
-
-  @Test
-  void key_returns_expected_record() {
-    KvStore.Key key = Keys.key("pk", "sk");
-    assertEquals("pk", key.partitionKey());
-    assertEquals("sk", key.sortKey());
-  }
-
-  @Test
-  void join_allows_double_slashes_in_parts() {
-    assertEquals("/a//b", Keys.join("a/", "b"));
-  }
+class KeysTest {
 
   @Test
   void tableCommitJournalPointerUsesPathSafeEncoding() {

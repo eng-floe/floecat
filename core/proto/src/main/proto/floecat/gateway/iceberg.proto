@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg;
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.gateway.iceberg.rpc";
 
+import "floecat/common/common.proto";
 import "floecat/catalog/partition.proto";
 
 message IcebergSchema {
@@ -106,4 +107,28 @@ message IcebergMetadata {
   repeated IcebergStatisticsFile statistics = 18;
   repeated IcebergPartitionStatisticsFile partition_statistics = 19;
   repeated IcebergEncryptedKey encryption_keys = 20;
+}
+
+message IcebergCommitJournalEntry {
+  uint32 version = 1;
+  string tx_id = 2;
+  string request_hash = 3;
+  ai.floedb.floecat.common.ResourceId table_id = 4;
+  repeated string namespace_path = 5;
+  string table_name = 6;
+  ai.floedb.floecat.common.ResourceId connector_id = 7;
+  repeated int64 added_snapshot_ids = 8;
+  repeated int64 removed_snapshot_ids = 9;
+  string metadata_location = 10;
+  string table_uuid = 11;
+  int64 created_at_ms = 12;
+}
+
+message IcebergCommitOutboxEntry {
+  uint32 version = 1;
+  string tx_id = 2;
+  string request_hash = 3;
+  string account_id = 4;
+  string table_id = 5;
+  int64 created_at_ms = 6;
 }

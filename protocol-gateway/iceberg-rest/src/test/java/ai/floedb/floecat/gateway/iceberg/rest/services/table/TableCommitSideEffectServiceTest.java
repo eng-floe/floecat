@@ -34,37 +34,13 @@ class TableCommitSideEffectServiceTest {
   private final TableCommitSideEffectService service = new TableCommitSideEffectService();
 
   @Test
-  void runConnectorSyncTriggersCaptureAndReconcile() {
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
-
-    service.runConnectorSync(tableSupport, connectorId, List.of("db"), "orders");
-
-    verify(tableSupport).runSyncMetadataCapture(connectorId, List.of("db"), "orders");
-    verify(tableSupport).triggerScopedReconcile(connectorId, List.of("db"), "orders");
-  }
-
-  @Test
-  void runConnectorSyncSkipsBlankConnectorIds() {
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    ResourceId emptyId = ResourceId.newBuilder().setId("").build();
-
-    service.runConnectorSync(tableSupport, emptyId, List.of("db"), "orders");
-
-    verify(tableSupport, never()).runSyncMetadataCapture(any(), any(), any());
-    verify(tableSupport, never()).triggerScopedReconcile(any(), any(), any());
-  }
-
-  @Test
-  void runConnectorStatsSyncSkipsWhenConnectorIntegrationDisabled() {
+  void runPostCommitStatsSyncSkipsWhenConnectorIntegrationDisabled() {
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
     ResourceId connectorId =
         ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
 
-    service.runConnectorStatsSyncAttempt(
+    service.runPostCommitStatsSyncAttempt(
         tableSupport, connectorId, List.of("db"), "orders", List.of(101L));
 
     verify(tableSupport, never())
@@ -77,14 +53,9 @@ class TableCommitSideEffectServiceTest {
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId =
         ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
-    var tableWithConnector =
-        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
-            .setUpstream(
-                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder().setConnectorId(connectorId))
-            .build();
 
     service.runPostCommitStatsSyncAttempt(
-        tableSupport, List.of("db"), "orders", tableWithConnector, List.of(101L, 102L));
+        tableSupport, connectorId, List.of("db"), "orders", List.of(101L, 102L));
 
     verify(tableSupport)
         .runSyncStatisticsCapture(
@@ -97,16 +68,26 @@ class TableCommitSideEffectServiceTest {
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     ResourceId connectorId =
         ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
-    var tableWithConnector =
-        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
-            .setUpstream(
-                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder().setConnectorId(connectorId))
-            .build();
 
     service.runPostCommitStatsSyncAttempt(
-        tableSupport, List.of("db"), "orders", tableWithConnector, List.of());
+        tableSupport, connectorId, List.of("db"), "orders", List.of());
 
     verify(tableSupport, never())
         .runSyncStatisticsCapture(any(), any(), any(), any(), anyBoolean());
+  }
+
+  @Test
+  void runPostCommitStatsSyncSupportsDirectConnectorIdReplayInputs() {
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
+
+    service.runPostCommitStatsSyncAttempt(
+        tableSupport, connectorId, List.of("db"), "orders", List.of(101L, 102L));
+
+    verify(tableSupport)
+        .runSyncStatisticsCapture(
+            eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(true));
   }
 }

@@ -27,6 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -69,6 +70,8 @@ public class TableCreateService {
   @Inject AccountContext accountContext;
   @Inject SnapshotClient snapshotClient;
   @Inject ObjectMapper mapper;
+  @Inject TransactionCommitService transactionCommitService;
+  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
 
   public Response create(
       NamespaceRequestContext namespaceContext,
@@ -101,18 +104,30 @@ public class TableCreateService {
           tableSupport);
     }
 
-    TableSpec.Builder spec;
+    TransactionCommitRequest txRequest;
     try {
-      spec =
-          tableSupport.buildCreateSpec(
+      txRequest =
+          tableCreateTransactionMapper.buildCreateRequest(
+              namespaceContext.namespacePath(),
+              tableName,
               namespaceContext.catalogId(),
               namespaceContext.namespaceId(),
-              tableName,
-              effectiveReq);
-    } catch (IllegalArgumentException | JsonProcessingException e) {
+              effectiveReq,
+              tableSupport);
+    } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    Table created = tableLifecycleService.createTable(spec, idempotencyKey);
+    Response txResponse =
+        transactionCommitService.commit(
+            namespaceContext.prefix(), idempotencyKey, txRequest, tableSupport);
+    if (txResponse == null
+        || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+      return txResponse;
+    }
+    Table created =
+        tableLifecycleService.getTable(
+            tableLifecycleService.resolveTableId(
+                namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName));
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials;
     try {

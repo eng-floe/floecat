@@ -493,16 +493,15 @@ public class CommitResponseBuilder {
     Long maxSequence = maxNonNull(snapshotSequence, requestSequence, existingSequence);
     Integer formatVersion = metadata.formatVersion();
     formatVersion = normalizeFormatVersionForSnapshots(formatVersion, requestSequence);
-    Long currentSnapshotId =
-        metadata.currentSnapshotId() == null ? latestSnapshotId(updatedSnapshots) : null;
     Map<String, String> props =
         metadata.properties() == null
             ? new LinkedHashMap<>()
             : new LinkedHashMap<>(metadata.properties());
+    Long currentSnapshotId = desiredCurrentSnapshotId(metadata, req, updatedSnapshots, props);
     if (maxSequence != null && maxSequence > 0) {
       props.put("last-sequence-number", Long.toString(maxSequence));
     }
-    if (currentSnapshotId != null && currentSnapshotId > 0) {
+    if (currentSnapshotId != null && currentSnapshotId >= 0) {
       props.put("current-snapshot-id", Long.toString(currentSnapshotId));
     }
     TableMetadataView updated =
@@ -617,11 +616,51 @@ public class CommitResponseBuilder {
     Long latest = null;
     for (Map<String, Object> snapshot : snapshots) {
       Long id = snapshotId(snapshot);
-      if (id != null && id > 0) {
+      if (id != null && id >= 0) {
         latest = id;
       }
     }
     return latest;
+  }
+
+  private Long desiredCurrentSnapshotId(
+      TableMetadataView metadata,
+      TableRequests.Commit req,
+      List<Map<String, Object>> updatedSnapshots,
+      Map<String, String> props) {
+    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
+    if (propertyCurrentSnapshotId != null && propertyCurrentSnapshotId >= 0) {
+      return propertyCurrentSnapshotId;
+    }
+    Long requestedMainRefSnapshotId = requestedMainRefSnapshotId(req);
+    if (requestedMainRefSnapshotId != null && requestedMainRefSnapshotId >= 0) {
+      return requestedMainRefSnapshotId;
+    }
+    if (metadata.currentSnapshotId() == null) {
+      return latestSnapshotId(updatedSnapshots);
+    }
+    return metadata.currentSnapshotId();
+  }
+
+  private Long requestedMainRefSnapshotId(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return null;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"set-snapshot-ref".equals(action)) {
+        continue;
+      }
+      String refName = asString(update.get("ref-name"));
+      if (!"main".equals(refName)) {
+        continue;
+      }
+      return parseLong(update.get("snapshot-id"));
+    }
+    return null;
   }
 
   private Long maxSequenceFromSnapshots(List<Map<String, Object>> snapshots) {

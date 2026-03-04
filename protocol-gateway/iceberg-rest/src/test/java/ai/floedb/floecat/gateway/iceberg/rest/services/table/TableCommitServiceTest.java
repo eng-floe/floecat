@@ -36,8 +36,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitReque
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
@@ -55,14 +53,8 @@ class TableCommitServiceTest {
       org.mockito.Mockito.mock(IcebergGatewayConfig.DeltaCompatConfig.class);
   private final TableLifecycleService tableLifecycleService =
       org.mockito.Mockito.mock(TableLifecycleService.class);
-  private final TableCommitSideEffectService sideEffectService =
-      org.mockito.Mockito.mock(TableCommitSideEffectService.class);
   private final CommitResponseBuilder responseBuilder =
       org.mockito.Mockito.mock(CommitResponseBuilder.class);
-  private final SnapshotMetadataService snapshotMetadataService =
-      org.mockito.Mockito.mock(SnapshotMetadataService.class);
-  private final TableMetadataImportService tableMetadataImportService =
-      org.mockito.Mockito.mock(TableMetadataImportService.class);
   private final TableGatewaySupport tableSupport =
       org.mockito.Mockito.mock(TableGatewaySupport.class);
   private final TransactionCommitService transactionCommitService =
@@ -72,20 +64,13 @@ class TableCommitServiceTest {
   void setUp() {
     service.config = config;
     service.tableLifecycleService = tableLifecycleService;
-    service.sideEffectService = sideEffectService;
     service.responseBuilder = responseBuilder;
-    service.snapshotMetadataService = snapshotMetadataService;
-    service.tableMetadataImportService = tableMetadataImportService;
     service.tableFormatSupport = new TableFormatSupport();
     service.transactionCommitService = transactionCommitService;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompatConfig));
     when(deltaCompatConfig.enabled()).thenReturn(false);
     when(deltaCompatConfig.readOnly()).thenReturn(true);
-    when(tableMetadataImportService.importMetadata(any(), any()))
-        .thenReturn(
-            new TableMetadataImportService.ImportedMetadata(
-                null, Map.of(), null, null, null, List.of()));
   }
 
   @Test

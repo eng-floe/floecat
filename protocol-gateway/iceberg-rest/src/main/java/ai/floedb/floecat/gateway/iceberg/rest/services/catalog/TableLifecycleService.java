@@ -16,16 +16,13 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -95,14 +92,6 @@ public class TableLifecycleService {
   public ResourceId resolveTableId(
       String catalogName, List<String> namespacePath, String tableName) {
     return NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
-  }
-
-  public Table createTable(TableSpec.Builder spec, String idempotencyKey) {
-    CreateTableRequest.Builder request = CreateTableRequest.newBuilder().setSpec(spec);
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
-    }
-    return tableClient.createTable(request.build()).getTable();
   }
 
   public Table getTable(ResourceId tableId) {

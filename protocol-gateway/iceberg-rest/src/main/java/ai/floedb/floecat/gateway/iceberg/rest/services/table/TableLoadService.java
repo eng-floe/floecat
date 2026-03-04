@@ -151,17 +151,17 @@ public class TableLoadService {
   }
 
   private String metadataLocation(IcebergMetadata metadata, Table tableRecord) {
-    if (metadata != null
-        && metadata.getMetadataLocation() != null
-        && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
-    }
     if (tableRecord != null && tableRecord.getPropertiesCount() > 0) {
       String propertyLocation =
           MetadataLocationUtil.metadataLocation(tableRecord.getPropertiesMap());
       if (propertyLocation != null && !propertyLocation.isBlank()) {
         return propertyLocation;
       }
+    }
+    if (metadata != null
+        && metadata.getMetadataLocation() != null
+        && !metadata.getMetadataLocation().isBlank()) {
+      return metadata.getMetadataLocation();
     }
     return null;
   }

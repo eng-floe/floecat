@@ -23,23 +23,17 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -49,10 +43,7 @@ public class TableCommitService {
 
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject TableCommitSideEffectService sideEffectService;
   @Inject CommitResponseBuilder responseBuilder;
-  @Inject SnapshotMetadataService snapshotMetadataService;
-  @Inject TableMetadataImportService tableMetadataImportService;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject TransactionCommitService transactionCommitService;
 
@@ -104,25 +95,6 @@ public class TableCommitService {
             command.table(), committedTable, tableId, null, req, tableSupport, metadata);
 
     CommitTableResponseDto responseDto = initialResponse;
-    if (!responseBuilder.containsSnapshotUpdates(req)) {
-      syncExternalSnapshotsIfNeeded(
-          tableSupport,
-          tableId,
-          command.namespacePath(),
-          command.table(),
-          committedTable,
-          responseDto,
-          req,
-          command.idempotencyKey());
-      syncSnapshotMetadataFromCommit(
-          tableSupport,
-          tableId,
-          command.namespacePath(),
-          command.table(),
-          committedTable,
-          responseDto,
-          command.idempotencyKey());
-    }
 
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
@@ -151,131 +123,6 @@ public class TableCommitService {
         return null;
       }
       throw e;
-    }
-  }
-
-  private void syncExternalSnapshotsIfNeeded(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Table committedTable,
-      CommitTableResponseDto responseDto,
-      TableRequests.Commit req,
-      String idempotencyKey) {
-    String metadataLocation = responseDto == null ? null : responseDto.metadataLocation();
-    if (!isExternalLocationTable(committedTable, metadataLocation)) {
-      return;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    String previousLocation =
-        committedTable == null
-            ? null
-            : MetadataLocationUtil.metadataLocation(committedTable.getPropertiesMap());
-    if (previousLocation != null && metadataLocation.equals(previousLocation)) {
-      return;
-    }
-    try {
-      Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
-      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
-      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
-          tableSupport,
-          tableId,
-          namespacePath,
-          tableName,
-          () -> committedTable,
-          imported,
-          idempotencyKey,
-          true);
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Snapshot sync from metadata failed for %s.%s (metadata=%s)",
-          namespacePath,
-          tableName,
-          metadataLocation);
-    }
-  }
-
-  private void syncSnapshotMetadataFromCommit(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Table committedTable,
-      CommitTableResponseDto responseDto,
-      String idempotencyKey) {
-    if (tableId == null || responseDto == null) {
-      return;
-    }
-    String metadataLocation = responseDto.metadataLocation();
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
-    try {
-      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
-      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
-          tableSupport,
-          tableId,
-          namespacePath,
-          tableName,
-          () -> committedTable,
-          imported,
-          idempotencyKey,
-          false);
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Snapshot sync from commit metadata failed for %s.%s (metadata=%s)",
-          namespacePath,
-          tableName,
-          metadataLocation);
-    }
-  }
-
-  private boolean isExternalLocationTable(Table table, String metadataLocation) {
-    if (table == null) {
-      return false;
-    }
-    if (!table.hasUpstream()) {
-      return metadataLocation != null && !metadataLocation.isBlank();
-    }
-    String uri = table.getUpstream().getUri();
-    return uri != null && !uri.isBlank();
-  }
-
-  private Map<String, String> resolveCommitIoProperties(
-      TableGatewaySupport tableSupport, Table committedTable) {
-    Map<String, String> merged = new LinkedHashMap<>();
-    if (tableSupport != null) {
-      merged.putAll(tableSupport.defaultFileIoProperties());
-    }
-    if (committedTable != null) {
-      merged.putAll(FileIoFactory.filterIoProperties(committedTable.getPropertiesMap()));
-    }
-    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
-  }
-
-  public void runConnectorSync(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName) {
-    try {
-      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      String namespace =
-          namespacePath == null
-              ? "<missing>"
-              : (namespacePath.isEmpty() ? "<empty>" : String.join(".", namespacePath));
-      LOG.warnf(
-          e,
-          "Post-commit connector sync failed for %s.%s",
-          namespace,
-          tableName == null ? "<missing>" : tableName);
     }
   }
 

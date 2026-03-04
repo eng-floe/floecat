@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.client;
 
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
-import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
@@ -46,10 +44,6 @@ public class TableClient {
 
   public GetTableResponse getTable(GetTableRequest request) {
     return stub().getTable(request);
-  }
-
-  public CreateTableResponse createTable(CreateTableRequest request) {
-    return stub().createTable(request);
   }
 
   public UpdateTableResponse updateTable(UpdateTableRequest request) {

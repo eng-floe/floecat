@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
@@ -59,6 +61,8 @@ class TableLoadServiceTest {
   private final TableFormatSupport tableFormatSupport = new TableFormatSupport();
   private final DeltaIcebergMetadataService deltaMetadataService =
       mock(DeltaIcebergMetadataService.class);
+  private final TableMetadataImportService tableMetadataImportService =
+      mock(TableMetadataImportService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
   @BeforeEach
@@ -68,6 +72,7 @@ class TableLoadServiceTest {
     service.snapshotClient = snapshotClient;
     service.tableFormatSupport = tableFormatSupport;
     service.deltaMetadataService = deltaMetadataService;
+    service.tableMetadataImportService = tableMetadataImportService;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompat));
     when(deltaCompat.enabled()).thenReturn(true);
@@ -153,5 +158,50 @@ class TableLoadServiceTest {
     assertNotNull(allEtag);
     assertNotNull(refsEtag);
     assertNotEquals(allEtag, refsEtag);
+  }
+
+  @Test
+  void loadPrefersTablePointerMetadataLocationOverSnapshotMetadataLocation() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("orders")
+            .putProperties("metadata-location", "s3://new/metadata/00003.metadata.json")
+            .build();
+    when(tableLifecycleService.getTable(tableId)).thenReturn(table);
+    when(tableSupport.loadCurrentMetadata(table))
+        .thenReturn(
+            IcebergMetadata.newBuilder()
+                .setMetadataLocation("s3://old/metadata/00002.metadata.json")
+                .build());
+    when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
+    when(tableMetadataImportService.importMetadata(any(), any()))
+        .thenReturn(
+            new TableMetadataImportService.ImportedMetadata(
+                null,
+                Map.of(),
+                null,
+                IcebergMetadata.newBuilder()
+                    .setMetadataLocation("s3://new/metadata/00003.metadata.json")
+                    .build(),
+                null,
+                List.of()));
+
+    TableRequestContext context =
+        new TableRequestContext(
+            new NamespaceRequestContext(
+                new CatalogRequestContext(
+                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+                "db",
+                List.of("db"),
+                ResourceId.newBuilder().setId("cat:db").build()),
+            "orders",
+            tableId);
+
+    service.load(context, "orders", null, null, null, tableSupport);
+
+    verify(tableMetadataImportService)
+        .importMetadata(eq("s3://new/metadata/00003.metadata.json"), any());
   }
 }

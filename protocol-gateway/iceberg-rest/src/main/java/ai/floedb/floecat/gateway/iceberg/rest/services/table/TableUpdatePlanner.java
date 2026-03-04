@@ -233,6 +233,7 @@ public class TableUpdatePlanner {
           && !"set-default-sort-order".equals(action)
           && !"remove-partition-specs".equals(action)
           && !"remove-schemas".equals(action)
+          && !"set-metadata-location".equals(action)
           && !"set-statistics".equals(action)
           && !"remove-statistics".equals(action)
           && !"set-partition-statistics".equals(action)
@@ -425,6 +426,12 @@ public class TableUpdatePlanner {
         String location = asString(update.get("location"));
         if (location != null && !location.isBlank()) {
           targetProps.put("location", location);
+          mutated = true;
+        }
+      } else if ("set-metadata-location".equals(action)) {
+        String metadataLocation = asString(update.get("metadata-location"));
+        if (metadataLocation != null && !metadataLocation.isBlank()) {
+          targetProps.put("metadata-location", metadataLocation);
           mutated = true;
         }
       }
