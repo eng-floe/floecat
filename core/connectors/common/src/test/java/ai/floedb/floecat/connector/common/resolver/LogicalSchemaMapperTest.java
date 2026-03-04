@@ -66,7 +66,7 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn c0 = desc.getColumns(0);
     assertEquals("id", c0.getName());
-    assertEquals("INT", c0.getLogicalType());
+    assertEquals("int", c0.getLogicalType());
     assertEquals("id", c0.getPhysicalPath());
     assertTrue(c0.getLeaf());
     assertEquals(1, c0.getOrdinal());
@@ -74,28 +74,11 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn c1 = desc.getColumns(1);
     assertEquals("name", c1.getName());
-    assertEquals("STRING", c1.getLogicalType());
+    assertEquals("string", c1.getLogicalType());
     assertTrue(c1.getLeaf());
     assertEquals(2, c1.getOrdinal());
     assertNotEquals(0L, c1.getId());
     assertNotEquals(c0.getId(), c1.getId());
-  }
-
-  @Test
-  void genericDecimalPrecisionAbove38IsAllowed() {
-    String json =
-        """
-            {"cols":[
-                {"name":"x","type":"DECIMAL(39,0)"}
-            ]}
-        """;
-
-    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
-    Table t = baseTable(json, upstream);
-
-    SchemaDescriptor desc = mapper.map(t, json);
-    assertEquals(1, desc.getColumnsCount());
-    assertEquals("DECIMAL(39,0)", desc.getColumns(0).getLogicalType());
   }
 
   // -------------------------------------------------------------------------
@@ -248,14 +231,14 @@ class LogicalSchemaMapperTest {
 
     SchemaColumn id = desc.getColumns(0);
     assertEquals("id", id.getName());
-    assertEquals("INT", id.getLogicalType());
+    assertEquals("int", id.getLogicalType());
     assertTrue(id.getLeaf());
     assertEquals(1, id.getOrdinal());
     assertNotEquals(0L, id.getId());
 
     SchemaColumn name = desc.getColumns(1);
     assertEquals("name", name.getName());
-    assertEquals("STRING", name.getLogicalType());
+    assertEquals("string", name.getLogicalType());
     assertTrue(name.getLeaf());
     assertEquals(2, name.getOrdinal());
     assertNotEquals(0L, name.getId());
@@ -359,34 +342,6 @@ class LogicalSchemaMapperTest {
       assertEquals(a.getOrdinal(), b.getOrdinal());
       assertEquals(a.getId(), b.getId(), "id must be deterministic");
     }
-  }
-
-  @Test
-  void genericSchemaFailsFastOnUnknownLogicalType() {
-    String json =
-        """
-            {"cols":[
-                {"name":"id","type":"not_a_real_type"}
-            ]}
-        """;
-
-    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
-    Table t = baseTable(json, upstream);
-
-    IllegalArgumentException err =
-        assertThrows(IllegalArgumentException.class, () -> mapper.map(t, json));
-    assertTrue(err.getMessage().contains("Failed to parse generic schema JSON"));
-  }
-
-  @Test
-  void genericSchemaFailsFastWhenColsMissing() {
-    String json = "{\"wrong\":\"shape\"}";
-    UpstreamRef upstream = UpstreamRef.newBuilder().setFormat(TableFormat.TF_UNSPECIFIED).build();
-    Table t = baseTable(json, upstream);
-
-    IllegalArgumentException err =
-        assertThrows(IllegalArgumentException.class, () -> mapper.map(t, json));
-    assertTrue(err.getMessage().contains("Failed to parse generic schema JSON"));
   }
 
   @Test

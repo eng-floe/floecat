@@ -59,31 +59,50 @@ public final class ArrowSchemaUtil {
   }
 
   private static ArrowType arrowType(String logicalType) {
-    LogicalType parsed = LogicalTypeFormat.parse(requireNonBlank(logicalType));
+    String normalized = requireNonBlank(logicalType);
+    String upper = normalized.toUpperCase(Locale.ROOT);
+    if (upper.endsWith("[]")) {
+      return new ArrowType.Utf8();
+    }
+    if ("INTERVAL".equals(upper)) {
+      throw new IllegalArgumentException(
+          "INTERVAL has no stable Arrow representation; omit or cast to STRING/BINARY");
+    }
+    if (Set.of("ARRAY", "MAP", "STRUCT", "VARIANT").contains(upper)) {
+      throw new IllegalArgumentException(
+          "Complex logical types are not supported in Arrow schema mapping: " + upper);
+    }
+    if ("JSON".equals(upper)) {
+      return new ArrowType.Utf8();
+    }
+    if ("FLOAT4".equals(upper)) {
+      return new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+    }
+    if ("FLOAT8".equals(upper)) {
+      return new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+    }
+    if ("TIMESTAMPTZ".equals(upper)) {
+      return new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
+    }
+    LogicalType parsed = LogicalTypeFormat.parse(normalized);
     return arrowType(parsed);
   }
 
   private static ArrowType arrowType(LogicalType logicalType) {
     return switch (logicalType.kind()) {
       case BOOLEAN -> ArrowType.Bool.INSTANCE;
-      case INT -> new ArrowType.Int(64, true);
-      case FLOAT -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
-      case DOUBLE -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
-      case DECIMAL -> ArrowDecimalTypes.decimalType(logicalType.precision(), logicalType.scale());
-      case STRING, JSON -> new ArrowType.Utf8();
+      case INT16 -> new ArrowType.Int(16, true);
+      case INT32 -> new ArrowType.Int(32, true);
+      case INT64 -> new ArrowType.Int(64, true);
+      case FLOAT32 -> new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE);
+      case FLOAT64 -> new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE);
+      case DECIMAL -> decimalType(logicalType.precision(), logicalType.scale());
+      case STRING -> new ArrowType.Utf8();
       case DATE -> new ArrowType.Date(DateUnit.DAY);
       case TIME -> new ArrowType.Time(TimeUnit.MICROSECOND, 64);
       case TIMESTAMP -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, null);
-      case TIMESTAMPTZ -> new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC");
       case UUID -> new ArrowType.FixedSizeBinary(16);
       case BINARY -> new ArrowType.Binary();
-      case INTERVAL ->
-          throw new IllegalArgumentException(
-              "INTERVAL has no stable Arrow representation; omit or cast to STRING/BINARY");
-      case ARRAY, MAP, STRUCT, VARIANT ->
-          throw new IllegalArgumentException(
-              "Complex logical types are not supported in Arrow schema mapping: "
-                  + logicalType.kind().name());
     };
   }
 
@@ -96,6 +115,16 @@ public final class ArrowSchemaUtil {
       throw new IllegalArgumentException("Logical type must not be blank");
     }
     return normalized;
+  }
+
+  private static ArrowType.Decimal decimalType(Integer precision, Integer scale) {
+    int p = Objects.requireNonNull(precision, "DECIMAL precision must not be null");
+    int s = Objects.requireNonNull(scale, "DECIMAL scale must not be null");
+    if (p > 76) {
+      throw new IllegalArgumentException("DECIMAL precision " + p + " exceeds Arrow max 76");
+    }
+    int bitWidth = p > 38 ? 256 : 128;
+    return new ArrowType.Decimal(p, s, bitWidth);
   }
 
   public static String logicalType(Field field) {
@@ -117,14 +146,20 @@ public final class ArrowSchemaUtil {
     if (arrowType instanceof ArrowType.Bool) {
       return LogicalType.of(LogicalKind.BOOLEAN);
     }
-    if (arrowType instanceof ArrowType.Int) {
-      return LogicalType.of(LogicalKind.INT);
+    if (arrowType instanceof ArrowType.Int intType) {
+      if (intType.getBitWidth() <= 16) {
+        return LogicalType.of(LogicalKind.INT16);
+      }
+      if (intType.getBitWidth() <= 32) {
+        return LogicalType.of(LogicalKind.INT32);
+      }
+      return LogicalType.of(LogicalKind.INT64);
     }
     if (arrowType instanceof ArrowType.FloatingPoint) {
       ArrowType.FloatingPoint fp = (ArrowType.FloatingPoint) arrowType;
       FloatingPointPrecision precision = fp.getPrecision();
       return LogicalType.of(
-          precision == FloatingPointPrecision.SINGLE ? LogicalKind.FLOAT : LogicalKind.DOUBLE);
+          precision == FloatingPointPrecision.SINGLE ? LogicalKind.FLOAT32 : LogicalKind.FLOAT64);
     }
     if (arrowType instanceof ArrowType.Decimal) {
       ArrowType.Decimal decimal = (ArrowType.Decimal) arrowType;
@@ -146,30 +181,12 @@ public final class ArrowSchemaUtil {
       return LogicalType.of(LogicalKind.DATE);
     }
     if (arrowType instanceof ArrowType.Time) {
-      ArrowType.Time time = (ArrowType.Time) arrowType;
-      return LogicalType.temporal(LogicalKind.TIME, temporalPrecision(time.getUnit()));
+      return LogicalType.of(LogicalKind.TIME);
     }
     if (arrowType instanceof ArrowType.Timestamp) {
-      ArrowType.Timestamp timestamp = (ArrowType.Timestamp) arrowType;
-      LogicalKind kind =
-          (timestamp.getTimezone() == null || timestamp.getTimezone().isBlank())
-              ? LogicalKind.TIMESTAMP
-              : LogicalKind.TIMESTAMPTZ;
-      return LogicalType.temporal(kind, temporalPrecision(timestamp.getUnit()));
+      return LogicalType.of(LogicalKind.TIMESTAMP);
     }
     throw new IllegalArgumentException("Unsupported Arrow type: " + arrowType);
-  }
-
-  private static int temporalPrecision(TimeUnit unit) {
-    if (unit == null) {
-      return 0;
-    }
-    return switch (unit) {
-      case SECOND -> 0;
-      case MILLISECOND -> 3;
-      case MICROSECOND -> 6;
-      case NANOSECOND -> 9;
-    };
   }
 
   /** Normalize the user-requested projection list so it can be compared case-insensitively. */

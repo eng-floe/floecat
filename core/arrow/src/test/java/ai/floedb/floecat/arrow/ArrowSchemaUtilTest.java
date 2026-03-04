@@ -31,36 +31,36 @@ import org.junit.jupiter.api.Test;
 class ArrowSchemaUtilTest {
 
   @Test
-  void mapsCanonicalIntToSigned64BitArrowInt() {
+  void mapsCanonicalIntToSigned32BitArrowInt() {
     SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INT").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(32);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
   @Test
-  void mapsIntegerAliasToSigned64BitArrowInt() {
+  void mapsIntegerAliasToSigned32BitArrowInt() {
     SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INTEGER").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(32);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
   @Test
-  void mapsSmallintAliasToSigned64BitArrowInt() {
+  void mapsSmallintAliasToSigned16BitArrowInt() {
     SchemaColumn column =
         SchemaColumn.newBuilder().setName("id").setLogicalType("SMALLINT").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(16);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
@@ -179,12 +179,12 @@ class ArrowSchemaUtilTest {
   @Test
   void derivesLogicalTypeFromArrowTimestampWithTz() {
     Field field = Field.nullable("ts", new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC"));
-    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIMESTAMPTZ(6)");
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIMESTAMP");
   }
 
   @Test
   void derivesLogicalTypeFromArrowTimeWithoutTz() {
     Field field = Field.nullable("t", new ArrowType.Time(TimeUnit.MICROSECOND, 64));
-    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIME(6)");
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIME");
   }
 }

@@ -146,10 +146,6 @@ public final class TestSupport {
       String rootUri,
       String schemaJson,
       String desc) {
-    boolean isGenericSchema = schemaJson != null && schemaJson.contains("\"cols\"");
-    TableFormat format = isGenericSchema ? TableFormat.TF_UNSPECIFIED : TableFormat.TF_ICEBERG;
-    ColumnIdAlgorithm cidAlgo =
-        isGenericSchema ? ColumnIdAlgorithm.CID_PATH_ORDINAL : ColumnIdAlgorithm.CID_FIELD_ID;
     var resp =
         mutation.createTable(
             CreateTableRequest.newBuilder()
@@ -161,8 +157,8 @@ public final class TestSupport {
                         .setDescription(desc)
                         .setUpstream(
                             UpstreamRef.newBuilder()
-                                .setFormat(format)
-                                .setColumnIdAlgorithm(cidAlgo)
+                                .setFormat(TableFormat.TF_ICEBERG)
+                                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
                                 .build())
                         .setSchemaJson(schemaJson))
                 .build());
