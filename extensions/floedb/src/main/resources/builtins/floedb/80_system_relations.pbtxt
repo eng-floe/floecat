@@ -883,13 +883,13 @@ system_tables {
   columns {
     name: "one"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     ordinal: 1
     engine_specific {
       [floe.ext.floe_column] {
         attname: "one"
-        atttypid: 23
+        atttypid: 20
         attnum: 1
         attnotnull: true
       }
@@ -2437,13 +2437,13 @@ system_tables {
   columns {
     name: "worker_lid"
     type {
-      name: "SMALLINT"
+      name: "BIGINT"
     }
     ordinal: 2
     engine_specific {
       [floe.ext.floe_column] {
         attname: "worker_lid"
-        atttypid: 21
+        atttypid: 20
         attnum: 2
         attnotnull: true
       }
@@ -2453,13 +2453,13 @@ system_tables {
   columns {
     name: "node_id"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     ordinal: 3
     engine_specific {
       [floe.ext.floe_column] {
         attname: "node_id"
-        atttypid: 23
+        atttypid: 20
         attnum: 3
         attnotnull: true
       }
@@ -2469,13 +2469,13 @@ system_tables {
   columns {
     name: "thread_id"
     type {
-      name: "SMALLINT"
+      name: "BIGINT"
     }
     ordinal: 4
     engine_specific {
       [floe.ext.floe_column] {
         attname: "thread_id"
-        atttypid: 21
+        atttypid: 20
         attnum: 4
         attnotnull: true
       }
