@@ -45,9 +45,11 @@ import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -601,8 +603,8 @@ public class Shell implements Runnable {
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
-         stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
-         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
+         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
          analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
              [--snapshot-ids id1,id2,...] [--full]
@@ -2463,9 +2465,11 @@ public class Shell implements Runnable {
   private void statsTable(List<String> args) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)");
+          "usage: stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to"
+              + " --current)");
       return;
     }
+    boolean json = hasFlag(args, "--json");
     String fq = args.get(0);
     var r =
         directory.resolveTable(
@@ -2475,7 +2479,11 @@ public class Shell implements Runnable {
             .setTableId(r.getResourceId())
             .setSnapshot(parseSnapshotSelector(args))
             .build();
-    var resp = statistics.getTableStats(req);
+    GetTableStatsResponse resp = statistics.getTableStats(req);
+    if (json) {
+      printJson(resp);
+      return;
+    }
     printTableStats(resp.getStats());
   }
 
@@ -2483,10 +2491,11 @@ public class Shell implements Runnable {
     if (args.isEmpty()) {
       out.println(
           "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
-              + " [--limit N]");
+              + " [--limit N] [--json]");
       return;
     }
 
+    boolean json = hasFlag(args, "--json");
     String fq = args.get(0);
     int limit = parseIntFlag(args, "--limit", 2000);
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
@@ -2507,6 +2516,10 @@ public class Shell implements Runnable {
             r -> r.getColumnsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     if (all.size() > limit) all = all.subList(0, limit);
+    if (json) {
+      printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build());
+      return;
+    }
     printColumnStats(all);
   }
 
@@ -3376,12 +3389,24 @@ public class Shell implements Runnable {
 
   private void printSnapshotDetail(Snapshot snapshot) {
     try {
-      JsonFormat.Printer printer = JsonFormat.printer().includingDefaultValueFields();
+      JsonFormat.Printer printer = jsonPrinter();
       out.println(printer.print(snapshot));
       printDecodedFormatMetadata(snapshot, printer);
     } catch (InvalidProtocolBufferException e) {
       out.println(snapshot.toString());
     }
+  }
+
+  private void printJson(com.google.protobuf.MessageOrBuilder message) {
+    try {
+      out.println(jsonPrinter().print(message));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("failed to render protobuf as json", e);
+    }
+  }
+
+  private JsonFormat.Printer jsonPrinter() {
+    return JsonFormat.printer().includingDefaultValueFields();
   }
 
   private void printDecodedFormatMetadata(Snapshot snapshot, JsonFormat.Printer printer) {
@@ -4027,6 +4052,10 @@ public class Shell implements Runnable {
 
   private long parseLongFlag(List<String> a, String f, long d) {
     return parseFlag(a, f, d, Long::parseLong);
+  }
+
+  private boolean hasFlag(List<String> args, String flag) {
+    return args.contains(flag);
   }
 
   private List<Long> parseSnapshotIds(String s) {
