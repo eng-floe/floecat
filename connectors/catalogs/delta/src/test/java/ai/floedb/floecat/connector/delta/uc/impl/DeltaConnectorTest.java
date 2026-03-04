@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 class DeltaConnectorTest {
@@ -55,9 +56,12 @@ class DeltaConnectorTest {
             Set.of(),
             new FloecatConnector.SnapshotEnumerationOptions(false, true, Set.of(), Set.of(3L, 5L)));
 
-    assertThat(bundles)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(3L, 5L);
+    List<Long> snapshotIds =
+        bundles.stream()
+            .map(FloecatConnector.SnapshotBundle::snapshotId)
+            .collect(Collectors.toList());
+
+    assertEquals(List.of(3L, 5L), snapshotIds);
   }
 
   @Test
@@ -85,12 +89,17 @@ class DeltaConnectorTest {
             new FloecatConnector.SnapshotEnumerationOptions(
                 false, false, Set.of(1L, 4L), Set.of()));
 
-    assertThat(bundles)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(0L, 2L, 3L, 5L);
-    assertThat(bundles)
-        .extracting(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
-        .containsExactly(0L, 2000L, 3000L, 5000L);
+    List<Long> snapshotIds =
+        bundles.stream()
+            .map(FloecatConnector.SnapshotBundle::snapshotId)
+            .collect(Collectors.toList());
+    assertEquals(List.of(0L, 2L, 3L, 5L), snapshotIds);
+
+    List<Long> timestamps =
+        bundles.stream()
+            .map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
+            .collect(Collectors.toList());
+    assertEquals(List.of(0L, 2000L, 3000L, 5000L), timestamps);
   }
 
   private static Snapshot snapshot(long version, long timestampMs) {
