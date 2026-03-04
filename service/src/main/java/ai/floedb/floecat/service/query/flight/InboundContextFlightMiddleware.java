@@ -18,13 +18,15 @@ package ai.floedb.floecat.service.query.flight;
 
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
+import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
+import io.grpc.Context;
 import io.grpc.StatusRuntimeException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.arrow.flight.CallHeaders;
 import org.apache.arrow.flight.CallInfo;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightServerMiddleware;
 import org.apache.arrow.flight.RequestContext;
-import org.jboss.logging.MDC;
 
 /**
  * Arrow Flight server middleware that provides full call-context parity with the gRPC path's {@code
@@ -59,9 +61,15 @@ final class InboundContextFlightMiddleware implements FlightServerMiddleware {
   static final Key<InboundContextFlightMiddleware> KEY = Key.of("floecat-inbound-context");
 
   private final ResolvedCallContext callContext;
+  private final Context callScope;
+  private final Context previousScope;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
 
-  private InboundContextFlightMiddleware(ResolvedCallContext callContext) {
+  private InboundContextFlightMiddleware(
+      ResolvedCallContext callContext, Context callScope, Context previousScope) {
     this.callContext = callContext;
+    this.callScope = callScope;
+    this.previousScope = previousScope;
   }
 
   /** Returns the fully resolved per-call context. */
@@ -78,21 +86,23 @@ final class InboundContextFlightMiddleware implements FlightServerMiddleware {
 
   @Override
   public void onCallCompleted(CallStatus status) {
-    clearMdc();
+    closeScope();
   }
 
   @Override
   public void onCallErrored(Throwable err) {
-    clearMdc();
+    closeScope();
   }
 
-  private void clearMdc() {
-    MDC.remove("query_id");
-    MDC.remove("correlation_id");
-    MDC.remove("floecat_account_id");
-    MDC.remove("floecat_subject");
-    MDC.remove("floecat_engine_kind");
-    MDC.remove("floecat_engine_version");
+  private void closeScope() {
+    if (!closed.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      callScope.detach(previousScope);
+    } finally {
+      InboundContextInterceptor.clearMdc();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -134,14 +144,12 @@ final class InboundContextFlightMiddleware implements FlightServerMiddleware {
       }
 
       // Populate MDC for the duration of this call (cleared in onCallCompleted/onCallErrored).
-      MDC.put("query_id", resolved.queryId());
-      MDC.put("correlation_id", resolved.correlationId());
-      MDC.put("floecat_account_id", resolved.principalContext().getAccountId());
-      MDC.put("floecat_subject", resolved.principalContext().getSubject());
-      MDC.put("floecat_engine_kind", resolved.engineContext().engineKind());
-      MDC.put("floecat_engine_version", resolved.engineContext().engineVersion());
+      InboundContextInterceptor.populateMdc(resolved);
 
-      return new InboundContextFlightMiddleware(resolved);
+      Context callScope =
+          InboundContextInterceptor.contextWithResolvedCallContext(Context.current(), resolved);
+      Context previousScope = callScope.attach();
+      return new InboundContextFlightMiddleware(resolved, callScope, previousScope);
     }
 
     private static CallStatus toFlightStatus(StatusRuntimeException e) {
