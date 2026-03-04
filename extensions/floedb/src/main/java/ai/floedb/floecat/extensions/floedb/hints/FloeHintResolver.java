@@ -2,8 +2,6 @@
  * Copyright 2026 Yellowbrick Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
@@ -49,7 +47,6 @@ import java.util.Optional;
 
 /** Computation-only helper that produces Floe-specific metadata hints. */
 public final class FloeHintResolver {
-  static final int VARHDRSZ = 4;
 
   private FloeHintResolver() {}
 
@@ -429,24 +426,14 @@ public final class FloeHintResolver {
     }
   }
 
-  static int deriveTypmod(LogicalType logical) {
+  private static int deriveTypmod(LogicalType logical) {
     if (logical == null) {
       return -1;
     }
-
-    switch (logical.kind()) {
-      case DECIMAL:
-        return (logical.precision() << 16) | logical.scale();
-      case TIMESTAMP, TIMESTAMPTZ, TIME:
-        {
-          // For temporal types, we encode the precision in typmod as (precision + VARHDRSZ)
-          Integer p = logical.temporalPrecision();
-          return (p == null) ? -1 : (p + VARHDRSZ);
-        }
-
-      default:
-        return -1;
+    if (logical.isDecimal()) {
+      return (logical.precision() << 16) | logical.scale();
     }
+    return -1;
   }
 
   private static <T extends Message> Optional<T> payload(
@@ -460,13 +447,12 @@ public final class FloeHintResolver {
     return ScannerUtils.payload(ctx.overlay(), id, descriptor, messageClass, ctx.engineContext());
   }
 
-  // package-private for testing
-  static boolean passByValue(LogicalType logical) {
+  private static boolean passByValue(LogicalType logical) {
     if (logical == null) {
       return false;
     }
     return switch (logical.kind()) {
-      case BOOLEAN, INT, FLOAT, DOUBLE, DATE, TIME, TIMESTAMP, TIMESTAMPTZ -> true;
+      case BOOLEAN, INT16, INT32, INT64, FLOAT32, FLOAT64, DATE, TIME, TIMESTAMP, UUID -> true;
       default -> false;
     };
   }

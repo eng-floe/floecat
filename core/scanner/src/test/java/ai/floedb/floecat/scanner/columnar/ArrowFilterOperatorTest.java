@@ -29,6 +29,7 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.Float4Vector;
 import org.apache.arrow.vector.Float8Vector;
+import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.junit.jupiter.api.Test;
@@ -64,7 +65,7 @@ class ArrowFilterOperatorTest {
         VectorSchemaRoot root = filtered.root();
         assertThat(root.getRowCount()).isEqualTo(1);
 
-        BigIntVector idVector = (BigIntVector) root.getVector(0);
+        IntVector idVector = (IntVector) root.getVector(0);
         assertThat(idVector.get(0)).isEqualTo(1);
 
         VarCharVector labelVector = (VarCharVector) root.getVector(1);
@@ -98,7 +99,7 @@ class ArrowFilterOperatorTest {
         VectorSchemaRoot root = filtered.root();
         assertThat(root.getRowCount()).isEqualTo(2);
 
-        BigIntVector idVector = (BigIntVector) root.getVector(0);
+        IntVector idVector = (IntVector) root.getVector(0);
         assertThat(idVector.get(0)).isEqualTo(2);
         assertThat(idVector.get(1)).isEqualTo(3);
 
