@@ -38,7 +38,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Timestamp semantics: {@code "timestamp"} (UTC) → {@code "TIMESTAMPTZ"}; {@code
  *       "timestamp_ntz"} (naive) → {@code "TIMESTAMP"}
  *   <li>Integer collapsing: all Delta int flavours → {@code "INT"}
- *   <li>Complex object nodes (struct/array/map) → correct canonical name, {@code leaf=false}
+ *   <li>Complex object nodes (struct/array/map/variant) → correct canonical name
  *   <li>DECIMAL passthrough: {@code "decimal(10,2)"} → {@code "DECIMAL(10,2)"}
  *   <li>Unknown/malformed source types fail fast (no silent fallback)
  * </ul>
@@ -215,6 +215,19 @@ class DeltaSchemaMapperTest {
     SchemaColumn col = firstColumn(json);
     assertThat(col.getLogicalType()).isEqualTo("MAP");
     assertThat(col.getLeaf()).isFalse();
+  }
+
+  @Test
+  void variantObjectNodeMapsToVariantAndIsLeaf() {
+    String json =
+        """
+        {"fields":[
+          {"name":"v","type":{"type":"variant"},"nullable":true}
+        ]}
+        """;
+    SchemaColumn col = firstColumn(json);
+    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(col.getLeaf()).isTrue();
   }
 
   // ---------------------------------------------------------------------------

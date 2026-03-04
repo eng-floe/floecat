@@ -145,6 +145,16 @@ class IcebergTypeMapperTest {
     assertKind(Types.TimestampType.withoutZone(), LogicalKind.TIMESTAMP);
   }
 
+  @Test
+  void timestampNanoWithZoneMapsToTimestamptz() {
+    assertKind(Types.TimestampNanoType.withZone(), LogicalKind.TIMESTAMPTZ);
+  }
+
+  @Test
+  void timestampNanoWithoutZoneMapsToTimestamp() {
+    assertKind(Types.TimestampNanoType.withoutZone(), LogicalKind.TIMESTAMP);
+  }
+
   // ---------------------------------------------------------------------------
   // Complex / container types
   // ---------------------------------------------------------------------------
@@ -169,14 +179,14 @@ class IcebergTypeMapperTest {
   }
 
   @Test
+  void variantMapsToVariant() {
+    assertKind(Types.VariantType.get(), LogicalKind.VARIANT);
+  }
+
+  @Test
   void unsupportedIcebergKindsFailFast() {
     List<Type> unsupported =
-        List.of(
-            Types.TimestampNanoType.withoutZone(),
-            Types.GeometryType.crs84(),
-            Types.GeographyType.crs84(),
-            Types.VariantType.get(),
-            Types.UnknownType.get());
+        List.of(Types.GeometryType.crs84(), Types.GeographyType.crs84(), Types.UnknownType.get());
 
     for (Type icebergType : unsupported) {
       assertThatThrownBy(() -> IcebergTypeMapper.toLogical(icebergType))

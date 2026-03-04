@@ -221,13 +221,17 @@ The module is pure Java; no configuration is required. Extending the type system
 - **Iceberg schema parsing** – `IcebergSchemaMapper.toCanonical(Type)` converts Iceberg types to
   canonical strings (e.g. `TimestampType.withZone()` → `"TIMESTAMPTZ"`), storing them in
   `SchemaColumn.logical_type`. This avoids the historic ambiguity where `"timestamp"` meant
-  UTC-stored in Delta but non-UTC in Iceberg.
+  UTC-stored in Delta but non-UTC in Iceberg. Iceberg `TimestampNanoType` is mapped with the same
+  timezone semantics (`withZone()` → `"TIMESTAMPTZ"`, `withoutZone()` → `"TIMESTAMP"`), and
+  Iceberg `VariantType` maps to canonical `"VARIANT"`.
 - **Delta schema parsing** – `DeltaSchemaMapper.deltaTypeToCanonical(JsonNode)` applies Delta-
   specific semantics: `"timestamp"` → `"TIMESTAMPTZ"` (UTC-stored), `"timestamp_ntz"` → `"TIMESTAMP"`
   (timezone-naive).
 - **Statistics ingestion** – NDV providers convert Parquet min/max values using `MinMaxCodec` before
   storing them in `ColumnStats`, ensuring planners can compare them without deserialising actual
-  binary payloads.
+  binary payloads. Connector planners canonicalize connector-native numeric temporal bounds to
+  typed values before generic coercion (for example Iceberg TIME micros-of-day, TIMESTAMP micros,
+  and TIMESTAMP_NANO nanos).
 
 ## Cross-References
 - Protobuf type definitions: [`docs/proto.md`](proto.md)

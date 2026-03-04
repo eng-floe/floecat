@@ -79,6 +79,24 @@ class IcebergSchemaMapperTest {
     assertThat(col.getLeaf()).isTrue();
   }
 
+  @Test
+  void utcTimestampNanoMapsToTimestamptz() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(1, "ts_utc_nano", Types.TimestampNanoType.withZone()));
+    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(col.getLeaf()).isTrue();
+  }
+
+  @Test
+  void nonUtcTimestampNanoMapsToTimestamp() {
+    SchemaColumn col =
+        singleColumn(
+            Types.NestedField.optional(1, "ts_ntz_nano", Types.TimestampNanoType.withoutZone()));
+    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
+    assertThat(col.getLeaf()).isTrue();
+  }
+
   // ---------------------------------------------------------------------------
   // Integer collapsing
   // ---------------------------------------------------------------------------
@@ -180,6 +198,13 @@ class IcebergSchemaMapperTest {
                     Types.NestedField.optional(2, "city", Types.StringType.get()))));
     assertThat(col.getLogicalType()).isEqualTo("STRUCT");
     assertThat(col.getLeaf()).isFalse();
+  }
+
+  @Test
+  void variantFieldMapsToVariantAndIsLeaf() {
+    SchemaColumn col = singleColumn(Types.NestedField.optional(1, "v", Types.VariantType.get()));
+    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(col.getLeaf()).isTrue();
   }
 
   // ---------------------------------------------------------------------------

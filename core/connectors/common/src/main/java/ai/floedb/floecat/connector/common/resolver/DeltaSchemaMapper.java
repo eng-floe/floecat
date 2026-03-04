@@ -30,7 +30,8 @@ import java.util.Set;
 /**
  * DeltaSchemaMapper: Converts Delta Lake-formatted schema JSON to logical SchemaDescriptor.
  *
- * <p>Handles Delta's JSON metadata format with support for nested structures (struct, array, map).
+ * <p>Handles Delta's JSON metadata format with support for nested structures (struct, array, map)
+ * and variant values.
  */
 final class DeltaSchemaMapper {
   private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -164,7 +165,7 @@ final class DeltaSchemaMapper {
    *
    * <p>Delta types are either textual scalars (e.g. {@code "string"}, {@code "timestamp"}) or JSON
    * objects for complex types ({@code {"type":"struct",...}}, {@code {"type":"array",...}}, {@code
-   * {"type":"map",...}}).
+   * {"type":"map",...}}, {@code {"type":"variant"}}).
    *
    * <p>Timestamp semantics: Delta's {@code "timestamp"} is always UTC-stored → canonical {@code
    * "TIMESTAMPTZ"}. Delta's {@code "timestamp_ntz"} is timezone-naive → canonical {@code
@@ -192,6 +193,7 @@ final class DeltaSchemaMapper {
         case "struct" -> "STRUCT";
         case "array" -> "ARRAY";
         case "map" -> "MAP";
+        case "variant" -> "VARIANT";
         default ->
             throw new IllegalArgumentException(
                 "Unrecognized Delta complex type: '" + typeNode.path("type").asText("") + "'");
