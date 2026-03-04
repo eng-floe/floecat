@@ -758,14 +758,14 @@ system_tables {
   columns {
     name: "num_nodes"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 4
     engine_specific {
       [floe.ext.floe_column] {
         attname: "num_nodes"
-        atttypid: 23
+        atttypid: 20
         attnum: 4
         attnotnull: false
       }
@@ -775,14 +775,14 @@ system_tables {
   columns {
     name: "active_nodes"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 5
     engine_specific {
       [floe.ext.floe_column] {
         attname: "active_nodes"
-        atttypid: 23
+        atttypid: 20
         attnum: 5
         attnotnull: false
       }
@@ -792,14 +792,14 @@ system_tables {
   columns {
     name: "vcpu_cores"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 6
     engine_specific {
       [floe.ext.floe_column] {
         attname: "vcpu_cores"
-        atttypid: 23
+        atttypid: 20
         attnum: 6
         attnotnull: false
       }
@@ -1207,14 +1207,14 @@ system_tables {
   columns {
     name: "num_workers"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 18
     engine_specific {
       [floe.ext.floe_column] {
         attname: "num_workers"
-        atttypid: 23
+        atttypid: 20
         attnum: 18
         attnotnull: false
       }
@@ -1241,14 +1241,14 @@ system_tables {
   columns {
     name: "compile_percent"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 20
     engine_specific {
       [floe.ext.floe_column] {
         attname: "compile_percent"
-        atttypid: 23
+        atttypid: 20
         attnum: 20
         attnotnull: false
       }
@@ -1258,14 +1258,14 @@ system_tables {
   columns {
     name: "cpu_percent"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 21
     engine_specific {
       [floe.ext.floe_column] {
         attname: "cpu_percent"
-        atttypid: 23
+        atttypid: 20
         attnum: 21
         attnotnull: false
       }
@@ -1275,14 +1275,14 @@ system_tables {
   columns {
     name: "cpu_percent_max"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 22
     engine_specific {
       [floe.ext.floe_column] {
         attname: "cpu_percent_max"
-        atttypid: 23
+        atttypid: 20
         attnum: 22
         attnotnull: false
       }
@@ -1292,14 +1292,14 @@ system_tables {
   columns {
     name: "num_restart"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 23
     engine_specific {
       [floe.ext.floe_column] {
         attname: "num_restart"
-        atttypid: 23
+        atttypid: 20
         attnum: 23
         attnotnull: false
       }
@@ -1309,14 +1309,14 @@ system_tables {
   columns {
     name: "num_error"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 24
     engine_specific {
       [floe.ext.floe_column] {
         attname: "num_error"
-        atttypid: 23
+        atttypid: 20
         attnum: 24
         attnotnull: false
       }
@@ -2867,14 +2867,14 @@ system_tables {
   columns {
     name: "queue_size"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 3
     engine_specific {
       [floe.ext.floe_column] {
         attname: "queue_size"
-        atttypid: 23
+        atttypid: 20
         attnum: 3
         attnotnull: false
       }
@@ -2884,14 +2884,14 @@ system_tables {
   columns {
     name: "min_concurrency"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 4
     engine_specific {
       [floe.ext.floe_column] {
         attname: "min_concurrency"
-        atttypid: 23
+        atttypid: 20
         attnum: 4
         attnotnull: false
       }
@@ -2901,14 +2901,14 @@ system_tables {
   columns {
     name: "max_concurrency"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 5
     engine_specific {
       [floe.ext.floe_column] {
         attname: "max_concurrency"
-        atttypid: 23
+        atttypid: 20
         attnum: 5
         attnotnull: false
       }
@@ -3111,14 +3111,14 @@ system_tables {
   columns {
     name: "priority"
     type {
-      name: "INT"
+      name: "BIGINT"
     }
     nullable: true
     ordinal: 4
     engine_specific {
       [floe.ext.floe_column] {
         attname: "priority"
-        atttypid: 23
+        atttypid: 20
         attnum: 4
         attnotnull: false
       }
