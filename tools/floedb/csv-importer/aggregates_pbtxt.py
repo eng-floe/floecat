@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate Floecat PBtxt for aggregates from pg_aggregate.csv (system only).
+Generate FloeCat PBtxt for aggregates from pg_aggregate.csv (system only).
 
 Inputs:
 - pg_aggregate.csv

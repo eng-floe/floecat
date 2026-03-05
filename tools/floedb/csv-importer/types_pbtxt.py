@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate Floecat PBtxt for SQL types from pg_type.csv (system only).
+Generate FloeCat PBtxt for SQL types from pg_type.csv (system only).
 
 Also emits FloeTypePlanningSemantics per type using:
 - pg_am.csv

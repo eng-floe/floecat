@@ -54,7 +54,7 @@ final class TypeResolverTest {
     EngineTypeMapper mapper =
         (logicalType, lookup) -> {
           invocations.incrementAndGet();
-          if (logicalType.kind() == LogicalKind.INT) {
+          if (logicalType.kind() == LogicalKind.INT32) {
             return lookup.findByName("pg_catalog", "int4");
           }
           return Optional.empty();
@@ -62,7 +62,7 @@ final class TypeResolverTest {
 
     TypeResolver resolver = new TypeResolver(ctx, mapper);
 
-    LogicalType logical = LogicalType.of(LogicalKind.INT);
+    LogicalType logical = LogicalType.of(LogicalKind.INT32);
     Optional<TypeNode> resolved = resolver.resolve(logical);
 
     assertThat(resolved).contains(type);

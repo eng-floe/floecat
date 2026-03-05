@@ -113,7 +113,7 @@ final class PgAttributeScannerTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("id")
-                .setLogicalType("INT")
+                .setLogicalType("INT32")
                 .setNullable(false)
                 .build(),
             SchemaColumn.newBuilder()
@@ -173,7 +173,11 @@ final class PgAttributeScannerTest {
 
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("x").setLogicalType("INT").setNullable(true).build());
+            SchemaColumn.newBuilder()
+                .setName("x")
+                .setLogicalType("INT32")
+                .setNullable(true)
+                .build());
 
     SystemObjectScanContext ctx =
         systemCatalogContext(systemPgCatalogNamespace(), List.of(int4), List.of(table), schema);
@@ -218,7 +222,7 @@ final class PgAttributeScannerTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("x")
-                .setLogicalType("INT")
+                .setLogicalType("INT32")
                 .setNullable(true)
                 .build()));
 
@@ -247,7 +251,7 @@ final class PgAttributeScannerTest {
   private static class TestTypeMapper implements EngineTypeMapper {
     @Override
     public Optional<TypeNode> resolve(LogicalType t, TypeLookup lookup) {
-      if ("INT".equals(t.kind().name())) {
+      if ("INT32".equals(t.kind().name())) {
         return lookup.findByName("pg_catalog", "int4");
       }
       if ("DECIMAL".equals(t.kind().name())) {

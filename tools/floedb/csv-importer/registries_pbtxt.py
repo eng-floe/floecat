@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate Floecat PBtxt for registry-level index dictionaries.
+Generate FloeCat PBtxt for registry-level index dictionaries.
 
 Emits a single registries.pbtxt containing registry-level EngineSpecific payloads:
 

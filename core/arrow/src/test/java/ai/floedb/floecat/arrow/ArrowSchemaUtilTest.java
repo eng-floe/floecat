@@ -24,42 +24,43 @@ import java.util.List;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.TimeUnit;
 import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.Test;
 
 class ArrowSchemaUtilTest {
 
   @Test
-  void mapsCanonicalIntToSigned64BitArrowInt() {
+  void mapsCanonicalIntToSigned32BitArrowInt() {
     SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INT").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(32);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
   @Test
-  void mapsIntegerAliasToSigned64BitArrowInt() {
+  void mapsIntegerAliasToSigned32BitArrowInt() {
     SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INTEGER").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(32);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
   @Test
-  void mapsSmallintAliasToSigned64BitArrowInt() {
+  void mapsSmallintAliasToSigned16BitArrowInt() {
     SchemaColumn column =
         SchemaColumn.newBuilder().setName("id").setLogicalType("SMALLINT").build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
 
-    assertThat(arrowType.getBitWidth()).isEqualTo(64);
+    assertThat(arrowType.getBitWidth()).isEqualTo(16);
     assertThat(arrowType.getIsSigned()).isTrue();
   }
 
@@ -161,5 +162,29 @@ class ArrowSchemaUtilTest {
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must not be blank");
+  }
+
+  @Test
+  void derivesLogicalTypeFromArrowUtf8Field() {
+    Field field = Field.nullable("text", new ArrowType.Utf8());
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("STRING");
+  }
+
+  @Test
+  void derivesLogicalTypeFromArrowDecimalField() {
+    Field field = Field.nullable("dec", new ArrowType.Decimal(12, 3, 128));
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("DECIMAL(12,3)");
+  }
+
+  @Test
+  void derivesLogicalTypeFromArrowTimestampWithTz() {
+    Field field = Field.nullable("ts", new ArrowType.Timestamp(TimeUnit.MICROSECOND, "UTC"));
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIMESTAMP");
+  }
+
+  @Test
+  void derivesLogicalTypeFromArrowTimeWithoutTz() {
+    Field field = Field.nullable("t", new ArrowType.Time(TimeUnit.MICROSECOND, 64));
+    assertThat(ArrowSchemaUtil.logicalType(field)).isEqualTo("TIME");
   }
 }
