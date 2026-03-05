@@ -42,10 +42,13 @@ public interface ReconcileJobStore {
 
   Optional<LeasedJob> leaseNext();
 
-  void markRunning(String jobId, long startedAtMs);
+  boolean renewLease(String jobId, String leaseEpoch);
+
+  void markRunning(String jobId, String leaseEpoch, long startedAtMs);
 
   void markProgress(
       String jobId,
+      String leaseEpoch,
       long scanned,
       long changed,
       long errors,
@@ -55,6 +58,7 @@ public interface ReconcileJobStore {
 
   void markSucceeded(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       long scanned,
       long changed,
@@ -63,6 +67,7 @@ public interface ReconcileJobStore {
 
   void markFailed(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -77,6 +82,7 @@ public interface ReconcileJobStore {
 
   void markCancelled(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -143,6 +149,7 @@ public interface ReconcileJobStore {
     public final boolean fullRescan;
     public final CaptureMode captureMode;
     public final ReconcileScope scope;
+    public final String leaseEpoch;
 
     public LeasedJob(
         String jobId,
@@ -150,13 +157,15 @@ public interface ReconcileJobStore {
         String connectorId,
         boolean fullRescan,
         CaptureMode captureMode,
-        ReconcileScope scope) {
+        ReconcileScope scope,
+        String leaseEpoch) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
       this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
+      this.leaseEpoch = leaseEpoch == null ? "" : leaseEpoch;
     }
   }
 

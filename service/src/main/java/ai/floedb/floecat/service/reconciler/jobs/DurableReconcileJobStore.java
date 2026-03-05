@@ -49,7 +49,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
   private static final long DEFAULT_LEASE_MS = 30_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
+  private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
+  private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
+  private static final int FALLBACK_SCAN_MAX_PAGES = 200;
   private static final int CAS_MAX = 16;
 
   @Inject PointerStore pointerStore;
@@ -62,6 +65,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
   private long leaseMs = DEFAULT_LEASE_MS;
   private long reclaimIntervalMs = DEFAULT_RECLAIM_INTERVAL_MS;
+  private long leaseRenewGraceMs = DEFAULT_LEASE_RENEW_GRACE_MS;
   private int readyScanLimit = DEFAULT_READY_SCAN_LIMIT;
 
   private final String leaseOwner = "reconcile-store-" + UUID.randomUUID();
@@ -99,6 +103,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.reclaim-interval-ms", Long.class)
                 .orElse(DEFAULT_RECLAIM_INTERVAL_MS));
+    leaseRenewGraceMs =
+        Math.max(
+            0L,
+            config
+                .getOptionalValue("floecat.reconciler.job-store.lease-renew-grace-ms", Long.class)
+                .orElse(DEFAULT_LEASE_RENEW_GRACE_MS));
     readyScanLimit =
         Math.max(
             1,
@@ -318,10 +328,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void markRunning(String jobId, long startedAtMs) {
+  public boolean renewLease(String jobId, String leaseEpoch) {
+    var loaded = loadByAnyAccount(jobId);
+    if (loaded.isEmpty()) {
+      return false;
+    }
+    return renewLeaseByCanonicalPointer(loaded.get().canonicalPointerKey, jobId, leaseEpoch);
+  }
+
+  @Override
+  public void markRunning(String jobId, String leaseEpoch, long startedAtMs) {
     mutateByJobId(
         jobId,
         existing -> {
+          if (!hasActiveLease(jobId, leaseEpoch, existing, "markRunning", false, true)) {
+            return null;
+          }
           existing.state = "JS_RUNNING";
           existing.message = "Running";
           if (existing.startedAtMs <= 0L) {
@@ -334,6 +356,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markProgress(
       String jobId,
+      String leaseEpoch,
       long scanned,
       long changed,
       long errors,
@@ -343,6 +366,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     mutateByJobId(
         jobId,
         existing -> {
+          if (!hasActiveLease(jobId, leaseEpoch, existing, "markProgress", false, true)) {
+            return null;
+          }
           if (isTerminalState(existing.state)) {
             return existing;
           }
@@ -361,6 +387,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markSucceeded(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       long scanned,
       long changed,
@@ -369,6 +396,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     mutateByJobId(
         jobId,
         existing -> {
+          if (!hasActiveLease(jobId, leaseEpoch, existing, "markSucceeded", false, true)) {
+            return null;
+          }
           if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
             return existing;
           }
@@ -383,6 +413,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
           existing.leaseOwner = null;
+          existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
           clearReadyPointer(existing.readyPointerKey);
           existing.readyPointerKey = null;
@@ -394,6 +425,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markFailed(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -404,6 +436,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     mutateByJobId(
         jobId,
         existing -> {
+          if (!hasActiveLease(jobId, leaseEpoch, existing, "markFailed", false, true)) {
+            return null;
+          }
           if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
             return existing;
           }
@@ -415,6 +450,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.statsProcessed = statsProcessed;
           existing.lastError = message == null ? "Failed" : message;
           existing.leaseOwner = null;
+          existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
 
           if (existing.attempt >= maxAttempts) {
@@ -469,9 +505,27 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             return existing;
           }
           if ("JS_RUNNING".equals(existing.state)) {
+            long now = System.currentTimeMillis();
             existing.state = "JS_CANCELLING";
             existing.message = (reason == null || reason.isBlank()) ? "Cancelling" : reason;
-            existing.updatedAtMs = System.currentTimeMillis();
+            long cancelPokeExpiry = now + CANCEL_POKE_MAX_DELAY_MS;
+            if (existing.leaseExpiresAtMs <= 0L) {
+              existing.leaseExpiresAtMs = cancelPokeExpiry;
+            } else {
+              existing.leaseExpiresAtMs = Math.min(existing.leaseExpiresAtMs, cancelPokeExpiry);
+            }
+            String readyKey =
+                Keys.reconcileReadyPointerByDue(
+                    now, existing.accountId, existing.laneKey, existing.jobId);
+            clearReadyPointer(existing.readyPointerKey);
+            if (upsertReadyPointer(readyKey, existing.currentBlobUri)) {
+              existing.readyPointerKey = readyKey;
+            } else {
+              LOG.warnf(
+                  "Failed to poke cancelling reconcile job %s for near-term pickup",
+                  existing.jobId);
+            }
+            existing.updatedAtMs = now;
             return existing;
           }
           existing.state = "JS_CANCELLED";
@@ -482,6 +536,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           }
           existing.finishedAtMs = now;
           existing.leaseOwner = null;
+          existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
           clearReadyPointer(existing.readyPointerKey);
           existing.readyPointerKey = null;
@@ -509,6 +564,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markCancelled(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -519,6 +575,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     mutateByJobId(
         jobId,
         existing -> {
+          if (!hasActiveLease(jobId, leaseEpoch, existing, "markCancelled", true, true)) {
+            return null;
+          }
           if (isTerminalState(existing.state)) {
             return existing;
           }
@@ -534,6 +593,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
           existing.leaseOwner = null;
+          existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
           clearReadyPointer(existing.readyPointerKey);
           existing.readyPointerKey = null;
@@ -562,6 +622,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
 
     String token = "";
+    int pages = 0;
     while (true) {
       StringBuilder next = new StringBuilder();
       var pointers = pointerStore.listPointersByPrefix("/accounts/", 256, token, next);
@@ -578,8 +639,22 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           return Optional.of(new StoredEnvelope(ptr.getKey(), rec.get()));
         }
       }
-      token = next.toString();
-      if (token.isBlank()) {
+      String nextToken = next.toString();
+      if (nextToken.isBlank()) {
+        return Optional.empty();
+      }
+      if (nextToken.equals(token)) {
+        LOG.warnf(
+            "Reconcile lookup fallback pagination token did not advance; aborting fallback scan to avoid livelock jobId=%s",
+            jobId);
+        return Optional.empty();
+      }
+      token = nextToken;
+      pages++;
+      if (pages >= FALLBACK_SCAN_MAX_PAGES) {
+        LOG.warnf(
+            "Reconcile lookup fallback hit safety page cap (%d); aborting scan jobId=%s",
+            FALLBACK_SCAN_MAX_PAGES, jobId);
         return Optional.empty();
       }
     }
@@ -649,6 +724,70 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
+  private boolean renewLeaseByCanonicalPointer(
+      String canonicalPointerKey, String jobId, String leaseEpoch) {
+    for (int i = 0; i < CAS_MAX; i++) {
+      Pointer currentPointer = pointerStore.get(canonicalPointerKey).orElse(null);
+      if (currentPointer == null) {
+        return false;
+      }
+      var currentOpt = readRecord(currentPointer);
+      if (currentOpt.isEmpty()) {
+        return false;
+      }
+
+      StoredReconcileJob current = currentOpt.get();
+      if (!hasActiveLease(jobId, leaseEpoch, current, "renewLease", true, false)) {
+        return false;
+      }
+      long now = System.currentTimeMillis();
+      long expiry = current.leaseExpiresAtMs;
+      if (expiry > 0L && (expiry - now) > (leaseMs / 2L)) {
+        return true;
+      }
+      if (expiry > 0L && now - expiry > leaseRenewGraceMs) {
+        LOG.warnf(
+            "Skipping renewLease for reconcile job %s due to lease expiry beyond grace now=%d expiry=%d graceMs=%d",
+            jobId, now, expiry, leaseRenewGraceMs);
+        return false;
+      }
+
+      current.updatedAtMs = now;
+      current.leaseExpiresAtMs = now + leaseMs;
+      current.canonicalPointerKey = canonicalPointerKey;
+
+      String nextBlobUri =
+          Keys.reconcileJobBlobUri(
+              current.accountId,
+              current.jobId,
+              "renew-" + (currentPointer.getVersion() + 1) + "-" + UUID.randomUUID());
+      try {
+        blobStore.put(
+            nextBlobUri,
+            mapper.writeValueAsBytes(current),
+            "application/json; charset=" + StandardCharsets.UTF_8.name());
+      } catch (Exception e) {
+        throw new IllegalStateException("Failed to persist renewed reconcile lease", e);
+      }
+
+      Pointer nextPointer =
+          Pointer.newBuilder()
+              .setKey(canonicalPointerKey)
+              .setBlobUri(nextBlobUri)
+              .setVersion(currentPointer.getVersion() + 1)
+              .build();
+      if (pointerStore.compareAndSet(
+          canonicalPointerKey, currentPointer.getVersion(), nextPointer)) {
+        syncIndexPointers(current, currentPointer.getBlobUri(), nextBlobUri);
+        blobStore.delete(currentPointer.getBlobUri());
+        return true;
+      }
+
+      blobStore.delete(nextBlobUri);
+    }
+    return false;
+  }
+
   private Optional<LeasedJob> leaseCanonical(
       String canonicalPointerKey, String readyPointerKey, long now) {
     for (int i = 0; i < CAS_MAX; i++) {
@@ -675,9 +814,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return Optional.empty();
       }
 
-      current.state = "JS_RUNNING";
-      current.message = "Leased";
+      boolean cancelling = "JS_CANCELLING".equals(current.state);
+      if (!cancelling) {
+        current.state = "JS_RUNNING";
+        current.message = "Leased";
+      }
       current.leaseOwner = leaseOwner;
+      current.leaseEpoch = UUID.randomUUID().toString();
       current.leaseExpiresAtMs = now + leaseMs;
       if (readyPointerKey != null && readyPointerKey.equals(current.readyPointerKey)) {
         current.readyPointerKey = null;
@@ -718,7 +861,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 current.connectorId,
                 current.fullRescan,
                 current.captureMode(),
-                current.toScope()));
+                current.toScope(),
+                current.leaseEpoch));
       }
 
       blobStore.delete(nextBlobUri);
@@ -793,16 +937,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         mutateByCanonicalPointer(
             canonicalKey,
             record -> {
-              if (!"JS_RUNNING".equals(record.state)) {
+              if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
                 return null;
               }
               if (record.leaseExpiresAtMs <= 0L || record.leaseExpiresAtMs > nowMs) {
                 return null;
               }
 
-              record.state = "JS_QUEUED";
-              record.message = "Lease expired; requeued";
+              boolean wasCancelling = "JS_CANCELLING".equals(record.state);
+              record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
+              record.message =
+                  wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
               record.leaseOwner = null;
+              record.leaseEpoch = null;
               record.leaseExpiresAtMs = 0L;
               record.nextAttemptAtMs = nowMs;
 
@@ -850,7 +997,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       for (Pointer candidate : ready) {
         long dueAt = parseDueMillis(candidate.getKey());
         if (dueAt > nowMs) {
-          return Optional.empty();
+          continue;
         }
 
         if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
@@ -1078,6 +1225,61 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return Math.min(maxBackoffMs, base);
   }
 
+  private boolean hasActiveLease(
+      String jobId,
+      String leaseEpoch,
+      StoredReconcileJob existing,
+      String op,
+      boolean allowCancelling,
+      boolean requireUnexpiredLease) {
+    if (leaseEpoch == null || leaseEpoch.isBlank()) {
+      logLeaseSkip(op, "Skipping %s for reconcile job %s due to missing lease epoch", op, jobId);
+      return false;
+    }
+    boolean stateAllowed =
+        "JS_RUNNING".equals(existing.state)
+            || (allowCancelling && "JS_CANCELLING".equals(existing.state));
+    if (!stateAllowed) {
+      logLeaseSkip(
+          op,
+          "Skipping %s for reconcile job %s due to non-running state=%s",
+          op,
+          jobId,
+          existing.state);
+      return false;
+    }
+    long now = System.currentTimeMillis();
+    if (requireUnexpiredLease && existing.leaseExpiresAtMs <= now) {
+      logLeaseSkip(
+          op,
+          "Skipping %s for reconcile job %s due to expired lease expiresAtMs=%d now=%d",
+          op,
+          jobId,
+          existing.leaseExpiresAtMs,
+          now);
+      return false;
+    }
+    if (!leaseOwner.equals(existing.leaseOwner) || !leaseEpoch.equals(existing.leaseEpoch)) {
+      logLeaseSkip(
+          op,
+          "Skipping %s for reconcile job %s due to stale lease (owner=%s epoch=%s)",
+          op,
+          jobId,
+          existing.leaseOwner,
+          existing.leaseEpoch);
+      return false;
+    }
+    return true;
+  }
+
+  private void logLeaseSkip(String op, String format, Object... args) {
+    if ("markProgress".equals(op)) {
+      LOG.debugf(format, args);
+    } else {
+      LOG.warnf(format, args);
+    }
+  }
+
   private static boolean isTerminalState(String state) {
     if (state == null) {
       return false;
@@ -1193,6 +1395,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public int attempt;
     public long nextAttemptAtMs;
     public String leaseOwner;
+    public String leaseEpoch;
     public long leaseExpiresAtMs;
     public String lastError;
 

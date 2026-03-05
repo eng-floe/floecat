@@ -31,6 +31,7 @@ import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -71,11 +72,15 @@ public class ReconcilerScheduler {
   private static final MetricId RECONCILE_ERRORS =
       new MetricId(
           "floecat.service.reconcile.errors.total", MetricType.COUNTER, "", "v1", "service");
+  private static final long DEFAULT_LEASE_HEARTBEAT_MS = 2_000L;
+  private static final long MIN_LEASE_HEARTBEAT_MS = 1_000L;
+  private static final long MIN_CANCEL_CHECK_MS = 500L;
 
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcileCancellationRegistry cancellations;
   @Inject Observability observability;
+  @Inject Config config;
   private static final Logger LOG = Logger.getLogger(ReconcilerScheduler.class);
 
   private final AtomicBoolean running = new AtomicBoolean(false);
@@ -94,11 +99,58 @@ public class ReconcilerScheduler {
       }
       cancellations.register(lease.jobId, Thread.currentThread());
       long started = System.currentTimeMillis();
+      long leaseMs =
+          Math.max(
+              1_000L,
+              config
+                  .getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class)
+                  .orElse(30_000L));
+      long suggestedHeartbeatMs = Math.max(MIN_LEASE_HEARTBEAT_MS, leaseMs / 3L);
+      long heartbeatEveryMs =
+          Math.max(
+              MIN_LEASE_HEARTBEAT_MS,
+              config
+                  .getOptionalValue("reconciler.lease-heartbeat-ms", Long.class)
+                  .orElse(Math.max(DEFAULT_LEASE_HEARTBEAT_MS, suggestedHeartbeatMs)));
+      long[] nextHeartbeatAtMs = {started + heartbeatEveryMs};
+      long cancelCheckEveryMs = Math.max(MIN_CANCEL_CHECK_MS, heartbeatEveryMs / 2L);
+      long[] nextCancelCheckAtMs = {started};
+      boolean[] cancellationRequested = {false};
+      AtomicBoolean leaseValid = new AtomicBoolean(true);
+      BooleanSupplier heartbeat =
+          () -> {
+            if (!leaseValid.get()) {
+              return false;
+            }
+            long now = System.currentTimeMillis();
+            if (now < nextHeartbeatAtMs[0]) {
+              return true;
+            }
+            boolean renewed = jobs.renewLease(lease.jobId, lease.leaseEpoch);
+            if (!renewed) {
+              leaseValid.set(false);
+              LOG.warnf(
+                  "Reconcile lease renewal failed for job %s; aborting worker path", lease.jobId);
+              return false;
+            }
+            nextHeartbeatAtMs[0] = now + heartbeatEveryMs;
+            return true;
+          };
 
-      jobs.markRunning(lease.jobId, System.currentTimeMillis());
-      jobs.markProgress(lease.jobId, 0, 0, 0, 0, 0, "Running reconcile");
+      jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
+      jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, "Running reconcile");
       BooleanSupplier cancelRequested =
-          () -> Thread.currentThread().isInterrupted() || jobs.isCancellationRequested(lease.jobId);
+          () -> {
+            if (!heartbeat.getAsBoolean() || Thread.currentThread().isInterrupted()) {
+              return true;
+            }
+            long now = System.currentTimeMillis();
+            if (now >= nextCancelCheckAtMs[0]) {
+              cancellationRequested[0] = jobs.isCancellationRequested(lease.jobId);
+              nextCancelCheckAtMs[0] = now + cancelCheckEveryMs;
+            }
+            return cancellationRequested[0];
+          };
 
       try {
         var connectorId =
@@ -116,7 +168,7 @@ public class ReconcilerScheduler {
                 .build();
         if (cancelRequested.getAsBoolean()) {
           long now = System.currentTimeMillis();
-          jobs.markCancelled(lease.jobId, now, "Cancelled", 0, 0, 0, 0, 0);
+          jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0);
           emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
           return;
         }
@@ -129,19 +181,25 @@ public class ReconcilerScheduler {
                 lease.captureMode,
                 null,
                 cancelRequested,
-                (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) ->
-                    jobs.markProgress(
-                        lease.jobId,
-                        scanned,
-                        changed,
-                        errors,
-                        snapshotsProcessed,
-                        statsProcessed,
-                        message));
+                (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {
+                  if (!heartbeat.getAsBoolean()) {
+                    return;
+                  }
+                  jobs.markProgress(
+                      lease.jobId,
+                      lease.leaseEpoch,
+                      scanned,
+                      changed,
+                      errors,
+                      snapshotsProcessed,
+                      statsProcessed,
+                      message);
+                });
         if (result.cancelled() || cancelRequested.getAsBoolean()) {
           long now = System.currentTimeMillis();
           jobs.markCancelled(
               lease.jobId,
+              lease.leaseEpoch,
               now,
               result.message(),
               result.scanned,
@@ -165,6 +223,7 @@ public class ReconcilerScheduler {
           long now = System.currentTimeMillis();
           jobs.markFailed(
               lease.jobId,
+              lease.leaseEpoch,
               now,
               result.message(),
               result.scanned,
@@ -190,6 +249,7 @@ public class ReconcilerScheduler {
         if (result.cancelled() || cancelRequested.getAsBoolean()) {
           jobs.markCancelled(
               lease.jobId,
+              lease.leaseEpoch,
               finished,
               result.message(),
               result.scanned,
@@ -210,7 +270,13 @@ public class ReconcilerScheduler {
           return;
         }
         jobs.markSucceeded(
-            lease.jobId, finished, result.scanned, result.changed, totalSnapshots, totalStats);
+            lease.jobId,
+            lease.leaseEpoch,
+            finished,
+            result.scanned,
+            result.changed,
+            totalSnapshots,
+            totalStats);
         emitOutcome(
             lease,
             "succeeded",
@@ -224,13 +290,13 @@ public class ReconcilerScheduler {
       } catch (Exception e) {
         if (Thread.currentThread().isInterrupted() || jobs.isCancellationRequested(lease.jobId)) {
           long now = System.currentTimeMillis();
-          jobs.markCancelled(lease.jobId, now, "Cancelled", 0, 0, 0, 0, 0);
+          jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0);
           emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
           Thread.interrupted();
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          jobs.markFailed(lease.jobId, now, msg, 0, 0, 1, 0, 0);
+          jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
           emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e));
         }
       } finally {
