@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -201,6 +202,11 @@ class ReconcilerServiceTest {
     @Override
     public void updateConnectorDestination(
         ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       throw new UnsupportedOperationException();
     }
   }

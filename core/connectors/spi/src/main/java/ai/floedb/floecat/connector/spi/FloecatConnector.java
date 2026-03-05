@@ -28,6 +28,7 @@ import java.io.Closeable;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 public interface FloecatConnector extends Closeable {
@@ -166,4 +167,35 @@ public interface FloecatConnector extends Closeable {
       Map<String, ByteString> metadata) {}
 
   record ScanBundle(List<ScanFile> dataFiles, List<ScanFile> deleteFiles) {}
+
+  /**
+   * Describes a SQL view sourced from the external catalog.
+   *
+   * @param namespaceFq fully-qualified namespace (e.g. "catalog.schema")
+   * @param name view display name
+   * @param sql the view's defining SQL query
+   * @param dialect SQL dialect (e.g. "spark")
+   * @param searchPath default namespace search path (from view version's defaultNamespace)
+   * @param schemaJson Delta-format JSON schema of the view's output columns
+   */
+  record ViewDescriptor(
+      String namespaceFq,
+      String name,
+      String sql,
+      String dialect,
+      List<String> searchPath,
+      String schemaJson) {}
+
+  /** Returns the names of views in the given namespace. Default: empty list. */
+  default List<String> listViews(String namespaceFq) {
+    return List.of();
+  }
+
+  /**
+   * Describes a view by name. Returns {@link Optional#empty()} if the view does not exist or cannot
+   * be described. Default: empty.
+   */
+  default Optional<ViewDescriptor> describeView(String namespaceFq, String name) {
+    return Optional.empty();
+  }
 }

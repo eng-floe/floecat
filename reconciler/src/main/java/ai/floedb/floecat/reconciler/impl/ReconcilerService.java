@@ -18,9 +18,11 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -38,6 +40,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -417,6 +420,82 @@ public class ReconcilerService {
             statsProcessed,
             new IllegalArgumentException(
                 "No tables matched scope: " + scope.destinationTableDisplayName()));
+      }
+
+      // View reconciliation pass — runs after tables; scope filter is table-only so all views sync.
+      List<String> viewNames;
+      try {
+        viewNames = connector.listViews(sourceNsFq);
+      } catch (Exception e) {
+        viewNames = List.of();
+        errors++;
+        errSummaries.add("listViews(" + sourceNsFq + "): " + rootCauseMessage(e));
+      }
+      for (String srcViewName : viewNames) {
+        scanned++;
+        try {
+          Optional<FloecatConnector.ViewDescriptor> viewOpt =
+              connector.describeView(sourceNsFq, srcViewName);
+          if (viewOpt.isEmpty()) {
+            continue;
+          }
+          FloecatConnector.ViewDescriptor view = viewOpt.get();
+          if (view.sql() == null || view.sql().isBlank()) {
+            continue;
+          }
+
+          List<SchemaColumn> outputColumns;
+          if (view.schemaJson() != null && !view.schemaJson().isBlank()) {
+            SchemaDescriptor schema =
+                schemaMapper.mapRaw(
+                    ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    toTableFormat(connector.format()),
+                    view.schemaJson(),
+                    Set.of());
+            outputColumns =
+                schema.getColumnsList().stream()
+                    .filter(SchemaColumn::getLeaf)
+                    .map(
+                        c ->
+                            SchemaColumn.newBuilder()
+                                .setName(c.getName())
+                                .setNullable(c.getNullable())
+                                .setLogicalType(c.getLogicalType())
+                                .build())
+                    .toList();
+          } else {
+            outputColumns = List.of();
+          }
+          if (outputColumns.isEmpty()) {
+            continue;
+          }
+
+          ViewSpec viewSpec =
+              ViewSpec.newBuilder()
+                  .setCatalogId(destCatalogId)
+                  .setNamespaceId(destNamespaceId)
+                  .setDisplayName(srcViewName)
+                  .setSql(view.sql())
+                  .setDialect(view.dialect() != null ? view.dialect() : "")
+                  .addAllCreationSearchPath(
+                      view.searchPath() != null ? view.searchPath() : List.of())
+                  .addAllOutputColumns(outputColumns)
+                  .build();
+          String idempotencyKey = destNsFq + "." + srcViewName;
+          backend.ensureView(ctx, viewSpec, idempotencyKey);
+          changed++;
+        } catch (Exception e) {
+          errors++;
+          errSummaries.add(
+              "ns="
+                  + scopeNamespaceFq
+                  + " view="
+                  + sourceNsFq
+                  + "."
+                  + srcViewName
+                  + " : "
+                  + rootCauseMessage(e));
+        }
       }
 
       DestinationTarget updated = destB.build();

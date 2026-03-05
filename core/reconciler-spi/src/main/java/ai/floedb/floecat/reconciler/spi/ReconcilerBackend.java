@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -68,6 +69,13 @@ public interface ReconcilerBackend {
 
   void updateConnectorDestination(
       ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination);
+
+  /**
+   * Creates a view with the given spec if it does not already exist (idempotency key is used for
+   * deduplication across reconciler runs). Returns the resource ID of the created or existing view,
+   * or {@link ResourceId#getDefaultInstance()} if a name conflict prevents creation.
+   */
+  ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey);
 
   record TableSpecDescriptor(
       String namespaceFq,

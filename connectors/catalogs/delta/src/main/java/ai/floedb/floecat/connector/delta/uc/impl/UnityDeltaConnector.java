@@ -17,12 +17,14 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.delta.kernel.engine.Engine;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 
@@ -168,6 +170,73 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to resolve storage_location for " + namespaceFq + "." + tableName, e);
+    }
+  }
+
+  @Override
+  public List<String> listViews(String namespaceFq) {
+    int dot = namespaceFq.indexOf('.');
+    if (dot < 0) {
+      return List.of();
+    }
+    String catalog = namespaceFq.substring(0, dot);
+    String schema = namespaceFq.substring(dot + 1);
+    try {
+      var tables =
+          M.readTree(
+                  ucHttp
+                      .get(
+                          "/api/2.1/unity-catalog/tables?catalog_name="
+                              + UcBaseSupport.url(catalog)
+                              + "&schema_name="
+                              + UcBaseSupport.url(schema))
+                      .body())
+              .path("tables");
+      List<String> out = new ArrayList<>();
+      for (var t : tables) {
+        if ("VIEW".equalsIgnoreCase(t.path("table_type").asText(""))) {
+          out.add(t.path("name").asText());
+        }
+      }
+      out.sort(String::compareTo);
+      return out;
+    } catch (Exception e) {
+      throw new RuntimeException("listViews failed", e);
+    }
+  }
+
+  @Override
+  public Optional<FloecatConnector.ViewDescriptor> describeView(
+      String namespaceFq, String viewName) {
+    try {
+      String full = namespaceFq + "." + viewName;
+      var meta =
+          M.readTree(ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full)).body());
+
+      String sql = meta.path("view_definition").asText("");
+
+      // Build a Delta-format schema JSON from the columns array so that ReconcilerService
+      // can map types via DeltaSchemaMapper (same path used for tables).
+      var fields = M.createArrayNode();
+      for (var c : meta.path("columns")) {
+        var n = M.createObjectNode();
+        n.put("name", c.path("name").asText());
+        n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
+        n.put("nullable", c.path("nullable").asBoolean(true));
+        fields.add(n);
+      }
+      var schemaNode = M.createObjectNode();
+      schemaNode.put("type", "struct");
+      schemaNode.set("fields", fields);
+
+      // Unity Catalog views are defined in Spark SQL; use the namespace as the search path.
+      List<String> searchPath = List.of(namespaceFq.split("\\."));
+
+      return Optional.of(
+          new FloecatConnector.ViewDescriptor(
+              namespaceFq, viewName, sql, "spark", searchPath, schemaNode.toString()));
+    } catch (Exception e) {
+      throw new RuntimeException("describeView failed", e);
     }
   }
 
