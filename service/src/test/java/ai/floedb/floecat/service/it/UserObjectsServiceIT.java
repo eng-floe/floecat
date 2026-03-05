@@ -33,7 +33,9 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationResolution;
+import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
@@ -54,7 +56,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
@@ -263,10 +264,6 @@ class UserObjectsServiceIT {
     assertEquals(1, end.getEnd().getNotFoundCount());
   }
 
-  // Disabled until views can populate the base table dependency
-  // list.
-  // TODO: re-enable when view support is ready
-  @Disabled
   @Test
   void GetUserObjectsStreamsViewDefinition() {
     var catName = catalogPrefix + "view_cat";
@@ -435,5 +432,85 @@ class UserObjectsServiceIT {
             .setSpec(spec)
             .setUpdateMask(mask)
             .build());
+  }
+
+  @Test
+  void eagerlyStreamsBaseTableWhenBaseRelationsPresent() throws Exception {
+    var catName = catalogPrefix + "eager_cat";
+    var cat = TestSupport.createCatalog(catalogService, catName, "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "eager_ns", List.of("eager"), "eager namespace");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "base_orders",
+            "s3://bucket/base_orders",
+            "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"order_id\",\"type\":\"int\",\"required\":true}]}",
+            "base table for eager test");
+    TestSupport.createSnapshot(
+        snapshot, tbl.getResourceId(), 3001L, System.currentTimeMillis() - 5000L);
+    var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "eager");
+    attachConnectorToTable(tbl.getResourceId(), connector);
+
+    // FQN format: "catalog[.parents]*.namespace.table" — must include namespace parents
+    var baseFqn = TestSupport.fqName(TestSupport.fq(catName, ns, tbl.getDisplayName()));
+    var col =
+        SchemaColumn.newBuilder()
+            .setName("order_id")
+            .setNullable(false)
+            .setLogicalType("INT")
+            .build();
+    var createdView =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("eager_view")
+                            .setSql("SELECT order_id FROM " + baseFqn)
+                            .addBaseRelations(baseFqn)
+                            .addOutputColumns(col))
+                    .build())
+            .getView();
+
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
+    var queryId = begin.getQuery().getQueryId();
+
+    var candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(createdView.getResourceId()))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+            .toCompletableFuture()
+            .join();
+
+    // header + resolutions (view + base table) + end = 3 chunks
+    assertEquals(3, chunks.size());
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertEquals(2, resolutions.getItemsCount());
+
+    RelationResolution viewRes = resolutions.getItems(0);
+    assertEquals(ResolutionStatus.RESOLUTION_STATUS_FOUND, viewRes.getStatus());
+    assertEquals(RelationKind.RELATION_KIND_VIEW, viewRes.getRelation().getKind());
+    assertEquals(createdView.getResourceId(), viewRes.getRelation().getRelationId());
+
+    RelationResolution baseRes = resolutions.getItems(1);
+    assertEquals(-1, baseRes.getInputIndex());
+    assertEquals(ResolutionStatus.RESOLUTION_STATUS_FOUND, baseRes.getStatus());
+    assertEquals(tbl.getResourceId(), baseRes.getRelation().getRelationId());
+
+    // End chunk counts only the explicitly-requested view
+    assertEquals(1, chunks.get(2).getEnd().getResolutionCount());
+    assertEquals(1, chunks.get(2).getEnd().getFoundCount());
   }
 }

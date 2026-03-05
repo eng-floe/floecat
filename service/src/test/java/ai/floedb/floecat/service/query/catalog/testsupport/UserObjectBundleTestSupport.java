@@ -246,7 +246,7 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<NameRef> viewName(ResourceId id) {
-      throw unsupported();
+      return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override

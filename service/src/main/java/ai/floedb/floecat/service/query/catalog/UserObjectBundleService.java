@@ -66,6 +66,7 @@ import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -690,7 +691,44 @@ public class UserObjectBundleService {
 
     private void fillPending() {
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
-        pending.add(resolveNextResolution());
+        PendingItem item = resolveNextResolution();
+        pending.add(item);
+        if (item instanceof PendingFound found
+            && found.relation().node() instanceof ViewNode view
+            && !view.baseRelations().isEmpty()) {
+          injectEagerBaseTables(view);
+        }
+      }
+    }
+
+    /**
+     * For a view with a populated {@code base_relations} list, eagerly resolves each base-table
+     * {@link NameRef}, builds a synthetic {@link ResolvedRelation}, pins its snapshot, and adds it
+     * to {@code pending} with {@code inputIndex = -1} to signal it was not explicitly requested.
+     * Failures to resolve a NameRef are silently skipped (base_relations is a performance hint).
+     * Duplicate base-table IDs are deduplicated.
+     */
+    private void injectEagerBaseTables(ViewNode view) {
+      Set<String> seen = new HashSet<>();
+      for (NameRef baseRef : view.baseRelations()) {
+        Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, baseRef);
+        if (baseIdOpt.isEmpty()) {
+          continue;
+        }
+        ResourceId baseId = baseIdOpt.get();
+        if (!seen.add(baseId.getId())) {
+          continue; // deduplicate
+        }
+        Optional<GraphNode> nodeOpt = overlay.resolve(baseId);
+        if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
+          continue;
+        }
+        QueryInput syntheticInput = QueryInput.newBuilder().setTableId(baseId).build();
+        ResolvedRelation syntheticRelation =
+            new ResolvedRelation(
+                TableReferenceCandidate.getDefaultInstance(), baseId, rel, syntheticInput);
+        accumulateChunkPins(collectSnapshotPins(correlationId, ctx, syntheticRelation));
+        pending.add(new PendingFound(-1, syntheticRelation));
       }
     }
 
