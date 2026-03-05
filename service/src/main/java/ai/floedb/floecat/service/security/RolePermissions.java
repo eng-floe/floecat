@@ -46,7 +46,13 @@ public final class RolePermissions {
   private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
-          "account.write", "catalog.read", "catalog.write", "namespace.read", "namespace.write");
+          "account.read",
+          "account.write",
+          "catalog.read",
+          "catalog.write",
+          "namespace.read",
+          "namespace.write",
+          "connector.create");
 
   private RolePermissions() {}
 

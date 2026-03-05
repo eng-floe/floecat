@@ -222,7 +222,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var accountId = pc.getAccountId();
                   var corr = pc.getCorrelationId();
 
-                  authz.require(pc, "connector.manage");
+                  authz.require(pc, List.of("connector.manage", "connector.create"));
 
                   var tsNow = nowTs();
                   var spec = request.getSpec();
