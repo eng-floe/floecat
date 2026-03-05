@@ -113,36 +113,10 @@ public class InboundContextInterceptor {
     ResolvedCallContext resolved =
         helper.resolve(name -> headers.get(metadataKey(name)), isCallAllowed(call));
 
-    PrincipalContext principalContext = resolved.principalContext();
-    String queryId = resolved.queryId();
     String correlationId = resolved.correlationId();
-    EngineContext engineContext = resolved.engineContext();
-    String engineKind = engineContext.engineKind();
-    String engineVersion = engineContext.engineVersion();
-    String sessionHeaderValue = resolved.sessionHeaderValue();
-    String authorizationHeaderValue = resolved.authorizationHeaderValue();
+    Context context = contextWithResolvedCallContext(Context.current(), resolved);
 
-    Context context =
-        Context.current()
-            .withValue(PC_KEY, principalContext)
-            .withValue(QUERY_KEY, queryId)
-            .withValue(ENGINE_VERSION_KEY, engineVersion)
-            .withValue(ENGINE_KIND_KEY, engineKind)
-            .withValue(ENGINE_CONTEXT_KEY, engineContext)
-            .withValue(CORR_KEY, correlationId);
-    if (sessionHeaderValue != null) {
-      context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
-    }
-    if (authorizationHeaderValue != null) {
-      context = context.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
-    }
-
-    MDC.put("query_id", queryId);
-    MDC.put("correlation_id", correlationId);
-    MDC.put("floecat_account_id", principalContext.getAccountId());
-    MDC.put("floecat_subject", principalContext.getSubject());
-    MDC.put("floecat_engine_kind", engineKind);
-    MDC.put("floecat_engine_version", engineVersion);
+    populateMdc(resolved);
 
     var forwarding =
         new SimpleForwardingServerCall<ReqT, RespT>(call) {
@@ -157,12 +131,7 @@ public class InboundContextInterceptor {
             try {
               metadata.put(CORR, correlationId);
             } finally {
-              MDC.remove("query_id");
-              MDC.remove("correlation_id");
-              MDC.remove("floecat_account_id");
-              MDC.remove("floecat_subject");
-              MDC.remove("floecat_engine_kind");
-              MDC.remove("floecat_engine_version");
+              clearMdc();
             }
             super.close(status, metadata);
           }
@@ -181,5 +150,51 @@ public class InboundContextInterceptor {
   private static Metadata.Key<String> metadataKey(String name) {
     return HEADER_KEYS.computeIfAbsent(
         name, h -> Metadata.Key.of(h, Metadata.ASCII_STRING_MARSHALLER));
+  }
+
+  public static Context contextWithResolvedCallContext(Context base, ResolvedCallContext resolved) {
+    PrincipalContext principalContext = resolved.principalContext();
+    String queryId = resolved.queryId();
+    String correlationId = resolved.correlationId();
+    EngineContext engineContext = resolved.engineContext();
+    String engineKind = engineContext.engineKind();
+    String engineVersion = engineContext.engineVersion();
+    String sessionHeaderValue = resolved.sessionHeaderValue();
+    String authorizationHeaderValue = resolved.authorizationHeaderValue();
+
+    Context context =
+        base.withValue(PC_KEY, principalContext)
+            .withValue(QUERY_KEY, queryId)
+            .withValue(ENGINE_VERSION_KEY, engineVersion)
+            .withValue(ENGINE_KIND_KEY, engineKind)
+            .withValue(ENGINE_CONTEXT_KEY, engineContext)
+            .withValue(CORR_KEY, correlationId);
+    if (sessionHeaderValue != null) {
+      context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
+    }
+    if (authorizationHeaderValue != null) {
+      context = context.withValue(AUTHORIZATION_HEADER_VALUE_KEY, authorizationHeaderValue);
+    }
+    return context;
+  }
+
+  public static void populateMdc(ResolvedCallContext resolved) {
+    PrincipalContext principalContext = resolved.principalContext();
+    EngineContext engineContext = resolved.engineContext();
+    MDC.put("query_id", resolved.queryId());
+    MDC.put("correlation_id", resolved.correlationId());
+    MDC.put("floecat_account_id", principalContext.getAccountId());
+    MDC.put("floecat_subject", principalContext.getSubject());
+    MDC.put("floecat_engine_kind", engineContext.engineKind());
+    MDC.put("floecat_engine_version", engineContext.engineVersion());
+  }
+
+  public static void clearMdc() {
+    MDC.remove("query_id");
+    MDC.remove("correlation_id");
+    MDC.remove("floecat_account_id");
+    MDC.remove("floecat_subject");
+    MDC.remove("floecat_engine_kind");
+    MDC.remove("floecat_engine_version");
   }
 }

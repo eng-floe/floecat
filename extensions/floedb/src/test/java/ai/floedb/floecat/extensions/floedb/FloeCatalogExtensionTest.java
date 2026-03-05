@@ -154,6 +154,16 @@ class FloeCatalogExtensionTest {
   }
 
   @Test
+  void extensionExposesPgCatalogScanners() {
+    var floeDb = new FloeCatalogExtension.FloeDb();
+    var floeDemo = new FloeCatalogExtension.FloeDemo();
+
+    assert floeDb.provide("pg_class_scanner", "floedb", "").isPresent();
+    assert floeDb.provide("pg_namespace_scanner", "floedb", "").isPresent();
+    assert floeDemo.provide("pg_class_scanner", "floe-demo", "").isPresent();
+  }
+
+  @Test
   void loadResourceTextParsesTextFormat() throws Exception {
     var extension = new TestCatalogExtension();
 

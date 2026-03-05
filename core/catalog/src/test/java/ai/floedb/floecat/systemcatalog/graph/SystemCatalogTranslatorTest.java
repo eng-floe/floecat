@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
+package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import org.junit.jupiter.api.Test;
 
 final class SystemCatalogTranslatorTest {
