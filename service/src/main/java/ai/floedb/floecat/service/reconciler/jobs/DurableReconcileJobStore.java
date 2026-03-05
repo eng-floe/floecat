@@ -35,6 +35,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
@@ -70,6 +71,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private final String leaseOwner = "reconcile-store-" + UUID.randomUUID();
   private volatile long lastReclaimAtMs;
+  private final ReentrantLock reclaimLock = new ReentrantLock();
 
   @PostConstruct
   void init() {
@@ -909,76 +911,86 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
       return;
     }
-    lastReclaimAtMs = nowMs;
+    if (!reclaimLock.tryLock()) {
+      return;
+    }
+    try {
+      if (nowMs - lastReclaimAtMs < reclaimIntervalMs) {
+        return;
+      }
+      lastReclaimAtMs = nowMs;
 
-    String token = "";
-    int pages = 0;
-    while (true) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> lookups =
-          pointerStore.listPointersByPrefix(
-              Keys.reconcileJobLookupPointerByIdPrefix(), 256, token, next);
-      for (Pointer lookup : lookups) {
-        var recordOpt = readRecordByBlobUri(lookup.getBlobUri());
-        if (recordOpt.isEmpty()) {
-          pointerStore.compareAndDelete(lookup.getKey(), lookup.getVersion());
-          continue;
+      String token = "";
+      int pages = 0;
+      while (true) {
+        StringBuilder next = new StringBuilder();
+        List<Pointer> lookups =
+            pointerStore.listPointersByPrefix(
+                Keys.reconcileJobLookupPointerByIdPrefix(), 256, token, next);
+        for (Pointer lookup : lookups) {
+          var recordOpt = readRecordByBlobUri(lookup.getBlobUri());
+          if (recordOpt.isEmpty()) {
+            pointerStore.compareAndDelete(lookup.getKey(), lookup.getVersion());
+            continue;
+          }
+          StoredReconcileJob existing = recordOpt.get();
+          if (existing.accountId == null
+              || existing.accountId.isBlank()
+              || existing.jobId == null
+              || existing.jobId.isBlank()) {
+            pointerStore.compareAndDelete(lookup.getKey(), lookup.getVersion());
+            continue;
+          }
+          String canonicalKey = Keys.reconcileJobPointerById(existing.accountId, existing.jobId);
+
+          mutateByCanonicalPointer(
+              canonicalKey,
+              record -> {
+                if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
+                  return null;
+                }
+                if (record.leaseExpiresAtMs <= 0L || record.leaseExpiresAtMs > nowMs) {
+                  return null;
+                }
+
+                boolean wasCancelling = "JS_CANCELLING".equals(record.state);
+                record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
+                record.message =
+                    wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
+                record.leaseOwner = null;
+                record.leaseEpoch = null;
+                record.leaseExpiresAtMs = 0L;
+                record.nextAttemptAtMs = nowMs;
+
+                String readyKey =
+                    Keys.reconcileReadyPointerByDue(
+                        nowMs, record.accountId, record.laneKey, record.jobId);
+                clearReadyPointer(record.readyPointerKey);
+                if (upsertReadyPointer(readyKey, record.currentBlobUri)) {
+                  record.readyPointerKey = readyKey;
+                }
+                return record;
+              });
         }
-        StoredReconcileJob existing = recordOpt.get();
-        if (existing.accountId == null
-            || existing.accountId.isBlank()
-            || existing.jobId == null
-            || existing.jobId.isBlank()) {
-          pointerStore.compareAndDelete(lookup.getKey(), lookup.getVersion());
-          continue;
+
+        String nextToken = next.toString();
+        if (nextToken.isBlank()) {
+          return;
         }
-        String canonicalKey = Keys.reconcileJobPointerById(existing.accountId, existing.jobId);
-
-        mutateByCanonicalPointer(
-            canonicalKey,
-            record -> {
-              if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
-                return null;
-              }
-              if (record.leaseExpiresAtMs <= 0L || record.leaseExpiresAtMs > nowMs) {
-                return null;
-              }
-
-              boolean wasCancelling = "JS_CANCELLING".equals(record.state);
-              record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
-              record.message =
-                  wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
-              record.leaseOwner = null;
-              record.leaseEpoch = null;
-              record.leaseExpiresAtMs = 0L;
-              record.nextAttemptAtMs = nowMs;
-
-              String readyKey =
-                  Keys.reconcileReadyPointerByDue(
-                      nowMs, record.accountId, record.laneKey, record.jobId);
-              clearReadyPointer(record.readyPointerKey);
-              if (upsertReadyPointer(readyKey, record.currentBlobUri)) {
-                record.readyPointerKey = readyKey;
-              }
-              return record;
-            });
+        if (nextToken.equals(token)) {
+          LOG.warn(
+              "Reconcile lease reclaim pagination token did not advance; aborting reclaim scan to avoid livelock");
+          return;
+        }
+        token = nextToken;
+        pages++;
+        if (pages >= 10_000) {
+          LOG.warn("Reconcile lease reclaim pagination hit safety page cap; aborting scan");
+          return;
+        }
       }
-
-      String nextToken = next.toString();
-      if (nextToken.isBlank()) {
-        return;
-      }
-      if (nextToken.equals(token)) {
-        LOG.warn(
-            "Reconcile lease reclaim pagination token did not advance; aborting reclaim scan to avoid livelock");
-        return;
-      }
-      token = nextToken;
-      pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile lease reclaim pagination hit safety page cap; aborting scan");
-        return;
-      }
+    } finally {
+      reclaimLock.unlock();
     }
   }
 
