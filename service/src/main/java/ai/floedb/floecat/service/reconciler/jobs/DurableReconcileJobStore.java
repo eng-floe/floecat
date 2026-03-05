@@ -170,14 +170,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             mapper.writeValueAsBytes(record),
             "application/json; charset=" + StandardCharsets.UTF_8.name());
       } catch (Exception e) {
-        pointerStore.compareAndDelete(dedupePointerKey, 1L);
+        clearDedupeReservation(dedupePointerKey, blobUri);
         throw new IllegalStateException("Failed to persist reconcile job payload", e);
       }
 
       Pointer canonical =
           Pointer.newBuilder().setKey(canonicalKey).setBlobUri(blobUri).setVersion(1L).build();
       if (!pointerStore.compareAndSet(canonicalKey, 0L, canonical)) {
-        pointerStore.compareAndDelete(dedupePointerKey, 1L);
+        clearDedupeReservation(dedupePointerKey, blobUri);
         blobStore.delete(blobUri);
         continue;
       }
@@ -185,8 +185,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       Pointer lookup =
           Pointer.newBuilder().setKey(lookupKey).setBlobUri(blobUri).setVersion(1L).build();
       if (!pointerStore.compareAndSet(lookupKey, 0L, lookup)) {
-        pointerStore.compareAndDelete(canonicalKey, 1L);
-        pointerStore.compareAndDelete(dedupePointerKey, 1L);
+        clearPointerIfMatches(canonicalKey, blobUri);
+        clearDedupeReservation(dedupePointerKey, blobUri);
         blobStore.delete(blobUri);
         continue;
       }
@@ -194,9 +194,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       Pointer ready =
           Pointer.newBuilder().setKey(readyKey).setBlobUri(blobUri).setVersion(1L).build();
       if (!pointerStore.compareAndSet(readyKey, 0L, ready)) {
-        pointerStore.compareAndDelete(lookupKey, 1L);
-        pointerStore.compareAndDelete(canonicalKey, 1L);
-        pointerStore.compareAndDelete(dedupePointerKey, 1L);
+        clearPointerIfMatches(lookupKey, blobUri);
+        clearPointerIfMatches(canonicalKey, blobUri);
+        clearDedupeReservation(dedupePointerKey, blobUri);
         blobStore.delete(blobUri);
         continue;
       }
@@ -625,6 +625,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     String token = "";
     int pages = 0;
+    LOG.warnf(
+        "Reconcile lookup fallback scan engaged for jobId=%s; scanning broad /accounts/ pointer prefix",
+        jobId);
     while (true) {
       StringBuilder next = new StringBuilder();
       var pointers = pointerStore.listPointersByPrefix("/accounts/", 256, token, next);
@@ -632,8 +635,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         if (!ptr.getKey().contains("/reconcile/jobs/by-id/")) {
           continue;
         }
-        if (!ptr.getKey().endsWith("/" + urlEncode(jobId))
-            && !ptr.getKey().endsWith(urlEncode(jobId))) {
+        if (!ptr.getKey().endsWith("/" + urlEncode(jobId))) {
           continue;
         }
         var rec = readRecord(ptr);
@@ -820,6 +822,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (!cancelling) {
         current.state = "JS_RUNNING";
         current.message = "Leased";
+      }
+      if (current.startedAtMs <= 0L) {
+        current.startedAtMs = now;
       }
       current.leaseOwner = leaseOwner;
       current.leaseEpoch = UUID.randomUUID().toString();
@@ -1123,6 +1128,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && record.accountId.equals(owner.get().accountId)) {
       pointerStore.compareAndDelete(dedupeKey, existing.getVersion());
     }
+  }
+
+  private void clearDedupeReservation(String dedupePointerKey, String expectedBlobUri) {
+    clearPointerIfMatches(dedupePointerKey, expectedBlobUri);
+  }
+
+  private void clearPointerIfMatches(String pointerKey, String expectedBlobUri) {
+    if (pointerKey == null || pointerKey.isBlank()) {
+      return;
+    }
+    Pointer existing = pointerStore.get(pointerKey).orElse(null);
+    if (existing == null) {
+      return;
+    }
+    if (expectedBlobUri != null
+        && !expectedBlobUri.isBlank()
+        && !expectedBlobUri.equals(existing.getBlobUri())) {
+      return;
+    }
+    pointerStore.compareAndDelete(pointerKey, existing.getVersion());
   }
 
   private Optional<StoredReconcileJob> readRecordByBlobUri(String blobUri) {
