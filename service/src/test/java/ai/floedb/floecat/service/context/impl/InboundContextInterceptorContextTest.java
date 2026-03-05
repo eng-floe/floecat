@@ -46,7 +46,8 @@ class InboundContextInterceptorContextTest {
       assertEquals("corr-1", InboundContextInterceptor.CORR_KEY.get());
       assertEquals("floedb", InboundContextInterceptor.ENGINE_KIND_KEY.get());
       assertEquals("9.9.9", InboundContextInterceptor.ENGINE_VERSION_KEY.get());
-      assertEquals("x-floe-session-token", InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get());
+      assertEquals(
+          "x-floe-session-token", InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get());
       assertEquals("Bearer token", InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get());
       assertEquals("floedb", InboundContextInterceptor.ENGINE_CONTEXT_KEY.get().engineKind());
     } finally {

@@ -19,8 +19,8 @@ package ai.floedb.floecat.extensions.floedb;
 import static ai.floedb.floecat.extensions.floedb.utils.FloePayloads.Descriptor.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogProvider;
 import ai.floedb.floecat.extensions.floedb.hints.FloeHintClearPolicy;
+import ai.floedb.floecat.extensions.floedb.pgcatalog.PgCatalogProvider;
 import ai.floedb.floecat.extensions.floedb.proto.*;
 import ai.floedb.floecat.extensions.floedb.sinks.FloeEngineSpecificDecorator;
 import ai.floedb.floecat.extensions.floedb.utils.FloePayloads;

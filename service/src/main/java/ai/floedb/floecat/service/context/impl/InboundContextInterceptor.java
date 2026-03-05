@@ -152,8 +152,7 @@ public class InboundContextInterceptor {
         name, h -> Metadata.Key.of(h, Metadata.ASCII_STRING_MARSHALLER));
   }
 
-  public static Context contextWithResolvedCallContext(
-      Context base, ResolvedCallContext resolved) {
+  public static Context contextWithResolvedCallContext(Context base, ResolvedCallContext resolved) {
     PrincipalContext principalContext = resolved.principalContext();
     String queryId = resolved.queryId();
     String correlationId = resolved.correlationId();
