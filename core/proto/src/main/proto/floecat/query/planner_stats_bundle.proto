@@ -160,7 +160,8 @@ message ColumnStatsInfo {
   /**
    * Canonical min bound; follows the same UTF-8 encoding rules as {@code ColumnStats.min}
    * (boolean = {@code "true"/"false"}, ints = base-10, floats = {@code Float/Double.toString},
-   * decimal = normalized plain string, date/time/timestamp ISO-8601, uuid lowercase display,
+   * decimal = normalized plain string, DATE/TIME = ISO-8601, TIMESTAMP = ISO local date-time
+   * (no zone suffix), TIMESTAMPTZ = ISO instant with {@code Z}, uuid lowercase display,
    * string literal, binary base64). Presence indicates the bound was observed even if it is empty.
    */
   optional string min = 10;

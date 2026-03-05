@@ -7,7 +7,7 @@ planners, CI pipelines, or operators can invoke them directly.
 ## builtin-validator
 
 Validates builtin catalog protobufs (either binary `.pb` or text `.pbtxt`) to
-ensure they contain the metadata FloeCat’s planner expects.
+ensure they contain the metadata Floecat’s planner expects.
 
 ### Build
 
