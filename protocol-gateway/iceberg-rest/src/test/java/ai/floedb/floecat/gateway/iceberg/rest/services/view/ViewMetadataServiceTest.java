@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -225,6 +227,51 @@ class ViewMetadataServiceTest {
             IllegalArgumentException.class,
             () -> service.withUserProperties(context, Map.of("polaris.internal", "x")));
     assertTrue(ex.getMessage().contains("reserved prefix"));
+  }
+
+  @Test
+  void extractDialectPicksFirstSqlRepresentation() {
+    // contextWithSingleVersion() has dialect="ansi" in its first SQL representation
+    ViewMetadataService.MetadataContext ctx = contextWithSingleVersion();
+    assertEquals("ansi", service.extractDialect(ctx));
+  }
+
+  @Test
+  void extractCreationSearchPathUsesDefaultNamespace() {
+    // contextWithSingleVersion() has defaultNamespace=["db"]
+    ViewMetadataService.MetadataContext ctx = contextWithSingleVersion();
+    assertEquals(List.of("db"), service.extractCreationSearchPath(ctx));
+  }
+
+  @Test
+  void extractOutputColumnsMapsSchemaFields() {
+    ViewMetadataView.ViewVersion version =
+        new ViewMetadataView.ViewVersion(
+            1,
+            123L,
+            7, // schemaId=7 — must match the SchemaSummary below
+            Map.of("operation", "create"),
+            List.of(new ViewMetadataView.ViewRepresentation("sql", "select col_a", "ansi")),
+            List.of("db"),
+            null);
+    ViewMetadataView.SchemaSummary schema =
+        new ViewMetadataView.SchemaSummary(
+            7, // matches version.schemaId
+            "struct",
+            List.of(Map.of("id", 1, "name", "col_a", "type", "int", "required", true)),
+            List.of());
+    ViewMetadataView metadata =
+        new ViewMetadataView(
+            "uuid-x", 1, null, 1, List.of(version), List.of(), List.of(schema), Map.of());
+    ViewMetadataService.MetadataContext ctx =
+        new ViewMetadataService.MetadataContext(metadata, Map.of(), "select col_a");
+
+    List<SchemaColumn> cols = service.extractOutputColumns(ctx);
+
+    assertEquals(1, cols.size());
+    assertEquals("col_a", cols.get(0).getName());
+    assertFalse(cols.get(0).getNullable()); // required=true → nullable=false
+    assertEquals("INT", cols.get(0).getLogicalType());
   }
 
   private ViewMetadataService.MetadataContext contextWithSingleVersion() {

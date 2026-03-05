@@ -58,6 +58,9 @@ public class ViewCreateService {
     spec.setSql(metadataContext.sql());
     try {
       spec.putAllProperties(viewMetadataService.buildPropertyMap(metadataContext));
+      spec.setDialect(viewMetadataService.extractDialect(metadataContext));
+      spec.addAllCreationSearchPath(viewMetadataService.extractCreationSearchPath(metadataContext));
+      spec.addAllOutputColumns(viewMetadataService.extractOutputColumns(metadataContext));
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }

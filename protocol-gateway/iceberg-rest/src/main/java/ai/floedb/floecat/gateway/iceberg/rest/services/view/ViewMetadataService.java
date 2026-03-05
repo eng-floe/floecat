@@ -22,6 +22,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepresentation;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewVersion;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,8 +35,11 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @ApplicationScoped
 public class ViewMetadataService {
@@ -284,6 +288,132 @@ public class ViewMetadataService {
     props.put(METADATA_LOCATION_PROPERTY_KEY, context.metadata().location());
     props.put(METADATA_PROPERTY_KEY, serializeMetadata(context.metadata()));
     return props;
+  }
+
+  /**
+   * Returns the dialect of the first SQL representation in the current view version, or {@code ""}
+   * when none is present.
+   */
+  public String extractDialect(MetadataContext ctx) {
+    return findCurrentVersion(ctx)
+        .flatMap(
+            v ->
+                v.representations().stream()
+                    .filter(r -> "sql".equals(r.type()))
+                    .findFirst()
+                    .map(ViewMetadataView.ViewRepresentation::dialect))
+        .filter(d -> d != null && !d.isBlank())
+        .orElse("");
+  }
+
+  /**
+   * Returns the {@code defaultNamespace} of the current view version as the creation search path.
+   */
+  public List<String> extractCreationSearchPath(MetadataContext ctx) {
+    return findCurrentVersion(ctx)
+        .map(ViewMetadataView.ViewVersion::defaultNamespace)
+        .orElse(List.of());
+  }
+
+  /**
+   * Maps the schema matching the current view version into a list of {@link SchemaColumn} protos.
+   * Each Iceberg field type value (a JSON string for primitives, a Map for complex types) is
+   * converted to a canonical logical-type string. Returns an empty list when the schema has no
+   * fields. Throws {@link IllegalArgumentException} if a field type cannot be recognized.
+   */
+  public List<SchemaColumn> extractOutputColumns(MetadataContext ctx) {
+    int schemaId = findCurrentVersion(ctx).map(ViewMetadataView.ViewVersion::schemaId).orElse(-1);
+    ViewMetadataView.SchemaSummary schema =
+        ctx.metadata().schemas().stream()
+            .filter(s -> s.schemaId() == schemaId)
+            .findFirst()
+            .orElse(null);
+    if (schema == null || schema.fields().isEmpty()) {
+      return List.of();
+    }
+    List<SchemaColumn> columns = new ArrayList<>();
+    for (Map<String, Object> field : schema.fields()) {
+      String name = (String) field.get("name");
+      boolean required = Boolean.TRUE.equals(field.get("required"));
+      Object typeValue = field.get("type");
+      try {
+        String logical = icebergTypeValueToCanonical(typeValue);
+        columns.add(
+            SchemaColumn.newBuilder()
+                .setName(name)
+                .setNullable(!required)
+                .setLogicalType(logical)
+                .build());
+      } catch (Exception e) {
+        throw new IllegalArgumentException(
+            "Cannot parse type for field '" + name + "': " + e.getMessage());
+      }
+    }
+    return columns;
+  }
+
+  private Optional<ViewMetadataView.ViewVersion> findCurrentVersion(MetadataContext ctx) {
+    return ctx.metadata().versions() == null
+        ? Optional.empty()
+        : ctx.metadata().versions().stream()
+            .filter(v -> v.versionId() == ctx.metadata().currentVersionId())
+            .findFirst();
+  }
+
+  private static final Pattern DECIMAL_TYPE_RE =
+      Pattern.compile("^decimal\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)$", Pattern.CASE_INSENSITIVE);
+
+  /**
+   * Converts the Iceberg REST JSON type value for a schema field to the canonical logical-type
+   * string used by FloeCAT. Iceberg uses JSON strings for primitives (e.g. {@code "int"}) and JSON
+   * objects for complex types (e.g. {@code {"type":"list",...}}).
+   *
+   * <p>Mapping follows {@code IcebergTypeMappings.toCanonical()} semantics: both {@code int} and
+   * {@code long} map to {@code "INT"}; {@code timestamptz} maps to {@code "TIMESTAMPTZ"}; {@code
+   * decimal(p,s)} maps to {@code "DECIMAL(p,s)"}.
+   */
+  static String icebergTypeValueToCanonical(Object typeValue) {
+    if (typeValue instanceof String s) {
+      String lower = s.trim().toLowerCase();
+      return switch (lower) {
+        case "int", "integer", "long" -> "INT";
+        case "float" -> "FLOAT";
+        case "double" -> "DOUBLE";
+        case "boolean" -> "BOOLEAN";
+        case "string" -> "STRING";
+        case "binary", "fixed" -> "BINARY";
+        case "uuid" -> "UUID";
+        case "date" -> "DATE";
+        case "time" -> "TIME";
+        case "timestamp" -> "TIMESTAMP";
+        case "timestamptz", "timestamp_ns", "timestamptz_ns" -> "TIMESTAMPTZ";
+        case "variant" -> "VARIANT";
+        default -> {
+          Matcher m = DECIMAL_TYPE_RE.matcher(lower);
+          if (m.matches()) {
+            yield "DECIMAL(" + m.group(1) + "," + m.group(2) + ")";
+          }
+          // fixed(n) → BINARY
+          if (lower.startsWith("fixed(") || lower.startsWith("fixed ")) {
+            yield "BINARY";
+          }
+          throw new IllegalArgumentException("Unrecognized Iceberg primitive type: " + s);
+        }
+      };
+    }
+    if (typeValue instanceof Map<?, ?> map) {
+      Object kind = map.get("type");
+      if (kind instanceof String k) {
+        return switch (k.toLowerCase().trim()) {
+          case "list" -> "ARRAY";
+          case "map" -> "MAP";
+          case "struct" -> "STRUCT";
+          default -> throw new IllegalArgumentException("Unrecognized Iceberg complex type: " + k);
+        };
+      }
+    }
+    throw new IllegalArgumentException(
+        "Unexpected Iceberg type value: " + (typeValue == null ? "null" : typeValue.getClass()));
   }
 
   private void enforceRequirements(ViewMetadataView metadata, List<JsonNode> requirements) {
