@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 """
-Generate FloeCat PBtxt for SQL functions from pg_proc.csv (system only).
+Generate Floecat PBtxt for SQL functions from pg_proc.csv (system only).
 
 Emits blocks like:
 

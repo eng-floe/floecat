@@ -19,7 +19,6 @@ package ai.floedb.floecat.types;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -31,11 +30,6 @@ public final class ValueEncoders {
 
   private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
   private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ISO_LOCAL_TIME;
-  private static final DateTimeFormatter INSTANT_FMT = DateTimeFormatter.ISO_INSTANT;
-  private static final long NANOS_PER_DAY = 86_400_000_000_000L;
-  private static final long TIME_SECONDS_THRESHOLD = 86_400L;
-  private static final long TIME_MILLIS_THRESHOLD = 86_400_000L;
-  private static final long TIME_MICROS_THRESHOLD = 86_400_000_000L;
 
   /**
    * Encode {@code value} to the canonical string used by ColumnStats min/max. Each {@link
@@ -54,38 +48,10 @@ public final class ValueEncoders {
       case BOOLEAN:
         // Boolean bounds are lowercase "true" or "false".
         return Boolean.toString((Boolean) value);
-      case INT16:
+      case INT:
+        // All integer sizes collapse to canonical 64-bit INT encoded as base-10.
         if (value instanceof Number n) {
-          // Signed integer siblings are emitted as canonical base-10 digits, no leading zeros.
-          return Short.toString(n.shortValue());
-        }
-        if (value instanceof CharSequence s) {
-          String str = trimOrNull(s);
-          if (str == null) {
-            return null;
-          }
-          return Short.toString(Short.parseShort(str));
-        }
-        throw new ClassCastException(
-            "INT16 value must be Number or String but was " + value.getClass());
-      case INT32:
-        if (value instanceof Number n) {
-          // INT32 bounds use base-10 decimals with optional '-' sign.
-          return Integer.toString(n.intValue());
-        }
-        if (value instanceof CharSequence s) {
-          String str = trimOrNull(s);
-          if (str == null) {
-            return null;
-          }
-          return Integer.toString(Integer.parseInt(str));
-        }
-        throw new ClassCastException(
-            "INT32 value must be Number or String but was " + value.getClass());
-      case INT64:
-        if (value instanceof Number n) {
-          // INT64 bounds follow the same base-10 encoding as INT32.
-          return Long.toString(n.longValue());
+          return Long.toString(Int64Coercions.checkedLong(n));
         }
         if (value instanceof CharSequence s) {
           String str = trimOrNull(s);
@@ -95,8 +61,8 @@ public final class ValueEncoders {
           return Long.toString(Long.parseLong(str));
         }
         throw new ClassCastException(
-            "INT64 value must be Number or String but was " + value.getClass());
-      case FLOAT32:
+            "INT value must be Number or String but was " + value.getClass());
+      case FLOAT:
         // Floating bounds follow Float.toString (includes "NaN", "Infinity", "-Infinity")
         // but normalize ±0 to a stable "0".
         if (value instanceof Number n) {
@@ -110,8 +76,8 @@ public final class ValueEncoders {
           return canonicalFloat(Float.parseFloat(str));
         }
         throw new ClassCastException(
-            "FLOAT32 value must be Number or String but was " + value.getClass());
-      case FLOAT64:
+            "FLOAT value must be Number or String but was " + value.getClass());
+      case DOUBLE:
         if (value instanceof Number n) {
           return canonicalDouble(n.doubleValue());
         }
@@ -123,7 +89,7 @@ public final class ValueEncoders {
           return canonicalDouble(Double.parseDouble(str));
         }
         throw new ClassCastException(
-            "FLOAT64 value must be Number or String but was " + value.getClass());
+            "DOUBLE value must be Number or String but was " + value.getClass());
 
       case DATE:
         {
@@ -133,7 +99,7 @@ public final class ValueEncoders {
           }
 
           if (value instanceof Number n) {
-            return DATE_FMT.format(LocalDate.ofEpochDay(n.longValue()));
+            return DATE_FMT.format(LocalDate.ofEpochDay(Int64Coercions.checkedLong(n)));
           }
 
           if (value instanceof CharSequence s) {
@@ -147,68 +113,65 @@ public final class ValueEncoders {
 
       case TIME:
         {
-          // ISO-8601 local time (HH:mm:ss[.fraction]) is emitted; numeric values map to
-          // seconds/milliseconds/microseconds/nanoseconds heuristically.
+          // ISO-8601 local time (HH:mm:ss[.fraction]) is emitted; numeric values are not accepted.
+          Integer precision = t.temporalPrecision();
           if (value instanceof LocalTime t0) {
-            return TIME_FMT.format(t0);
+            return TemporalCoercions.formatLocalTime(t0, precision);
           }
 
-          if (value instanceof Number n) {
-            long v = n.longValue();
-            long abs = Math.abs(v);
-            long nanos;
-            if (abs < TIME_SECONDS_THRESHOLD) {
-              nanos = v * 1_000_000_000L;
-            } else if (abs < TIME_MILLIS_THRESHOLD) {
-              nanos = v * 1_000_000L;
-            } else if (abs < TIME_MICROS_THRESHOLD) {
-              nanos = v * 1_000L;
-            } else {
-              nanos = v;
-            }
-
-            long dayNanos = Math.floorMod(nanos, NANOS_PER_DAY);
-            return TIME_FMT.format(LocalTime.ofNanoOfDay(dayNanos));
-          }
           if (value instanceof CharSequence s) {
-            return LocalTime.parse(s).toString();
+            return TemporalCoercions.formatLocalTime(LocalTime.parse(s.toString()), precision);
           }
 
           throw new IllegalArgumentException(
-              "TIME must be LocalTime, Number (s/ms/µs/ns), or ISO HH:mm:ss[.nnn] String but was: "
+              "TIME must be LocalTime or ISO HH:mm:ss[.nnn] String but was: "
                   + value.getClass().getName());
         }
 
       case TIMESTAMP:
         {
-          // UTC ISO-8601 instant with Z suffix; numeric inputs are interpreted heuristically
-          // (seconds/millis/micros/nanos) but the emitted string is always ISO.
-          if (value instanceof Instant i) {
-            return INSTANT_FMT.format(i);
-          }
+          // TIMESTAMP is timezone-naive and encoded as ISO local date-time (no zone suffix).
+          Integer precision = t.temporalPrecision();
+          return TemporalCoercions.formatLocalDateTime(
+              TemporalCoercions.coerceTimestampNoTz(value), precision);
+        }
 
-          if (value instanceof Number n) {
-            return INSTANT_FMT.format(instantFromNumber(n.longValue()));
-          }
-
-          if (value instanceof CharSequence s) {
-            return INSTANT_FMT.format(Instant.parse(s.toString()));
-          }
-
-          throw new IllegalArgumentException(
-              "TIMESTAMP must be Instant, numeric seconds/millis/micros/nanos, or ISO-8601 String"
-                  + " but was: "
-                  + value.getClass().getName());
+      case TIMESTAMPTZ:
+        {
+          // TIMESTAMPTZ is always UTC-normalised and encoded as ISO instant with Z suffix.
+          Integer precision = t.temporalPrecision();
+          return TemporalCoercions.formatInstantUtc(
+              TemporalCoercions.coerceInstant(value), precision);
         }
 
       case STRING:
         return asUtf8String(value);
       case UUID:
-        return ((UUID) value).toString();
+        if (value instanceof UUID u) {
+          return u.toString();
+        }
+        if (value instanceof CharSequence s) {
+          return UUID.fromString(s.toString()).toString();
+        }
+        throw new IllegalArgumentException(
+            "UUID value must be UUID or String but was: " + value.getClass().getName());
       case BINARY:
         return Base64.getEncoder().encodeToString(asBytes(value));
       case DECIMAL:
         return canonicalDecimal((BigDecimal) value);
+      case JSON:
+        // JSON has no meaningful min/max ordering semantics.
+        throw new IllegalArgumentException(
+            "min/max encoding is unsupported for non-stats-orderable type " + t.kind().name());
+      case INTERVAL:
+        return encodeInterval(t, value);
+      case ARRAY:
+      case MAP:
+      case STRUCT:
+      case VARIANT:
+        // Complex/container types have no stable min/max ordering semantics.
+        throw new IllegalArgumentException(
+            "min/max encoding is unsupported for complex type " + t.kind().name());
 
       default:
         return value.toString();
@@ -224,28 +187,42 @@ public final class ValueEncoders {
 
     switch (t.kind()) {
       case BOOLEAN:
-        return Boolean.parseBoolean(encoded);
-      case INT16:
-        return Short.parseShort(encoded);
-      case INT32:
-        return Integer.parseInt(encoded);
-      case INT64:
+        return parseBooleanStrict(encoded);
+      case INT:
+        // All integer sizes decode as canonical 64-bit Long.
         return Long.parseLong(encoded);
-      case FLOAT32:
+      case FLOAT:
         return Float.parseFloat(encoded);
-      case FLOAT64:
+      case DOUBLE:
         return Double.parseDouble(encoded);
       case DATE:
         return LocalDate.parse(encoded, DATE_FMT);
       case TIME:
-        return LocalTime.parse(encoded, TIME_FMT);
+        return TemporalCoercions.truncateToTemporalPrecision(
+            LocalTime.parse(encoded, TIME_FMT), t.temporalPrecision());
       case TIMESTAMP:
-        return Instant.parse(encoded);
+        return TemporalCoercions.truncateToTemporalPrecision(
+            TemporalCoercions.parseTimestampNoTz(encoded), t.temporalPrecision());
+      case TIMESTAMPTZ:
+        // TIMESTAMPTZ is always UTC-normalised and decoded as Instant.
+        return TemporalCoercions.truncateToTemporalPrecision(
+            TemporalCoercions.parseZonedInstant(encoded), t.temporalPrecision());
       case STRING:
+        return encoded;
+      case JSON:
+        // JSON is stored as a UTF-8 string; decoding is identical to STRING.
         return encoded;
       case UUID:
         return UUID.fromString(encoded);
       case BINARY:
+        return Base64.getDecoder().decode(encoded);
+      case INTERVAL:
+        return decodeInterval(t, encoded);
+      case ARRAY:
+      case MAP:
+      case STRUCT:
+      case VARIANT:
+        // Backward compatibility for previously persisted opaque values.
         return Base64.getDecoder().decode(encoded);
       case DECIMAL:
         return new BigDecimal(encoded);
@@ -260,27 +237,6 @@ public final class ValueEncoders {
     }
 
     return Base64.getDecoder().decode(encoded);
-  }
-
-  private static final long NANOS_THRESHOLD = 1_000_000_000_000_000_000L;
-  private static final long MICROS_THRESHOLD = 1_000_000_000_000_000L;
-  private static final long MILLIS_THRESHOLD = 1_000_000_000_000L;
-
-  private static Instant instantFromNumber(long v) {
-    long av = Math.abs(v);
-    if (av >= NANOS_THRESHOLD) {
-      long secs = Math.floorDiv(v, 1_000_000_000L);
-      int nanos = (int) Math.floorMod(v, 1_000_000_000L);
-      return Instant.ofEpochSecond(secs, nanos);
-    } else if (av >= MICROS_THRESHOLD) {
-      long secs = Math.floorDiv(v, 1_000_000L);
-      long micros = Math.floorMod(v, 1_000_000L);
-      return Instant.ofEpochSecond(secs, (int) (micros * 1_000L));
-    } else if (av >= MILLIS_THRESHOLD) {
-      return Instant.ofEpochMilli(v);
-    } else {
-      return Instant.ofEpochSecond(v);
-    }
   }
 
   private static String canonicalFloat(float v) {
@@ -305,6 +261,15 @@ public final class ValueEncoders {
     return normalized.toPlainString();
   }
 
+  private static boolean parseBooleanStrict(String raw) {
+    String normalized = raw.trim().toLowerCase(java.util.Locale.ROOT);
+    return switch (normalized) {
+      case "true", "t", "1" -> true;
+      case "false", "f", "0" -> false;
+      default -> throw new IllegalArgumentException("Invalid BOOLEAN value: " + raw);
+    };
+  }
+
   private static byte[] asBytes(Object v) {
     if (v instanceof byte[] arr) {
       return arr;
@@ -322,6 +287,161 @@ public final class ValueEncoders {
 
     throw new IllegalArgumentException(
         "BINARY value must be byte[] or ByteBuffer: " + v.getClass());
+  }
+
+  private static String encodeInterval(LogicalType t, Object value) {
+    IntervalRange range = t.intervalRange() == null ? IntervalRange.UNSPECIFIED : t.intervalRange();
+    Integer fractionalPrecision = t.intervalFractionalPrecision();
+    if (value instanceof CharSequence cs) {
+      return normalizeIntervalString(cs.toString(), range, fractionalPrecision);
+    }
+    if (value instanceof java.time.Period p) {
+      if (range == IntervalRange.DAY_TO_SECOND) {
+        throw new IllegalArgumentException(
+            "INTERVAL DAY TO SECOND does not accept year-month values");
+      }
+      if (range == IntervalRange.YEAR_TO_MONTH && p.getDays() != 0) {
+        throw new IllegalArgumentException(
+            "INTERVAL YEAR TO MONTH must not include day components");
+      }
+      return p.toString();
+    }
+    if (value instanceof java.time.Duration d) {
+      if (range == IntervalRange.YEAR_TO_MONTH) {
+        throw new IllegalArgumentException(
+            "INTERVAL YEAR TO MONTH does not accept day-time values");
+      }
+      return truncateDuration(d, fractionalPrecision).toString();
+    }
+    throw new IllegalArgumentException(
+        "INTERVAL value must be ISO-8601 String, Period, or Duration but was: "
+            + value.getClass().getName());
+  }
+
+  private static Object decodeInterval(LogicalType t, String encoded) {
+    IntervalRange range = t.intervalRange() == null ? IntervalRange.UNSPECIFIED : t.intervalRange();
+    Integer fractionalPrecision = t.intervalFractionalPrecision();
+    String raw = encoded.trim();
+    if (raw.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must not be blank");
+    }
+    return switch (range) {
+      case YEAR_TO_MONTH -> normalizeYearMonthInterval(raw);
+      case DAY_TO_SECOND -> normalizeDayTimeInterval(raw, fractionalPrecision);
+      case UNSPECIFIED -> normalizeIntervalString(raw, range, fractionalPrecision);
+    };
+  }
+
+  private static String normalizeIntervalString(
+      String raw, IntervalRange range, Integer fractionalPrecision) {
+    String trimmed = raw.trim();
+    if (trimmed.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must not be blank");
+    }
+    if (range == IntervalRange.UNSPECIFIED) {
+      try {
+        return normalizeIntervalAuto(trimmed, fractionalPrecision);
+      } catch (RuntimeException e) {
+        throw new IllegalArgumentException("INTERVAL string must be ISO-8601", e);
+      }
+    }
+    if (range == IntervalRange.YEAR_TO_MONTH) {
+      return normalizeYearMonthInterval(trimmed);
+    }
+    return normalizeDayTimeInterval(trimmed, fractionalPrecision);
+  }
+
+  private static String normalizeYearMonthInterval(String raw) {
+    java.time.Period p;
+    try {
+      p = java.time.Period.parse(raw);
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 year-month", e);
+    }
+    if (p.getDays() != 0) {
+      throw new IllegalArgumentException("INTERVAL YEAR TO MONTH must not include day components");
+    }
+    return p.toString();
+  }
+
+  private static String normalizePeriodInterval(String raw) {
+    try {
+      return java.time.Period.parse(raw).toString();
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 year-month", e);
+    }
+  }
+
+  private static String normalizeDayTimeInterval(String raw, Integer fractionalPrecision) {
+    try {
+      java.time.Duration duration = java.time.Duration.parse(raw);
+      return truncateDuration(duration, fractionalPrecision).toString();
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601 day-time", e);
+    }
+  }
+
+  private static String normalizeIntervalAuto(String raw, Integer fractionalPrecision) {
+    try {
+      return normalizePeriodInterval(raw);
+    } catch (RuntimeException ignore) {
+      // fall through to duration parsing
+    }
+    try {
+      return normalizeDayTimeInterval(raw, fractionalPrecision);
+    } catch (RuntimeException ignore) {
+      // fall through to combined parsing
+    }
+    return normalizeMixedInterval(raw, fractionalPrecision);
+  }
+
+  private static String normalizeMixedInterval(String raw, Integer fractionalPrecision) {
+    int tPos = raw.indexOf('T');
+    if (tPos <= 0) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601");
+    }
+    String datePart = raw.substring(0, tPos);
+    String timePart = raw.substring(tPos + 1);
+    if (timePart.isEmpty()) {
+      throw new IllegalArgumentException("INTERVAL string must be ISO-8601");
+    }
+    java.time.Period p =
+        "P".equals(datePart) ? java.time.Period.ZERO : java.time.Period.parse(datePart);
+    java.time.Duration d =
+        truncateDuration(java.time.Duration.parse("PT" + timePart), fractionalPrecision);
+    if (p.isZero()) {
+      return d.toString();
+    }
+    if (d.isZero()) {
+      return p.toString();
+    }
+    return p.toString() + d.toString().substring(1);
+  }
+
+  private static java.time.Duration truncateDuration(
+      java.time.Duration duration, Integer fractionalPrecision) {
+    if (fractionalPrecision == null) {
+      return duration;
+    }
+    int precision = fractionalPrecision;
+    if (precision >= 9) {
+      return duration;
+    }
+    int nanos = duration.getNano();
+    int factor = pow10(9 - precision);
+    int truncated = (nanos / factor) * factor;
+    if (truncated == nanos) {
+      return duration;
+    }
+    return java.time.Duration.ofSeconds(duration.getSeconds(), truncated);
+  }
+
+  private static int pow10(int exponent) {
+    int value = 1;
+    for (int i = 0; i < exponent; i++) {
+      value *= 10;
+    }
+    return value;
   }
 
   private static String asUtf8String(Object v) {

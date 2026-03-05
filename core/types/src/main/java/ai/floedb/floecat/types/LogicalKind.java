@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.types;
 
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -23,47 +24,197 @@ import java.util.Map;
  * Canonical logical type kinds shared across table formats (e.g. Iceberg, Delta) and SQL-facing
  * components.
  *
- * <p>This enum represents only the logical category. Type parameters (precision, scale, timezone,
- * length, etc.) are handled outside of this enum.
+ * <p>This enum represents only the logical category. Type parameters (precision, scale, temporal
+ * precision, interval range/precision, length, etc.) are handled outside of this enum.
+ *
+ * <p>Every integer size from source formats (TINYINT, SMALLINT, INT, BIGINT) collapses to {@link
+ * #INT} (64-bit). Complex types ({@link #ARRAY}, {@link #MAP}, {@link #STRUCT}, {@link #VARIANT})
+ * are non-parameterised here; nested structure is captured by child {@code SchemaColumn} rows with
+ * their own paths.
  */
 public enum LogicalKind {
+  // Scalar numeric
   BOOLEAN,
-  INT16,
-  INT32,
-  INT64,
-  FLOAT32,
-  FLOAT64,
-  DATE,
-  TIME,
-  TIMESTAMP,
+  INT,
+  FLOAT,
+  DOUBLE,
+  DECIMAL,
+
+  // Scalar string / binary
   STRING,
   BINARY,
   UUID,
-  DECIMAL;
 
-  private static final Map<String, LogicalKind> ALIASES =
-      Map.ofEntries(
-          Map.entry("INTEGER", INT32),
-          Map.entry("INT", INT32),
-          Map.entry("SMALLINT", INT16),
-          Map.entry("BIGINT", INT64),
-          Map.entry("LONG", INT64),
-          Map.entry("FLOAT", FLOAT32),
-          Map.entry("REAL", FLOAT32),
-          Map.entry("DOUBLE", FLOAT64),
-          Map.entry("BOOLEAN", BOOLEAN),
-          Map.entry("BOOL", BOOLEAN),
-          Map.entry("VARCHAR", STRING),
-          Map.entry("CHAR", STRING),
-          Map.entry("CHARACTER", STRING),
-          Map.entry("TEXT", STRING),
-          Map.entry("STRING", STRING),
-          Map.entry("VARBINARY", BINARY),
-          Map.entry("BINARY", BINARY),
-          Map.entry("UUID", UUID),
-          Map.entry("DECIMAL", DECIMAL),
-          Map.entry("NUMERIC", DECIMAL));
+  // Scalar temporal
+  DATE,
+  TIME,
+  TIMESTAMP,
+  TIMESTAMPTZ,
+  INTERVAL,
 
+  // Semi-structured
+  JSON,
+
+  // Complex / container (non-parameterised)
+  ARRAY,
+  MAP,
+  STRUCT,
+  VARIANT;
+
+  /** Returns true iff this is a numeric type: INT, FLOAT, DOUBLE, or DECIMAL. */
+  public boolean isNumeric() {
+    return switch (this) {
+      case INT, FLOAT, DOUBLE, DECIMAL -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a temporal type: DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or INTERVAL. */
+  public boolean isTemporal() {
+    return switch (this) {
+      case DATE, TIME, TIMESTAMP, TIMESTAMPTZ, INTERVAL -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a complex/container type: ARRAY, MAP, STRUCT, or VARIANT. */
+  public boolean isComplex() {
+    return switch (this) {
+      case ARRAY, MAP, STRUCT, VARIANT -> true;
+      default -> false;
+    };
+  }
+
+  /** Returns true iff this is a non-complex (scalar or semi-structured) type. */
+  public boolean isScalar() {
+    return !isComplex();
+  }
+
+  /** Returns true iff values of this kind can be meaningfully ordered for stats (min/max). */
+  public boolean isStatsOrderable() {
+    return switch (this) {
+      case BOOLEAN,
+          INT,
+          FLOAT,
+          DOUBLE,
+          DECIMAL,
+          STRING,
+          UUID,
+          BINARY,
+          DATE,
+          TIME,
+          TIMESTAMP,
+          TIMESTAMPTZ ->
+          true;
+      case INTERVAL, JSON, ARRAY, MAP, STRUCT, VARIANT -> false;
+    };
+  }
+
+  private static final Map<String, LogicalKind> ALIASES;
+
+  static {
+    Map<String, LogicalKind> m = new HashMap<>();
+
+    // INT — all integer sizes from source formats collapse to 64-bit INT
+    m.put("INT", INT);
+    m.put("INTEGER", INT);
+    m.put("BIGINT", INT);
+    m.put("LONG", INT);
+    m.put("SMALLINT", INT);
+    m.put("TINYINT", INT);
+    m.put("INT8", INT);
+    m.put("INT4", INT);
+    m.put("INT2", INT);
+    m.put("UINT8", INT);
+    m.put("UINT4", INT);
+    m.put("UINT2", INT);
+
+    // FLOAT — 32-bit IEEE-754
+    m.put("FLOAT", FLOAT);
+    m.put("FLOAT4", FLOAT);
+    m.put("FLOAT32", FLOAT);
+    m.put("REAL", FLOAT);
+
+    // DOUBLE — 64-bit IEEE-754
+    m.put("DOUBLE", DOUBLE);
+    m.put("FLOAT8", DOUBLE);
+    m.put("FLOAT64", DOUBLE);
+    m.put("DOUBLE PRECISION", DOUBLE);
+
+    // STRING
+    m.put("STRING", STRING);
+    m.put("VARCHAR", STRING);
+    m.put("CHAR", STRING);
+    m.put("CHARACTER", STRING);
+    m.put("TEXT", STRING);
+    m.put("NTEXT", STRING);
+    m.put("NVARCHAR", STRING);
+
+    // BINARY
+    m.put("BINARY", BINARY);
+    m.put("VARBINARY", BINARY);
+    m.put("BYTEA", BINARY);
+    m.put("BLOB", BINARY);
+    m.put("IMAGE", BINARY);
+
+    // BOOLEAN
+    m.put("BOOLEAN", BOOLEAN);
+    m.put("BOOL", BOOLEAN);
+    m.put("BIT", BOOLEAN);
+
+    // UUID
+    m.put("UUID", UUID);
+
+    // DECIMAL
+    m.put("DECIMAL", DECIMAL);
+    m.put("NUMERIC", DECIMAL);
+
+    // TIMESTAMPTZ
+    m.put("TIMESTAMPTZ", TIMESTAMPTZ);
+    m.put("TIMESTAMP WITH TIME ZONE", TIMESTAMPTZ);
+
+    // TIMESTAMP
+    m.put("TIMESTAMP", TIMESTAMP);
+    m.put("DATETIME", TIMESTAMP);
+
+    // INTERVAL
+    m.put("INTERVAL", INTERVAL);
+
+    // JSON
+    m.put("JSON", JSON);
+    m.put("JSONB", JSON);
+
+    // DATE / TIME
+    m.put("DATE", DATE);
+    m.put("TIME", TIME);
+
+    // Complex types
+    m.put("ARRAY", ARRAY);
+    m.put("MAP", MAP);
+    m.put("STRUCT", STRUCT);
+    m.put("VARIANT", VARIANT);
+
+    ALIASES = Map.copyOf(m);
+  }
+
+  /**
+   * Resolves a type name (canonical or aliased) to a {@link LogicalKind}.
+   *
+   * <p>The lookup is case-insensitive and collapses internal whitespace, so {@code "BIGINT"},
+   * {@code "bigint"}, and {@code "BigInt"} all resolve to {@link #INT}, and {@code "double
+   * precision"} resolves to {@link #DOUBLE}.
+   *
+   * <p>Canonical enum names are tried first ({@link #INT}, {@link #FLOAT}, {@link #TIMESTAMPTZ},
+   * …); if no exact match is found, the ALIASES map is consulted. The ALIASES map covers all
+   * source-format synonyms documented in the Floe Data Types spec, including integer sizes ({@code
+   * TINYINT} … {@code BIGINT}), float aliases ({@code FLOAT4}, {@code FLOAT32}, {@code REAL}),
+   * string aliases ({@code VARCHAR}, {@code CHAR}, …), and multi-word aliases ({@code "TIMESTAMP
+   * WITH TIME ZONE"}, {@code "DOUBLE PRECISION"}).
+   *
+   * @param candidate type name to resolve (may be null, blank, or unknown — all throw)
+   * @return the matching {@link LogicalKind}
+   * @throws IllegalArgumentException if {@code candidate} is null, blank, or not recognised
+   */
   public static LogicalKind fromName(String candidate) {
     if (candidate == null) {
       throw new IllegalArgumentException("Logical kind must not be null");
@@ -71,7 +222,7 @@ public enum LogicalKind {
 
     String normalized = normalize(candidate);
 
-    // First try exact enum match (INT32, FLOAT64, ...)
+    // First try exact enum match (INT, FLOAT, DOUBLE, TIMESTAMPTZ, ...)
     try {
       return LogicalKind.valueOf(normalized);
     } catch (IllegalArgumentException ignore) {

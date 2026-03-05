@@ -121,13 +121,11 @@ public final class ServiceLoaderSystemCatalogProvider
      * Floecat default Information schema objects are always added but can be overwritten by the
      * plugins own definition of the schema.
      *
-     * Only the builtin information schema provider provides standalone definitions; every other
-     * system-object provider implementations ships a full EngineSystemCatalogExtension so we
-     * can reuse the same discovery stream.
+     * Every engine-specific scanner provider should be surfaced through its
+     * EngineSystemCatalogExtension implementation.
      */
     List<SystemObjectScannerProvider> extensionProviders =
         engineExtensions.stream().map(ext -> (SystemObjectScannerProvider) ext).toList();
-
     this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
   }
 

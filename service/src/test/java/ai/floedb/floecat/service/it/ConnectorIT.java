@@ -660,6 +660,9 @@ public class ConnectorIT {
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
     assertTrue(job.fullRescan);
+    assertTrue(job.tablesScanned > 0, "expected complex fixture reconcile to scan tables");
+    assertTrue(
+        job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
     assertTrue(
         job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
     assertTrue(job.statsProcessed > 0, "expected complex fixture reconcile to generate stats");

@@ -25,8 +25,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.junit.jupiter.api.Test;
@@ -72,7 +72,7 @@ class ArrowProjectOperatorTest {
         assertThat(new String(labelVector.get(0), StandardCharsets.UTF_8)).isEqualTo("keep");
         assertThat(new String(labelVector.get(1), StandardCharsets.UTF_8)).isEqualTo("skip");
 
-        IntVector idVector = (IntVector) root.getVector(1);
+        BigIntVector idVector = (BigIntVector) root.getVector(1);
         assertThat(idVector.get(0)).isEqualTo(1);
         assertThat(idVector.get(1)).isEqualTo(2);
       }
@@ -162,7 +162,7 @@ class ArrowProjectOperatorTest {
         assertThat(new String(labelVector.get(0), StandardCharsets.UTF_8)).isEqualTo("keep");
         assertThat(new String(labelVector.get(1), StandardCharsets.UTF_8)).isEqualTo("skip");
 
-        IntVector idVector = (IntVector) root.getVector(1);
+        BigIntVector idVector = (BigIntVector) root.getVector(1);
         assertThat(idVector.get(0)).isEqualTo(1);
         assertThat(idVector.get(1)).isEqualTo(2);
       }
@@ -254,7 +254,7 @@ class ArrowProjectOperatorTest {
       // Ensure the batch is still usable and can be closed exactly once by the caller.
       try (projected) {
         assertThat(projected.root().getRowCount()).isEqualTo(2);
-        IntVector idVector = (IntVector) projected.root().getVector(0);
+        BigIntVector idVector = (BigIntVector) projected.root().getVector(0);
         assertThat(idVector.get(0)).isEqualTo(1);
         assertThat(idVector.get(1)).isEqualTo(2);
       }

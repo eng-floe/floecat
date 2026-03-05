@@ -22,6 +22,7 @@ import ai.floedb.floecat.connector.common.Planner;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
+import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import io.delta.kernel.Scan;
 import io.delta.kernel.ScanBuilder;
@@ -40,6 +41,9 @@ import io.delta.kernel.statistics.DataFileStatistics;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.utils.FileStatus;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -56,6 +60,7 @@ import org.apache.parquet.io.InputFile;
 
 final class DeltaPlanner implements Planner<String> {
   private static final String PARQUET_FORMAT = "PARQUET";
+  private static final long MICROS_PER_SECOND = 1_000_000L;
 
   private final List<PlannedFile<String>> files = new ArrayList<>();
   private final Map<String, LogicalType> nameToLogical = new LinkedHashMap<>();
@@ -163,6 +168,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
+                      raw = canonicalizeStatValue(lt, raw);
                       Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
                       mins.put(colName, typed);
                     }
@@ -177,6 +183,7 @@ final class DeltaPlanner implements Planner<String> {
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
+                      raw = canonicalizeStatValue(lt, raw);
                       Object typed = (lt == null) ? raw : LogicalComparators.normalize(lt, raw);
                       maxs.put(colName, typed);
                     }
@@ -363,5 +370,28 @@ final class DeltaPlanner implements Planner<String> {
     } catch (Throwable ignore) {
       return null;
     }
+  }
+
+  static Object canonicalizeStatValue(LogicalType logicalType, Object raw) {
+    if (logicalType == null || raw == null || !(raw instanceof Number n)) {
+      return raw;
+    }
+    if (logicalType.kind() == LogicalKind.TIMESTAMP) {
+      return localDateTimeFromMicros(n.longValue());
+    }
+    if (logicalType.kind() == LogicalKind.TIMESTAMPTZ) {
+      return instantFromMicros(n.longValue());
+    }
+    return raw;
+  }
+
+  private static Instant instantFromMicros(long micros) {
+    long seconds = Math.floorDiv(micros, MICROS_PER_SECOND);
+    long microsRemainder = Math.floorMod(micros, MICROS_PER_SECOND);
+    return Instant.ofEpochSecond(seconds, microsRemainder * 1_000L);
+  }
+
+  private static LocalDateTime localDateTimeFromMicros(long micros) {
+    return LocalDateTime.ofInstant(instantFromMicros(micros), ZoneOffset.UTC);
   }
 }

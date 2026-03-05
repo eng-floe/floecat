@@ -24,6 +24,10 @@ import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,6 +55,9 @@ import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 
 final class IcebergPlanner implements Planner<Integer> {
+  private static final long MICROS_PER_DAY = 86_400_000_000L;
+  private static final long MICROS_PER_SECOND = 1_000_000L;
+  private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
   private final List<PlannedFile<Integer>> files = new ArrayList<>();
   private final Map<Integer, String> idToName = new HashMap<>();
@@ -195,6 +202,7 @@ final class IcebergPlanner implements Planner<Integer> {
         dup.get(bytes);
         decoded = new String(bytes, StandardCharsets.UTF_8);
       }
+      decoded = canonicalizeDecodedBound(type, decoded);
       LogicalType logicalType = idToLogical.get(id);
       Object canonical =
           logicalType != null ? LogicalCoercions.coerceStatValue(logicalType, decoded) : decoded;
@@ -203,6 +211,49 @@ final class IcebergPlanner implements Planner<Integer> {
       }
     }
     return out.isEmpty() ? null : out;
+  }
+
+  static Object canonicalizeDecodedBound(Type type, Object decoded) {
+    if (type == null || decoded == null || !(decoded instanceof Number n)) {
+      return decoded;
+    }
+    return switch (type.typeId()) {
+      case TIME -> canonicalTimeBound(n.longValue());
+      case TIMESTAMP -> canonicalTimestampMicrosBound(type, n.longValue());
+      case TIMESTAMP_NANO -> canonicalTimestampNanosBound(type, n.longValue());
+      default -> decoded;
+    };
+  }
+
+  private static LocalTime canonicalTimeBound(long micros) {
+    if (micros < 0 || micros >= MICROS_PER_DAY) {
+      return null;
+    }
+    return LocalTime.ofNanoOfDay(micros * 1_000L);
+  }
+
+  private static Object canonicalTimestampMicrosBound(Type type, long micros) {
+    long seconds = Math.floorDiv(micros, MICROS_PER_SECOND);
+    long microsRemainder = Math.floorMod(micros, MICROS_PER_SECOND);
+    Instant instant = Instant.ofEpochSecond(seconds, microsRemainder * 1_000L);
+    return convertTimestampBound(type, instant);
+  }
+
+  private static Object canonicalTimestampNanosBound(Type type, long nanos) {
+    long seconds = Math.floorDiv(nanos, NANOS_PER_SECOND);
+    long nanosRemainder = Math.floorMod(nanos, NANOS_PER_SECOND);
+    Instant instant = Instant.ofEpochSecond(seconds, nanosRemainder);
+    return convertTimestampBound(type, instant);
+  }
+
+  private static Object convertTimestampBound(Type type, Instant instant) {
+    if (type instanceof Types.TimestampType ts) {
+      return ts.shouldAdjustToUTC() ? instant : LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+    if (type instanceof Types.TimestampNanoType ts) {
+      return ts.shouldAdjustToUTC() ? instant : LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+    return instant;
   }
 
   private String partitionJson(PartitionSpec spec, StructLike partition) {
