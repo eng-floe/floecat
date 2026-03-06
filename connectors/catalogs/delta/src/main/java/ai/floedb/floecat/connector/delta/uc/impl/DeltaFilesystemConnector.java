@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.engine.Engine;
 import java.util.List;
 import java.util.function.Function;
@@ -69,5 +70,14 @@ final class DeltaFilesystemConnector extends DeltaConnector {
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
     return tableRoot;
+  }
+
+  /**
+   * Filesystem Delta tables are pointed at a single table root; there is no catalog or schema layer
+   * that could surface view definitions. Returns empty always.
+   */
+  @Override
+  public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    return List.of();
   }
 }

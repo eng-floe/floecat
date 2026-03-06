@@ -385,8 +385,10 @@ public class ViewMetadataService {
         case "uuid" -> "UUID";
         case "date" -> "DATE";
         case "time" -> "TIME";
-        case "timestamp" -> "TIMESTAMP";
-        case "timestamptz", "timestamp_ns", "timestamptz_ns" -> "TIMESTAMPTZ";
+        // timestamp (no tz) / timestamp_ns (nanosecond, no tz) → timezone-naive
+        case "timestamp", "timestamp_ns" -> "TIMESTAMP";
+        // timestamptz (UTC) / timestamptz_ns (nanosecond, UTC) → UTC-normalised
+        case "timestamptz", "timestamptz_ns" -> "TIMESTAMPTZ";
         case "variant" -> "VARIANT";
         default -> {
           Matcher m = DECIMAL_TYPE_RE.matcher(lower);
@@ -559,7 +561,8 @@ public class ViewMetadataService {
             ? view.getCreatedAt().getSeconds() * 1000 + view.getCreatedAt().getNanos() / 1_000_000
             : Instant.now().toEpochMilli();
     ViewMetadataView.ViewRepresentation representation =
-        new ViewMetadataView.ViewRepresentation("sql", nonBlank(view.getSql(), "select 1"), "ansi");
+        new ViewMetadataView.ViewRepresentation(
+            "sql", nonBlank(view.getSql(), "select 1"), nonBlank(view.getDialect(), "ansi"));
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(
             0,

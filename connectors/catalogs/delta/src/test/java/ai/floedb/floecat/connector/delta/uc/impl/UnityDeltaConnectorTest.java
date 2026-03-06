@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -61,6 +62,23 @@ class UnityDeltaConnectorTest {
   @AfterEach
   void tearDown() {
     server.stop(0);
+  }
+
+  @Test
+  void describeThrowsOnNotFound() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> {
+          String body = "{\"error_code\":\"RESOURCE_DOES_NOT_EXIST\",\"message\":\"Not found\"}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(404, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    assertThatThrownBy(() -> connector.describe("mycat.myschema", "missing_table"))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("404");
   }
 
   @Test
@@ -149,7 +167,8 @@ class UnityDeltaConnectorTest {
     assertThat(view.dialect()).isEqualTo("spark");
     assertThat(view.namespaceFq()).isEqualTo("mycat.myschema");
     assertThat(view.name()).isEqualTo("revenue_view");
-    assertThat(view.searchPath()).containsExactly("mycat", "myschema");
+    // searchPath must contain only the schema segment — catalog is handled separately.
+    assertThat(view.searchPath()).containsExactly("myschema");
     // schemaJson must contain the column names
     assertThat(view.schemaJson()).contains("\"amount\"");
     assertThat(view.schemaJson()).contains("\"region\"");
@@ -185,5 +204,118 @@ class UnityDeltaConnectorTest {
     // type_name "INT" should appear in schema JSON
     assertThat(result.get().schemaJson()).contains("\"id\"");
     assertThat(result.get().schemaJson()).contains("INT");
+  }
+
+  @Test
+  void describeViewReturnsEmptyOnNotFound() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/tables/",
+        exchange -> {
+          // Simulate UC returning 404 (view deleted between list and describe)
+          String body = "{\"error_code\":\"RESOURCE_DOES_NOT_EXIST\",\"message\":\"Not found\"}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(404, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    Optional<FloecatConnector.ViewDescriptor> result =
+        connector.describeView("mycat.myschema", "gone_view");
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void listViewDescriptorsBatchesAllViewsInSingleCall() throws Exception {
+    // listViewDescriptors() must call the list endpoint only once and return full descriptors.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange -> {
+          String body =
+              """
+              {"tables":[
+                {"name":"v1","table_type":"VIEW","view_definition":"SELECT a FROM t1",
+                 "columns":[{"name":"a","type_text":"INT","nullable":true}]},
+                {"name":"orders","data_source_format":"DELTA"},
+                {"name":"v2","table_type":"VIEW","view_definition":"SELECT b FROM t2",
+                 "columns":[{"name":"b","type_text":"STRING","nullable":false}]}
+              ]}
+              """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.myschema");
+
+    // Only VIEW entries; sorted alphabetically.
+    assertThat(views).hasSize(2);
+    assertThat(views.get(0).name()).isEqualTo("v1");
+    assertThat(views.get(0).sql()).isEqualTo("SELECT a FROM t1");
+    assertThat(views.get(0).dialect()).isEqualTo("spark");
+    assertThat(views.get(0).schemaJson()).contains("\"a\"");
+    assertThat(views.get(1).name()).isEqualTo("v2");
+    assertThat(views.get(1).sql()).isEqualTo("SELECT b FROM t2");
+  }
+
+  @Test
+  void listViewDescriptorsReturnsEmptyWhenNamespaceHasNoDot() {
+    // No HTTP call expected since the namespace is malformed.
+    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("nodot");
+    assertThat(views).isEmpty();
+  }
+
+  @Test
+  void listViewDescriptorsSearchPathContainsOnlySchemaSegments() throws Exception {
+    // Verifies fix for issue 3: searchPath must NOT include the catalog prefix.
+    // For "mycat.myschema", searchPath should be ["myschema"], not ["mycat", "myschema"].
+    // Including the catalog causes enrichForViewContext to prepend it a second time, producing
+    // catalog.catalog.schema.table resolution for unqualified base relation names.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange -> {
+          String body =
+              """
+              {"tables":[
+                {"name":"v1","table_type":"VIEW","view_definition":"SELECT x FROM t",
+                 "columns":[{"name":"x","type_text":"INT","nullable":true}]}
+              ]}
+              """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.myschema");
+
+    assertThat(views).hasSize(1);
+    assertThat(views.get(0).searchPath()).containsExactly("myschema");
+  }
+
+  @Test
+  void listViewDescriptorsSearchPathPreservesMultiLevelSchema() throws Exception {
+    // For a three-segment namespace "mycat.ns1.ns2", searchPath should be ["ns1", "ns2"].
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange -> {
+          String body =
+              """
+              {"tables":[
+                {"name":"v1","table_type":"VIEW","view_definition":"SELECT x FROM t",
+                 "columns":[{"name":"x","type_text":"INT","nullable":true}]}
+              ]}
+              """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("mycat.ns1.ns2");
+
+    assertThat(views).hasSize(1);
+    assertThat(views.get(0).searchPath()).containsExactly("ns1", "ns2");
   }
 }

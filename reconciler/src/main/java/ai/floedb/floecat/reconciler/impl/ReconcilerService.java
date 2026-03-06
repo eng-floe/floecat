@@ -100,6 +100,15 @@ public class ReconcilerService {
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
 
+  /** Opens a connector from a resolved configuration. */
+  @FunctionalInterface
+  interface ConnectorOpener {
+    FloecatConnector open(ConnectorConfig config);
+  }
+
+  // Package-private; replaced in tests to avoid going through ConnectorFactory's ServiceLoader.
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
+
   public Result reconcile(
       PrincipalContext principal,
       ResourceId connectorId,
@@ -204,8 +213,7 @@ public class ReconcilerService {
     var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
-    try (FloecatConnector connector = ConnectorFactory.create(resolved)) {
-      ensureNotCancelled(cancelCheck);
+    try (FloecatConnector connector = connectorOpener.open(resolved)) {
       final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
@@ -256,13 +264,9 @@ public class ReconcilerService {
               : connector.listTables(sourceNsFq);
 
       if (tables.isEmpty()) {
-        return new Result(
-            scanned,
-            changed,
-            1,
-            snapshotsProcessed,
-            statsProcessed,
-            new IllegalStateException("No tables found in source namespace: " + sourceNsFq));
+        // A views-only namespace is valid; let the view pass proceed.
+        LOG.debugf(
+            "No tables found in source namespace %s; connector may have views only.", sourceNsFq);
       }
 
       final boolean singleTableMode = tables.size() == 1;
@@ -391,14 +395,9 @@ public class ReconcilerService {
             return new Result(scanned, changed, errors, snapshotsProcessed, statsProcessed, e);
           }
           errors++;
-          e.printStackTrace();
-          progressOut.onProgress(
-              scanned,
-              changed,
-              errors,
-              snapshotsProcessed,
-              statsProcessed,
-              "Error table " + sourceNsFq + "." + srcTable + ": " + rootCauseMessage(e));
+          LOG.errorf(
+              "Table sync failed: ns=%s table=%s.%s — %s",
+              scopeNamespaceFq, sourceNsFq, srcTable, rootCauseMessage(e));
           errSummaries.add(
               "ns="
                   + scopeNamespaceFq
@@ -412,34 +411,24 @@ public class ReconcilerService {
       }
 
       if (!matchedScope && scope.hasTableFilter()) {
-        return new Result(
-            0,
-            0,
-            1,
-            snapshotsProcessed,
-            statsProcessed,
-            new IllegalArgumentException(
-                "No tables matched scope: " + scope.destinationTableDisplayName()));
+        // Record the miss as an error but do NOT return — the view pass must still run.
+        // A table filter is table-scoped; views are always reconciled regardless.
+        errors++;
+        errSummaries.add("No tables matched scope: " + scope.destinationTableDisplayName());
       }
 
       // View reconciliation pass — runs after tables; scope filter is table-only so all views sync.
-      List<String> viewNames;
+      // Note: existing views are not updated on re-sync (create-only idempotent operation).
+      List<FloecatConnector.ViewDescriptor> viewDescriptors;
       try {
-        viewNames = connector.listViews(sourceNsFq);
+        viewDescriptors = connector.listViewDescriptors(sourceNsFq);
       } catch (Exception e) {
-        viewNames = List.of();
+        viewDescriptors = List.of();
         errors++;
-        errSummaries.add("listViews(" + sourceNsFq + "): " + rootCauseMessage(e));
+        errSummaries.add("listViewDescriptors(" + sourceNsFq + "): " + rootCauseMessage(e));
       }
-      for (String srcViewName : viewNames) {
-        scanned++;
+      for (FloecatConnector.ViewDescriptor view : viewDescriptors) {
         try {
-          Optional<FloecatConnector.ViewDescriptor> viewOpt =
-              connector.describeView(sourceNsFq, srcViewName);
-          if (viewOpt.isEmpty()) {
-            continue;
-          }
-          FloecatConnector.ViewDescriptor view = viewOpt.get();
           if (view.sql() == null || view.sql().isBlank()) {
             continue;
           }
@@ -470,29 +459,33 @@ public class ReconcilerService {
             continue;
           }
 
+          scanned++;
           ViewSpec viewSpec =
               ViewSpec.newBuilder()
                   .setCatalogId(destCatalogId)
                   .setNamespaceId(destNamespaceId)
-                  .setDisplayName(srcViewName)
+                  .setDisplayName(view.name())
                   .setSql(view.sql())
                   .setDialect(view.dialect() != null ? view.dialect() : "")
                   .addAllCreationSearchPath(
                       view.searchPath() != null ? view.searchPath() : List.of())
                   .addAllOutputColumns(outputColumns)
                   .build();
-          String idempotencyKey = destNsFq + "." + srcViewName;
-          backend.ensureView(ctx, viewSpec, idempotencyKey);
-          changed++;
+          String idempotencyKey = destNsFq + "." + view.name();
+          ResourceId viewId = backend.ensureView(ctx, viewSpec, idempotencyKey);
+          // Only count genuinely new views; ALREADY_EXISTS returns getDefaultInstance() (empty id).
+          if (!viewId.getId().isEmpty()) {
+            changed++;
+          }
         } catch (Exception e) {
           errors++;
           errSummaries.add(
-              "ns="
+              "dest-ns="
                   + scopeNamespaceFq
-                  + " view="
+                  + " source-view="
                   + sourceNsFq
                   + "."
-                  + srcViewName
+                  + view.name()
                   + " : "
                   + rootCauseMessage(e));
         }

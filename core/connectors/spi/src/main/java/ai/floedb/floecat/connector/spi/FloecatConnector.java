@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import com.google.protobuf.ByteString;
 import java.io.Closeable;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -175,8 +176,11 @@ public interface FloecatConnector extends Closeable {
    * @param name view display name
    * @param sql the view's defining SQL query
    * @param dialect SQL dialect (e.g. "spark")
-   * @param searchPath default namespace search path (from view version's defaultNamespace)
-   * @param schemaJson Delta-format JSON schema of the view's output columns
+   * @param searchPath default namespace search path used when the view's SQL was authored (e.g.
+   *     {@code ["catalog", "schema"]})
+   * @param schemaJson schema JSON in the same format as {@link TableDescriptor#schemaJson()} —
+   *     interpreted by {@code LogicalSchemaMapper.mapRaw()} using the connector's {@link
+   *     ConnectorFormat}
    */
   record ViewDescriptor(
       String namespaceFq,
@@ -186,7 +190,13 @@ public interface FloecatConnector extends Closeable {
       List<String> searchPath,
       String schemaJson) {}
 
-  /** Returns the names of views in the given namespace. Default: empty list. */
+  /**
+   * Returns the names of views in the given namespace. Default: empty list.
+   *
+   * @implSpec Prefer overriding {@link #listViewDescriptors} directly when the underlying catalog
+   *     can return view definitions in a single request, to avoid an additional round-trip per
+   *     view.
+   */
   default List<String> listViews(String namespaceFq) {
     return List.of();
   }
@@ -194,8 +204,29 @@ public interface FloecatConnector extends Closeable {
   /**
    * Describes a view by name. Returns {@link Optional#empty()} if the view does not exist or cannot
    * be described. Default: empty.
+   *
+   * @implSpec Prefer overriding {@link #listViewDescriptors} directly when the underlying catalog
+   *     can return all view definitions in a single request, to avoid an additional round-trip per
+   *     view.
    */
   default Optional<ViewDescriptor> describeView(String namespaceFq, String name) {
     return Optional.empty();
+  }
+
+  /**
+   * Returns full descriptors for all views in the given namespace in a single operation. Connectors
+   * that can batch this more efficiently than one {@link #describeView} call per name should
+   * override this method.
+   *
+   * <p><b>Default implementation:</b> chains {@link #listViews} and {@link #describeView} per name.
+   * This default is <em>fail-fast</em>: if any {@code describeView} call throws, the exception
+   * propagates immediately and remaining views are skipped.
+   */
+  default List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    List<ViewDescriptor> result = new ArrayList<>();
+    for (String name : listViews(namespaceFq)) {
+      describeView(namespaceFq, name).ifPresent(result::add);
+    }
+    return result;
   }
 }

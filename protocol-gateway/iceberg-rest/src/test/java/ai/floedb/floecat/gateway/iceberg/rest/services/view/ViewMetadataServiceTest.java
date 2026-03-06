@@ -274,6 +274,33 @@ class ViewMetadataServiceTest {
     assertEquals("INT", cols.get(0).getLogicalType());
   }
 
+  // ── icebergTypeValueToCanonical timestamp semantics ──────────────────────
+
+  @Test
+  void timestampMapsToTimestamp() {
+    // Iceberg "timestamp" = no timezone (local) → TIMESTAMP
+    assertEquals("TIMESTAMP", ViewMetadataService.icebergTypeValueToCanonical("timestamp"));
+  }
+
+  @Test
+  void timestamptzMapsToTimestamptz() {
+    // Iceberg "timestamptz" = UTC-normalised → TIMESTAMPTZ
+    assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz"));
+  }
+
+  @Test
+  void timestampNsMapsToTimestamp() {
+    // Iceberg "timestamp_ns" = nanosecond, no timezone → TIMESTAMP (not TIMESTAMPTZ)
+    // Regression test: previously mapped incorrectly to TIMESTAMPTZ.
+    assertEquals("TIMESTAMP", ViewMetadataService.icebergTypeValueToCanonical("timestamp_ns"));
+  }
+
+  @Test
+  void timestamptzNsMapsToTimestamptz() {
+    // Iceberg "timestamptz_ns" = nanosecond, UTC-normalised → TIMESTAMPTZ
+    assertEquals("TIMESTAMPTZ", ViewMetadataService.icebergTypeValueToCanonical("timestamptz_ns"));
+  }
+
   private ViewMetadataService.MetadataContext contextWithSingleVersion() {
     ViewMetadataView.ViewVersion version =
         new ViewMetadataView.ViewVersion(

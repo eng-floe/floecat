@@ -80,24 +80,8 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   @Override
   public List<String> listTables(String namespaceFq) {
-    int dot = namespaceFq.indexOf('.');
-    if (dot < 0) {
-      return List.of();
-    }
-
-    String catalog = namespaceFq.substring(0, dot);
-    String schema = namespaceFq.substring(dot + 1);
     try {
-      var tables =
-          M.readTree(
-                  ucHttp
-                      .get(
-                          "/api/2.1/unity-catalog/tables?catalog_name="
-                              + UcBaseSupport.url(catalog)
-                              + "&schema_name="
-                              + UcBaseSupport.url(schema))
-                      .body())
-              .path("tables");
+      var tables = listTablesNode(namespaceFq);
       List<String> out = new ArrayList<>();
       for (var t : tables) {
         String fmt = t.path("data_source_format").asText("");
@@ -116,8 +100,11 @@ public final class UnityDeltaConnector extends DeltaConnector {
   public TableDescriptor describe(String namespaceFq, String tableName) {
     try {
       String full = namespaceFq + "." + tableName;
-      var meta =
-          M.readTree(ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full)).body());
+      var response = ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full));
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new RuntimeException("UC returned HTTP " + response.statusCode() + " for " + full);
+      }
+      var meta = M.readTree(response.body());
 
       var fields = M.createArrayNode();
       for (var c : meta.path("columns")) {
@@ -150,6 +137,8 @@ public final class UnityDeltaConnector extends DeltaConnector {
           List.of(),
           ColumnIdAlgorithm.CID_PATH_ORDINAL,
           props);
+    } catch (RuntimeException e) {
+      throw e;
     } catch (Exception e) {
       throw new RuntimeException("describe failed", e);
     }
@@ -175,23 +164,8 @@ public final class UnityDeltaConnector extends DeltaConnector {
 
   @Override
   public List<String> listViews(String namespaceFq) {
-    int dot = namespaceFq.indexOf('.');
-    if (dot < 0) {
-      return List.of();
-    }
-    String catalog = namespaceFq.substring(0, dot);
-    String schema = namespaceFq.substring(dot + 1);
     try {
-      var tables =
-          M.readTree(
-                  ucHttp
-                      .get(
-                          "/api/2.1/unity-catalog/tables?catalog_name="
-                              + UcBaseSupport.url(catalog)
-                              + "&schema_name="
-                              + UcBaseSupport.url(schema))
-                      .body())
-              .path("tables");
+      var tables = listTablesNode(namespaceFq);
       List<String> out = new ArrayList<>();
       for (var t : tables) {
         if ("VIEW".equalsIgnoreCase(t.path("table_type").asText(""))) {
@@ -205,39 +179,115 @@ public final class UnityDeltaConnector extends DeltaConnector {
     }
   }
 
+  /**
+   * Overrides the default one-call-per-view implementation. UC's list-tables response already
+   * contains {@code view_definition} and {@code columns} for VIEW entries, so this method builds
+   * full descriptors in a single HTTP call instead of N additional describe calls.
+   */
+  @Override
+  public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String namespaceFq) {
+    try {
+      var tables = listTablesNode(namespaceFq);
+      List<FloecatConnector.ViewDescriptor> out = new ArrayList<>();
+      // creation_search_path is the schema portion only — the catalog is handled separately via
+      // NameRef.catalog / default-catalog enrichment in QueryInputResolver.  Including the catalog
+      // here would cause enrichForViewContext to prepend it a second time, resolving unqualified
+      // names as catalog.catalog.schema.table.
+      String[] nsParts = namespaceFq.split("\\.", 2);
+      List<String> searchPath = nsParts.length > 1 ? List.of(nsParts[1].split("\\.")) : List.of();
+      for (var t : tables) {
+        if (!"VIEW".equalsIgnoreCase(t.path("table_type").asText(""))) {
+          continue;
+        }
+        String viewName = t.path("name").asText();
+        String sql = t.path("view_definition").asText("");
+        out.add(
+            new FloecatConnector.ViewDescriptor(
+                namespaceFq, viewName, sql, "spark", searchPath, buildSchemaJson(t)));
+      }
+      out.sort((a, b) -> a.name().compareTo(b.name()));
+      return out;
+    } catch (Exception e) {
+      throw new RuntimeException("listViewDescriptors failed", e);
+    }
+  }
+
   @Override
   public Optional<FloecatConnector.ViewDescriptor> describeView(
       String namespaceFq, String viewName) {
     try {
       String full = namespaceFq + "." + viewName;
-      var meta =
-          M.readTree(ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full)).body());
-
-      String sql = meta.path("view_definition").asText("");
-
-      // Build a Delta-format schema JSON from the columns array so that ReconcilerService
-      // can map types via DeltaSchemaMapper (same path used for tables).
-      var fields = M.createArrayNode();
-      for (var c : meta.path("columns")) {
-        var n = M.createObjectNode();
-        n.put("name", c.path("name").asText());
-        n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
-        n.put("nullable", c.path("nullable").asBoolean(true));
-        fields.add(n);
+      var response = ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full));
+      if (response.statusCode() == 404) {
+        return Optional.empty();
       }
-      var schemaNode = M.createObjectNode();
-      schemaNode.put("type", "struct");
-      schemaNode.set("fields", fields);
-
-      // Unity Catalog views are defined in Spark SQL; use the namespace as the search path.
-      List<String> searchPath = List.of(namespaceFq.split("\\."));
-
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        throw new RuntimeException(
+            "UC API returned HTTP " + response.statusCode() + " for " + full);
+      }
+      var meta = M.readTree(response.body());
+      String sql = meta.path("view_definition").asText("");
+      // creation_search_path is the schema portion only (same reasoning as listViewDescriptors).
+      String[] nsParts = namespaceFq.split("\\.", 2);
+      List<String> searchPath = nsParts.length > 1 ? List.of(nsParts[1].split("\\.")) : List.of();
       return Optional.of(
           new FloecatConnector.ViewDescriptor(
-              namespaceFq, viewName, sql, "spark", searchPath, schemaNode.toString()));
+              namespaceFq, viewName, sql, "spark", searchPath, buildSchemaJson(meta)));
+    } catch (RuntimeException e) {
+      throw e;
     } catch (Exception e) {
       throw new RuntimeException("describeView failed", e);
     }
+  }
+
+  /**
+   * Builds a schema JSON string (compatible with DeltaSchemaMapper) from a UC table/view JSON node
+   * that contains a {@code columns} array.
+   *
+   * <p>Note: unlike {@link #describe}, this method intentionally omits the {@code comment} field
+   * from each column's {@code metadata} block. UC exposes column comments on table entries but not
+   * on VIEW entries (the {@code columns} array in a view response has no {@code comment} field).
+   * Adding an empty or missing {@code comment} to view schema JSON would be noise.
+   */
+  private String buildSchemaJson(JsonNode meta) {
+    var fields = M.createArrayNode();
+    for (var c : meta.path("columns")) {
+      var n = M.createObjectNode();
+      n.put("name", c.path("name").asText());
+      n.put("type", c.path("type_text").asText(c.path("type_name").asText()));
+      n.put("nullable", c.path("nullable").asBoolean(true));
+      fields.add(n);
+    }
+    var schemaNode = M.createObjectNode();
+    schemaNode.put("type", "struct");
+    schemaNode.set("fields", fields);
+    return schemaNode.toString();
+  }
+
+  /**
+   * Fetches the raw {@code tables} JSON array from the UC tables endpoint for the given {@code
+   * "catalog.schema"} namespace, or returns an empty array node if the namespace contains no dot
+   * separator.
+   *
+   * <p>TODO: UC returns paginated results; this method only fetches the first page. Namespaces with
+   * more entries than UC's default page size will silently return incomplete results.
+   */
+  private JsonNode listTablesNode(String namespaceFq) throws Exception {
+    int dot = namespaceFq.indexOf('.');
+    if (dot < 0) {
+      return M.createArrayNode();
+    }
+    String catalog = namespaceFq.substring(0, dot);
+    String schema = namespaceFq.substring(dot + 1);
+    return M.readTree(
+            ucHttp
+                .get(
+                    "/api/2.1/unity-catalog/tables?catalog_name="
+                        + UcBaseSupport.url(catalog)
+                        + "&schema_name="
+                        + UcBaseSupport.url(schema))
+                .body())
+        .path("tables");
   }
 
   private static void putIfPresent(Map<String, String> props, JsonNode n, String field) {
