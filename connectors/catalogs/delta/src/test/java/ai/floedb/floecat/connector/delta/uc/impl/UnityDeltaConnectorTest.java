@@ -333,15 +333,15 @@ class UnityDeltaConnectorTest {
           String body =
               (query != null && query.contains("page_token=page2"))
                   ? """
-                    {"tables":[
-                      {"name":"t2","data_source_format":"DELTA"}
-                    ]}
-                    """
+                  {"tables":[
+                    {"name":"t2","data_source_format":"DELTA"}
+                  ]}
+                  """
                   : """
-                    {"tables":[
-                      {"name":"t1","data_source_format":"DELTA"}
-                    ],"next_page_token":"page2"}
-                    """;
+                  {"tables":[
+                    {"name":"t1","data_source_format":"DELTA"}
+                  ],"next_page_token":"page2"}
+                  """;
           byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
           exchange.sendResponseHeaders(200, bytes.length);
           exchange.getResponseBody().write(bytes);
@@ -362,11 +362,11 @@ class UnityDeltaConnectorTest {
           String body =
               (query != null && query.contains("page_token=cp2"))
                   ? """
-                    {"catalogs":[{"name":"cat2"}]}
-                    """
+                  {"catalogs":[{"name":"cat2"}]}
+                  """
                   : """
-                    {"catalogs":[{"name":"cat1"}],"next_page_token":"cp2"}
-                    """;
+                  {"catalogs":[{"name":"cat1"}],"next_page_token":"cp2"}
+                  """;
           byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
           exchange.sendResponseHeaders(200, bytes.length);
           exchange.getResponseBody().write(bytes);
@@ -408,11 +408,11 @@ class UnityDeltaConnectorTest {
           String body =
               (query != null && query.contains("page_token=sp2"))
                   ? """
-                    {"schemas":[{"name":"ns2"}]}
-                    """
+                  {"schemas":[{"name":"ns2"}]}
+                  """
                   : """
-                    {"schemas":[{"name":"ns1"}],"next_page_token":"sp2"}
-                    """;
+                  {"schemas":[{"name":"ns1"}],"next_page_token":"sp2"}
+                  """;
           byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
           exchange.sendResponseHeaders(200, bytes.length);
           exchange.getResponseBody().write(bytes);
@@ -421,5 +421,24 @@ class UnityDeltaConnectorTest {
 
     List<String> namespaces = connector.listNamespaces();
     assertThat(namespaces).containsExactlyInAnyOrder("mycat.ns1", "mycat.ns2");
+  }
+
+  @Test
+  void ucGetAllThrowsOnNonTwoHundredStatus() throws Exception {
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          byte[] body =
+              "{\"error_code\":\"PERMISSION_DENIED\",\"message\":\"Forbidden\"}".getBytes();
+          exchange.sendResponseHeaders(403, body.length);
+          try (var out = exchange.getResponseBody()) {
+            out.write(body);
+          }
+        });
+
+    assertThatThrownBy(() -> connector.listNamespaces())
+        .isInstanceOf(RuntimeException.class)
+        .cause()
+        .hasMessageContaining("UC list returned HTTP 403");
   }
 }

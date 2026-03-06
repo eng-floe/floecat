@@ -51,6 +51,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -711,7 +712,8 @@ public class UserObjectBundleService {
     private void injectEagerBaseTables(ViewNode view) {
       Set<String> seen = new HashSet<>();
       for (NameRef baseRef : view.baseRelations()) {
-        Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, baseRef);
+        NameRef enriched = ViewContextUtils.enrichForViewContext(baseRef, view, defaultCatalog);
+        Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, enriched);
         if (baseIdOpt.isEmpty()) {
           continue;
         }

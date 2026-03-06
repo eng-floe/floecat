@@ -298,7 +298,12 @@ public final class UnityDeltaConnector extends DeltaConnector {
                   + (baseUrl.contains("?") ? "&" : "?")
                   + "page_token="
                   + UcBaseSupport.url(pageToken);
-      JsonNode page = M.readTree(ucHttp.get(url).body());
+      var resp = ucHttp.get(url);
+      if (resp.statusCode() / 100 != 2) {
+        throw new RuntimeException(
+            "UC list returned HTTP " + resp.statusCode() + " for " + url + ": " + resp.body());
+      }
+      JsonNode page = M.readTree(resp.body());
       page.path(arrayField).forEach(all::add);
       String next = page.path("next_page_token").asText(null);
       pageToken = (next == null || next.isBlank()) ? null : next;

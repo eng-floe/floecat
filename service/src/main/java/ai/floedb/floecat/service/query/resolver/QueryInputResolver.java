@@ -29,6 +29,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.query.ViewContextUtils;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -248,39 +249,12 @@ public class QueryInputResolver {
               for (var base : view.baseRelations()) {
                 metadataGraph
                     .resolveName(
-                        state.correlationId, enrichForViewContext(base, view, state.defaultCatalog))
+                        state.correlationId,
+                        ViewContextUtils.enrichForViewContext(
+                            base, view, state.defaultCatalog.orElse("")))
                     .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
               }
             });
-  }
-
-  /**
-   * Enriches a base-relation {@link NameRef} with context from the view's creation environment so
-   * that it re-resolves deterministically:
-   *
-   * <ul>
-   *   <li>If {@code catalog} is blank, the query's default catalog name is substituted.
-   *   <li>If {@code path} (schema) is empty, the view's {@code creationSearchPath} is used as the
-   *       namespace path — the same schema that was in scope when the view was created.
-   * </ul>
-   *
-   * <p>NameRefs that carry an explicit {@code resource_id} are returned unchanged; they already
-   * identify the target directly and need no name-based enrichment.
-   */
-  private static NameRef enrichForViewContext(
-      NameRef base, ViewNode view, Optional<String> defaultCatalog) {
-    if (base.hasResourceId()) {
-      return base;
-    }
-    boolean needsCatalog = base.getCatalog().isBlank() && defaultCatalog.isPresent();
-    boolean needsPath = base.getPathList().isEmpty() && !view.creationSearchPath().isEmpty();
-    if (!needsCatalog && !needsPath) {
-      return base;
-    }
-    NameRef.Builder b = base.toBuilder();
-    if (needsCatalog) b.setCatalog(defaultCatalog.get());
-    if (needsPath) b.addAllPath(view.creationSearchPath());
-    return b.build();
   }
 
   private void mergePin(Map<ResourceId, SnapshotPin> pinByTableId, SnapshotPin pin) {

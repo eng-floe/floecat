@@ -513,4 +513,93 @@ class UserObjectsServiceIT {
     assertEquals(1, chunks.get(2).getEnd().getResolutionCount());
     assertEquals(1, chunks.get(2).getEnd().getFoundCount());
   }
+
+  @Test
+  void eagerlyStreamsBaseTableWhenBaseRelationHasBlankCatalogAndEmptyPath() throws Exception {
+    // Verifies that ViewContextUtils.enrichForViewContext is applied in the eager-streaming path:
+    // if a base_relation was stored as a bare table name (no catalog, no schema path), the default
+    // catalog from BeginQuery and the view's creationSearchPath must fill in the missing parts so
+    // the base table still resolves and is eagerly emitted.
+    var catName = catalogPrefix + "enrich_cat";
+    var cat = TestSupport.createCatalog(catalogService, catName, "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "enrich_ns", List.of("enrich"), "enrich namespace");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "enrich_orders",
+            "s3://bucket/enrich_orders",
+            "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"order_id\",\"type\":\"int\",\"required\":true}]}",
+            "base table for enrichment test");
+    TestSupport.createSnapshot(
+        snapshot, tbl.getResourceId(), 4001L, System.currentTimeMillis() - 5000L);
+    var connector = createDummyConnector(cat.getResourceId(), ns.getResourceId(), "enrich");
+    attachConnectorToTable(tbl.getResourceId(), connector);
+
+    // creationSearchPath captures the schema-path as it was at view creation time: the
+    // namespace's parents plus its display name.
+    var searchPath = new java.util.ArrayList<>(ns.getParentsList());
+    searchPath.add(ns.getDisplayName());
+
+    var col =
+        SchemaColumn.newBuilder()
+            .setName("order_id")
+            .setNullable(false)
+            .setLogicalType("INT")
+            .build();
+
+    // base_relations stores the bare table name only (no catalog, no schema).
+    // NodeLoader.parseFqn("enrich_orders") → NameRef{name="enrich_orders"}.
+    // enrichForViewContext fills: catalog ← defaultCatalog, path ← creationSearchPath.
+    var createdView =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("enrich_view")
+                            .setSql("SELECT order_id FROM enrich_orders")
+                            .addAllCreationSearchPath(searchPath)
+                            .addBaseRelations("enrich_orders")
+                            .addOutputColumns(col))
+                    .build())
+            .getView();
+
+    var begin =
+        lifecycle.beginQuery(
+            BeginQueryRequest.newBuilder().setDefaultCatalogId(cat.getResourceId()).build());
+    var queryId = begin.getQuery().getQueryId();
+
+    var candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(createdView.getResourceId()))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        collectUserObjectBundle(
+                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+            .toCompletableFuture()
+            .join();
+
+    // header + resolutions (view + eagerly-emitted base table) + end = 3 chunks
+    assertEquals(3, chunks.size());
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertEquals(2, resolutions.getItemsCount());
+
+    RelationResolution viewRes = resolutions.getItems(0);
+    assertEquals(ResolutionStatus.RESOLUTION_STATUS_FOUND, viewRes.getStatus());
+    assertEquals(RelationKind.RELATION_KIND_VIEW, viewRes.getRelation().getKind());
+    assertEquals(createdView.getResourceId(), viewRes.getRelation().getRelationId());
+
+    // Base table was eagerly emitted (input_index == -1) after enriching the bare NameRef
+    RelationResolution baseRes = resolutions.getItems(1);
+    assertEquals(-1, baseRes.getInputIndex());
+    assertEquals(ResolutionStatus.RESOLUTION_STATUS_FOUND, baseRes.getStatus());
+    assertEquals(tbl.getResourceId(), baseRes.getRelation().getRelationId());
+  }
 }
