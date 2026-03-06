@@ -318,4 +318,108 @@ class UnityDeltaConnectorTest {
     assertThat(views).hasSize(1);
     assertThat(views.get(0).searchPath()).containsExactly("ns1", "ns2");
   }
+
+  // -------------------------------------------------------------------------
+  // Pagination tests
+  // -------------------------------------------------------------------------
+
+  @Test
+  void listTablesPaginatesAcrossMultiplePages() throws Exception {
+    // UC returns two pages: first has next_page_token, second does not.
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange -> {
+          String query = exchange.getRequestURI().getQuery();
+          String body =
+              (query != null && query.contains("page_token=page2"))
+                  ? """
+                    {"tables":[
+                      {"name":"t2","data_source_format":"DELTA"}
+                    ]}
+                    """
+                  : """
+                    {"tables":[
+                      {"name":"t1","data_source_format":"DELTA"}
+                    ],"next_page_token":"page2"}
+                    """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<String> tables = connector.listTables("mycat.myschema");
+    assertThat(tables).containsExactly("t1", "t2");
+  }
+
+  @Test
+  void listNamespacesPaginatesCatalogs() throws Exception {
+    // Catalogs endpoint returns two pages; schemas endpoint returns a single page per catalog.
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          String query = exchange.getRequestURI().getQuery();
+          String body =
+              (query != null && query.contains("page_token=cp2"))
+                  ? """
+                    {"catalogs":[{"name":"cat2"}]}
+                    """
+                  : """
+                    {"catalogs":[{"name":"cat1"}],"next_page_token":"cp2"}
+                    """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+    server.createContext(
+        "/api/2.1/unity-catalog/schemas",
+        exchange -> {
+          // Determine catalog from query and return one schema per catalog.
+          String query = exchange.getRequestURI().getQuery();
+          String schemaName = (query != null && query.contains("cat2")) ? "s2" : "s1";
+          String body = "{\"schemas\":[{\"name\":\"" + schemaName + "\"}]}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<String> namespaces = connector.listNamespaces();
+    assertThat(namespaces).containsExactlyInAnyOrder("cat1.s1", "cat2.s2");
+  }
+
+  @Test
+  void listNamespacesPaginatesSchemasWithinCatalog() throws Exception {
+    // Schemas endpoint returns two pages for the same catalog.
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          String body = "{\"catalogs\":[{\"name\":\"mycat\"}]}";
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+    server.createContext(
+        "/api/2.1/unity-catalog/schemas",
+        exchange -> {
+          String query = exchange.getRequestURI().getQuery();
+          String body =
+              (query != null && query.contains("page_token=sp2"))
+                  ? """
+                    {"schemas":[{"name":"ns2"}]}
+                    """
+                  : """
+                    {"schemas":[{"name":"ns1"}],"next_page_token":"sp2"}
+                    """;
+          byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, bytes.length);
+          exchange.getResponseBody().write(bytes);
+          exchange.getResponseBody().close();
+        });
+
+    List<String> namespaces = connector.listNamespaces();
+    assertThat(namespaces).containsExactlyInAnyOrder("mycat.ns1", "mycat.ns2");
+  }
 }

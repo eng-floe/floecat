@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import io.delta.kernel.engine.Engine;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,19 +56,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
   @Override
   public List<String> listNamespaces() {
     try {
-      var cats = M.readTree(ucHttp.get("/api/2.1/unity-catalog/catalogs").body()).path("catalogs");
       List<String> out = new ArrayList<>();
-      for (var c : cats) {
+      for (var c : ucGetAll("/api/2.1/unity-catalog/catalogs", "catalogs")) {
         String catalogName = c.path("name").asText();
-        var schemas =
-            M.readTree(
-                    ucHttp
-                        .get(
-                            "/api/2.1/unity-catalog/schemas?catalog_name="
-                                + UcBaseSupport.url(catalogName))
-                        .body())
-                .path("schemas");
-        for (var s : schemas) {
+        for (var s :
+            ucGetAll(
+                "/api/2.1/unity-catalog/schemas?catalog_name=" + UcBaseSupport.url(catalogName),
+                "schemas")) {
           out.add(catalogName + "." + s.path("name").asText());
         }
       }
@@ -265,12 +260,9 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   /**
-   * Fetches the raw {@code tables} JSON array from the UC tables endpoint for the given {@code
-   * "catalog.schema"} namespace, or returns an empty array node if the namespace contains no dot
-   * separator.
-   *
-   * <p>TODO: UC returns paginated results; this method only fetches the first page. Namespaces with
-   * more entries than UC's default page size will silently return incomplete results.
+   * Fetches all entries from the UC tables endpoint for the given {@code "catalog.schema"}
+   * namespace, following {@code next_page_token} pagination until exhausted. Returns an empty array
+   * node if the namespace contains no dot separator.
    */
   private JsonNode listTablesNode(String namespaceFq) throws Exception {
     int dot = namespaceFq.indexOf('.');
@@ -279,15 +271,39 @@ public final class UnityDeltaConnector extends DeltaConnector {
     }
     String catalog = namespaceFq.substring(0, dot);
     String schema = namespaceFq.substring(dot + 1);
-    return M.readTree(
-            ucHttp
-                .get(
-                    "/api/2.1/unity-catalog/tables?catalog_name="
-                        + UcBaseSupport.url(catalog)
-                        + "&schema_name="
-                        + UcBaseSupport.url(schema))
-                .body())
-        .path("tables");
+    return ucGetAll(
+        "/api/2.1/unity-catalog/tables?catalog_name="
+            + UcBaseSupport.url(catalog)
+            + "&schema_name="
+            + UcBaseSupport.url(schema),
+        "tables");
+  }
+
+  /**
+   * Fetches all items from a paginated UC REST endpoint, following {@code next_page_token} links
+   * until exhausted. Accumulates the {@code arrayField} array from each page into a single {@link
+   * ArrayNode}.
+   *
+   * @param baseUrl the endpoint URL (path + query, without a {@code page_token} param)
+   * @param arrayField the JSON key that holds the array of items on each page
+   */
+  private ArrayNode ucGetAll(String baseUrl, String arrayField) throws Exception {
+    ArrayNode all = M.createArrayNode();
+    String pageToken = null;
+    do {
+      String url =
+          pageToken == null
+              ? baseUrl
+              : baseUrl
+                  + (baseUrl.contains("?") ? "&" : "?")
+                  + "page_token="
+                  + UcBaseSupport.url(pageToken);
+      JsonNode page = M.readTree(ucHttp.get(url).body());
+      page.path(arrayField).forEach(all::add);
+      String next = page.path("next_page_token").asText(null);
+      pageToken = (next == null || next.isBlank()) ? null : next;
+    } while (pageToken != null);
+    return all;
   }
 
   private static void putIfPresent(Map<String, String> props, JsonNode n, String field) {
