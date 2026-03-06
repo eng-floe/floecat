@@ -265,12 +265,23 @@ public class SystemNodeRegistry {
         logMissingNamespace("table", table.name());
         continue;
       }
+      String canonicalTableName = NameRefUtil.canonical(table.name());
       ResourceId tableId = resourceId(normalizedKind, table);
       Map<Long, Map<EngineHintKey, EngineHint>> normalizedColumnHints =
           buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
       List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
       Map<EngineHintKey, EngineHint> tableHints =
           EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.engineSpecific());
+      if ("information_schema.tables".equals(canonicalTableName)) {
+        LOG.infof(
+            "System table materialization: engine=%s version=%s name=%s id=%s ruleCount=%d hintCount=%d",
+            normalizedKind,
+            normalizedVersion,
+            canonicalTableName,
+            tableId,
+            table.engineSpecific().size(),
+            tableHints.size());
+      }
       SystemTableNode node;
       switch (table.backendKind()) {
         case TABLE_BACKEND_KIND_FLOECAT ->
@@ -433,6 +444,12 @@ public class SystemNodeRegistry {
     for (SystemObjectDef def :
         internalProvider.definitions(
             EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, normalizedVersion)) {
+      if (def instanceof SystemTableDef table
+          && "information_schema.tables".equals(NameRefUtil.canonical(table.name()))) {
+        LOG.infof(
+            "mergeCatalogData source=internal name=information_schema.tables rules=%d",
+            table.engineSpecific().size());
+      }
       mergeDefinition(def, namespaceByName, tableByName, viewByName);
     }
 
@@ -440,6 +457,11 @@ public class SystemNodeRegistry {
       namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);
     }
     for (SystemTableDef table : baseCatalog.tables()) {
+      if ("information_schema.tables".equals(NameRefUtil.canonical(table.name()))) {
+        LOG.infof(
+            "mergeCatalogData source=baseCatalog name=information_schema.tables rules=%d",
+            table.engineSpecific().size());
+      }
       tableByName.put(NameRefUtil.canonical(table.name()), table);
     }
     for (SystemViewDef view : baseCatalog.views()) {
@@ -454,6 +476,13 @@ public class SystemNodeRegistry {
         for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
           if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
             continue;
+          }
+          if (def instanceof SystemTableDef table
+              && "information_schema.tables".equals(NameRefUtil.canonical(table.name()))) {
+            LOG.infof(
+                "mergeCatalogData source=provider(%s) name=information_schema.tables rules=%d",
+                provider.getClass().getName(),
+                table.engineSpecific().size());
           }
           mergeDefinition(def, namespaceByName, tableByName, viewByName);
         }

@@ -39,3 +39,17 @@ system_namespaces {
     payload_type: "floe.namespace+proto"
   }
 }
+
+system_namespaces {
+  name {
+    name: "information_schema"
+  }
+  display_name: "information_schema"
+  engine_specific {
+    [floe.ext.floe_namespace] {
+      oid: 10000
+      nspname: "information_schema"
+    }
+    payload_type: "floe.namespace+proto"
+  }
+}

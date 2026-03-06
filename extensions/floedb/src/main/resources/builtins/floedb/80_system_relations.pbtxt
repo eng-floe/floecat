@@ -12,6 +12,253 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "tables"
+  }
+  display_name: "tables"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "tables_scanner"
+  }
+  columns {
+    name: "table_catalog"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_catalog"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "table_schema"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_schema"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "table_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_name"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "table_type"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_type"
+        atttypid: 1043
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 11823
+      relname: "tables"
+      relnamespace: 10000
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "columns"
+  }
+  display_name: "columns"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "columns_scanner"
+  }
+  columns {
+    name: "table_catalog"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_catalog"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "table_schema"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_schema"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: false
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "table_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 3
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "table_name"
+        atttypid: 1043
+        attnum: 3
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "column_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 4
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "column_name"
+        atttypid: 1043
+        attnum: 4
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "data_type"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 5
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "data_type"
+        atttypid: 1043
+        attnum: 5
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "ordinal_position"
+    type { name: "INT" }
+    nullable: false
+    ordinal: 6
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "ordinal_position"
+        atttypid: 23
+        attnum: 6
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 11785
+      relname: "columns"
+      relnamespace: 10000
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "schemata"
+  }
+  display_name: "schemata"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "schemata_scanner"
+  }
+  columns {
+    name: "catalog_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 1
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "catalog_name"
+        atttypid: 1043
+        attnum: 1
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  columns {
+    name: "schema_name"
+    type { name: "VARCHAR" }
+    nullable: false
+    ordinal: 2
+    engine_specific {
+      [floe.ext.floe_column] {
+        attname: "schema_name"
+        atttypid: 1043
+        attnum: 2
+        attnotnull: true
+      }
+      payload_type: "floe.column+proto"
+    }
+  }
+  engine_specific {
+    [floe.ext.floe_relation] {
+      oid: 11813
+      relname: "schemata"
+      relnamespace: 10000
+      relkind: "r"
+      reltuples: 0.0
+    }
+    payload_type: "floe.relation+proto"
+  }
+}
+
 system_tables {
   name {
     path: "pg_catalog"

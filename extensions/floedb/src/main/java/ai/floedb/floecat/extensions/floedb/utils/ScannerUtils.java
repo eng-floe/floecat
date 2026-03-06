@@ -28,10 +28,15 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import com.google.protobuf.Message;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
+import org.jboss.logging.Logger;
 
 public final class ScannerUtils {
+
+  private static final Logger LOG = Logger.getLogger(ScannerUtils.class);
 
   private ScannerUtils() {}
 
@@ -244,6 +249,7 @@ public final class ScannerUtils {
     }
 
     if (policy == OidPolicy.REQUIRE) {
+      logMissingSystemHint(overlay, id, descriptor, engineContext, "OID");
       throw new MissingSystemOidException(
           "Missing OID for SYSTEM object id=" + id + " payloadType=" + descriptor.type());
     }
@@ -280,6 +286,7 @@ public final class ScannerUtils {
       return resolved.get();
     }
     if (policy == OidPolicy.REQUIRE) {
+      logMissingSystemHint(overlay, id, descriptor, engineContext, "array field");
       throw new MissingSystemOidException(
           "Missing array field for SYSTEM object id=" + id + " payloadType=" + descriptor.type());
     }
@@ -298,5 +305,63 @@ public final class ScannerUtils {
 
   public static SchemaColumn col(String name, String type) {
     return SchemaColumn.newBuilder().setName(name).setLogicalType(type).setNullable(false).build();
+  }
+
+  private static void logMissingSystemHint(
+      CatalogOverlay overlay,
+      ResourceId id,
+      FloePayloads.Descriptor descriptor,
+      EngineContext engineContext,
+      String fieldName) {
+    EngineContext ctx = engineContext == null ? EngineContext.empty() : engineContext;
+    String requestedKind = ctx.normalizedKind();
+    String requestedVersion = ctx.normalizedVersion();
+    String payloadType = descriptor.type();
+
+    if (overlay == null) {
+      LOG.errorf(
+          "Missing SYSTEM %s hint: id=%s payloadType=%s requestedKey={engineKind=%s, engineVersion=%s} reason=no overlay",
+          fieldName, id, payloadType, requestedKind, requestedVersion);
+      return;
+    }
+
+    var nodeOpt = overlay.resolve(id);
+    if (nodeOpt.isEmpty()) {
+      LOG.errorf(
+          "Missing SYSTEM %s hint: id=%s payloadType=%s requestedKey={engineKind=%s, engineVersion=%s} reason=node not found in overlay",
+          fieldName, id, payloadType, requestedKind, requestedVersion);
+      return;
+    }
+
+    var node = nodeOpt.get();
+    Map<EngineHintKey, EngineHint> hints = node.engineHints();
+    String availableKeys =
+        hints.keySet().stream().map(EngineHintKey::toString).sorted().collect(Collectors.joining(", "));
+    if (availableKeys.isEmpty()) {
+      availableKeys = "<none>";
+    }
+
+    String samePayloadKeys =
+        hints.keySet().stream()
+            .filter(k -> payloadType.equals(k.payloadType()))
+            .map(k -> "{engineKind=" + k.engineKind() + ", engineVersion=" + k.engineVersion() + "}")
+            .sorted()
+            .collect(Collectors.joining(", "));
+    if (samePayloadKeys.isEmpty()) {
+      samePayloadKeys = "<none>";
+    }
+
+    LOG.errorf(
+        "Missing SYSTEM %s hint: id=%s resolvedNodeId=%s nodeKind=%s nodeOrigin=%s payloadType=%s requestedKey={engineKind=%s, engineVersion=%s}; availableKeys=[%s]; matchingPayloadKeys=[%s]",
+        fieldName,
+        id,
+        node.id(),
+        node.kind(),
+        node.origin(),
+        payloadType,
+        requestedKind,
+        requestedVersion,
+        availableKeys,
+        samePayloadKeys);
   }
 }
