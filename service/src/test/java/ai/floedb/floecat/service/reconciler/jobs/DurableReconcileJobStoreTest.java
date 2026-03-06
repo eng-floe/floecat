@@ -78,9 +78,8 @@ class DurableReconcileJobStoreTest {
     String first =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
 
-    var leased = store.leaseNext();
-    assertTrue(leased.isPresent());
-    store.markSucceeded(first, System.currentTimeMillis(), 10, 2, 4, 20);
+    var leased = store.leaseNext().orElseThrow();
+    store.markSucceeded(first, leased.leaseEpoch, System.currentTimeMillis(), 10, 2, 4, 20);
 
     String second =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
@@ -102,7 +101,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void markFailedRequeuesAndEventuallyTransitionsToFailed() {
+  void markFailedRequeuesAndEventuallyTransitionsToFailed() throws Exception {
     System.setProperty("floecat.reconciler.job-store.max-attempts", "2");
     System.setProperty("floecat.reconciler.job-store.base-backoff-ms", "100");
     System.setProperty("floecat.reconciler.job-store.max-backoff-ms", "100");
@@ -115,13 +114,17 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty());
-    assertTrue(store.leaseNext().isPresent());
+    var firstLease = store.leaseNext().orElseThrow();
 
-    store.markFailed(jobId, System.currentTimeMillis(), "transient", 1, 0, 1, 2, 3);
+    store.markFailed(
+        jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "transient", 1, 0, 1, 2, 3);
     ReconcileJob retried = store.get(jobId).orElseThrow();
     assertEquals("JS_QUEUED", retried.state);
 
-    store.markFailed(jobId, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
+    Thread.sleep(120L);
+    var secondLease = store.leaseNext().orElseThrow();
+    store.markFailed(
+        jobId, secondLease.leaseEpoch, System.currentTimeMillis(), "terminal", 1, 0, 2, 2, 3);
     ReconcileJob failed = store.get(jobId).orElseThrow();
     assertEquals("JS_FAILED", failed.state);
   }
@@ -200,6 +203,111 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancellingLeaseIsReclaimedWithoutLosingCancellationIntent() throws Exception {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "1000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1000");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    var firstLease = store.leaseNext().orElseThrow();
+    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
+    store.cancel(ACCOUNT_ID, jobId, "stop");
+    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+
+    Thread.sleep(1150L);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, secondLease.jobId);
+    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+
+    store.markCancelled(
+        secondLease.jobId,
+        secondLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "Cancelled",
+        0,
+        0,
+        0,
+        0,
+        0);
+    assertEquals("JS_CANCELLED", store.get(jobId).orElseThrow().state);
+  }
+
+  @Test
+  void cancelPokesLeaseExpiryForFasterReclaim() throws Exception {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "5000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    var firstLease = store.leaseNext().orElseThrow();
+    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
+    store.cancel(ACCOUNT_ID, jobId, "stop");
+
+    // Cancel should poke lease expiry, allowing reclaim well before the original 5s lease.
+    Thread.sleep(1300L);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, secondLease.jobId);
+    assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
+  }
+
+  @Test
+  void renewLeaseExtendsLeaseAndDelaysReclaim() throws Exception {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "2000");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "200");
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
+
+    Thread.sleep(500L);
+    assertTrue(store.renewLease(jobId, lease.leaseEpoch));
+
+    Thread.sleep(700L);
+    assertTrue(store.leaseNext().isEmpty());
+
+    Thread.sleep(1600L);
+    assertEquals(jobId, store.leaseNext().orElseThrow().jobId);
+  }
+
+  @Test
+  void renewLeaseRejectsStaleEpoch() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty());
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
+
+    assertTrue(!store.renewLease(jobId, "stale-epoch"));
+  }
+
+  @Test
   void parseDueMillisAcceptsReadyKeyWithoutLeadingSlash() throws Exception {
     store.init();
     Method parseDueMillis =
@@ -228,12 +336,13 @@ class DurableReconcileJobStoreTest {
     store.enqueue(
         ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
 
-    String firstRunning = store.leaseNext().orElseThrow().jobId;
-    store.markRunning(firstRunning, System.currentTimeMillis());
+    var firstLease = store.leaseNext().orElseThrow();
+    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
 
-    String cancellingJob = store.leaseNext().orElseThrow().jobId;
-    store.markRunning(cancellingJob, System.currentTimeMillis());
-    store.cancel(ACCOUNT_ID, cancellingJob, "stop");
+    var cancellingLease = store.leaseNext().orElseThrow();
+    store.markRunning(
+        cancellingLease.jobId, cancellingLease.leaseEpoch, System.currentTimeMillis());
+    store.cancel(ACCOUNT_ID, cancellingLease.jobId, "stop");
 
     var stats = store.queueStats();
 

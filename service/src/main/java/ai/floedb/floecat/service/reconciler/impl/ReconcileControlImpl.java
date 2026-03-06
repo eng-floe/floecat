@@ -159,7 +159,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var principalContext = principalProvider.get();
                     var correlationId = principalContext.getCorrelationId();
 
-                    authz.require(principalContext, "connector.manage");
+                    authz.require(
+                        principalContext, List.of("connector.manage", "connector.create"));
 
                     var connectorId =
                         scopedConnectorId(

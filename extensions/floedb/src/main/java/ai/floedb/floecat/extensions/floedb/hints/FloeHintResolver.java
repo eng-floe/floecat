@@ -164,11 +164,12 @@ public final class FloeHintResolver {
       LogicalType logicalType) {
 
     if (ctx != null && tableId != null) {
+      long columnKey = column.getId() != 0L ? column.getId() : column.getOrdinal();
       Optional<FloeColumnSpecific> stored =
           ScannerUtils.columnPayload(
               ctx.overlay(),
               tableId,
-              column.getId(),
+              columnKey,
               COLUMN,
               FloeColumnSpecific.class,
               ctx.engineContext());

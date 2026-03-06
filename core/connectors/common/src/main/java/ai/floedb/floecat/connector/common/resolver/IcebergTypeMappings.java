@@ -42,12 +42,18 @@ public final class IcebergTypeMappings {
         yield LogicalType.of(
             ts.shouldAdjustToUTC() ? LogicalKind.TIMESTAMPTZ : LogicalKind.TIMESTAMP);
       }
+      case TIMESTAMP_NANO -> {
+        var ts = (Types.TimestampNanoType) t;
+        yield LogicalType.of(
+            ts.shouldAdjustToUTC() ? LogicalKind.TIMESTAMPTZ : LogicalKind.TIMESTAMP);
+      }
       case STRING -> LogicalType.of(LogicalKind.STRING);
       case FIXED, BINARY -> LogicalType.of(LogicalKind.BINARY);
       case UUID -> LogicalType.of(LogicalKind.UUID);
       case LIST -> LogicalType.of(LogicalKind.ARRAY);
       case MAP -> LogicalType.of(LogicalKind.MAP);
       case STRUCT -> LogicalType.of(LogicalKind.STRUCT);
+      case VARIANT -> LogicalType.of(LogicalKind.VARIANT);
       case DECIMAL -> {
         var d = (Types.DecimalType) t;
         LogicalType logicalType = LogicalType.decimal(d.precision(), d.scale());

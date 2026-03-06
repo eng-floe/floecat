@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
 public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
+  private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
 
@@ -164,6 +165,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       }
 
       if (leased.add(jobId)) {
+        String leaseEpoch = UUID.randomUUID().toString();
+        leaseEpochs.put(jobId, leaseEpoch);
         return Optional.of(
             new LeasedJob(
                 job.jobId,
@@ -171,37 +174,55 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.connectorId,
                 job.fullRescan,
                 job.captureMode,
-                job.scope));
+                job.scope,
+                leaseEpoch));
       }
     }
   }
 
   @Override
-  public void markRunning(String jobId, long startedAtMs) {
+  public boolean renewLease(String jobId, String leaseEpoch) {
+    var job = jobs.get(jobId);
+    if (job == null) {
+      return false;
+    }
+    if (!"JS_RUNNING".equals(job.state) && !"JS_CANCELLING".equals(job.state)) {
+      return false;
+    }
+    return hasActiveLease(jobId, leaseEpoch);
+  }
+
+  @Override
+  public void markRunning(String jobId, String leaseEpoch, long startedAtMs) {
     jobs.computeIfPresent(
         jobId,
-        (id, job) ->
-            new ReconcileJob(
-                job.jobId,
-                job.accountId,
-                job.connectorId,
-                "JS_RUNNING",
-                "Running",
-                startedAtMs,
-                0L,
-                job.tablesScanned,
-                job.tablesChanged,
-                job.errors,
-                job.fullRescan,
-                job.captureMode,
-                job.snapshotsProcessed,
-                job.statsProcessed,
-                job.scope));
+        (id, job) -> {
+          if (!hasActiveLease(id, leaseEpoch)) {
+            return job;
+          }
+          return new ReconcileJob(
+              job.jobId,
+              job.accountId,
+              job.connectorId,
+              "JS_RUNNING",
+              "Running",
+              startedAtMs,
+              0L,
+              job.tablesScanned,
+              job.tablesChanged,
+              job.errors,
+              job.fullRescan,
+              job.captureMode,
+              job.snapshotsProcessed,
+              job.statsProcessed,
+              job.scope);
+        });
   }
 
   @Override
   public void markProgress(
       String jobId,
+      String leaseEpoch,
       long scanned,
       long changed,
       long errors,
@@ -211,6 +232,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
+          if (!hasActiveLease(id, leaseEpoch)) {
+            return job;
+          }
           if ("JS_CANCELLED".equals(job.state)
               || "JS_SUCCEEDED".equals(job.state)
               || "JS_FAILED".equals(job.state)) {
@@ -238,6 +262,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markSucceeded(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       long scanned,
       long changed,
@@ -246,10 +271,14 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
+          if (!hasActiveLease(id, leaseEpoch)) {
+            return job;
+          }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
           leased.remove(id);
+          leaseEpochs.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -272,6 +301,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markFailed(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -282,10 +312,14 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
+          if (!hasActiveLease(id, leaseEpoch)) {
+            return job;
+          }
           if ("JS_CANCELLED".equals(job.state) || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
           leased.remove(id);
+          leaseEpochs.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -337,6 +371,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.scope);
           }
           leased.remove(id);
+          leaseEpochs.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -379,6 +414,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   @Override
   public void markCancelled(
       String jobId,
+      String leaseEpoch,
       long finishedAtMs,
       String message,
       long scanned,
@@ -389,7 +425,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
+          if (!hasActiveLease(id, leaseEpoch)) {
+            return job;
+          }
           leased.remove(id);
+          leaseEpochs.remove(id);
           ready.remove(id);
           return new ReconcileJob(
               job.jobId,
@@ -408,5 +448,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               statsProcessed,
               job.scope);
         });
+  }
+
+  private boolean hasActiveLease(String jobId, String leaseEpoch) {
+    String expected = leaseEpochs.get(jobId);
+    return expected != null && !expected.isBlank() && expected.equals(leaseEpoch);
   }
 }

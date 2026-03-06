@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -40,9 +41,11 @@ import java.util.ArrayList;
 import java.util.List;
 import org.apache.arrow.flight.CallHeaders;
 import org.apache.arrow.flight.CallOption;
+import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightClient;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightInfo;
+import org.apache.arrow.flight.FlightRuntimeException;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.HeaderCallOption;
 import org.apache.arrow.flight.Location;
@@ -180,6 +183,46 @@ public class SystemTableFlightIT {
   }
 
   @Test
+  void getStream_returnsRowsForInformationSchemaTablesByName() {
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(
+                SystemTableTarget.newBuilder()
+                    .setName(
+                        NameRef.newBuilder()
+                            .addPath("information_schema")
+                            .setName("tables")
+                            .build())
+                    .build())
+            .setQueryId(queryId)
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    FlightInfo info = client.getInfo(descriptor, queryHeader(queryId));
+    List<List<String>> rows = readRows(info);
+
+    assertFalse(rows.isEmpty(), "information_schema.tables by name should return rows");
+  }
+
+  @Test
+  void getFlightInfo_acceptsSystemTableIdWithCallerAccount() {
+    ResourceId callerScopedTableId =
+        informationSchemaTablesTableId().toBuilder().setAccountId("caller-account").build();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(callerScopedTableId).build())
+            .setQueryId(queryId)
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    FlightInfo info = client.getInfo(descriptor, queryHeader(queryId));
+    List<List<String>> rows = readRows(info);
+
+    assertNotNull(info, "FlightInfo should not be null");
+    assertFalse(rows.isEmpty(), "Caller-scoped system id should still resolve and stream rows");
+  }
+
+  @Test
   void getStream_projectionReducesColumns() {
     ResourceId tableId = informationSchemaColumnsTableId();
     SystemTableFlightCommand command =
@@ -199,6 +242,23 @@ public class SystemTableFlightIT {
     for (List<String> row : rows) {
       assertEquals(1, row.size(), "Each row should have exactly 1 column after projection");
     }
+  }
+
+  @Test
+  void getFlightInfo_rejectsMismatchedEngineTableId() {
+    ResourceId wrongEngineId =
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TABLE, "information_schema.tables");
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(wrongEngineId).build())
+            .setQueryId(queryId)
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+
+    FlightRuntimeException error =
+        assertThrows(
+            FlightRuntimeException.class, () -> client.getInfo(descriptor, queryHeader(queryId)));
+    assertEquals(CallStatus.NOT_FOUND.code(), error.status().code());
   }
 
   // -------------------------------------------------------------------------

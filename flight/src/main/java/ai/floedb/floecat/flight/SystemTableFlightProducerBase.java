@@ -18,13 +18,17 @@ package ai.floedb.floecat.flight;
 
 import ai.floedb.floecat.arrow.ArrowBatchSerializer;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
+import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -153,10 +157,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       return !canonical.isBlank() && supported.contains(canonical);
     }
     if (target.hasId()) {
-      return resolveSystemTableName(target.getId(), ctx)
-          .map(SystemTableFlightProducerBase::normalizeTableName)
-          .filter(supported::contains)
-          .isPresent();
+      return resolveHandleById(target.getId(), ctx).isPresent();
     }
     return false;
   }
@@ -196,17 +197,27 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   @Override
   public boolean supportsDescriptor(FlightDescriptor descriptor) {
-    ResolvedCallContext defaultCtx = ResolvedCallContext.unauthenticated();
+    return supportsDescriptor(null, descriptor);
+  }
+
+  @Override
+  public boolean supportsDescriptor(CallContext context, FlightDescriptor descriptor) {
+    ResolvedCallContext routingCtx = routingContext(context);
     return decodeCommandQuietly(descriptor)
-        .map(cmd -> supportsCommand(cmd, defaultCtx))
+        .map(cmd -> supportsCommand(cmd, routingCtx))
         .orElse(false);
   }
 
   @Override
   public boolean supportsTicket(Ticket ticket) {
-    ResolvedCallContext defaultCtx = ResolvedCallContext.unauthenticated();
+    return supportsTicket(null, ticket);
+  }
+
+  @Override
+  public boolean supportsTicket(CallContext context, Ticket ticket) {
+    ResolvedCallContext routingCtx = routingContext(context);
     return decodeTicketCommandQuietly(ticket)
-        .map(cmd -> supportsCommand(cmd, defaultCtx))
+        .map(cmd -> supportsCommand(cmd, routingCtx))
         .orElse(false);
   }
 
@@ -381,6 +392,17 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     return resolved;
   }
 
+  private ResolvedCallContext routingContext(CallContext context) {
+    if (context == null) {
+      return ResolvedCallContext.unauthenticated();
+    }
+    try {
+      return effectiveContext(resolveCallContext(context));
+    } catch (Throwable ignored) {
+      return ResolvedCallContext.unauthenticated();
+    }
+  }
+
   private Schema projectSchema(
       String tableName,
       Optional<ResourceId> tableId,
@@ -442,7 +464,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       columns.add(
           SchemaColumn.newBuilder()
               .setName(field.getName())
-              .setLogicalType(field.getFieldType().getType().toString())
+              .setLogicalType(ArrowSchemaUtil.logicalType(field))
               .setFieldId(ordinal)
               .setNullable(field.isNullable())
               .setOrdinal(ordinal)
@@ -461,6 +483,17 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     return Optional.empty();
   }
 
+  /**
+   * Candidate engine kinds used when deriving deterministic system-table IDs from table names.
+   *
+   * <p>The request's engine headers (if any) are the source of truth. We include normalized forms
+   * and always keep floecat_internal as a fallback namespace.
+   */
+  protected Collection<String> systemIdEngineKinds(ResolvedCallContext context) {
+    EngineContext engineContext = context == null ? EngineContext.empty() : context.engineContext();
+    return List.of(engineContext.effectiveEngineKind());
+  }
+
   private Optional<SystemTableHandle> resolveHandleById(
       ResourceId id, ResolvedCallContext context) {
     if (id == null || id.getId() == null || id.getId().isBlank()) {
@@ -469,9 +502,16 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     ResolvedCallContext ctx = effectiveContext(context);
     Set<String> supported = supportedNames(ctx);
     return resolveSystemTableName(id, context)
+        .map(SystemTableFlightProducerBase::normalizeTableName)
         .filter(supported::contains)
-        .map(name -> new SystemTableHandle(name, Optional.of(id)))
-        .or(() -> resolveFromSupportedNames(id, supported, context));
+        .map(
+            name -> {
+              Optional<ResourceId> resolvedId =
+                  resolveSystemTableId(NameRefUtil.fromCanonical(name), context);
+              return new SystemTableHandle(name, resolvedId.or(() -> Optional.of(id)));
+            })
+        .or(() -> resolveFromSupportedNames(id, supported, context))
+        .or(() -> resolveByGeneratedSystemIds(id, supported, context));
   }
 
   private Optional<SystemTableHandle> resolveHandleByName(
@@ -498,7 +538,28 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       Optional<ResourceId> candidate =
           resolveSystemTableId(NameRefUtil.fromCanonical(tableName), context);
       if (candidate.filter(candidateId -> resourceIdsEqual(candidateId, id)).isPresent()) {
-        return Optional.of(new SystemTableHandle(tableName, Optional.of(id)));
+        return Optional.of(new SystemTableHandle(tableName, candidate));
+      }
+    }
+    return Optional.empty();
+  }
+
+  private Optional<SystemTableHandle> resolveByGeneratedSystemIds(
+      ResourceId id, Set<String> supported, ResolvedCallContext context) {
+    if (supported.isEmpty()) {
+      return Optional.empty();
+    }
+    ResolvedCallContext ctx = effectiveContext(context);
+    for (String tableName : supported) {
+      for (String engineKind : systemIdEngineKinds(ctx)) {
+        ResourceId candidate =
+            SystemNodeRegistry.resourceId(engineKind, ResourceKind.RK_TABLE, tableName);
+        if (resourceIdsEqual(candidate, id)) {
+          Optional<ResourceId> resolvedId =
+              resolveSystemTableId(NameRefUtil.fromCanonical(tableName), context);
+          return Optional.of(
+              new SystemTableHandle(tableName, resolvedId.or(() -> Optional.of(candidate))));
+        }
       }
     }
     return Optional.empty();
@@ -511,9 +572,16 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     if (a.getId() == null || b.getId() == null) {
       return false;
     }
-    return a.getId().equals(b.getId())
-        && a.getAccountId().equals(b.getAccountId())
-        && a.getKind() == b.getKind();
+    if (!a.getId().equals(b.getId())) {
+      return false;
+    }
+    return kindsCompatible(a.getKind(), b.getKind());
+  }
+
+  private static boolean kindsCompatible(ResourceKind left, ResourceKind right) {
+    return left == ResourceKind.RK_UNSPECIFIED
+        || right == ResourceKind.RK_UNSPECIFIED
+        || left == right;
   }
 
   private SystemTableFlightCommand commandWithTableId(
