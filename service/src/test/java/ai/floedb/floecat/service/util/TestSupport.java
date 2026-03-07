@@ -30,6 +30,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -202,7 +203,9 @@ public final class TestSupport {
                         .setNamespaceId(namespaceId)
                         .setDisplayName(displayName)
                         .setDescription(desc)
-                        .setSql(sql))
+                        .setSql(sql)
+                        .addOutputColumns(
+                            SchemaColumn.newBuilder().setName("_col0").setNullable(true).build()))
                 .build());
     return resp.getView();
   }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.impl;
 
 import ai.floedb.floecat.common.rpc.QueryInput;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
@@ -42,12 +43,17 @@ public class QueryInputMetadataAssembler {
    * when inputs are supplied up front.
    */
   public QueryInputMetadata assemble(
-      String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      ResourceId defaultCatalogId) {
     if (inputs.isEmpty()) {
       return QueryInputMetadata.empty();
     }
 
-    var resolution = inputResolver.resolveInputs(correlationId, inputs, asOfDefault);
+    var resolution =
+        inputResolver.resolveInputs(
+            correlationId, inputs, asOfDefault, Optional.of(defaultCatalogId));
     SnapshotSet snapshotSet = resolution.snapshotSet();
     ExpansionMap expansionMap =
         expansions.computeExpansion(correlationId, List.copyOf(resolution.resolved()));

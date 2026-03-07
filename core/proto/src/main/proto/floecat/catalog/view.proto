@@ -19,6 +19,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/query/schema.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/field_mask.proto";
 
@@ -32,6 +33,31 @@ message View {
   optional string description = 5;
   string sql = 6;
   google.protobuf.Timestamp created_at = 7;
+
+  /** SQL dialect the view is written in (e.g. "spark", "trino", "ansi"). */
+  string dialect = 8;
+
+  /**
+   * Fully-qualified names of relations this view directly depends on,
+   * e.g. "catalog.schema.table". Optional performance hint: when populated,
+   * GetUserObjects eagerly resolves and streams base-table metadata in the
+   * same response, saving a planner round-trip. Stored as names (not IDs)
+   * so that a drop-and-recreate of a base relation does not invalidate the view.
+   */
+  repeated string base_relations = 9;
+
+  /**
+   * Namespace search path captured at view-creation time, used to
+   * deterministically re-resolve unqualified names in the SQL text.
+   */
+  repeated string creation_search_path = 10;
+
+  /**
+   * Resolved output schema of the view. Required on CreateView so planners
+   * never need to re-parse the SQL just to discover the column list.
+   */
+  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 11;
+
   map<string,string> properties = 99;
 }
 
@@ -57,6 +83,19 @@ message ViewSpec {
   optional string display_name = 3;
   optional string description = 4;
   optional string sql = 5;
+
+  /** See View.dialect. */
+  string dialect = 6;
+
+  /** See View.base_relations. Optional. */
+  repeated string base_relations = 7;
+
+  /** See View.creation_search_path. */
+  repeated string creation_search_path = 8;
+
+  /** See View.output_columns. Required on CreateView. */
+  repeated ai.floedb.floecat.query.SchemaColumn output_columns = 9;
+
   map<string,string> properties = 99;
 }
 

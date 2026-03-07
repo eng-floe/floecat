@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -162,6 +163,68 @@ class ViewResourceTest extends AbstractRestResourceTest {
             .getSpec()
             .getPropertiesMap()
             .containsKey(ViewMetadataService.METADATA_PROPERTY_KEY));
+  }
+
+  @Test
+  void createViewPropagatesDialectSearchPathAndOutputColumns() {
+    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+
+    when(viewStub.createView(any()))
+        .thenAnswer(
+            inv -> {
+              CreateViewRequest request = inv.getArgument(0);
+              ViewSpec spec = request.getSpec();
+              View created =
+                  View.newBuilder()
+                      .setResourceId(ResourceId.newBuilder().setId("cat:db:typed_view"))
+                      .setDisplayName(spec.getDisplayName())
+                      .setSql(spec.getSql())
+                      .putAllProperties(spec.getPropertiesMap())
+                      .build();
+              return CreateViewResponse.newBuilder().setView(created).build();
+            });
+
+    given()
+        .body(
+            """
+            {
+              "name":"typed_view",
+              "schema":{
+                "schema-id":1,
+                "type":"struct",
+                "fields":[
+                  {"id":1,"name":"order_id","type":"int","required":true}
+                ]
+              },
+              "view-version":{
+                "version-id":1,
+                "timestamp-ms":1700000000,
+                "schema-id":1,
+                "summary":{"operation":"create"},
+                "representations":[{"type":"sql","sql":"select order_id","dialect":"spark"}],
+                "default-namespace":["db"]
+              },
+              "properties":{}
+            }
+            """)
+        .header("Content-Type", "application/json")
+        .when()
+        .post("/v1/foo/namespaces/db/views")
+        .then()
+        .statusCode(200);
+
+    ArgumentCaptor<CreateViewRequest> createCaptor =
+        ArgumentCaptor.forClass(CreateViewRequest.class);
+    verify(viewStub).createView(createCaptor.capture());
+    ViewSpec capturedSpec = createCaptor.getValue().getSpec();
+    assertEquals("spark", capturedSpec.getDialect());
+    assertEquals(List.of("db"), capturedSpec.getCreationSearchPathList());
+    assertEquals(1, capturedSpec.getOutputColumnsCount());
+    assertEquals("order_id", capturedSpec.getOutputColumns(0).getName());
+    assertEquals("INT", capturedSpec.getOutputColumns(0).getLogicalType());
+    assertFalse(capturedSpec.getOutputColumns(0).getNullable());
   }
 
   @Test

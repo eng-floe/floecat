@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
+import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
@@ -46,6 +47,9 @@ import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -125,6 +129,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @GrpcClient("floecat")
   ConnectorsGrpc.ConnectorsBlockingStub connector;
+
+  @GrpcClient("floecat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
 
   @Override
   public ResourceId ensureNamespace(ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
@@ -449,6 +456,23 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
+    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+      request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
+    }
+    try {
+      return view(ctx).createView(request.build()).getView().getResourceId();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
+        // View already exists without a matching idempotency key; treat as success.
+        return ResourceId.getDefaultInstance();
+      }
+      throw e;
+    }
+  }
+
+  @Override
   public void updateConnectorDestination(
       ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
     var spec = ConnectorSpec.newBuilder().setDestination(destination).build();
@@ -490,6 +514,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private ConnectorsGrpc.ConnectorsBlockingStub connector(ReconcileContext ctx) {
     return withHeaders(connector, ctx);
+  }
+
+  private ViewServiceGrpc.ViewServiceBlockingStub view(ReconcileContext ctx) {
+    return withHeaders(view, ctx);
   }
 
   private <T extends AbstractStub<T>> T withHeaders(T stub, ReconcileContext ctx) {

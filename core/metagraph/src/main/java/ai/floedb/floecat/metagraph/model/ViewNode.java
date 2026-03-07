@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.metagraph.model;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.time.Instant;
@@ -26,8 +27,11 @@ import java.util.Optional;
 /**
  * Immutable view node encapsulating SQL definition and dependency references.
  *
- * <p>The node stores base relation IDs only; traversal APIs resolve them to aligned {@link
- * GraphNode}s so callers always see a consistent tree.
+ * <p>{@code baseRelations} holds the fully-qualified names of relations this view directly depends
+ * on, expressed as {@link NameRef} objects so that resolution can be performed directly via {@code
+ * CatalogOverlay.resolveName()} without any string parsing. The list is an optional performance
+ * hint: when non-empty, {@code UserObjectBundleService} eagerly resolves base-table metadata in the
+ * same {@code GetUserObjects} response, saving the planner a round-trip.
  */
 public record ViewNode(
     ResourceId id,
@@ -39,7 +43,7 @@ public record ViewNode(
     String sql,
     String dialect,
     List<SchemaColumn> outputColumns,
-    List<ResourceId> baseRelations,
+    List<NameRef> baseRelations,
     List<String> creationSearchPath,
     GraphNodeOrigin origin,
     Map<String, String> properties,

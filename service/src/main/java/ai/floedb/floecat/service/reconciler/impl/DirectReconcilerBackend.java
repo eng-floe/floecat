@@ -29,6 +29,8 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -49,6 +51,7 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.Timestamp;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -68,6 +71,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject ViewRepository viewRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject StatsRepository statsRepository;
   @Inject SnapshotHelper snapshotHelper;
@@ -190,6 +194,43 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     // Reconciler must not advance table core OCC version for existing tables.
     // Existing table shape updates are intentionally skipped here; only creation-on-miss
     // is allowed through ensureTable().
+  }
+
+  @Override
+  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    String corrId = ctx.correlationId();
+    String accountId = ctx.principal().getAccountId();
+    var namespace =
+        namespaceRepo
+            .getById(spec.getNamespaceId())
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        corrId, NAMESPACE, Map.of("namespace_id", spec.getNamespaceId().getId())));
+    String catalogId = namespace.getCatalogId().getId();
+    String namespaceId = spec.getNamespaceId().getId();
+    String normalized = normalizeName(spec.getDisplayName());
+
+    var existing = viewRepo.getByName(accountId, catalogId, namespaceId, normalized);
+    if (existing.isPresent()) {
+      return ResourceId.getDefaultInstance(); // already exists — idempotent
+    }
+
+    var view =
+        View.newBuilder()
+            .setResourceId(randomResourceId(accountId, ResourceKind.RK_VIEW))
+            .setCatalogId(namespace.getCatalogId())
+            .setNamespaceId(spec.getNamespaceId())
+            .setDisplayName(normalized)
+            .setSql(spec.getSql())
+            .setDialect(spec.getDialect())
+            .addAllCreationSearchPath(spec.getCreationSearchPathList())
+            .addAllOutputColumns(spec.getOutputColumnsList())
+            .addAllBaseRelations(spec.getBaseRelationsList())
+            .putAllProperties(spec.getPropertiesMap())
+            .build();
+    viewRepo.create(view);
+    return view.getResourceId();
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor, List<String> partitionKeys) {

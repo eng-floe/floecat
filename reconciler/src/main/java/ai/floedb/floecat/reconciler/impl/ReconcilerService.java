@@ -18,9 +18,11 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -38,6 +40,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -96,6 +99,15 @@ public class ReconcilerService {
   @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
+
+  /** Opens a connector from a resolved configuration. */
+  @FunctionalInterface
+  interface ConnectorOpener {
+    FloecatConnector open(ConnectorConfig config);
+  }
+
+  // Package-private; replaced in tests to avoid going through ConnectorFactory's ServiceLoader.
+  ConnectorOpener connectorOpener = ConnectorFactory::create;
 
   public Result reconcile(
       PrincipalContext principal,
@@ -201,7 +213,7 @@ public class ReconcilerService {
     var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
-    try (FloecatConnector connector = ConnectorFactory.create(resolved)) {
+    try (FloecatConnector connector = connectorOpener.open(resolved)) {
       ensureNotCancelled(cancelCheck);
       final ResourceId destCatalogId = dest.getCatalogId();
 
@@ -253,13 +265,9 @@ public class ReconcilerService {
               : connector.listTables(sourceNsFq);
 
       if (tables.isEmpty()) {
-        return new Result(
-            scanned,
-            changed,
-            1,
-            snapshotsProcessed,
-            statsProcessed,
-            new IllegalStateException("No tables found in source namespace: " + sourceNsFq));
+        // A views-only namespace is valid; let the view pass proceed.
+        LOG.debugf(
+            "No tables found in source namespace %s; connector may have views only.", sourceNsFq);
       }
 
       final boolean singleTableMode = tables.size() == 1;
@@ -388,14 +396,9 @@ public class ReconcilerService {
             return new Result(scanned, changed, errors, snapshotsProcessed, statsProcessed, e);
           }
           errors++;
-          e.printStackTrace();
-          progressOut.onProgress(
-              scanned,
-              changed,
-              errors,
-              snapshotsProcessed,
-              statsProcessed,
-              "Error table " + sourceNsFq + "." + srcTable + ": " + rootCauseMessage(e));
+          LOG.errorf(
+              "Table sync failed: ns=%s table=%s.%s — %s",
+              scopeNamespaceFq, sourceNsFq, srcTable, rootCauseMessage(e));
           errSummaries.add(
               "ns="
                   + scopeNamespaceFq
@@ -409,14 +412,84 @@ public class ReconcilerService {
       }
 
       if (!matchedScope && scope.hasTableFilter()) {
-        return new Result(
-            0,
-            0,
-            1,
-            snapshotsProcessed,
-            statsProcessed,
-            new IllegalArgumentException(
-                "No tables matched scope: " + scope.destinationTableDisplayName()));
+        // Record the miss as an error but do NOT return — the view pass must still run.
+        // A table filter is table-scoped; views are always reconciled regardless.
+        errors++;
+        errSummaries.add("No tables matched scope: " + scope.destinationTableDisplayName());
+      }
+
+      // View reconciliation pass — runs after tables; scope filter is table-only so all views sync.
+      // Note: existing views are not updated on re-sync (create-only idempotent operation).
+      List<FloecatConnector.ViewDescriptor> viewDescriptors;
+      try {
+        viewDescriptors = connector.listViewDescriptors(sourceNsFq);
+      } catch (Exception e) {
+        viewDescriptors = List.of();
+        errors++;
+        errSummaries.add("listViewDescriptors(" + sourceNsFq + "): " + rootCauseMessage(e));
+      }
+      for (FloecatConnector.ViewDescriptor view : viewDescriptors) {
+        try {
+          if (view.sql() == null || view.sql().isBlank()) {
+            continue;
+          }
+
+          List<SchemaColumn> outputColumns;
+          if (view.schemaJson() != null && !view.schemaJson().isBlank()) {
+            SchemaDescriptor schema =
+                schemaMapper.mapRaw(
+                    ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    toTableFormat(connector.format()),
+                    view.schemaJson(),
+                    Set.of());
+            outputColumns =
+                schema.getColumnsList().stream()
+                    .filter(SchemaColumn::getLeaf)
+                    .map(
+                        c ->
+                            SchemaColumn.newBuilder()
+                                .setName(c.getName())
+                                .setNullable(c.getNullable())
+                                .setLogicalType(c.getLogicalType())
+                                .build())
+                    .toList();
+          } else {
+            outputColumns = List.of();
+          }
+          if (outputColumns.isEmpty()) {
+            continue;
+          }
+
+          scanned++;
+          ViewSpec viewSpec =
+              ViewSpec.newBuilder()
+                  .setCatalogId(destCatalogId)
+                  .setNamespaceId(destNamespaceId)
+                  .setDisplayName(view.name())
+                  .setSql(view.sql())
+                  .setDialect(view.dialect() != null ? view.dialect() : "")
+                  .addAllCreationSearchPath(
+                      view.searchPath() != null ? view.searchPath() : List.of())
+                  .addAllOutputColumns(outputColumns)
+                  .build();
+          String idempotencyKey = destNsFq + "." + view.name();
+          ResourceId viewId = backend.ensureView(ctx, viewSpec, idempotencyKey);
+          // Only count genuinely new views; ALREADY_EXISTS returns getDefaultInstance() (empty id).
+          if (!viewId.getId().isEmpty()) {
+            changed++;
+          }
+        } catch (Exception e) {
+          errors++;
+          errSummaries.add(
+              "dest-ns="
+                  + scopeNamespaceFq
+                  + " source-view="
+                  + sourceNsFq
+                  + "."
+                  + view.name()
+                  + " : "
+                  + rootCauseMessage(e));
+        }
       }
 
       DestinationTarget updated = destB.build();
