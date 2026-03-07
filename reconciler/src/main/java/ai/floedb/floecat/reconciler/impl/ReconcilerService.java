@@ -214,6 +214,7 @@ public class ReconcilerService {
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
     try (FloecatConnector connector = connectorOpener.open(resolved)) {
+      ensureNotCancelled(cancelCheck);
       final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
