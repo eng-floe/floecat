@@ -70,7 +70,7 @@ message FloeColumnSpecific {
   optional uint32 atttypid = 2;
 
   /** Type modifier (atttypmod). */
-  optional int32 atttypmod = 3;
+  optional int32 atttypmod = 3 [default = -1];
 
   /** Attribute number (attnum). */
   optional int32 attnum = 4;
