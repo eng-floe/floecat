@@ -157,7 +157,7 @@ public class CommitResponseBuilder {
     finalResponse = normalizeMetadataLocation(finalResponse);
     finalResponse = preferRequestedMetadata(finalResponse, resolveRequestedMetadataLocation(req));
     finalResponse = mergeTableDefinitionUpdates(finalResponse, req);
-    return finalResponse;
+    return normalizeResponseMetadata(finalResponse);
   }
 
   public CommitTableResponseDto mergeTableDefinitionUpdates(
@@ -180,6 +180,9 @@ public class CommitResponseBuilder {
             : new ArrayList<>(metadata.partitionSpecs());
     List<Map<String, Object>> sortOrders =
         metadata.sortOrders() == null ? new ArrayList<>() : new ArrayList<>(metadata.sortOrders());
+    Integer lastAddedSchemaId = null;
+    Integer lastAddedSpecId = null;
+    Integer lastAddedSortOrderId = null;
 
     for (Map<String, Object> update : req.updates()) {
       if (update == null) {
@@ -202,13 +205,21 @@ public class CommitResponseBuilder {
             update.get("schema") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
         if (schema != null && !schema.isEmpty()) {
           upsertById(schemas, new LinkedHashMap<>(schema), "schema-id");
+          Integer schemaId = asInteger(schema.get("schema-id"));
+          if (schemaId != null && schemaId >= 0) {
+            lastAddedSchemaId = schemaId;
+          }
         }
         Integer reqLastColumn = asInteger(update.get("last-column-id"));
+        if (reqLastColumn == null) {
+          reqLastColumn = maxSchemaFieldId(schema);
+        }
         if (reqLastColumn != null) {
           lastColumnId = reqLastColumn;
         }
       } else if ("set-current-schema".equals(action)) {
-        Integer schemaId = asInteger(update.get("schema-id"));
+        Integer schemaId =
+            resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
         if (schemaId != null) {
           currentSchemaId = schemaId;
         }
@@ -218,9 +229,13 @@ public class CommitResponseBuilder {
             update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
         if (spec != null && !spec.isEmpty()) {
           upsertById(partitionSpecs, new LinkedHashMap<>(spec), "spec-id");
+          Integer specId = asInteger(spec.get("spec-id"));
+          if (specId != null && specId >= 0) {
+            lastAddedSpecId = specId;
+          }
         }
       } else if ("set-default-spec".equals(action)) {
-        Integer specId = asInteger(update.get("spec-id"));
+        Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
         if (specId != null) {
           defaultSpecId = specId;
         }
@@ -230,9 +245,17 @@ public class CommitResponseBuilder {
             update.get("sort-order") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
         if (sortOrder != null && !sortOrder.isEmpty()) {
           upsertById(sortOrders, new LinkedHashMap<>(sortOrder), "order-id");
+          Integer sortOrderId = asInteger(sortOrder.get("order-id"));
+          if (sortOrderId == null) {
+            sortOrderId = asInteger(sortOrder.get("sort-order-id"));
+          }
+          if (sortOrderId != null && sortOrderId >= 0) {
+            lastAddedSortOrderId = sortOrderId;
+          }
         }
       } else if ("set-default-sort-order".equals(action)) {
-        Integer sortOrderId = asInteger(update.get("sort-order-id"));
+        Integer sortOrderId =
+            resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
         if (sortOrderId != null) {
           defaultSortOrderId = sortOrderId;
         }
@@ -288,6 +311,153 @@ public class CommitResponseBuilder {
             metadata.partitionStatistics(),
             metadata.snapshots());
     return commitResponse(updated);
+  }
+
+  private Integer resolveLastAddedId(Integer requested, Integer lastAdded) {
+    if (requested == null) {
+      return null;
+    }
+    if (requested == -1) {
+      return lastAdded;
+    }
+    return requested;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Integer maxSchemaFieldId(Map<String, Object> schema) {
+    if (schema == null || schema.isEmpty()) {
+      return null;
+    }
+    Object rawFields = schema.get("fields");
+    if (!(rawFields instanceof List<?> fields)) {
+      return null;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
+        continue;
+      }
+      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("id"));
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max;
+  }
+
+  private CommitTableResponseDto normalizeResponseMetadata(CommitTableResponseDto response) {
+    if (response == null || response.metadata() == null) {
+      return response;
+    }
+    TableMetadataView metadata = response.metadata();
+    List<Map<String, Object>> schemas = normalizeSchemas(metadata.schemas());
+    Integer currentSchemaId = normalizeCurrentSchemaId(metadata.currentSchemaId(), schemas);
+    Map<String, String> props =
+        metadata.properties() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(metadata.properties());
+    if (currentSchemaId != null) {
+      props.put("current-schema-id", Integer.toString(currentSchemaId));
+    }
+    TableMetadataView normalized =
+        new TableMetadataView(
+            metadata.formatVersion(),
+            metadata.tableUuid(),
+            metadata.location(),
+            metadata.metadataLocation(),
+            metadata.lastUpdatedMs(),
+            Map.copyOf(props),
+            metadata.lastColumnId(),
+            currentSchemaId,
+            metadata.defaultSpecId(),
+            metadata.lastPartitionId(),
+            metadata.defaultSortOrderId(),
+            metadata.currentSnapshotId(),
+            metadata.lastSequenceNumber(),
+            schemas,
+            metadata.partitionSpecs(),
+            metadata.sortOrders(),
+            metadata.refs(),
+            metadata.snapshotLog(),
+            metadata.metadataLog(),
+            metadata.statistics(),
+            metadata.partitionStatistics(),
+            metadata.snapshots());
+    return commitResponse(normalized);
+  }
+
+  private List<Map<String, Object>> normalizeSchemas(List<Map<String, Object>> schemas) {
+    if (schemas == null || schemas.isEmpty()) {
+      Map<String, Object> fallback = new LinkedHashMap<>();
+      fallback.put("type", "struct");
+      fallback.put("schema-id", 0);
+      fallback.put("fields", List.of());
+      return List.of(Map.copyOf(fallback));
+    }
+    for (Map<String, Object> schema : schemas) {
+      if (schema == null) {
+        continue;
+      }
+      Integer schemaId = asInteger(schema.get("schema-id"));
+      if (schemaId != null && schemaId >= 0) {
+        return schemas;
+      }
+    }
+    List<Map<String, Object>> normalized = new ArrayList<>(schemas.size());
+    boolean patched = false;
+    for (Map<String, Object> schema : schemas) {
+      if (!patched && schema != null) {
+        Map<String, Object> copy = new LinkedHashMap<>(schema);
+        copy.put("schema-id", 0);
+        normalized.add(Map.copyOf(copy));
+        patched = true;
+      } else {
+        normalized.add(schema);
+      }
+    }
+    if (!patched) {
+      Map<String, Object> fallback = new LinkedHashMap<>();
+      fallback.put("type", "struct");
+      fallback.put("schema-id", 0);
+      fallback.put("fields", List.of());
+      normalized.set(0, Map.copyOf(fallback));
+    }
+    return List.copyOf(normalized);
+  }
+
+  private Integer normalizeCurrentSchemaId(
+      Integer currentSchemaId, List<Map<String, Object>> schemas) {
+    Integer candidate = currentSchemaId != null && currentSchemaId >= 0 ? currentSchemaId : null;
+    if (candidate != null && containsSchemaId(schemas, candidate)) {
+      return candidate;
+    }
+    for (Map<String, Object> schema : schemas) {
+      if (schema == null) {
+        continue;
+      }
+      Integer schemaId = asInteger(schema.get("schema-id"));
+      if (schemaId != null && schemaId >= 0) {
+        return schemaId;
+      }
+    }
+    return 0;
+  }
+
+  private boolean containsSchemaId(List<Map<String, Object>> schemas, int schemaId) {
+    if (schemas == null || schemas.isEmpty()) {
+      return false;
+    }
+    for (Map<String, Object> schema : schemas) {
+      if (schema == null) {
+        continue;
+      }
+      Integer value = asInteger(schema.get("schema-id"));
+      if (value != null && value == schemaId) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public CommitTableResponseDto preferStageMetadata(
@@ -493,16 +663,15 @@ public class CommitResponseBuilder {
     Long maxSequence = maxNonNull(snapshotSequence, requestSequence, existingSequence);
     Integer formatVersion = metadata.formatVersion();
     formatVersion = normalizeFormatVersionForSnapshots(formatVersion, requestSequence);
-    Long currentSnapshotId =
-        metadata.currentSnapshotId() == null ? latestSnapshotId(updatedSnapshots) : null;
     Map<String, String> props =
         metadata.properties() == null
             ? new LinkedHashMap<>()
             : new LinkedHashMap<>(metadata.properties());
+    Long currentSnapshotId = desiredCurrentSnapshotId(metadata, req, updatedSnapshots, props);
     if (maxSequence != null && maxSequence > 0) {
       props.put("last-sequence-number", Long.toString(maxSequence));
     }
-    if (currentSnapshotId != null && currentSnapshotId > 0) {
+    if (currentSnapshotId != null && currentSnapshotId >= 0) {
       props.put("current-snapshot-id", Long.toString(currentSnapshotId));
     }
     TableMetadataView updated =
@@ -617,11 +786,51 @@ public class CommitResponseBuilder {
     Long latest = null;
     for (Map<String, Object> snapshot : snapshots) {
       Long id = snapshotId(snapshot);
-      if (id != null && id > 0) {
+      if (id != null && id >= 0) {
         latest = id;
       }
     }
     return latest;
+  }
+
+  private Long desiredCurrentSnapshotId(
+      TableMetadataView metadata,
+      TableRequests.Commit req,
+      List<Map<String, Object>> updatedSnapshots,
+      Map<String, String> props) {
+    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
+    if (propertyCurrentSnapshotId != null && propertyCurrentSnapshotId >= 0) {
+      return propertyCurrentSnapshotId;
+    }
+    Long requestedMainRefSnapshotId = requestedMainRefSnapshotId(req);
+    if (requestedMainRefSnapshotId != null && requestedMainRefSnapshotId >= 0) {
+      return requestedMainRefSnapshotId;
+    }
+    if (metadata.currentSnapshotId() == null) {
+      return latestSnapshotId(updatedSnapshots);
+    }
+    return metadata.currentSnapshotId();
+  }
+
+  private Long requestedMainRefSnapshotId(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return null;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"set-snapshot-ref".equals(action)) {
+        continue;
+      }
+      String refName = asString(update.get("ref-name"));
+      if (!"main".equals(refName)) {
+        continue;
+      }
+      return parseLong(update.get("snapshot-id"));
+    }
+    return null;
   }
 
   private Long maxSequenceFromSnapshots(List<Map<String, Object>> snapshots) {

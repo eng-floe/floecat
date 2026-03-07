@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.connector.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
@@ -33,18 +34,11 @@ import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.GetReconcileJobRequest;
-import ai.floedb.floecat.connector.rpc.GetReconcileJobResponse;
-import ai.floedb.floecat.connector.rpc.JobState;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
@@ -54,10 +48,6 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
-import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -74,12 +64,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.telemetry.Observability;
-import ai.floedb.floecat.telemetry.Tag;
-import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -99,10 +84,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerService reconcilerService;
   @Inject CredentialResolver credentialResolver;
-  @Inject Observability observability;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -131,7 +113,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.interval",
           "policy.enabled",
           "policy.max_parallel",
-          "policy.not_before");
+          "policy.not_before",
+          "policy.mode");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
   private static final String REDACTED = "****";
@@ -203,8 +186,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   authz.require(principalContext, "connector.manage");
 
-                  var connectorId = request.getConnectorId();
-                  ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
+                  var connectorId =
+                      scopedConnectorId(
+                          principalContext.getAccountId(), request.getConnectorId(), correlationId);
 
                   var connector =
                       connectorRepo
@@ -499,8 +483,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "connector.manage");
 
-                  var connectorId = request.getConnectorId();
-                  ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+                  var connectorId =
+                      scopedConnectorId(pc.getAccountId(), request.getConnectorId(), corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
@@ -634,8 +618,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   authz.require(pc, "connector.manage");
 
-                  var connectorId = request.getConnectorId();
-                  ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+                  var connectorId =
+                      scopedConnectorId(pc.getAccountId(), request.getConnectorId(), corr);
 
                   MutationMeta meta;
                   try {
@@ -743,173 +727,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         .setSummary("Validation failed: " + e.getMessage())
                         .build();
                   }
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<SyncCaptureResponse> syncCapture(SyncCaptureRequest request) {
-    var L = LogHelper.start(LOG, "SyncCapture");
-    String trigger = syncCaptureTrigger(request);
-
-    return mapFailures(
-            run(
-                () -> {
-                  try {
-                    var pc = principalProvider.get();
-                    authz.require(pc, "connector.manage");
-                    var corr = pc.getCorrelationId();
-
-                    var connectorId = request.getConnectorId();
-                    ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
-                    connectorRepo.getById(connectorId).orElse(null);
-
-                    List<List<String>> nsPaths =
-                        request.getDestinationNamespacePathsList().stream()
-                            .map(NamespacePath::getSegmentsList)
-                            .map(List::copyOf)
-                            .toList();
-                    var scope =
-                        ReconcileScope.of(
-                            nsPaths,
-                            request.getDestinationTableDisplayName(),
-                            request.getDestinationTableColumnsList());
-
-                    CaptureMode mode =
-                        request.getIncludeStatistics()
-                            ? CaptureMode.STATS_ONLY_ASYNC
-                            : CaptureMode.METADATA_ONLY_CORE;
-
-                    var result = reconcilerService.reconcile(pc, connectorId, false, scope, mode);
-                    if (!result.ok()) {
-                      if (result.error != null) {
-                        throw new RuntimeException("sync capture failed", result.error);
-                      }
-                      throw new IllegalStateException("sync capture failed");
-                    }
-                    observeReconcileCounter(
-                        ServiceMetrics.Reconcile.SYNC_CAPTURE,
-                        "sync_capture",
-                        "success",
-                        trigger,
-                        null);
-                    return SyncCaptureResponse.newBuilder()
-                        .setTablesScanned(result.scanned)
-                        .setTablesChanged(result.changed)
-                        .setErrors(result.errors)
-                        .build();
-                  } catch (RuntimeException e) {
-                    observeReconcileCounter(
-                        ServiceMetrics.Reconcile.SYNC_CAPTURE,
-                        "sync_capture",
-                        "error",
-                        trigger,
-                        normalizeReason(e));
-                    throw e;
-                  }
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<TriggerReconcileResponse> triggerReconcile(TriggerReconcileRequest request) {
-    var L = LogHelper.start(LOG, "TriggerReconcile");
-    String trigger = triggerType(request);
-
-    return mapFailures(
-            run(
-                () -> {
-                  try {
-                    var princpalContext = principalProvider.get();
-                    var correlationId = princpalContext.getCorrelationId();
-
-                    authz.require(princpalContext, List.of("connector.manage", "connector.create"));
-
-                    var connectorId = request.getConnectorId();
-                    ensureKind(
-                        connectorId, ResourceKind.RK_CONNECTOR, "connector_id", correlationId);
-                    connectorRepo
-                        .getById(connectorId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId,
-                                    GeneratedErrorMessages.MessageKey.CONNECTOR,
-                                    Map.of("id", connectorId.getId())));
-
-                    var jobId =
-                        jobs.enqueue(
-                            connectorId.getAccountId(),
-                            connectorId.getId(),
-                            request.getFullRescan(),
-                            scopeFromRequest(request));
-                    observeReconcileCounter(
-                        ServiceMetrics.Reconcile.TRIGGER,
-                        "trigger_reconcile",
-                        "success",
-                        trigger,
-                        null);
-                    return TriggerReconcileResponse.newBuilder().setJobId(jobId).build();
-                  } catch (RuntimeException e) {
-                    observeReconcileCounter(
-                        ServiceMetrics.Reconcile.TRIGGER,
-                        "trigger_reconcile",
-                        "error",
-                        trigger,
-                        normalizeReason(e));
-                    throw e;
-                  }
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<GetReconcileJobResponse> getReconcileJob(GetReconcileJobRequest request) {
-    var L = LogHelper.start(LOG, "GetReconcileJob");
-
-    return mapFailures(
-            run(
-                () -> {
-                  var principalContext = principalProvider.get();
-                  var correlationId = principalContext.getCorrelationId();
-
-                  authz.require(principalContext, "connector.manage");
-
-                  var job =
-                      jobs.get(request.getJobId())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId,
-                                      GeneratedErrorMessages.MessageKey.JOB,
-                                      Map.of("id", request.getJobId())));
-
-                  return GetReconcileJobResponse.newBuilder()
-                      .setJobId(job.jobId)
-                      .setConnectorId(job.connectorId)
-                      .setState(toProtoState(job.state))
-                      .setMessage(job.message == null ? "" : job.message)
-                      .setStartedAt(Timestamps.fromMillis(job.startedAtMs))
-                      .setFinishedAt(
-                          job.finishedAtMs == 0
-                              ? Timestamps.fromMillis(0)
-                              : Timestamps.fromMillis(job.finishedAtMs))
-                      .setTablesScanned(job.tablesScanned)
-                      .setTablesChanged(job.tablesChanged)
-                      .setErrors(job.errors)
-                      .build();
                 }),
             correlationId())
         .onFailure()
@@ -1091,106 +908,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
   }
 
-  private static ReconcileScope scopeFromRequest(TriggerReconcileRequest request) {
-    if (request == null) {
-      return ReconcileScope.empty();
-    }
-    var namespaces =
-        request.getDestinationNamespacePathsList().stream()
-            .map(NamespacePath::getSegmentsList)
-            .map(List::copyOf)
-            .toList();
-    return ReconcileScope.of(
-        namespaces,
-        request.getDestinationTableDisplayName(),
-        request.getDestinationTableColumnsList());
-  }
-
-  private static JobState toProtoState(String state) {
-    if (state == null) {
-      return JobState.JS_UNSPECIFIED;
-    }
-
-    return switch (state) {
-      case "JS_QUEUED" -> JobState.JS_QUEUED;
-      case "JS_RUNNING" -> JobState.JS_RUNNING;
-      case "JS_SUCCEEDED" -> JobState.JS_SUCCEEDED;
-      case "JS_FAILED" -> JobState.JS_FAILED;
-      case "JS_CANCELLED" -> JobState.JS_CANCELLED;
-      default -> JobState.JS_UNSPECIFIED;
-    };
-  }
-
-  private void observeReconcileCounter(
-      ai.floedb.floecat.telemetry.MetricId metric,
-      String operation,
-      String result,
-      String trigger,
-      String reason) {
-    if (observability == null) {
-      return;
-    }
-    if (reason == null || reason.isBlank()) {
-      observability.counter(
-          metric,
-          1.0,
-          Tag.of(TagKey.COMPONENT, "service"),
-          Tag.of(TagKey.OPERATION, operation),
-          Tag.of(TagKey.RESULT, result),
-          Tag.of(TagKey.TRIGGER, trigger));
-      return;
-    }
-    observability.counter(
-        metric,
-        1.0,
-        Tag.of(TagKey.COMPONENT, "service"),
-        Tag.of(TagKey.OPERATION, operation),
-        Tag.of(TagKey.RESULT, result),
-        Tag.of(TagKey.TRIGGER, trigger),
-        Tag.of(TagKey.REASON, reason));
-  }
-
-  private static String triggerType(TriggerReconcileRequest request) {
-    if (request == null) {
-      return "unknown";
-    }
-    boolean scoped =
-        !request.getDestinationNamespacePathsList().isEmpty()
-            || (request.getDestinationTableDisplayName() != null
-                && !request.getDestinationTableDisplayName().isBlank())
-            || !request.getDestinationTableColumnsList().isEmpty();
-    return scoped ? "scoped" : "manual";
-  }
-
-  private static String syncCaptureTrigger(SyncCaptureRequest request) {
-    if (request == null) {
-      return "unknown";
-    }
-    boolean scoped =
-        !request.getDestinationNamespacePathsList().isEmpty()
-            || (request.getDestinationTableDisplayName() != null
-                && !request.getDestinationTableDisplayName().isBlank())
-            || !request.getDestinationTableColumnsList().isEmpty();
-    if (!scoped) {
-      return "manual";
-    }
-    return request.getIncludeStatistics() ? "scoped_stats" : "scoped_metadata";
-  }
-
-  private static String normalizeReason(Throwable t) {
-    if (t == null) {
-      return "unknown";
-    }
-    String simple = t.getClass().getSimpleName();
-    if (simple == null || simple.isBlank()) {
-      return "runtime_exception";
-    }
-    return simple
-        .replaceAll("([a-z])([A-Z])", "$1_$2")
-        .replaceAll("[^A-Za-z0-9_]+", "_")
-        .toLowerCase(java.util.Locale.ROOT);
-  }
-
   static List<List<String>> toPaths(List<NamespacePath> in) {
     if (in == null || in.isEmpty()) {
       return List.of();
@@ -1208,6 +925,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               return List.copyOf(cleaned);
             })
         .toList();
+  }
+
+  private ResourceId scopedConnectorId(String accountId, ResourceId connectorId, String corr) {
+    ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
+    return connectorId.toBuilder().setAccountId(accountId).build();
   }
 
   private Connector applyConnectorSpecPatch(
@@ -1474,6 +1196,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           pb.clearNotBefore();
         }
       }
+      if (maskTargets(mask, "policy.mode")) {
+        pb.setMode(inPol.getMode());
+      }
       b.setPolicy(pb.build());
     }
 
@@ -1576,6 +1301,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("max_parallel", policy.getMaxParallel())
                 .scalar("interval_seconds", policy.getInterval().getSeconds())
                 .scalar("interval_nanos", policy.getInterval().getNanos())
+                .scalar("mode", policy.getMode().name())
                 .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
                 .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
 

@@ -71,10 +71,11 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
 - **ConnectorsImpl** – Manages connector lifecycle, validates `ConnectorSpec` via SPI factories,
-  wires reconciliation job submission, and exposes `ValidateConnector` + `TriggerReconcile`.
-  `SyncCapture` maps to reconciler capture modes:
-  - `include_statistics=false` -> `METADATA_ONLY_CORE`
-  - `include_statistics=true` -> `STATS_ONLY_ASYNC`
+  wires reconciliation job submission, and exposes `ValidateConnector` + `StartCapture`.
+  `CaptureNow` maps to reconciler capture modes:
+  - metadata only -> `METADATA_ONLY`
+  - stats only -> `STATS_ONLY`
+  - metadata plus stats -> `METADATA_AND_STATS`
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes `FetchScanBundle` so planners can request connector scan metadata on
   demand.
@@ -136,9 +137,8 @@ intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/
 terminal jobs. `SeedRunner`
 populates demo data when `floecat.seed.enabled=true`.
 
-For connector-backed fixture tables, seeding now runs two reconcile passes per fixture scope:
-- core metadata pass (`METADATA_ONLY_CORE`)
-- stats capture pass (`STATS_ONLY_ASYNC`)
+For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
+using `METADATA_AND_STATS`.
 
 This ensures query scan bundles and Delta-compat manifest materialization have required file stats
 available immediately after startup.

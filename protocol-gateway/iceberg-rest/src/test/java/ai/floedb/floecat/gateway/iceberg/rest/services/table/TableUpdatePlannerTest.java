@@ -34,6 +34,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -48,12 +50,16 @@ class TableUpdatePlannerTest {
   private final TableUpdatePlanner planner = new TableUpdatePlanner();
   private final CommitRequirementService requirements = mock(CommitRequirementService.class);
   private final TablePropertyService propertyService = mock(TablePropertyService.class);
+  private final SnapshotMetadataService snapshotMetadataService =
+      mock(SnapshotMetadataService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
   @BeforeEach
   void setUp() {
     planner.commitRequirementService = requirements;
     planner.tablePropertyService = propertyService;
+    planner.snapshotMetadataService = snapshotMetadataService;
+    planner.mapper = new ObjectMapper();
   }
 
   @Test
@@ -194,6 +200,54 @@ class TableUpdatePlannerTest {
     assertEquals("0", props.get("default-spec-id"));
     assertEquals("0", props.get("default-sort-order-id"));
     assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", props.get("location"));
+    assertTrue(plan.mask().build().getPathsList().contains("schema_json"));
+    assertTrue(plan.spec().build().getSchemaJson().contains("\"schema-id\":0"));
+  }
+
+  @Test
+  void planUpdatesResolvesSetLastSentinelsForTableDefinitionIds() {
+    when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
+    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "add-schema",
+                    "schema",
+                    Map.of(
+                        "schema-id",
+                        7,
+                        "type",
+                        "struct",
+                        "fields",
+                        List.of(
+                            Map.of("id", 1, "name", "id", "required", false, "type", "int"),
+                            Map.of("id", 2, "name", "v", "required", false, "type", "string")))),
+                Map.of("action", "set-current-schema", "schema-id", -1),
+                Map.of("action", "add-spec", "spec", Map.of("spec-id", 9, "fields", List.of())),
+                Map.of("action", "set-default-spec", "spec-id", -1),
+                Map.of(
+                    "action",
+                    "add-sort-order",
+                    "sort-order",
+                    Map.of("order-id", 11, "fields", List.of())),
+                Map.of("action", "set-default-sort-order", "sort-order-id", -1)));
+
+    TableUpdatePlanner.UpdatePlan plan =
+        planner.planUpdates(
+            command(request),
+            tableSupplier(),
+            ResourceId.newBuilder().setId("cat:db:orders").build());
+
+    assertFalse(plan.hasError());
+    Map<String, String> props = plan.spec().build().getPropertiesMap();
+    assertEquals("2", props.get("last-column-id"));
+    assertEquals("7", props.get("current-schema-id"));
+    assertEquals("9", props.get("default-spec-id"));
+    assertEquals("11", props.get("default-sort-order-id"));
   }
 
   private Supplier<Table> tableSupplier() {

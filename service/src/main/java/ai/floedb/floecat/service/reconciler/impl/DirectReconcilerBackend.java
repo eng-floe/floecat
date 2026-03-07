@@ -55,9 +55,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "local", enableIfMissing = true)
 @ApplicationScoped
@@ -263,6 +265,24 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   public Optional<Snapshot> fetchSnapshot(
       ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     return snapshotRepo.getById(tableId, snapshotId);
+  }
+
+  @Override
+  public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
+    Set<Long> snapshotIds = new LinkedHashSet<>();
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      List<Snapshot> batch = snapshotRepo.list(tableId, 500, token, next);
+      for (Snapshot snapshot : batch) {
+        if (snapshot.getSnapshotId() >= 0) {
+          snapshotIds.add(snapshot.getSnapshotId());
+        }
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+    return snapshotIds;
   }
 
   @Override

@@ -35,6 +35,9 @@ specializing discovery and catalog wiring.
   the configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
   timestamps, parent IDs, stats payloads, per-file stats (row count/size plus per-column metrics),
   sequence numbers, manifest lists, and summary maps.
+  When invoked with incremental `SnapshotEnumerationOptions`, the connector walks back from the
+  current snapshot through the parent chain and stops once it reaches a snapshot already known to
+  Floecat, returning only the newly discovered lineage.
 
 ## Important Internal Details
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,

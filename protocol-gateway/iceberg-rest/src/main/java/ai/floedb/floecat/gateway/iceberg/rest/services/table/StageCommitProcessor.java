@@ -16,17 +16,16 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -45,6 +44,7 @@ import io.grpc.StatusRuntimeException;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;
 import org.eclipse.microprofile.config.Config;
@@ -62,6 +62,7 @@ public class StageCommitProcessor {
   @Inject TableClient tableClient;
   @Inject SnapshotClient snapshotClient;
   @Inject ConnectorClient connectorClient;
+  @Inject TransactionCommitService transactionCommitService;
 
   private TableGatewaySupport tableSupport;
 
@@ -122,12 +123,26 @@ public class StageCommitProcessor {
         entry.requirements(), catalogName, namespacePath, tableName, tableExists);
     Table tableRecord = existing;
     if (!tableExists) {
-      CreateTableRequest.Builder createRequest =
-          CreateTableRequest.newBuilder().setSpec(entry.spec());
-      if (entry.idempotencyKey() != null && !entry.idempotencyKey().isBlank()) {
-        createRequest.setIdempotency(IdempotencyKey.newBuilder().setKey(entry.idempotencyKey()));
+      Response txResponse =
+          transactionCommitService.commitCreate(
+              prefix,
+              entry.idempotencyKey(),
+              namespacePath,
+              tableName,
+              entry.catalogId(),
+              entry.namespaceId(),
+              entry.request(),
+              tableSupport);
+      if (txResponse == null
+          || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+        throw mapTransactionFailure(txResponse);
       }
-      tableRecord = tableClient.createTable(createRequest.build()).getTable();
+      ResourceId createdId =
+          NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
+      tableRecord =
+          tableClient
+              .getTable(GetTableRequest.newBuilder().setTableId(createdId).build())
+              .getTable();
     }
     LoadTableResultDto loadResult = toLoadResult(tableName, entry, tableRecord);
     LOG.infof(
@@ -163,6 +178,25 @@ public class StageCommitProcessor {
     } catch (StatusRuntimeException e) {
       return List.of();
     }
+  }
+
+  private RuntimeException mapTransactionFailure(Response response) {
+    if (response == null) {
+      return new IllegalStateException("stage commit transaction failed");
+    }
+    String message = "stage commit transaction failed";
+    if (response.getEntity() instanceof IcebergErrorResponse errorResponse
+        && errorResponse.error() != null
+        && errorResponse.error().message() != null
+        && !errorResponse.error().message().isBlank()) {
+      message = errorResponse.error().message();
+    }
+    return switch (response.getStatus()) {
+      case 400 -> StageCommitException.validation(message);
+      case 404 -> StageCommitException.notFound(message);
+      case 409 -> StageCommitException.conflict(message);
+      default -> new IllegalStateException(message);
+    };
   }
 
   void validateStageRequirements(

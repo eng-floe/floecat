@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
@@ -43,6 +44,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImp
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,7 +91,11 @@ class TableCommitMaterializationServiceTest {
                 UpstreamRef.newBuilder()
                     .setFormat(TableFormat.TF_ICEBERG)
                     .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                    .setConnectorId(
+                        ResourceId.newBuilder()
+                            .setId("conn-1")
+                            .setKind(ResourceKind.RK_CONNECTOR)
+                            .build())
                     .build())
             .build();
     MaterializeMetadataResult result =
@@ -374,6 +380,115 @@ class TableCommitMaterializationServiceTest {
     assertNull(result.error());
     assertEquals(
         "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+  }
+
+  @Test
+  void materializeMetadataNormalizesNegativeRequiredIdsForParser() throws Exception {
+    TableMetadataView negativeRequiredIds =
+        new TableMetadataView(
+            2,
+            "f7adfd2a-c9f4-4b2f-a053-60e14b7a5ad6",
+            "s3://warehouse/tables/orders",
+            null,
+            System.currentTimeMillis(),
+            Map.of(),
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            null,
+            0L,
+            List.of(Map.of("type", "struct", "schema-id", -1, "fields", List.of())),
+            List.of(Map.of("spec-id", -1, "fields", List.of())),
+            List.of(Map.of("order-id", -1, "fields", List.of())),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    when(materializeMetadataService.materialize(
+            eq("cat.db"),
+            eq("orders"),
+            argThat(
+                md ->
+                    md != null
+                        && md.lastColumnId() != null
+                        && md.lastColumnId() >= 0
+                        && md.currentSchemaId() != null
+                        && md.currentSchemaId() >= 0
+                        && md.defaultSpecId() != null
+                        && md.defaultSpecId() >= 0
+                        && md.lastPartitionId() != null
+                        && md.lastPartitionId() >= 0
+                        && md.defaultSortOrderId() != null
+                        && md.defaultSortOrderId() >= 0
+                        && md.properties() != null
+                        && asInteger(md.properties().get("current-schema-id")) != null
+                        && asInteger(md.properties().get("current-schema-id")) >= 0
+                        && asInteger(md.properties().get("last-column-id")) != null
+                        && asInteger(md.properties().get("last-column-id")) >= 0
+                        && asInteger(md.properties().get("default-spec-id")) != null
+                        && asInteger(md.properties().get("default-spec-id")) >= 0
+                        && asInteger(md.properties().get("last-partition-id")) != null
+                        && asInteger(md.properties().get("last-partition-id")) >= 0
+                        && asInteger(md.properties().get("default-sort-order-id")) != null
+                        && asInteger(md.properties().get("default-sort-order-id")) >= 0
+                        && md.schemas() != null
+                        && !md.schemas().isEmpty()
+                        && md.schemas().stream()
+                            .filter(Objects::nonNull)
+                            .map(schema -> schema.get("schema-id"))
+                            .map(TableCommitMaterializationServiceTest::asInteger)
+                            .anyMatch(id -> id != null && id >= 0)
+                        && md.partitionSpecs() != null
+                        && !md.partitionSpecs().isEmpty()
+                        && md.partitionSpecs().stream()
+                            .filter(Objects::nonNull)
+                            .map(spec -> spec.get("spec-id"))
+                            .map(TableCommitMaterializationServiceTest::asInteger)
+                            .anyMatch(id -> id != null && id >= 0)
+                        && md.sortOrders() != null
+                        && !md.sortOrders().isEmpty()
+                        && md.sortOrders().stream()
+                            .filter(Objects::nonNull)
+                            .map(order -> order.get("order-id"))
+                            .map(TableCommitMaterializationServiceTest::asInteger)
+                            .anyMatch(id -> id != null && id >= 0)),
+            eq("s3://warehouse/tables/orders/metadata/")))
+        .thenReturn(
+            new MaterializeResult(
+                "s3://warehouse/tables/orders/metadata/00001-new.metadata.json",
+                negativeRequiredIds.withMetadataLocation(
+                    "s3://warehouse/tables/orders/metadata/00001-new.metadata.json")));
+
+    MaterializeMetadataResult result =
+        service.materializeMetadata(
+            "cat.db",
+            null,
+            "orders",
+            null,
+            negativeRequiredIds,
+            "s3://warehouse/tables/orders/metadata/");
+
+    assertNull(result.error());
+    assertEquals(
+        "s3://warehouse/tables/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+  }
+
+  private static Integer asInteger(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    try {
+      return Integer.parseInt(String.valueOf(value));
+    } catch (NumberFormatException e) {
+      return null;
+    }
   }
 
   @Test

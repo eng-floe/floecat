@@ -63,6 +63,7 @@ public class TableCreateService {
       List.of(Map.of("type", "assert-create"));
 
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject TransactionCommitService transactionCommitService;
   @Inject NamespaceClient namespaceClient;
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
@@ -101,18 +102,38 @@ public class TableCreateService {
           tableSupport);
     }
 
-    TableSpec.Builder spec;
+    Response txResponse;
     try {
-      spec =
-          tableSupport.buildCreateSpec(
+      txResponse =
+          transactionCommitService.commitCreate(
+              namespaceContext.prefix(),
+              idempotencyKey,
+              namespaceContext.namespacePath(),
+              tableName,
               namespaceContext.catalogId(),
               namespaceContext.namespaceId(),
-              tableName,
-              effectiveReq);
-    } catch (IllegalArgumentException | JsonProcessingException e) {
+              effectiveReq,
+              tableSupport);
+    } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    Table created = tableLifecycleService.createTable(spec, idempotencyKey);
+    if (txResponse == null
+        || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+      return txResponse;
+    }
+
+    Table created;
+    try {
+      var tableId =
+          tableLifecycleService.resolveTableId(
+              namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
+      created = tableLifecycleService.getTable(tableId);
+    } catch (Exception e) {
+      return IcebergErrorResponses.failure(
+          "Failed to load created table",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials;
     try {

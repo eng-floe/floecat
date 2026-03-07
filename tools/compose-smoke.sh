@@ -299,6 +299,29 @@ run_mode() {
     assert_contains "$label duckdb mutation delete" "$duckdb_out" "mut_after_delete=2,4,a,c"
     assert_contains "$label duckdb mutation update" "$duckdb_out" "mut_after_update=2,4,a,c2"
 
+    local duckdb_rename_out
+    if duckdb_rename_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_rename_src_smoke VALUES (1, 'x'); ALTER TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke RENAME TO duckdb_rename_dst_smoke; SELECT 'rename_row_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_rename_dst_smoke;" 2>&1); then
+      echo "$duckdb_rename_out"
+      assert_contains "$label duckdb rename row count" "$duckdb_rename_out" "rename_row_count=1"
+    else
+      echo "$duckdb_rename_out"
+      assert_contains "$label duckdb rename unsupported" "$duckdb_rename_out" "Not implemented Error: Alter Schema Entry"
+      docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+        duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke;" >/dev/null 2>&1 || true
+    fi
+
+    local duckdb_namespace_out
+    if duckdb_namespace_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      duckdb -c "$duckdb_bootstrap CREATE SCHEMA IF NOT EXISTS iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_create_ok=1' AS check; DROP SCHEMA iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_drop_ok=1' AS check;" 2>&1); then
+      echo "$duckdb_namespace_out"
+      assert_contains "$label duckdb namespace create" "$duckdb_namespace_out" "ns_create_ok=1"
+      assert_contains "$label duckdb namespace drop" "$duckdb_namespace_out" "ns_drop_ok=1"
+    else
+      echo "$duckdb_namespace_out"
+      echo "[WARN] $label duckdb namespace lifecycle unsupported; skipping strict assertion"
+    fi
+
     local duckdb_snapshots_out
     local duckdb_snapshots_query_fn="COPY (SELECT snapshot_id FROM iceberg_snapshots('iceberg_floecat.iceberg.duckdb_mutation_smoke') ORDER BY timestamp_ms DESC) TO '/dev/stdout' (FORMAT CSV, HEADER FALSE);"
     if ! duckdb_snapshots_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
@@ -440,6 +463,54 @@ try:
 except Exception:
     drop_ok = True
 print("drop_table_ok=" + ("1" if drop_ok else "0"))
+run_sql("DROP SCHEMA IF EXISTS floecat.trino_ns_smoke")
+run_sql("CREATE SCHEMA IF NOT EXISTS floecat.trino_ns_smoke")
+print("ns_create_ok=1")
+run_sql("DROP SCHEMA floecat.trino_ns_smoke")
+print("ns_drop_ok=1")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_rename_dst_smoke")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_rename_src_smoke")
+run_sql("CREATE TABLE iceberg.trino_rename_src_smoke (id INTEGER, v VARCHAR)")
+run_sql("INSERT INTO iceberg.trino_rename_src_smoke VALUES (1, 'x')")
+run_sql("ALTER TABLE iceberg.trino_rename_src_smoke RENAME TO iceberg.trino_rename_dst_smoke")
+print(
+    scalar(
+        "SELECT 'rename_row_count=' || CAST(COUNT(*) AS VARCHAR) "
+        "FROM iceberg.trino_rename_dst_smoke"
+    )
+)
+run_sql("DROP TABLE iceberg.trino_rename_dst_smoke")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_meta_smoke")
+run_sql("CREATE TABLE iceberg.trino_meta_smoke (id INTEGER, v VARCHAR)")
+run_sql("ALTER TABLE iceberg.trino_meta_smoke ADD COLUMN note VARCHAR")
+run_sql("ALTER TABLE iceberg.trino_meta_smoke RENAME COLUMN v TO v2")
+print(
+    scalar(
+        "SELECT 'meta_columns=' || CAST(COUNT(*) AS VARCHAR) "
+        "FROM information_schema.columns "
+        "WHERE table_catalog = 'floecat' AND table_schema = 'iceberg' "
+        "AND table_name = 'trino_meta_smoke' AND column_name IN ('id', 'v2', 'note')"
+    )
+)
+run_sql("DROP TABLE iceberg.trino_meta_smoke")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_merge_smoke")
+run_sql("CREATE TABLE iceberg.trino_merge_smoke (id INTEGER, v VARCHAR)")
+run_sql("INSERT INTO iceberg.trino_merge_smoke VALUES (1, 'a'), (2, 'b')")
+run_sql(
+    "MERGE INTO iceberg.trino_merge_smoke t "
+    "USING (VALUES (2, 'b2'), (3, 'c')) s(id, v) "
+    "ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET v = s.v "
+    "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)"
+)
+print(
+    scalar(
+        "SELECT 'merge_after=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+        "FROM iceberg.trino_merge_smoke"
+    )
+)
+run_sql("DROP TABLE iceberg.trino_merge_smoke")
 run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
 run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
 print(
@@ -522,6 +593,11 @@ PY
     assert_contains "$label trino dv_demo_delta content" "$trino_out" "dv_content=1,3,a,c"
     assert_contains "$label trino ctas count" "$trino_out" "ctas_count=5"
     assert_contains "$label trino drop table verification" "$trino_out" "drop_table_ok=1"
+    assert_contains "$label trino namespace create" "$trino_out" "ns_create_ok=1"
+    assert_contains "$label trino namespace drop" "$trino_out" "ns_drop_ok=1"
+    assert_contains "$label trino rename row count" "$trino_out" "rename_row_count=1"
+    assert_contains "$label trino metadata column update" "$trino_out" "meta_columns=3"
+    assert_contains "$label trino merge mutation" "$trino_out" "merge_after=3,6,a,c"
     assert_contains "$label trino mutation create" "$trino_out" "mut_after_create=0"
     assert_contains "$label trino mutation insert" "$trino_out" "mut_after_insert=3,6,a,c"
     assert_contains "$label trino mutation delete" "$trino_out" "mut_after_delete=2,4,a,c"

@@ -39,8 +39,6 @@ import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -63,6 +61,9 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -110,6 +111,7 @@ public abstract class AbstractRestResourceTest {
   protected QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScanStub;
   protected QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchemaStub;
   protected ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
+  protected ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlStub;
   protected RequestSpecification defaultSpec;
 
   @BeforeEach
@@ -124,6 +126,7 @@ public abstract class AbstractRestResourceTest {
     queryScanStub = Mockito.mock(QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
     querySchemaStub = Mockito.mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
     connectorsStub = Mockito.mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
+    reconcileControlStub = Mockito.mock(ReconcileControlGrpc.ReconcileControlBlockingStub.class);
 
     Mockito.when(clients.table()).thenReturn(tableStub);
     Mockito.when(clients.directory()).thenReturn(directoryStub);
@@ -135,6 +138,7 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(clients.queryScan()).thenReturn(queryScanStub);
     Mockito.when(clients.querySchema()).thenReturn(querySchemaStub);
     Mockito.when(clients.connectors()).thenReturn(connectorsStub);
+    Mockito.when(clients.reconcileControl()).thenReturn(reconcileControlStub);
     Mockito.when(grpc.raw()).thenReturn(clients);
     Mockito.when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
     Mockito.when(grpc.withHeaders(directoryStub)).thenReturn(directoryStub);
@@ -146,6 +150,7 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(grpc.withHeaders(queryScanStub)).thenReturn(queryScanStub);
     Mockito.when(grpc.withHeaders(querySchemaStub)).thenReturn(querySchemaStub);
     Mockito.when(grpc.withHeaders(connectorsStub)).thenReturn(connectorsStub);
+    Mockito.when(grpc.withHeaders(reconcileControlStub)).thenReturn(reconcileControlStub);
     Mockito.when(querySchemaStub.describeInputs(Mockito.any()))
         .thenReturn(DescribeInputsResponse.getDefaultInstance());
     Mockito.when(snapshotStub.createSnapshot(Mockito.any()))
@@ -163,10 +168,10 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(snapshotStub.getSnapshot(Mockito.any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(fixtureSnapshot).build());
     Mockito.when(viewStub.getView(Mockito.any())).thenReturn(GetViewResponse.getDefaultInstance());
-    Mockito.when(connectorsStub.triggerReconcile(Mockito.any()))
-        .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job").build());
-    Mockito.when(connectorsStub.syncCapture(Mockito.any()))
-        .thenReturn(SyncCaptureResponse.newBuilder().build());
+    Mockito.when(reconcileControlStub.startCapture(Mockito.any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job").build());
+    Mockito.when(reconcileControlStub.captureNow(Mockito.any()))
+        .thenReturn(CaptureNowResponse.newBuilder().build());
     Mockito.when(queryStub.getQuery(Mockito.any()))
         .thenAnswer(
             inv -> {

@@ -101,4 +101,134 @@ class CommitResponseBuilderTest {
         "set-location update should populate metadata location field");
     assertEquals("0", merged.metadata().properties().get("current-schema-id"));
   }
+
+  @Test
+  void mergeSnapshotUpdatesPrefersCommittedCurrentSnapshotOverStaleMetadata() {
+    long staleSnapshotId = 7105637631842704244L;
+    long newSnapshotId = 1772624629860L;
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
+            1L,
+            Map.of("current-snapshot-id", Long.toString(newSnapshotId), "format-version", "2"),
+            2,
+            0,
+            0,
+            0,
+            0,
+            staleSnapshotId,
+            0L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of("main", Map.of("snapshot-id", staleSnapshotId, "type", "branch")),
+            List.of(),
+            List.of(),
+            List.of(Map.of("snapshot-id", staleSnapshotId, "timestamp-ms", 1L)),
+            List.of(),
+            List.of(Map.of("snapshot-id", staleSnapshotId, "timestamp-ms", 1L)));
+
+    CommitTableResponseDto response =
+        new CommitTableResponseDto(metadata.metadataLocation(), metadata);
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "add-snapshot",
+                    "snapshot",
+                    Map.of(
+                        "snapshot-id",
+                        newSnapshotId,
+                        "timestamp-ms",
+                        1772624629860L,
+                        "sequence-number",
+                        1L,
+                        "summary",
+                        Map.of("operation", "append"))),
+                Map.of(
+                    "action",
+                    "set-snapshot-ref",
+                    "ref-name",
+                    "main",
+                    "snapshot-id",
+                    newSnapshotId,
+                    "type",
+                    "branch")));
+
+    CommitTableResponseDto merged = builder.mergeSnapshotUpdates(response, request);
+
+    assertEquals(newSnapshotId, merged.metadata().currentSnapshotId());
+    assertEquals(
+        Long.toString(newSnapshotId), merged.metadata().properties().get("current-snapshot-id"));
+  }
+
+  @Test
+  void mergeTableDefinitionUpdatesResolvesSetLastSentinelIds() {
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
+            1L,
+            Map.of("format-version", "2"),
+            0,
+            0,
+            0,
+            0,
+            0,
+            null,
+            0L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    CommitTableResponseDto response =
+        new CommitTableResponseDto(metadata.metadataLocation(), metadata);
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "add-schema",
+                    "schema",
+                    Map.of(
+                        "schema-id",
+                        1,
+                        "type",
+                        "struct",
+                        "fields",
+                        List.of(
+                            Map.of("id", 1, "name", "id", "required", false, "type", "int"),
+                            Map.of("id", 2, "name", "name", "required", false, "type", "string")))),
+                Map.of("action", "set-current-schema", "schema-id", -1),
+                Map.of("action", "add-spec", "spec", Map.of("spec-id", 3, "fields", List.of())),
+                Map.of("action", "set-default-spec", "spec-id", -1),
+                Map.of(
+                    "action",
+                    "add-sort-order",
+                    "sort-order",
+                    Map.of("order-id", 5, "fields", List.of())),
+                Map.of("action", "set-default-sort-order", "sort-order-id", -1)));
+
+    CommitTableResponseDto merged = builder.mergeTableDefinitionUpdates(response, request);
+
+    assertEquals(1, merged.metadata().currentSchemaId());
+    assertEquals(3, merged.metadata().defaultSpecId());
+    assertEquals(5, merged.metadata().defaultSortOrderId());
+    assertEquals("1", merged.metadata().properties().get("current-schema-id"));
+    assertEquals("2", merged.metadata().properties().get("last-column-id"));
+  }
 }

@@ -14,14 +14,21 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.api.dto;
+package ai.floedb.floecat.reconciler.jobs;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.Map;
+import org.junit.jupiter.api.Test;
 
-public record NamespaceDto(
-    String id,
-    String displayName,
-    List<String> parents,
-    String description,
-    Map<String, String> properties) {}
+class ReconcileScopeTest {
+
+  @Test
+  void snapshotFilterPreservesDeltaVersionZero() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), null, List.of(), List.of(0L, 2L, 0L, -1L));
+
+    assertEquals(List.of(0L, 2L), scope.destinationSnapshotIds());
+    assertTrue(scope.hasSnapshotFilter());
+  }
+}

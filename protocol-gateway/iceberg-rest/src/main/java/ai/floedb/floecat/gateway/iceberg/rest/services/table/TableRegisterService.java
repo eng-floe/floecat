@@ -18,10 +18,10 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -32,22 +32,20 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MetadataLocationSync;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -56,9 +54,8 @@ public class TableRegisterService {
 
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableMetadataImportService tableMetadataImportService;
-  @Inject SnapshotMetadataService snapshotMetadataService;
   @Inject SnapshotClient snapshotClient;
-  @Inject TableCommitService tableCommitService;
+  @Inject TransactionCommitService transactionCommitService;
 
   public Response register(
       NamespaceRequestContext namespaceContext,
@@ -83,62 +80,46 @@ public class TableRegisterService {
       return IcebergErrorResponses.validation(e.getMessage());
     }
 
-    TableSpec.Builder spec =
-        tableSupport.baseTableSpec(
-            namespaceContext.catalogId(), namespaceContext.namespaceId(), tableName);
-    if (importedMetadata.schemaJson() != null && !importedMetadata.schemaJson().isBlank()) {
-      spec.setSchemaJson(importedMetadata.schemaJson());
-    }
-    Map<String, String> mergedProps =
-        mergeImportedProperties(null, importedMetadata, metadataLocation);
-    if (!mergedProps.isEmpty()) {
-      spec.putAllProperties(mergedProps);
-    }
-    tableSupport.addMetadataLocationProperties(spec, metadataLocation);
-
-    Table created;
-    try {
-      created = tableLifecycleService.createTable(spec, idempotencyKey);
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
-        if (Boolean.TRUE.equals(req.overwrite())) {
-          return overwriteRegisteredTable(
-              namespaceContext,
-              tableName,
-              metadataLocation,
-              idempotencyKey,
-              req.properties(),
-              importedMetadata,
-              tableSupport);
+    boolean overwrite = Boolean.TRUE.equals(req.overwrite());
+    boolean tableExists = false;
+    if (overwrite) {
+      try {
+        ResourceId existingTableId =
+            tableLifecycleService.resolveTableId(
+                namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
+        tableLifecycleService.getTable(existingTableId);
+        tableExists = true;
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
         }
-        return IcebergErrorResponses.conflict("Table already exists");
       }
-      throw e;
     }
-    final Table initialCreated = created;
-    Supplier<Table> createdSupplier = () -> initialCreated;
-    Response snapshotBootstrap =
-        snapshotMetadataService.ensureImportedCurrentSnapshot(
-            tableSupport,
-            created.getResourceId(),
-            namespaceContext.namespacePath(),
-            tableName,
-            createdSupplier,
-            importedMetadata,
-            idempotencyKey);
-    if (snapshotBootstrap != null) {
-      return snapshotBootstrap;
+    Response commitResponse =
+        overwrite && tableExists
+            ? overwriteRegisteredTable(
+                namespaceContext,
+                tableName,
+                metadataLocation,
+                idempotencyKey,
+                req.properties(),
+                importedMetadata,
+                tableSupport)
+            : createRegisteredTable(
+                namespaceContext,
+                tableName,
+                metadataLocation,
+                idempotencyKey,
+                importedMetadata,
+                tableSupport);
+    if (commitResponse != null) {
+      return commitResponse;
     }
-    Table ensuredCreated =
-        MetadataLocationSync.ensureMetadataLocation(
-            tableLifecycleService,
-            tableSupport,
-            initialCreated.getResourceId(),
-            initialCreated,
-            metadataLocation);
-    if (ensuredCreated != null) {
-      created = ensuredCreated;
-    }
+
+    ResourceId tableId =
+        tableLifecycleService.resolveTableId(
+            namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
+    Table created = tableLifecycleService.getTable(tableId);
 
     String resolvedLocation =
         tableSupport.resolveTableLocation(
@@ -154,8 +135,6 @@ public class TableRegisterService {
             null,
             idempotencyKey,
             tableSupport);
-    tableCommitService.runConnectorSync(
-        tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     List<Snapshot> snapshots =
@@ -177,6 +156,34 @@ public class TableRegisterService {
     return builder.build();
   }
 
+  private Response createRegisteredTable(
+      NamespaceRequestContext namespaceContext,
+      String tableName,
+      String metadataLocation,
+      String idempotencyKey,
+      ImportedMetadata importedMetadata,
+      TableGatewaySupport tableSupport) {
+    Response response =
+        transactionCommitService.commit(
+            namespaceContext.prefix(),
+            idempotencyKey,
+            buildRegisterTransactionRequest(
+                namespaceContext.namespacePath(),
+                tableName,
+                mergeImportedProperties(null, importedMetadata, metadataLocation),
+                metadataLocation,
+                importedMetadata,
+                List.of(),
+                true),
+            tableSupport);
+    if (response != null && response.getStatus() == Response.Status.CONFLICT.getStatusCode()) {
+      return IcebergErrorResponses.conflict("Table already exists");
+    }
+    return response != null && response.getStatus() != Response.Status.NO_CONTENT.getStatusCode()
+        ? response
+        : null;
+  }
+
   private Response overwriteRegisteredTable(
       NamespaceRequestContext namespaceContext,
       String tableName,
@@ -185,8 +192,6 @@ public class TableRegisterService {
       Map<String, String> registerProperties,
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
-    Map<String, String> ioProperties =
-        tableSupport.resolveRegisterFileIoProperties(registerProperties);
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
@@ -204,62 +209,26 @@ public class TableRegisterService {
       }
       throw e;
     }
-
+    List<Long> existingSnapshotIds = listSnapshotIds(tableId);
     Map<String, String> props =
         mergeImportedProperties(existing.getPropertiesMap(), importedMetadata, metadataLocation);
-    LOG.infof(
-        "Register overwrite merged metadata namespace=%s.%s merged=%s imported=%s",
-        String.join(".", namespaceContext.namespacePath()),
-        tableName,
-        props.get("metadata-location"),
-        metadataLocation);
-
-    FieldMask.Builder mask = FieldMask.newBuilder().addPaths("properties");
-    TableSpec.Builder updateSpec = TableSpec.newBuilder().putAllProperties(props);
-    tableSupport.addMetadataLocationProperties(updateSpec, metadataLocation);
-    if (importedMetadata != null
-        && importedMetadata.schemaJson() != null
-        && !importedMetadata.schemaJson().isBlank()) {
-      updateSpec.setSchemaJson(importedMetadata.schemaJson());
-      mask.addPaths("schema_json");
+    Response response =
+        transactionCommitService.commit(
+            namespaceContext.prefix(),
+            idempotencyKey,
+            buildRegisterTransactionRequest(
+                namespaceContext.namespacePath(),
+                tableName,
+                props,
+                metadataLocation,
+                importedMetadata,
+                existingSnapshotIds,
+                false),
+            tableSupport);
+    if (response != null && response.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+      return response;
     }
-    Table updated =
-        tableLifecycleService.updateTable(
-            UpdateTableRequest.newBuilder()
-                .setTableId(tableId)
-                .setSpec(updateSpec)
-                .setUpdateMask(mask)
-                .build());
-    LOG.infof(
-        "Register overwrite update response namespace=%s.%s metadata=%s",
-        String.join(".", namespaceContext.namespacePath()),
-        tableName,
-        updated.getPropertiesMap().get("metadata-location"));
-    Long currentSnapshotId = propertyLong(props, "current-snapshot-id");
-    if (currentSnapshotId != null && currentSnapshotId > 0) {
-      snapshotMetadataService.updateSnapshotMetadataLocation(
-          tableId, currentSnapshotId, metadataLocation);
-    }
-
-    Table snapshotTable = updated;
-    Response snapshotBootstrap =
-        snapshotMetadataService.ensureImportedCurrentSnapshot(
-            tableSupport,
-            tableId,
-            namespaceContext.namespacePath(),
-            tableName,
-            () -> snapshotTable,
-            importedMetadata,
-            idempotencyKey);
-    if (snapshotBootstrap != null) {
-      return snapshotBootstrap;
-    }
-    Table ensuredUpdated =
-        MetadataLocationSync.ensureMetadataLocation(
-            tableLifecycleService, tableSupport, tableId, updated, metadataLocation);
-    if (ensuredUpdated != null) {
-      updated = ensuredUpdated;
-    }
+    Table updated = tableLifecycleService.getTable(tableId);
 
     ResourceId connectorId =
         existing.hasUpstream() && existing.getUpstream().hasConnectorId()
@@ -268,6 +237,8 @@ public class TableRegisterService {
     String resolvedLocation =
         tableSupport.resolveTableLocation(
             importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
+    Map<String, String> ioProperties =
+        tableSupport.resolveRegisterFileIoProperties(registerProperties);
     if (connectorId == null) {
       connectorId =
           configureConnector(
@@ -280,10 +251,7 @@ public class TableRegisterService {
               null,
               idempotencyKey,
               tableSupport);
-      tableCommitService.runConnectorSync(
-          tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
     } else {
-      tableSupport.updateConnectorMetadata(connectorId, metadataLocation);
       String existingUri =
           existing.hasUpstream() && existing.getUpstream().getUri() != null
               ? existing.getUpstream().getUri()
@@ -293,8 +261,6 @@ public class TableRegisterService {
         tableSupport.updateTableUpstream(
             tableId, namespaceContext.namespacePath(), tableName, connectorId, resolvedLocation);
       }
-      tableCommitService.runConnectorSync(
-          tableSupport, connectorId, namespaceContext.namespacePath(), tableName);
     }
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
@@ -314,6 +280,129 @@ public class TableRegisterService {
       builder.header(HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(etagValue));
     }
     return builder.build();
+  }
+
+  private TransactionCommitRequest buildRegisterTransactionRequest(
+      List<String> namespacePath,
+      String tableName,
+      Map<String, String> mergedProps,
+      String metadataLocation,
+      ImportedMetadata importedMetadata,
+      List<Long> existingSnapshotIds,
+      boolean assertCreate) {
+    List<Map<String, Object>> requirements = new ArrayList<>();
+    if (assertCreate) {
+      requirements.add(Map.of("type", "assert-create"));
+    }
+    List<Map<String, Object>> updates = new ArrayList<>();
+    Map<String, String> props = mergedProps == null ? Map.of() : new LinkedHashMap<>(mergedProps);
+    props.remove("metadata-location");
+    if (!props.isEmpty()) {
+      updates.add(Map.of("action", "set-properties", "updates", props));
+    }
+    String location = props.get("location");
+    if (location != null && !location.isBlank()) {
+      updates.add(Map.of("action", "set-location", "location", location));
+    }
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      updates.add(Map.of("action", "set-metadata-location", "metadata-location", metadataLocation));
+    }
+    List<Long> importedSnapshotIds = new ArrayList<>();
+    if (importedMetadata != null && importedMetadata.snapshots() != null) {
+      for (ImportedSnapshot snapshot : importedMetadata.snapshots()) {
+        Map<String, Object> snapshotMap = new LinkedHashMap<>();
+        if (snapshot.snapshotId() != null) {
+          snapshotMap.put("snapshot-id", snapshot.snapshotId());
+          importedSnapshotIds.add(snapshot.snapshotId());
+        }
+        if (snapshot.parentSnapshotId() != null) {
+          snapshotMap.put("parent-snapshot-id", snapshot.parentSnapshotId());
+        }
+        if (snapshot.sequenceNumber() != null) {
+          snapshotMap.put("sequence-number", snapshot.sequenceNumber());
+        }
+        if (snapshot.timestampMs() != null) {
+          snapshotMap.put("timestamp-ms", snapshot.timestampMs());
+        }
+        if (snapshot.manifestList() != null && !snapshot.manifestList().isBlank()) {
+          snapshotMap.put("manifest-list", snapshot.manifestList());
+        }
+        if (snapshot.summary() != null && !snapshot.summary().isEmpty()) {
+          snapshotMap.put("summary", snapshot.summary());
+        }
+        if (snapshot.schemaId() != null) {
+          snapshotMap.put("schema-id", snapshot.schemaId());
+        }
+        if (importedMetadata.schemaJson() != null && !importedMetadata.schemaJson().isBlank()) {
+          snapshotMap.put("schema-json", importedMetadata.schemaJson());
+        }
+        updates.add(Map.of("action", "add-snapshot", "snapshot", snapshotMap));
+      }
+    } else if (importedMetadata != null && importedMetadata.currentSnapshot() != null) {
+      ImportedSnapshot snapshot = importedMetadata.currentSnapshot();
+      Map<String, Object> snapshotMap = new LinkedHashMap<>();
+      if (snapshot.snapshotId() != null) {
+        snapshotMap.put("snapshot-id", snapshot.snapshotId());
+        importedSnapshotIds.add(snapshot.snapshotId());
+      }
+      if (snapshot.parentSnapshotId() != null) {
+        snapshotMap.put("parent-snapshot-id", snapshot.parentSnapshotId());
+      }
+      if (snapshot.sequenceNumber() != null) {
+        snapshotMap.put("sequence-number", snapshot.sequenceNumber());
+      }
+      if (snapshot.timestampMs() != null) {
+        snapshotMap.put("timestamp-ms", snapshot.timestampMs());
+      }
+      if (snapshot.manifestList() != null && !snapshot.manifestList().isBlank()) {
+        snapshotMap.put("manifest-list", snapshot.manifestList());
+      }
+      if (snapshot.summary() != null && !snapshot.summary().isEmpty()) {
+        snapshotMap.put("summary", snapshot.summary());
+      }
+      if (snapshot.schemaId() != null) {
+        snapshotMap.put("schema-id", snapshot.schemaId());
+      }
+      if (importedMetadata.schemaJson() != null && !importedMetadata.schemaJson().isBlank()) {
+        snapshotMap.put("schema-json", importedMetadata.schemaJson());
+      }
+      updates.add(Map.of("action", "add-snapshot", "snapshot", snapshotMap));
+    }
+    if (existingSnapshotIds != null
+        && !existingSnapshotIds.isEmpty()
+        && !importedSnapshotIds.isEmpty()) {
+      List<Long> removals =
+          existingSnapshotIds.stream().filter(id -> !importedSnapshotIds.contains(id)).toList();
+      if (!removals.isEmpty()) {
+        updates.add(Map.of("action", "remove-snapshots", "snapshot-ids", removals));
+      }
+    }
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(namespacePath, tableName), requirements, updates)));
+  }
+
+  private List<Long> listSnapshotIds(ResourceId tableId) {
+    if (tableId == null) {
+      return List.of();
+    }
+    try {
+      return snapshotClient
+          .listSnapshots(
+              ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest.newBuilder()
+                  .setTableId(tableId)
+                  .build())
+          .getSnapshotsList()
+          .stream()
+          .map(ai.floedb.floecat.catalog.rpc.Snapshot::getSnapshotId)
+          .toList();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return List.of();
+      }
+      throw e;
+    }
   }
 
   private ResourceId configureConnector(
@@ -394,21 +483,6 @@ public class TableRegisterService {
       return;
     }
     target.keySet().removeIf(FileIoFactory::isFileIoProperty);
-  }
-
-  private Long propertyLong(Map<String, String> props, String key) {
-    if (props == null || props.isEmpty()) {
-      return null;
-    }
-    String value = props.get(key);
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
   }
 
   private String metadataLocation(Table table, IcebergMetadata metadata) {

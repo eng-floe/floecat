@@ -1,0 +1,145 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.reconciler;
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.reconciler.rpc";
+
+import "floecat/common/common.proto";
+import "floecat/connector/connector.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+message CaptureScope {
+  ai.floedb.floecat.common.ResourceId connector_id = 1;
+  repeated ai.floedb.floecat.connector.NamespacePath destination_namespace_paths = 2;
+  string destination_table_display_name = 3;
+  repeated string destination_table_columns = 4;
+  repeated uint64 destination_snapshot_ids = 5;
+}
+
+enum CaptureMode {
+  CM_UNSPECIFIED = 0;
+  CM_METADATA_ONLY = 1;
+  CM_METADATA_AND_STATS = 2;
+  CM_STATS_ONLY = 3;
+}
+
+message CaptureNowRequest {
+  CaptureScope scope = 1;
+  CaptureMode mode = 2;
+  bool full_rescan = 3;
+}
+
+message CaptureNowResponse {
+  uint64 tables_scanned = 1;
+  uint64 tables_changed = 2;
+  uint64 errors = 3;
+}
+
+message StartCaptureRequest {
+  CaptureScope scope = 1;
+  CaptureMode mode = 2;
+  bool full_rescan = 3;
+}
+
+message StartCaptureResponse {
+  string job_id = 1;
+}
+
+message GetReconcileJobRequest {
+  string job_id = 1;
+}
+
+message GetReconcileJobResponse {
+  string job_id = 1;
+  string connector_id = 2;
+  JobState state = 3;
+  string message = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  uint64 tables_scanned = 7;
+  uint64 tables_changed = 8;
+  uint64 errors = 9;
+  bool full_rescan = 10;
+  uint64 snapshots_processed = 11;
+  uint64 stats_processed = 12;
+  uint64 duration_ms = 13;
+}
+
+message ListReconcileJobsRequest {
+  ai.floedb.floecat.common.PageRequest page = 1;
+  string connector_id = 2;
+  repeated JobState states = 3;
+}
+
+message ListReconcileJobsResponse {
+  repeated GetReconcileJobResponse jobs = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message CancelReconcileJobRequest {
+  string job_id = 1;
+  string reason = 2;
+}
+
+message CancelReconcileJobResponse {
+  bool cancelled = 1;
+  GetReconcileJobResponse job = 2;
+}
+
+enum JobState {
+  JS_UNSPECIFIED = 0;
+  JS_QUEUED = 1;
+  JS_RUNNING = 2;
+  JS_SUCCEEDED = 3;
+  JS_FAILED = 4;
+  JS_CANCELLING = 5;
+  JS_CANCELLED = 6;
+}
+
+message GetReconcilerSettingsRequest {}
+
+message GetReconcilerSettingsResponse {
+  bool auto_enabled = 1;
+  google.protobuf.Duration default_interval = 2;
+  ai.floedb.floecat.connector.ReconcileMode default_mode = 3;
+  google.protobuf.Duration finished_job_retention = 4;
+}
+
+message UpdateReconcilerSettingsRequest {
+  optional bool auto_enabled = 1;
+  optional google.protobuf.Duration default_interval = 2;
+  optional ai.floedb.floecat.connector.ReconcileMode default_mode = 3;
+  optional google.protobuf.Duration finished_job_retention = 4;
+}
+
+message UpdateReconcilerSettingsResponse {
+  bool auto_enabled = 1;
+  google.protobuf.Duration default_interval = 2;
+  ai.floedb.floecat.connector.ReconcileMode default_mode = 3;
+  google.protobuf.Duration finished_job_retention = 4;
+}
+
+service ReconcileControl {
+  rpc CaptureNow(CaptureNowRequest) returns (CaptureNowResponse);
+  rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
+  rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
+  rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
+  rpc CancelReconcileJob(CancelReconcileJobRequest) returns (CancelReconcileJobResponse);
+  rpc GetReconcilerSettings(GetReconcilerSettingsRequest) returns (GetReconcilerSettingsResponse);
+  rpc UpdateReconcilerSettings(UpdateReconcilerSettingsRequest)
+      returns (UpdateReconcilerSettingsResponse);
+}

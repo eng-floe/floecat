@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -30,115 +29,57 @@ public class TableCommitSideEffectService {
   private static final Logger LOG = Logger.getLogger(TableCommitSideEffectService.class);
   @Inject SnapshotMetadataService snapshotMetadataService;
 
-  public void runConnectorSync(
+  public boolean runPostCommitStatsSyncAttempt(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,
       List<String> namespacePath,
-      String tableName) {
-    runConnectorSyncAttempt(tableSupport, connectorId, namespacePath, tableName);
+      String tableName,
+      List<Long> snapshotIds) {
+    return runStatsSyncAttempt(
+        tableSupport, connectorId, namespacePath, tableName, snapshotIds, true);
   }
 
-  public ConnectorSyncResult runConnectorSyncAttempt(
+  private boolean runStatsSyncAttempt(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,
       List<String> namespacePath,
-      String tableName) {
+      String tableName,
+      List<Long> snapshotIds,
+      boolean fullRescan) {
     if (!tableSupport.connectorIntegrationEnabled()) {
-      return ConnectorSyncResult.skippedResult();
+      return true;
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
-      return ConnectorSyncResult.skippedResult();
+      return true;
     }
-    boolean captureOk = true;
-    boolean reconcileOk = true;
-    try {
-      tableSupport.runSyncMetadataCapture(connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      captureOk = false;
-      LOG.warnf(
-          e,
-          "Connector sync metadata capture failed connectorId=%s namespace=%s table=%s",
-          connectorId.getId(),
-          namespacePath == null ? "<null>" : String.join(".", namespacePath),
-          tableName);
+    if (snapshotIds == null || snapshotIds.isEmpty()) {
+      return true;
     }
     try {
-      tableSupport.triggerScopedReconcile(connectorId, namespacePath, tableName);
+      tableSupport.runSyncStatisticsCapture(
+          connectorId, namespacePath, tableName, snapshotIds, fullRescan);
+      return true;
     } catch (Throwable e) {
-      reconcileOk = false;
-      LOG.warnf(
-          e,
-          "Connector reconcile trigger failed connectorId=%s namespace=%s table=%s",
-          connectorId.getId(),
-          namespacePath == null ? "<null>" : String.join(".", namespacePath),
-          tableName);
-    }
-    return new ConnectorSyncResult(captureOk, reconcileOk, false);
-  }
-
-  public ConnectorSyncResult runConnectorStatsSyncAttempt(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName) {
-    if (!tableSupport.connectorIntegrationEnabled()) {
-      return ConnectorSyncResult.skippedResult();
-    }
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return ConnectorSyncResult.skippedResult();
-    }
-    boolean statsOk = true;
-    try {
-      tableSupport.runSyncStatisticsCapture(connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      statsOk = false;
       LOG.warnf(
           e,
           "Connector stats-only sync failed connectorId=%s namespace=%s table=%s",
           connectorId.getId(),
           namespacePath == null ? "<null>" : String.join(".", namespacePath),
           tableName);
+      return false;
     }
-    return new ConnectorSyncResult(statsOk, true, false);
   }
 
-  public ConnectorSyncResult runPostCommitStatsSyncAttempt(
-      TableGatewaySupport tableSupport,
-      List<String> namespacePath,
-      String tableName,
-      Table tableRecord) {
-    return runConnectorStatsSyncAttempt(
-        tableSupport, resolveConnectorId(tableRecord), namespacePath, tableName);
-  }
-
-  ResourceId resolveConnectorId(Table tableRecord) {
-    if (tableRecord == null
-        || !tableRecord.hasUpstream()
-        || !tableRecord.getUpstream().hasConnectorId()) {
-      return null;
-    }
-    ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
-    return connectorId == null || connectorId.getId().isBlank() ? null : connectorId;
-  }
-
-  public void pruneRemovedSnapshots(ResourceId tableId, List<Long> snapshotIds) {
+  public boolean pruneRemovedSnapshots(ResourceId tableId, List<Long> snapshotIds) {
     if (tableId == null || snapshotIds == null || snapshotIds.isEmpty()) {
-      return;
+      return true;
     }
     try {
       snapshotMetadataService.deleteSnapshots(tableId, snapshotIds);
+      return true;
     } catch (RuntimeException e) {
       LOG.warnf(e, "Snapshot prune failed tableId=%s snapshotIds=%s", tableId.getId(), snapshotIds);
-    }
-  }
-
-  public record ConnectorSyncResult(boolean captureOk, boolean reconcileOk, boolean skipped) {
-    static ConnectorSyncResult skippedResult() {
-      return new ConnectorSyncResult(true, true, true);
-    }
-
-    public boolean success() {
-      return skipped || (captureOk && reconcileOk);
+      return false;
     }
   }
 }

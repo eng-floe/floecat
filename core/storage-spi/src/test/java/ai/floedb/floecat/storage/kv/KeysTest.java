@@ -52,4 +52,25 @@ public class KeysTest {
   void join_allows_double_slashes_in_parts() {
     assertEquals("/a//b", Keys.join("a/", "b"));
   }
+
+  @Test
+  void tableCommitJournalPointerUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/tx-journal/tx%20id",
+        Keys.tableCommitJournalPointer("acct id", "table id", "tx id"));
+  }
+
+  @Test
+  void snapshotPointerByIdUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/snapshots/by-id/0000000000000000000",
+        Keys.snapshotPointerById("acct id", "table id", 0L));
+  }
+
+  @Test
+  void tableCommitOutboxPendingPointerUsesGlobalAccountPartition() {
+    assertEquals(
+        "/accounts/acct%20id/tx-outbox/pending/0000000000000000123/table%20id/tx%20id",
+        Keys.tableCommitOutboxPendingPointer(123L, "acct id", "table id", "tx id"));
+  }
 }

@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.common.rpc.ErrorCode;
@@ -39,6 +40,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
@@ -68,6 +74,9 @@ import org.junit.jupiter.api.*;
 public class ConnectorIT {
   @GrpcClient("floecat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
+
+  @GrpcClient("floecat")
+  ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
 
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
@@ -339,6 +348,276 @@ public class ConnectorIT {
   }
 
   @Test
+  void icebergFixtureIncrementalReconcileSkipsAlreadyIngestedSnapshots() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-incremental", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-incremental")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-incremental")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(TestS3Fixtures.bucketUri(null))
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var fullJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(fullJob);
+    assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
+    assertTrue(fullJob.fullRescan);
+    assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
+    assertTrue(fullJob.statsProcessed > 0, "expected full reconcile to process stats");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-incremental")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    int snapshotCountAfterFull = snaps.count(table.getResourceId());
+    assertTrue(snapshotCountAfterFull > 0, "expected snapshots to be materialized after full run");
+
+    var incrementalJob = runReconcile(conn.getResourceId(), false);
+    assertNotNull(incrementalJob);
+    assertEquals(
+        "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
+    assertFalse(incrementalJob.fullRescan);
+    assertEquals(0L, incrementalJob.snapshotsProcessed, "incremental should find no new snapshots");
+    assertEquals(0L, incrementalJob.statsProcessed, "incremental should process no new stats");
+    assertEquals(snapshotCountAfterFull, snaps.count(table.getResourceId()));
+  }
+
+  @Test
+  void icebergFixtureIncrementalReconcileCapturesStatsForNewSnapshot() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-incremental-advance", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-incremental-advance")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json"));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-incremental-advance")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(TestS3Fixtures.bucketUri(null))
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var fullJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(fullJob);
+    assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
+    assertTrue(fullJob.fullRescan);
+    assertEquals(
+        1L,
+        fullJob.snapshotsProcessed,
+        "expected initial fixture reconcile to process one snapshot");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-incremental-advance")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    assertEquals(
+        1, snaps.count(table.getResourceId()), "expected one snapshot after initial reconcile");
+
+    var advancedProps = new HashMap<>(conn.getPropertiesMap());
+    advancedProps.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json"));
+    conn = updateConnectorProperties(conn.getResourceId(), advancedProps);
+
+    var incrementalJob = runReconcile(conn.getResourceId(), false);
+    assertNotNull(incrementalJob);
+    assertEquals(
+        "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
+    assertFalse(incrementalJob.fullRescan);
+    assertEquals(
+        1L, incrementalJob.snapshotsProcessed, "incremental should ingest one new snapshot");
+    assertTrue(
+        incrementalJob.statsProcessed > 0, "incremental should capture stats for the new snapshot");
+    assertEquals(
+        2,
+        snaps.count(table.getResourceId()),
+        "expected second snapshot after incremental reconcile");
+
+    var fileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+    assertTrue(
+        fileResp.getFileColumnsCount() > 0,
+        "expected current snapshot file stats after incremental reconcile");
+  }
+
+  @Test
+  void icebergFixtureIncrementalReconcileCapturesDeleteStatsForNewSnapshot() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-incremental-delete", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-incremental-delete")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json"));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-incremental-delete")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(TestS3Fixtures.bucketUri(null))
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var fullJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(fullJob);
+    assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
+    assertTrue(fullJob.fullRescan);
+    assertEquals(
+        2L,
+        fullJob.snapshotsProcessed,
+        "expected initial fixture reconcile to process two snapshots");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-incremental-delete")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    assertEquals(
+        2, snaps.count(table.getResourceId()), "expected two snapshots after initial reconcile");
+
+    var advancedProps = new HashMap<>(conn.getPropertiesMap());
+    advancedProps.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
+    conn = updateConnectorProperties(conn.getResourceId(), advancedProps);
+
+    var incrementalJob = runReconcile(conn.getResourceId(), false);
+    assertNotNull(incrementalJob);
+    assertEquals(
+        "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
+    assertFalse(incrementalJob.fullRescan);
+    assertEquals(
+        1L, incrementalJob.snapshotsProcessed, "incremental should ingest one delete snapshot");
+    assertTrue(
+        incrementalJob.statsProcessed > 0,
+        "incremental should capture stats for the delete snapshot");
+    assertEquals(
+        3,
+        snaps.count(table.getResourceId()),
+        "expected third snapshot after incremental reconcile");
+
+    var fileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+    assertTrue(
+        fileResp.getFileColumnsList().stream()
+            .anyMatch(f -> f.getFileContent() == FileContent.FC_POSITION_DELETES),
+        "expected current snapshot to expose a position delete file");
+  }
+
+  @Test
   void icebergComplexFixtureGeneratesStats() throws Exception {
     TestS3Fixtures.seedFixturesOnce();
 
@@ -377,13 +656,16 @@ public class ConnectorIT {
                 .putAllProperties(props)
                 .build());
 
-    var job = runReconcile(conn.getResourceId());
+    var job = runReconcile(conn.getResourceId(), true);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
     assertTrue(job.fullRescan);
     assertTrue(job.tablesScanned > 0, "expected complex fixture reconcile to scan tables");
     assertTrue(
         job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
+    assertTrue(
+        job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
+    assertTrue(job.statsProcessed > 0, "expected complex fixture reconcile to generate stats");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
@@ -596,11 +878,31 @@ public class ConnectorIT {
   }
 
   ReconcileJobStore.ReconcileJob runReconcile(ResourceId rid) throws Exception {
+    return runReconcile(rid, true);
+  }
+
+  private Connector updateConnectorProperties(
+      ResourceId connectorId, java.util.Map<String, String> properties) {
+    return connectors
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().putAllProperties(properties).build())
+                .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+                .build())
+        .getConnector();
+  }
+
+  ReconcileJobStore.ReconcileJob runReconcile(ResourceId rid, boolean fullRescan) throws Exception {
     assertEquals(ResourceKind.RK_CONNECTOR, rid.getKind());
 
     var trig =
-        connectors.triggerReconcile(
-            TriggerReconcileRequest.newBuilder().setConnectorId(rid).setFullRescan(true).build());
+        reconcileControl.startCapture(
+            StartCaptureRequest.newBuilder()
+                .setScope(CaptureScope.newBuilder().setConnectorId(rid).build())
+                .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                .setFullRescan(fullRescan)
+                .build());
 
     String jobId = trig.getJobId();
     assertFalse(jobId.isBlank());
@@ -852,6 +1154,44 @@ public class ConnectorIT {
   }
 
   @Test
+  void connectorResourceIdKindIsPreservedAcrossCreateGetAndList() {
+    TestSupport.createCatalog(catalogService, "cat-kind", "");
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("kind-check")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://x")
+            .setSource(source(List.of("a", "b")))
+            .setDestination(dest("cat-kind"))
+            .build();
+
+    var created =
+        connectors.createConnector(CreateConnectorRequest.newBuilder().setSpec(spec).build());
+    assertEquals(
+        ResourceKind.RK_CONNECTOR,
+        created.getConnector().getResourceId().getKind(),
+        "createConnector should return a connector resource id");
+
+    var fetched =
+        connectors.getConnector(
+            GetConnectorRequest.newBuilder()
+                .setConnectorId(created.getConnector().getResourceId())
+                .build());
+    assertEquals(
+        ResourceKind.RK_CONNECTOR,
+        fetched.getConnector().getResourceId().getKind(),
+        "getConnector should preserve connector resource id kind");
+
+    var listed =
+        connectors.listConnectors(ListConnectorsRequest.newBuilder().build()).getConnectorsList();
+    assertTrue(
+        listed.stream()
+            .filter(c -> c.getDisplayName().equals("kind-check"))
+            .allMatch(c -> c.getResourceId().getKind() == ResourceKind.RK_CONNECTOR),
+        "listConnectors should preserve connector resource id kind");
+  }
+
+  @Test
   void connectorAuthIsMaskedOnResponses() {
     TestSupport.createCatalog(catalogService, "cat-auth", "");
     var auth =
@@ -1097,7 +1437,7 @@ public class ConnectorIT {
   }
 
   @Test
-  void triggerReconcileNotFound() throws Exception {
+  void startCaptureNotFound() throws Exception {
     var rid =
         ResourceId.newBuilder()
             .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
@@ -1108,8 +1448,11 @@ public class ConnectorIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                connectors.triggerReconcile(
-                    TriggerReconcileRequest.newBuilder().setConnectorId(rid).build()));
+                reconcileControl.startCapture(
+                    StartCaptureRequest.newBuilder()
+                        .setScope(CaptureScope.newBuilder().setConnectorId(rid).build())
+                        .setMode(CaptureMode.CM_METADATA_AND_STATS)
+                        .build()));
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Connector not found");
@@ -1121,7 +1464,7 @@ public class ConnectorIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                connectors.getReconcileJob(
+                reconcileControl.getReconcileJob(
                     GetReconcileJobRequest.newBuilder().setJobId("zzz").build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Job not found");

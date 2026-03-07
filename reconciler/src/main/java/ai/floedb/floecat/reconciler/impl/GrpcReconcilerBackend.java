@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -46,6 +47,7 @@ import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -74,9 +76,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "remote")
@@ -256,6 +260,28 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       throw e;
     }
+  }
+
+  @Override
+  public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
+    Set<Long> snapshotIds = new LinkedHashSet<>();
+    String token = "";
+    do {
+      var response =
+          snapshot(ctx)
+              .listSnapshots(
+                  ListSnapshotsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setPage(PageRequest.newBuilder().setPageSize(500).setPageToken(token))
+                      .build());
+      for (Snapshot snapshot : response.getSnapshotsList()) {
+        if (snapshot.getSnapshotId() >= 0) {
+          snapshotIds.add(snapshot.getSnapshotId());
+        }
+      }
+      token = response.hasPage() ? response.getPage().getNextPageToken() : "";
+    } while (!token.isBlank());
+    return snapshotIds;
   }
 
   @Override
