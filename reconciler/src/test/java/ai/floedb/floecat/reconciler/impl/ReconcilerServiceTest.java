@@ -154,6 +154,11 @@ class ReconcilerServiceTest {
     }
 
     @Override
+    public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
+      return Set.of();
+    }
+
+    @Override
     public void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot) {
       throw new UnsupportedOperationException();
     }
@@ -288,6 +293,151 @@ class ReconcilerServiceTest {
     assertThat(selectors).containsExactlyInAnyOrder("i", "#1");
   }
 
+  @Test
+  void filterBundlesForModeSkipsAlreadyIngestedSnapshotsForIncremental() throws Exception {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+            return Set.of(10L, 12L);
+          }
+        };
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L), Set.of());
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(11L);
+  }
+
+  @Test
+  void filterBundlesForModeKeepsAllSnapshotsForFullRescan() throws Exception {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+            return Set.of(10L, 12L);
+          }
+        };
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L), Set.of());
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(10L, 11L);
+  }
+
+  @Test
+  void filterBundlesForModeSkipsKnownSnapshotsWhenStatsAreIncluded() throws Exception {
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L), Set.of());
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(10L, 11L);
+  }
+
+  @Test
+  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L), Set.of(11L, 12L));
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(12L);
+  }
+
+  @Test
+  void knownSnapshotIdsForEnumerationPrunesAllIncrementalRuns() throws Exception {
+    @SuppressWarnings("unchecked")
+    Set<Long> metadataOnly =
+        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
+    @SuppressWarnings("unchecked")
+    Set<Long> metadataAndStats =
+        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
+    @SuppressWarnings("unchecked")
+    Set<Long> statsOnly = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
+    @SuppressWarnings("unchecked")
+    Set<Long> fullRescan = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(true, Set.of(10L, 11L));
+
+    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
+    assertThat(metadataAndStats).containsExactlyInAnyOrder(10L, 11L);
+    assertThat(statsOnly).containsExactlyInAnyOrder(10L, 11L);
+    assertThat(fullRescan).isEmpty();
+  }
+
+  @Test
+  void tableChangedIsFalseWhenNoBundlesRemain() throws Exception {
+    assertThat(invokeTableChanged(List.of())).isFalse();
+  }
+
+  @Test
+  void tableChangedIsTrueWhenBundlesRemain() throws Exception {
+    assertThat(
+            invokeTableChanged(
+                List.of(
+                    new FloecatConnector.SnapshotBundle(
+                        11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
+                        Map.of()))))
+        .isTrue();
+  }
+
   @SuppressWarnings("unchecked")
   private static Set<String> invokeEffectiveSelectors(ReconcileScope scope, SourceSelector source)
       throws Exception {
@@ -296,5 +446,51 @@ class ReconcilerServiceTest {
             "effectiveSelectors", ReconcileScope.class, SourceSelector.class);
     method.setAccessible(true);
     return (Set<String>) method.invoke(null, scope, source);
+  }
+
+  private Object invokeFilterBundlesForMode(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      boolean fullRescan,
+      boolean includeCoreMetadata,
+      boolean includeStats,
+      Set<Long> existingSnapshotIds,
+      Set<Long> targetSnapshotIds)
+      throws Exception {
+    Method method =
+        ReconcilerService.class.getDeclaredMethod(
+            "filterBundlesForMode",
+            List.class,
+            boolean.class,
+            boolean.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            ReconcilerService.ProgressListener.class);
+    method.setAccessible(true);
+    return method.invoke(
+        service,
+        bundles,
+        fullRescan,
+        includeCoreMetadata,
+        includeStats,
+        existingSnapshotIds,
+        targetSnapshotIds,
+        (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
+  }
+
+  private static Object invokeKnownSnapshotIdsForEnumeration(
+      boolean fullRescan, Set<Long> existingSnapshotIds) throws Exception {
+    Method method =
+        ReconcilerService.class.getDeclaredMethod(
+            "knownSnapshotIdsForEnumeration", boolean.class, Set.class);
+    method.setAccessible(true);
+    return method.invoke(null, fullRescan, existingSnapshotIds);
+  }
+
+  private static boolean invokeTableChanged(List<FloecatConnector.SnapshotBundle> bundles)
+      throws Exception {
+    Method method = ReconcilerService.class.getDeclaredMethod("tableChanged", List.class);
+    method.setAccessible(true);
+    return (boolean) method.invoke(null, bundles);
   }
 }

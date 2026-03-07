@@ -76,20 +76,46 @@ public class TableCommitSideEffectService {
     return new ConnectorSyncResult(captureOk, reconcileOk, false);
   }
 
+  public ConnectorSyncResult runPostCommitStatsSyncAttempt(
+      TableGatewaySupport tableSupport,
+      List<String> namespacePath,
+      String tableName,
+      Table tableRecord,
+      List<Long> snapshotIds) {
+    return runConnectorStatsSyncAttempt(
+        tableSupport, resolveConnectorId(tableRecord), namespacePath, tableName, snapshotIds, true);
+  }
+
   public ConnectorSyncResult runConnectorStatsSyncAttempt(
       TableGatewaySupport tableSupport,
       ResourceId connectorId,
       List<String> namespacePath,
-      String tableName) {
+      String tableName,
+      List<Long> snapshotIds) {
+    return runConnectorStatsSyncAttempt(
+        tableSupport, connectorId, namespacePath, tableName, snapshotIds, false);
+  }
+
+  public ConnectorSyncResult runConnectorStatsSyncAttempt(
+      TableGatewaySupport tableSupport,
+      ResourceId connectorId,
+      List<String> namespacePath,
+      String tableName,
+      List<Long> snapshotIds,
+      boolean fullRescan) {
     if (!tableSupport.connectorIntegrationEnabled()) {
       return ConnectorSyncResult.skippedResult();
     }
     if (connectorId == null || connectorId.getId().isBlank()) {
       return ConnectorSyncResult.skippedResult();
     }
+    if (snapshotIds == null || snapshotIds.isEmpty()) {
+      return ConnectorSyncResult.skippedResult();
+    }
     boolean statsOk = true;
     try {
-      tableSupport.runSyncStatisticsCapture(connectorId, namespacePath, tableName);
+      tableSupport.runSyncStatisticsCapture(
+          connectorId, namespacePath, tableName, snapshotIds, fullRescan);
     } catch (Throwable e) {
       statsOk = false;
       LOG.warnf(
@@ -100,15 +126,6 @@ public class TableCommitSideEffectService {
           tableName);
     }
     return new ConnectorSyncResult(statsOk, true, false);
-  }
-
-  public ConnectorSyncResult runPostCommitStatsSyncAttempt(
-      TableGatewaySupport tableSupport,
-      List<String> namespacePath,
-      String tableName,
-      Table tableRecord) {
-    return runConnectorStatsSyncAttempt(
-        tableSupport, resolveConnectorId(tableRecord), namespacePath, tableName);
   }
 
   ResourceId resolveConnectorId(Table tableRecord) {

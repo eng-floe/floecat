@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import com.google.protobuf.ByteString;
 import java.io.Closeable;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,8 +52,52 @@ public interface FloecatConnector extends Closeable {
       String tableName,
       ResourceId destinationTableId,
       Set<String> includeColumns,
+      SnapshotEnumerationOptions options) {
+    boolean includeStatistics = options == null || options.includeStatistics();
+    return enumerateSnapshotsWithStats(
+        namespaceFq, tableName, destinationTableId, includeColumns, includeStatistics);
+  }
+
+  default List<SnapshotBundle> enumerateSnapshotsWithStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
       boolean includeStatistics) {
     return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
+  }
+
+  record SnapshotEnumerationOptions(
+      boolean includeStatistics,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    public SnapshotEnumerationOptions {
+      knownSnapshotIds =
+          knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
+      targetSnapshotIds =
+          targetSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(targetSnapshotIds));
+    }
+
+    public static SnapshotEnumerationOptions full(boolean includeStatistics) {
+      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of(), Set.of());
+    }
+
+    public static SnapshotEnumerationOptions full(
+        boolean includeStatistics, Set<Long> targetSnapshotIds) {
+      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of(), targetSnapshotIds);
+    }
+
+    public static SnapshotEnumerationOptions incremental(
+        boolean includeStatistics, Set<Long> knownSnapshotIds) {
+      return new SnapshotEnumerationOptions(includeStatistics, false, knownSnapshotIds, Set.of());
+    }
+
+    public static SnapshotEnumerationOptions incremental(
+        boolean includeStatistics, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
+      return new SnapshotEnumerationOptions(
+          includeStatistics, false, knownSnapshotIds, targetSnapshotIds);
+    }
   }
 
   @Override

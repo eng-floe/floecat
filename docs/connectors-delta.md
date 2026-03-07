@@ -7,7 +7,7 @@ warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL en
 (through the v2 client) to enumerate tables, collect statistics, and plan files.
 
 The primary implementation is `DeltaConnector` (abstract) with source-specific subclasses for Unity
-Catalog and filesystem-backed tables, exposed via `DeltaConnectorProvider`. Supporting classes manage
+Catalog, AWS Glue, and filesystem-backed tables, exposed via `DeltaConnectorProvider`. Supporting classes manage
 OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream),
 Databricks SQL execution, and custom file readers for S3.
 
@@ -22,7 +22,10 @@ Databricks SQL execution, and custom file readers for S3.
   - Plans files using `DeltaPlanner`, emitting `ScanFile`s for data/delete manifests.
 - **`DeltaFilesystemConnector`** – Single-table connector for `delta.table-root` plus optional
   `external.namespace` / `external.table-name` overrides.
-- **`DeltaConnectorFactory`** – Selects Unity vs filesystem sources and wires engine/auth/IO.
+- **`DeltaGlueConnector`** – AWS Glue-backed connector that:
+  - Lists databases and Delta-registered tables from Glue.
+  - Resolves table `storage_location` from Glue metadata and reads table snapshots via Delta Kernel.
+- **`DeltaConnectorFactory`** – Selects Unity, Glue, or filesystem sources and wires engine/auth/IO.
 - **`UcBaseSupport` / `UcHttp`** – HTTP helpers for constructing API URLs, encoding parameters, and
   handling retries/timeouts.
 - **`DeltaTypeMapper`** – Maps Delta/Parquet logical types into Floecat logical types for stats.
@@ -39,7 +42,10 @@ Databricks SQL execution, and custom file readers for S3.
   Delta Kernel, and returns a `TableDescriptor` containing location, partition keys, and properties.
 - `enumerateSnapshotsWithStats(...)` – Iterates Delta snapshots, optionally samples Parquet files to
   produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
-  per-file stats (row count/size plus per-column metrics when available).
+  per-file stats (row count/size plus per-column metrics when available). In incremental mode, the
+  connector enumerates all Delta versions that Floecat has not already ingested. When
+  `SnapshotEnumerationOptions.targetSnapshotIds` is supplied, enumeration is limited to that
+  explicit version set even when `fullRescan=true`.
 
 ## Important Internal Details
 
@@ -78,7 +84,7 @@ Connector resources (HTTP clients, S3 client, Delta engine) are closed when `clo
 
 Important connector properties:
 
-- `delta.source` – Selects backend (`unity`, `filesystem`). Defaults to `unity`.
+- `delta.source` – Selects backend (`unity`, `glue`, `filesystem`). Defaults to `unity`.
 - `delta.table-root` – Required for `delta.source=filesystem`, pointing at a Delta table root.
 - `external.namespace`, `external.table-name` – Optional overrides for filesystem connector naming.
 - `http.connect.ms`, `http.read.ms` – Timeout controls for Unity Catalog HTTP calls.
@@ -88,6 +94,8 @@ Important connector properties:
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`
   expects either `token=<access-token>` or `oauth.mode=cli` (to read the Databricks CLI cache).
   Service principal and WIF are expressed as `AuthCredentials` and resolved upstream.
+  For `delta.source=glue`, use AWS credentials/profile options (for example resolved `s3.*` keys
+  or `auth.properties` profile settings) and set `auth.scheme=aws-sigv4` or `none`.
 
 Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
 For Delta, the relevant types are `bearer`, `client` (SP), `cli`, `token-exchange` (WIF),

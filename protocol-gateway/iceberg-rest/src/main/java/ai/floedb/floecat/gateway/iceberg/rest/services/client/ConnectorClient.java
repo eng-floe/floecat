@@ -22,13 +22,14 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
@@ -42,30 +43,34 @@ public class ConnectorClient {
   }
 
   public CreateConnectorResponse createConnector(CreateConnectorRequest request) {
-    return stub().createConnector(request);
+    return connectorStub().createConnector(request);
   }
 
   public GetConnectorResponse getConnector(GetConnectorRequest request) {
-    return stub().getConnector(request);
+    return connectorStub().getConnector(request);
   }
 
   public UpdateConnectorResponse updateConnector(UpdateConnectorRequest request) {
-    return stub().updateConnector(request);
+    return connectorStub().updateConnector(request);
   }
 
   public void deleteConnector(DeleteConnectorRequest request) {
-    stub().deleteConnector(request);
+    connectorStub().deleteConnector(request);
   }
 
-  public SyncCaptureResponse syncCapture(SyncCaptureRequest request) {
-    return stub().syncCapture(request);
+  public CaptureNowResponse captureNow(CaptureNowRequest request) {
+    return reconcileStub().captureNow(request);
   }
 
-  public TriggerReconcileResponse triggerReconcile(TriggerReconcileRequest request) {
-    return stub().triggerReconcile(request);
+  public StartCaptureResponse startCapture(StartCaptureRequest request) {
+    return reconcileStub().startCapture(request);
   }
 
-  private ConnectorsGrpc.ConnectorsBlockingStub stub() {
+  private ConnectorsGrpc.ConnectorsBlockingStub connectorStub() {
     return grpc.withHeaders(grpc.raw().connectors());
+  }
+
+  private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileStub() {
+    return grpc.withHeaders(grpc.raw().reconcileControl());
   }
 }

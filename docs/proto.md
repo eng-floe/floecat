@@ -29,8 +29,6 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 - **`types/types.proto`** – Logical type registry (Boolean/Decimal/etc.) and scalar encodings used by
   statistics and bundles.
 - **`account/account.proto`** – Account CRUD service for multi-tenancy.
-- **`statistics/statistics.proto`** – Staging schema for alternative stats pipelines (mirrors
-  `catalog/stats.proto` but with different versioning).
 
 ## Public API / Surface Area
 ### Core Services
@@ -44,7 +42,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
-| `Connectors` | Connector CRUD, `ValidateConnector`, `TriggerReconcile`, `GetReconcileJob`. |
+| `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. |

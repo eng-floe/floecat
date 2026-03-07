@@ -21,16 +21,19 @@ import java.util.List;
 
 /** Scope constraints for a reconcile job (namespaces, tables, optional column hints). */
 public final class ReconcileScope {
-  private static final ReconcileScope EMPTY = new ReconcileScope(List.of(), null, List.of());
+  private static final ReconcileScope EMPTY =
+      new ReconcileScope(List.of(), null, List.of(), List.of());
 
   private final List<List<String>> destinationNamespacePaths;
   private final String destinationTableDisplayName;
   private final List<String> destinationTableColumns;
+  private final List<Long> destinationSnapshotIds;
 
   private ReconcileScope(
       List<List<String>> destinationNamespacePaths,
       String destinationTableDisplayName,
-      List<String> destinationTableColumns) {
+      List<String> destinationTableColumns,
+      List<Long> destinationSnapshotIds) {
     if (destinationNamespacePaths == null || destinationNamespacePaths.isEmpty()) {
       this.destinationNamespacePaths = List.of();
     } else {
@@ -48,6 +51,13 @@ public final class ReconcileScope {
 
     this.destinationTableColumns =
         destinationTableColumns == null ? List.of() : List.copyOf(destinationTableColumns);
+    this.destinationSnapshotIds =
+        destinationSnapshotIds == null
+            ? List.of()
+            : destinationSnapshotIds.stream()
+                .filter(id -> id != null && id >= 0L)
+                .distinct()
+                .toList();
   }
 
   public static ReconcileScope empty() {
@@ -58,13 +68,26 @@ public final class ReconcileScope {
       List<List<String>> destinationNamespacePaths,
       String destinationTableDisplayName,
       List<String> destinationTableColumns) {
+    return of(
+        destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns, List.of());
+  }
+
+  public static ReconcileScope of(
+      List<List<String>> destinationNamespacePaths,
+      String destinationTableDisplayName,
+      List<String> destinationTableColumns,
+      List<Long> destinationSnapshotIds) {
     if ((destinationNamespacePaths == null || destinationNamespacePaths.isEmpty())
         && (destinationTableDisplayName == null || destinationTableDisplayName.isBlank())
-        && (destinationTableColumns == null || destinationTableColumns.isEmpty())) {
+        && (destinationTableColumns == null || destinationTableColumns.isEmpty())
+        && (destinationSnapshotIds == null || destinationSnapshotIds.isEmpty())) {
       return EMPTY;
     }
     return new ReconcileScope(
-        destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns);
+        destinationNamespacePaths,
+        destinationTableDisplayName,
+        destinationTableColumns,
+        destinationSnapshotIds);
   }
 
   public List<List<String>> destinationNamespacePaths() {
@@ -77,6 +100,10 @@ public final class ReconcileScope {
 
   public List<String> destinationTableColumns() {
     return destinationTableColumns;
+  }
+
+  public List<Long> destinationSnapshotIds() {
+    return destinationSnapshotIds;
   }
 
   public boolean hasNamespaceFilter() {
@@ -114,6 +141,10 @@ public final class ReconcileScope {
 
   public boolean hasColumnFilter() {
     return !destinationTableColumns.isEmpty();
+  }
+
+  public boolean hasSnapshotFilter() {
+    return !destinationSnapshotIds.isEmpty();
   }
 
   public List<String> columnsOrEmpty() {

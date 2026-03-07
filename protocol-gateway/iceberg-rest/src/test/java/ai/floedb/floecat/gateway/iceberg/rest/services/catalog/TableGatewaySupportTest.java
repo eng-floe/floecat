@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -38,14 +39,11 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.SyncCaptureRequest;
-import ai.floedb.floecat.connector.rpc.SyncCaptureResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
@@ -55,6 +53,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import java.util.List;
@@ -244,7 +247,8 @@ class TableGatewaySupportTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId catalogId = ResourceId.newBuilder().setId("cat").build();
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
     when(connectorClient.createConnector(any()))
         .thenReturn(
             CreateConnectorResponse.newBuilder()
@@ -282,7 +286,8 @@ class TableGatewaySupportTest {
 
   @Test
   void updateConnectorMetadataMergesPropertiesAndUpdatesMask() {
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
     when(connectorClient.getConnector(any()))
         .thenReturn(
             GetConnectorResponse.newBuilder()
@@ -311,10 +316,12 @@ class TableGatewaySupportTest {
   @Test
   void updateConnectorMetadataSkipsInvalidInputsOrMissingConnector() {
     support.updateConnectorMetadata(null, "s3://bucket/meta.json");
-    support.updateConnectorMetadata(ResourceId.newBuilder().setId("c1").build(), " ");
+    support.updateConnectorMetadata(
+        ResourceId.newBuilder().setId("c1").setKind(ResourceKind.RK_CONNECTOR).build(), " ");
     verify(connectorClient, never()).getConnector(any());
 
-    ResourceId connectorId = ResourceId.newBuilder().setId("c1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c1").setKind(ResourceKind.RK_CONNECTOR).build();
     when(connectorClient.getConnector(any())).thenReturn(GetConnectorResponse.newBuilder().build());
     support.updateConnectorMetadata(connectorId, "s3://bucket/meta.json");
     verify(connectorClient, times(1)).getConnector(any());
@@ -429,7 +436,8 @@ class TableGatewaySupportTest {
   @Test
   void updateTableUpstreamIncludesConnectorNamespaceAndUri() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-9").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("connector-9").setKind(ResourceKind.RK_CONNECTOR).build();
 
     support.updateTableUpstream(
         tableId, List.of("db", "analytics"), "orders", connectorId, "s3://target/orders");
@@ -470,13 +478,17 @@ class TableGatewaySupportTest {
   @Test
   void runSyncMetadataCaptureSkipsInvalidInputsAndBuildsScopedRequest() {
     support.runSyncMetadataCapture(null, List.of("db"), "orders");
-    support.runSyncMetadataCapture(ResourceId.newBuilder().setId("c1").build(), List.of("db"), " ");
-    verify(connectorClient, never()).syncCapture(any());
+    support.runSyncMetadataCapture(
+        ResourceId.newBuilder().setId("c1").setKind(ResourceKind.RK_CONNECTOR).build(),
+        List.of("db"),
+        " ");
+    verify(connectorClient, never()).captureNow(any());
 
-    ResourceId connectorId = ResourceId.newBuilder().setId("c1").build();
-    when(connectorClient.syncCapture(any()))
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c1").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any()))
         .thenReturn(
-            SyncCaptureResponse.newBuilder()
+            CaptureNowResponse.newBuilder()
                 .setTablesScanned(1)
                 .setTablesChanged(1)
                 .setErrors(0)
@@ -484,35 +496,97 @@ class TableGatewaySupportTest {
 
     support.runSyncMetadataCapture(connectorId, List.of("db", "analytics"), "orders");
 
-    ArgumentCaptor<SyncCaptureRequest> captor = ArgumentCaptor.forClass(SyncCaptureRequest.class);
-    verify(connectorClient, times(1)).syncCapture(captor.capture());
-    SyncCaptureRequest request = captor.getValue();
-    assertEquals(connectorId, request.getConnectorId());
-    assertEquals("orders", request.getDestinationTableDisplayName());
-    assertFalse(request.getIncludeStatistics());
-    assertEquals(1, request.getDestinationNamespacePathsCount());
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient, times(1)).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(connectorId, request.getScope().getConnectorId());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(CaptureMode.CM_METADATA_ONLY, request.getMode());
+    assertFalse(request.getFullRescan());
+    assertEquals(1, request.getScope().getDestinationNamespacePathsCount());
     assertEquals(
-        List.of("db", "analytics"), request.getDestinationNamespacePaths(0).getSegmentsList());
+        List.of("db", "analytics"),
+        request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
+  }
+
+  @Test
+  void runSyncStatisticsCaptureBuildsStatsOnlyRequest() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c3").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any()))
+        .thenReturn(
+            CaptureNowResponse.newBuilder()
+                .setTablesScanned(1)
+                .setTablesChanged(1)
+                .setErrors(0)
+                .build());
+
+    support.runSyncStatisticsCapture(connectorId, List.of("db", "analytics"), "orders");
+
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient, times(1)).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(connectorId, request.getScope().getConnectorId());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(1, request.getScope().getDestinationNamespacePathsCount());
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertFalse(request.getFullRescan());
+  }
+
+  @Test
+  void runSyncStatisticsCaptureIncludesExplicitSnapshotScope() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c4").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+
+    support.runSyncStatisticsCapture(
+        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L));
+
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertFalse(request.getFullRescan());
+  }
+
+  @Test
+  void runSyncStatisticsCaptureCanRequestFullRescanForExplicitSnapshotScope() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c5").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+
+    support.runSyncStatisticsCapture(
+        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L), true);
+
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient).captureNow(captor.capture());
+    CaptureNowRequest request = captor.getValue();
+    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertTrue(request.getFullRescan());
   }
 
   @Test
   void triggerScopedReconcileBuildsScopedRequestAndToleratesFailures() {
-    ResourceId connectorId = ResourceId.newBuilder().setId("c2").build();
-    when(connectorClient.triggerReconcile(any()))
-        .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job-1").build());
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("c2").setKind(ResourceKind.RK_CONNECTOR).build();
+    when(connectorClient.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
 
     support.triggerScopedReconcile(connectorId, List.of("ns"), "orders");
 
-    ArgumentCaptor<TriggerReconcileRequest> captor =
-        ArgumentCaptor.forClass(TriggerReconcileRequest.class);
-    verify(connectorClient).triggerReconcile(captor.capture());
-    TriggerReconcileRequest request = captor.getValue();
-    assertEquals(connectorId, request.getConnectorId());
+    ArgumentCaptor<StartCaptureRequest> captor = ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(connectorClient).startCapture(captor.capture());
+    StartCaptureRequest request = captor.getValue();
+    assertEquals(connectorId, request.getScope().getConnectorId());
     assertFalse(request.getFullRescan());
-    assertEquals("orders", request.getDestinationTableDisplayName());
-    assertEquals(List.of("ns"), request.getDestinationNamespacePaths(0).getSegmentsList());
+    assertEquals(CaptureMode.CM_METADATA_AND_STATS, request.getMode());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(
+        List.of("ns"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
 
-    when(connectorClient.triggerReconcile(any())).thenThrow(Status.INTERNAL.asRuntimeException());
+    when(connectorClient.startCapture(any())).thenThrow(Status.INTERNAL.asRuntimeException());
     support.triggerScopedReconcile(connectorId, List.of("ns"), "orders");
   }
 
@@ -652,9 +726,9 @@ class TableGatewaySupportTest {
   @Test
   void runSyncMetadataCaptureWithoutNamespacePathOmitsNamespaceFilter() {
     ResourceId connectorId = ResourceId.newBuilder().setId("cx").build();
-    when(connectorClient.syncCapture(any()))
+    when(connectorClient.captureNow(any()))
         .thenReturn(
-            SyncCaptureResponse.newBuilder()
+            CaptureNowResponse.newBuilder()
                 .setTablesScanned(0)
                 .setTablesChanged(0)
                 .setErrors(0)
@@ -662,23 +736,22 @@ class TableGatewaySupportTest {
 
     support.runSyncMetadataCapture(connectorId, null, "orders");
 
-    ArgumentCaptor<SyncCaptureRequest> captor = ArgumentCaptor.forClass(SyncCaptureRequest.class);
-    verify(connectorClient, times(1)).syncCapture(captor.capture());
-    assertEquals(0, captor.getValue().getDestinationNamespacePathsCount());
+    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
+    verify(connectorClient, times(1)).captureNow(captor.capture());
+    assertEquals(0, captor.getValue().getScope().getDestinationNamespacePathsCount());
   }
 
   @Test
   void triggerScopedReconcileWithoutNamespacePathOmitsNamespaceFilter() {
     ResourceId connectorId = ResourceId.newBuilder().setId("cy").build();
-    when(connectorClient.triggerReconcile(any()))
-        .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job-2").build());
+    when(connectorClient.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-2").build());
 
     support.triggerScopedReconcile(connectorId, null, "orders");
 
-    ArgumentCaptor<TriggerReconcileRequest> captor =
-        ArgumentCaptor.forClass(TriggerReconcileRequest.class);
-    verify(connectorClient, times(1)).triggerReconcile(captor.capture());
-    assertEquals(0, captor.getValue().getDestinationNamespacePathsCount());
+    ArgumentCaptor<StartCaptureRequest> captor = ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(connectorClient, times(1)).startCapture(captor.capture());
+    assertEquals(0, captor.getValue().getScope().getDestinationNamespacePathsCount());
   }
 
   @Test

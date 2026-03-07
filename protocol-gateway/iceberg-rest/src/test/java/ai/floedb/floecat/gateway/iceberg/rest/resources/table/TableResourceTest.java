@@ -56,8 +56,6 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileResponse;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
@@ -76,6 +74,8 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -441,8 +441,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .build();
     when(connectorsStub.createConnector(any()))
         .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
-    when(connectorsStub.triggerReconcile(any()))
-        .thenReturn(TriggerReconcileResponse.newBuilder().setJobId("job-1").build());
+    when(reconcileControlStub.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
 
     given()
         .contentType(MediaType.APPLICATION_JSON)
@@ -478,12 +478,12 @@ class TableResourceTest extends AbstractRestResourceTest {
         FIXTURE.metadataLocation(),
         createReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
 
-    ArgumentCaptor<TriggerReconcileRequest> trigger =
-        ArgumentCaptor.forClass(TriggerReconcileRequest.class);
-    verify(connectorsStub).triggerReconcile(trigger.capture());
-    assertEquals(connectorId, trigger.getValue().getConnectorId());
-    assertEquals(1, trigger.getValue().getDestinationNamespacePathsCount());
-    assertEquals("new_table", trigger.getValue().getDestinationTableDisplayName());
+    ArgumentCaptor<StartCaptureRequest> trigger =
+        ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(reconcileControlStub).startCapture(trigger.capture());
+    assertEquals(connectorId, trigger.getValue().getScope().getConnectorId());
+    assertEquals(1, trigger.getValue().getScope().getDestinationNamespacePathsCount());
+    assertEquals("new_table", trigger.getValue().getScope().getDestinationTableDisplayName());
   }
 
   @Test
@@ -626,7 +626,8 @@ class TableResourceTest extends AbstractRestResourceTest {
   void createsUpdatesAndDeletesTable() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId connectorId = ResourceId.newBuilder().setId("conn-1").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
     when(directoryStub.resolveTable(any()))

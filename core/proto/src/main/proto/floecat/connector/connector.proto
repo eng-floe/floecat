@@ -169,6 +169,13 @@ message ReconcilePolicy {
   bool enabled = 2;
   int32 max_parallel = 3;
   google.protobuf.Timestamp not_before = 4;
+  ReconcileMode mode = 5;
+}
+
+enum ReconcileMode {
+  RM_UNSPECIFIED = 0;
+  RM_INCREMENTAL = 1;
+  RM_FULL = 2;
 }
 
 message ConnectorSpec {
@@ -236,54 +243,6 @@ message ValidateConnectorResponse {
   map<string,string> capabilities = 3;
 }
 
-message SyncCaptureRequest {
-  ai.floedb.floecat.common.ResourceId connector_id = 1;
-  repeated NamespacePath destination_namespace_paths = 2;
-  string destination_table_display_name = 3;
-  repeated string destination_table_columns = 4;
-  bool include_statistics = 5;
-}
-
-message SyncCaptureResponse {
-  uint64 tables_scanned = 1;
-  uint64 tables_changed = 2;
-  uint64 errors = 3;
-}
-
-message TriggerReconcileRequest {
-  ai.floedb.floecat.common.ResourceId connector_id = 1;
-  bool full_rescan = 2;
-  repeated NamespacePath destination_namespace_paths = 3;
-  string destination_table_display_name = 4;
-  repeated string destination_table_columns = 5;
-}
-message TriggerReconcileResponse {
-  string job_id = 1;
-}
-
-message GetReconcileJobRequest {
-  string job_id = 1;
-}
-message GetReconcileJobResponse {
-  string job_id = 1;
-  string connector_id = 2;
-  JobState state = 3;
-  string message = 4;
-  google.protobuf.Timestamp started_at = 5;
-  google.protobuf.Timestamp finished_at = 6;
-  uint64 tables_scanned = 7;
-  uint64 tables_changed = 8;
-  uint64 errors = 9;
-}
-enum JobState {
-  JS_UNSPECIFIED = 0;
-  JS_QUEUED = 1;
-  JS_RUNNING = 2;
-  JS_SUCCEEDED = 3;
-  JS_FAILED = 4;
-  JS_CANCELLED = 5;
-}
-
 service Connectors {
   rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse);
   rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);
@@ -292,8 +251,4 @@ service Connectors {
   rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse);
 
   rpc ValidateConnector(ValidateConnectorRequest) returns (ValidateConnectorResponse);
-
-  rpc SyncCapture(SyncCaptureRequest) returns (SyncCaptureResponse);
-  rpc TriggerReconcile(TriggerReconcileRequest) returns (TriggerReconcileResponse);
-  rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
 }

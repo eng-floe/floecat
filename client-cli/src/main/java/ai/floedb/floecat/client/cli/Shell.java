@@ -45,9 +45,11 @@ import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -103,12 +105,11 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
-import ai.floedb.floecat.connector.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.rpc.TriggerReconcileRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.execution.rpc.ScanFile;
@@ -133,8 +134,20 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
-import ai.floedb.floecat.statistics.rpc.AnalyzeTableRequest;
-import ai.floedb.floecat.statistics.rpc.StatsCaptureGrpc;
+import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
+import ai.floedb.floecat.reconciler.rpc.JobState;
+import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
+import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
+import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
@@ -289,6 +302,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
+
+  @Inject
+  @GrpcClient("floecat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
 
   @Inject
@@ -302,10 +319,6 @@ public class Shell implements Runnable {
   @Inject
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
-
-  @Inject
-  @GrpcClient("floecat")
-  StatsCaptureGrpc.StatsCaptureBlockingStub statscapture;
 
   private ManagedChannel overrideChannel;
 
@@ -590,11 +603,12 @@ public class Shell implements Runnable {
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>
-         stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)
-         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
+         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
-         analyze <tableFQ> [--columns c1,c2,...]
-             # Runs synchronous table-scoped reconcile (metadata pass, then stats pass).
+         analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
+             [--snapshot-ids id1,id2,...] [--full]
+             # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          query renew <query_id> [--ttl <seconds>]
          query end <query_id> [--commit|--abort]
@@ -607,21 +621,28 @@ public class Shell implements Runnable {
              [--dest-ns <a.b[.c]>] [--dest-table <name>]
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]
              [--head k=v ...]
-             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <uri>]
              [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
-             [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
          connector delete <display_name|id>  [--etag <etag>]
          connector validate <kind> <uri>
              [--dest-account <account>] [--dest-catalog <display>] [--dest-ns <a.b[.c]> ...] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v ...]
-             [--policy-enabled] [--policy-interval-sec <n>] [--policy-max-par <n>]
+             [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode incremental|full] [--policy-max-par <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...]
          connector trigger <display_name|id> [--full]
+             [--mode metadata-only|metadata-and-stats|stats-only]
+             [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]
+             [--snapshot-ids id1,id2,...]
          connector job <jobId>
+         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
+         connector cancel <jobId> [--reason <text>]
+         connector settings get
+         connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
          help
          quit
 """);
@@ -642,11 +663,11 @@ public class Shell implements Runnable {
     snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
     viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
     connectors = ConnectorsGrpc.newBlockingStub(overrideChannel);
+    reconcileControl = ReconcileControlGrpc.newBlockingStub(overrideChannel);
     queries = QueryServiceGrpc.newBlockingStub(overrideChannel);
     queryScan = QueryScanServiceGrpc.newBlockingStub(overrideChannel);
     querySchema = QuerySchemaServiceGrpc.newBlockingStub(overrideChannel);
     accounts = AccountServiceGrpc.newBlockingStub(overrideChannel);
-    statscapture = StatsCaptureGrpc.newBlockingStub(overrideChannel);
   }
 
   private void initAuthConfig() {
@@ -729,11 +750,11 @@ public class Shell implements Runnable {
     snapshots = snapshots.withInterceptors(authInterceptor);
     viewService = viewService.withInterceptors(authInterceptor);
     connectors = connectors.withInterceptors(authInterceptor);
+    reconcileControl = reconcileControl.withInterceptors(authInterceptor);
     queries = queries.withInterceptors(authInterceptor);
     queryScan = queryScan.withInterceptors(authInterceptor);
     querySchema = querySchema.withInterceptors(authInterceptor);
     accounts = accounts.withInterceptors(authInterceptor);
-    statscapture = statscapture.withInterceptors(authInterceptor);
   }
 
   private void dispatch(String inputLine) {
@@ -1679,7 +1700,8 @@ public class Shell implements Runnable {
 
   private void cmdConnectorCrud(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: connector <list|get|create|update|delete|validate|trigger|job> ...");
+      out.println(
+          "usage: connector <list|get|create|update|delete|validate|trigger|job|jobs|cancel|settings> ...");
       return;
     }
     String sub = args.get(0);
@@ -1715,7 +1737,8 @@ public class Shell implements Runnable {
                   + " [--dest-table <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v"
                   + " ...] [--head k=v ...] [--cred-type <type>] [--cred k=v ...]"
                   + " [--cred-head k=v ...] [--policy-enabled] (if provided,"
-                  + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-max-par <n>]"
+                  + " policy.enabled=true) [--policy-interval-sec <n>] [--policy-mode"
+                  + " incremental|full] [--policy-max-par <n>]"
                   + " [--policy-not-before-epoch <sec>] [--props k=v ...]  (e.g."
                   + " stats.ndv.enabled=false,stats.ndv.sample_fraction=0.1)");
           return;
@@ -1748,13 +1771,15 @@ public class Shell implements Runnable {
 
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
+        ReconcileMode policyMode =
+            parseReconcileMode(Quotes.unquote(parseStringFlag(args, "--policy-mode", "")));
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
         var auth = buildAuth(authScheme, authProps, headerHints, credentials);
-        var policy = buildPolicy(policyEnabled, intervalSec, maxPar, notBeforeSec);
+        var policy = buildPolicy(policyEnabled, intervalSec, policyMode, maxPar, notBeforeSec);
 
         var spec =
             ConnectorSpec.newBuilder()
@@ -1792,7 +1817,8 @@ public class Shell implements Runnable {
                   + " <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...] [--head k=v"
                   + " ...] [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]"
                   + " [--policy-enabled true|false] [--policy-interval-sec"
-                  + " <n>] [--policy-max-par <n>] [--policy-not-before-epoch <sec>] [--props k=v"
+                  + " <n>] [--policy-mode incremental|full] [--policy-max-par <n>]"
+                  + " [--policy-not-before-epoch <sec>] [--props k=v"
                   + " ...] [--etag <etag>]");
           return;
         }
@@ -1826,6 +1852,8 @@ public class Shell implements Runnable {
         Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
         String policyEnabledStr = parseStringFlag(args, "--policy-enabled", "");
         long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
+        ReconcileMode policyMode =
+            parseReconcileMode(Quotes.unquote(parseStringFlag(args, "--policy-mode", "")));
         int maxPar = parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = parseKeyValueList(args, "--props");
@@ -1870,17 +1898,23 @@ public class Shell implements Runnable {
         }
 
         boolean policySet =
-            !policyEnabledStr.isBlank() || intervalSec != 0L || maxPar != 0 || notBeforeSec != 0L;
+            !policyEnabledStr.isBlank()
+                || intervalSec != 0L
+                || policyMode != ReconcileMode.RM_UNSPECIFIED
+                || maxPar != 0
+                || notBeforeSec != 0L;
         if (policySet) {
           var pb =
               buildPolicy(
                   !policyEnabledStr.isBlank() && Boolean.parseBoolean(policyEnabledStr),
                   intervalSec,
+                  policyMode,
                   maxPar,
                   notBeforeSec);
           spec.setPolicy(pb);
           if (!policyEnabledStr.isBlank()) mask.add("policy.enabled");
           if (intervalSec != 0L) mask.add("policy.interval");
+          if (policyMode != ReconcileMode.RM_UNSPECIFIED) mask.add("policy.mode");
           if (maxPar != 0) mask.add("policy.max_parallel");
           if (notBeforeSec != 0L) mask.add("policy.not_before");
         }
@@ -1945,6 +1979,9 @@ public class Shell implements Runnable {
                   + " [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]"
                   + " [--source-ns <a.b[.c]>] [--source-table <name>] [--source-cols c1,#id2,...]"
                   + " [--dest-catalog <name>] [--dest-ns <a.b[.c]>] [--dest-table <name>]"
+                  + " [--policy-enabled] [--policy-interval-sec <n>] [--policy-mode"
+                  + " incremental|full] [--policy-max-par <n>] [--policy-not-before-epoch"
+                  + " <sec>]"
                   + " [--props k=v ...]");
           return;
         }
@@ -1967,6 +2004,12 @@ public class Shell implements Runnable {
         String credType = Quotes.unquote(parseStringFlag(args, "--cred-type", ""));
         Map<String, String> credProps = parseKeyValueList(args, "--cred");
         Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
+        boolean policyEnabled = args.contains("--policy-enabled");
+        long intervalSec = parseLongFlag(args, "--policy-interval-sec", 0L);
+        ReconcileMode policyMode =
+            parseReconcileMode(Quotes.unquote(parseStringFlag(args, "--policy-mode", "")));
+        int maxPar = parseIntFlag(args, "--policy-max-par", 0);
+        long notBeforeSec = parseLongFlag(args, "--policy-not-before-epoch", 0L);
 
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
@@ -1980,6 +2023,15 @@ public class Shell implements Runnable {
                 .setUri(uri)
                 .putAllProperties(properties)
                 .setAuth(auth);
+        boolean policySet =
+            policyEnabled
+                || intervalSec > 0L
+                || policyMode != ReconcileMode.RM_UNSPECIFIED
+                || maxPar > 0
+                || notBeforeSec > 0L;
+        if (policySet) {
+          spec.setPolicy(buildPolicy(policyEnabled, intervalSec, policyMode, maxPar, notBeforeSec));
+        }
 
         boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
         if (sourceSet) spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
@@ -2001,14 +2053,40 @@ public class Shell implements Runnable {
       }
       case "trigger" -> {
         if (args.size() < 2) {
-          out.println("usage: connector trigger <display_name|id> [--full]");
+          out.println(
+              "usage: connector trigger <display_name|id> [--full]"
+                  + " [--mode metadata-only|metadata-and-stats|stats-only]"
+                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]"
+                  + " [--snapshot-ids id1,id2,...]");
           return;
         }
         boolean full = args.contains("--full");
+        CaptureMode mode = parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
+        String destNs = Quotes.unquote(parseStringFlag(args, "--dest-ns", ""));
+        String destTable = Quotes.unquote(parseStringFlag(args, "--dest-table", ""));
+        List<String> destColumns =
+            csvList(Quotes.unquote(parseStringFlag(args, "--dest-cols", "")));
+        List<Long> snapshotIds =
+            parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
+        ResourceId connectorId = resolveConnectorId(Quotes.unquote(args.get(1)));
+        CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
+        if (!destNs.isBlank()) {
+          scope.addDestinationNamespacePaths(toNsPath(destNs));
+        }
+        if (!destTable.isBlank()) {
+          scope.setDestinationTableDisplayName(destTable);
+        }
+        if (!destColumns.isEmpty()) {
+          scope.addAllDestinationTableColumns(destColumns);
+        }
+        if (!snapshotIds.isEmpty()) {
+          scope.addAllDestinationSnapshotIds(snapshotIds);
+        }
         var resp =
-            connectors.triggerReconcile(
-                TriggerReconcileRequest.newBuilder()
-                    .setConnectorId(resolveConnectorId(Quotes.unquote(args.get(1))))
+            reconcileControl.startCapture(
+                StartCaptureRequest.newBuilder()
+                    .setScope(scope.build())
+                    .setMode(mode)
                     .setFullRescan(full)
                     .build());
         out.println(resp.getJobId());
@@ -2019,35 +2097,102 @@ public class Shell implements Runnable {
           return;
         }
         var resp =
-            connectors.getReconcileJob(
+            reconcileControl.getReconcileJob(
                 GetReconcileJobRequest.newBuilder().setJobId(Quotes.unquote(args.get(1))).build());
-        out.printf(
-            "job_id=%s connector_id=%s state=%s started=%s finished=%s scanned=%d"
-                + " changed=%d errors=%d%n",
-            resp.getJobId(),
-            resp.getConnectorId(),
-            resp.getState().name(),
-            ts(resp.getStartedAt()),
-            ts(resp.getFinishedAt()),
-            resp.getTablesScanned(),
-            resp.getTablesChanged(),
-            resp.getErrors());
-        if (resp.getMessage() != null && !resp.getMessage().isBlank()) {
-          var lines = splitErrorLines(resp.getMessage());
-          if (lines.isEmpty()) {
-            out.println("message: " + resp.getMessage());
-          } else if (lines.size() == 1) {
-            out.println("message: " + lines.get(0));
-          } else {
-            out.println("message:");
-            for (String line : lines) {
-              out.println("  - " + line);
-            }
+        printReconcileJob(resp);
+      }
+      case "jobs" -> {
+        int pageSize = parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
+        String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", ""));
+        String stateArg = Quotes.unquote(parseStringFlag(args, "--state", ""));
+        var req = ListReconcileJobsRequest.newBuilder();
+        req.setPage(PageRequest.newBuilder().setPageSize(pageSize).build());
+        if (!connectorRef.isBlank()) {
+          req.setConnectorId(rid(resolveConnectorId(connectorRef)));
+        }
+        for (String token : csvList(stateArg)) {
+          JobState state = parseJobState(token);
+          if (state != JobState.JS_UNSPECIFIED) {
+            req.addStates(state);
           }
         }
+        var resp = reconcileControl.listReconcileJobs(req.build());
+        if (resp.getJobsList().isEmpty()) {
+          out.println("no reconcile jobs");
+          return;
+        }
+        for (GetReconcileJobResponse job : resp.getJobsList()) {
+          printReconcileJobSummary(job);
+        }
+        if (resp.hasPage() && !resp.getPage().getNextPageToken().isBlank()) {
+          out.println("next_page_token=" + resp.getPage().getNextPageToken());
+        }
       }
-
+      case "cancel" -> {
+        if (args.size() < 2) {
+          out.println("usage: connector cancel <jobId> [--reason <text>]");
+          return;
+        }
+        String reason = Quotes.unquote(parseStringFlag(args, "--reason", ""));
+        var resp =
+            reconcileControl.cancelReconcileJob(
+                CancelReconcileJobRequest.newBuilder()
+                    .setJobId(Quotes.unquote(args.get(1)))
+                    .setReason(reason)
+                    .build());
+        out.println("cancelled=" + resp.getCancelled());
+        if (resp.hasJob()) {
+          printReconcileJob(resp.getJob());
+        }
+      }
+      case "settings" -> cmdReconcilerSettings(args.subList(1, args.size()));
       default -> out.println("unknown subcommand");
+    }
+  }
+
+  private void cmdReconcilerSettings(List<String> args) {
+    if (args.isEmpty()) {
+      out.println(
+          "usage: connector settings <get|update> [--auto-enabled true|false]"
+              + " [--default-interval-sec <n>] [--default-mode incremental|full]"
+              + " [--finished-job-retention-sec <n>]");
+      return;
+    }
+    switch (args.get(0)) {
+      case "get" ->
+          printReconcilerSettings(
+              reconcileControl.getReconcilerSettings(
+                  GetReconcilerSettingsRequest.newBuilder().build()));
+      case "update" -> {
+        String autoEnabled = parseStringFlag(args, "--auto-enabled", "");
+        long defaultIntervalSec = parseLongFlag(args, "--default-interval-sec", 0L);
+        ReconcileMode defaultMode =
+            parseReconcileMode(Quotes.unquote(parseStringFlag(args, "--default-mode", "")));
+        long finishedJobRetentionSec = parseLongFlag(args, "--finished-job-retention-sec", 0L);
+
+        var req = UpdateReconcilerSettingsRequest.newBuilder();
+        if (!autoEnabled.isBlank()) {
+          req.setAutoEnabled(Boolean.parseBoolean(autoEnabled));
+        }
+        if (defaultIntervalSec > 0L) {
+          req.setDefaultInterval(durSeconds(defaultIntervalSec));
+        }
+        if (defaultMode != ReconcileMode.RM_UNSPECIFIED) {
+          req.setDefaultMode(defaultMode);
+        }
+        if (finishedJobRetentionSec > 0L) {
+          req.setFinishedJobRetention(durSeconds(finishedJobRetentionSec));
+        }
+        if (!req.hasAutoEnabled()
+            && !req.hasDefaultInterval()
+            && !req.hasDefaultMode()
+            && !req.hasFinishedJobRetention()) {
+          out.println("Nothing to update. Provide one or more flags to change.");
+          return;
+        }
+        printReconcilerSettings(reconcileControl.updateReconcilerSettings(req.build()));
+      }
+      default -> out.println("usage: connector settings <get|update> ...");
     }
   }
 
@@ -2065,13 +2210,16 @@ public class Shell implements Runnable {
   }
 
   private ReconcilePolicy buildPolicy(
-      boolean enabled, long intervalSec, int maxPar, long notBeforeSec) {
+      boolean enabled, long intervalSec, ReconcileMode mode, int maxPar, long notBeforeSec) {
     ReconcilePolicy.Builder b = ReconcilePolicy.newBuilder().setEnabled(enabled);
     if (maxPar > 0) {
       b.setMaxParallel(maxPar);
     }
     if (intervalSec > 0) {
       b.setInterval(durSeconds(intervalSec));
+    }
+    if (mode != null && mode != ReconcileMode.RM_UNSPECIFIED) {
+      b.setMode(mode);
     }
     if (notBeforeSec > 0) {
       b.setNotBefore(tsSeconds(notBeforeSec));
@@ -2255,45 +2403,73 @@ public class Shell implements Runnable {
     }
   }
 
-  // analyze runs a synchronous table-scoped reconcile pass for metadata and table stats.
+  // analyze runs a synchronous table-scoped CaptureNow call for metadata and table stats.
   private void cmdAnalyze(List<String> args) {
     if (args.isEmpty()) {
-      out.println("usage: analyze <tableFQ> [--columns c1,c2,...]");
+      out.println(
+          "usage: analyze <tableFQ> [--columns c1,c2,...]"
+              + " [--mode metadata-only|metadata-and-stats|stats-only]"
+              + " [--snapshot-ids id1,id2,...] [--full]");
       return;
     }
 
     String fq = args.get(0);
     String columnsArg = Quotes.unquote(parseStringFlag(args, "--columns", ""));
     List<String> columns = csvList(columnsArg);
+    CaptureMode mode = parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
+    List<Long> snapshotIds =
+        parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
+    boolean full = args.contains("--full");
 
     var resolved =
         directory.resolveTable(
             ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
 
+    var table =
+        tables
+            .getTable(GetTableRequest.newBuilder().setTableId(resolved.getResourceId()).build())
+            .getTable();
+    if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
+      throw new IllegalArgumentException("table has no upstream connector");
+    }
+    var namespace =
+        namespaces
+            .getNamespace(
+                GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
+            .getNamespace();
+    var scopePath = new ArrayList<>(namespace.getParentsList());
+    if (!namespace.getDisplayName().isBlank()) {
+      scopePath.add(namespace.getDisplayName());
+    }
+
     var response =
-        statscapture.analyzeTable(
-            AnalyzeTableRequest.newBuilder()
-                .setTableId(resolved.getResourceId())
-                .addAllDestinationTableColumns(columns)
+        reconcileControl.captureNow(
+            CaptureNowRequest.newBuilder()
+                .setScope(
+                    CaptureScope.newBuilder()
+                        .setConnectorId(table.getUpstream().getConnectorId())
+                        .addDestinationNamespacePaths(
+                            NamespacePath.newBuilder().addAllSegments(scopePath).build())
+                        .setDestinationTableDisplayName(table.getDisplayName())
+                        .addAllDestinationTableColumns(columns)
+                        .addAllDestinationSnapshotIds(snapshotIds)
+                        .build())
+                .setMode(mode)
+                .setFullRescan(full)
                 .build());
     out.printf(
-        "analyze ok table=%s metadata(scanned=%d changed=%d errors=%d) "
-            + "stats(scanned=%d changed=%d errors=%d)%n",
-        fq,
-        response.getMetadataTablesScanned(),
-        response.getMetadataTablesChanged(),
-        response.getMetadataErrors(),
-        response.getStatsTablesScanned(),
-        response.getStatsTablesChanged(),
-        response.getStatsErrors());
+        "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
+        fq, response.getTablesScanned(), response.getTablesChanged(), response.getErrors());
   }
 
   private void statsTable(List<String> args) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats table <tableFQ> [--snapshot <id>|--current] (defaults to --current)");
+          "usage: stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to"
+              + " --current)");
       return;
     }
+    boolean json = hasFlag(args, "--json");
     String fq = args.get(0);
     var r =
         directory.resolveTable(
@@ -2303,7 +2479,11 @@ public class Shell implements Runnable {
             .setTableId(r.getResourceId())
             .setSnapshot(parseSnapshotSelector(args))
             .build();
-    var resp = statistics.getTableStats(req);
+    GetTableStatsResponse resp = statistics.getTableStats(req);
+    if (json) {
+      printJson(resp);
+      return;
+    }
     printTableStats(resp.getStats());
   }
 
@@ -2311,10 +2491,11 @@ public class Shell implements Runnable {
     if (args.isEmpty()) {
       out.println(
           "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
-              + " [--limit N]");
+              + " [--limit N] [--json]");
       return;
     }
 
+    boolean json = hasFlag(args, "--json");
     String fq = args.get(0);
     int limit = parseIntFlag(args, "--limit", 2000);
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
@@ -2335,6 +2516,10 @@ public class Shell implements Runnable {
             r -> r.getColumnsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     if (all.size() > limit) all = all.subList(0, limit);
+    if (json) {
+      printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build());
+      return;
+    }
     printColumnStats(all);
   }
 
@@ -3204,12 +3389,24 @@ public class Shell implements Runnable {
 
   private void printSnapshotDetail(Snapshot snapshot) {
     try {
-      JsonFormat.Printer printer = JsonFormat.printer().includingDefaultValueFields();
+      JsonFormat.Printer printer = jsonPrinter();
       out.println(printer.print(snapshot));
       printDecodedFormatMetadata(snapshot, printer);
     } catch (InvalidProtocolBufferException e) {
       out.println(snapshot.toString());
     }
+  }
+
+  private void printJson(com.google.protobuf.MessageOrBuilder message) {
+    try {
+      out.println(jsonPrinter().print(message));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("failed to render protobuf as json", e);
+    }
+  }
+
+  private JsonFormat.Printer jsonPrinter() {
+    return JsonFormat.printer().includingDefaultValueFields();
   }
 
   private void printDecodedFormatMetadata(Snapshot snapshot, JsonFormat.Printer printer) {
@@ -3648,6 +3845,119 @@ public class Shell implements Runnable {
     };
   }
 
+  private ReconcileMode parseReconcileMode(String s) {
+    if (s == null || s.isBlank()) {
+      return ReconcileMode.RM_UNSPECIFIED;
+    }
+    return switch (s.trim().toUpperCase(Locale.ROOT)) {
+      case "INCREMENTAL", "RM_INCREMENTAL" -> ReconcileMode.RM_INCREMENTAL;
+      case "FULL", "RM_FULL" -> ReconcileMode.RM_FULL;
+      default -> ReconcileMode.RM_UNSPECIFIED;
+    };
+  }
+
+  private CaptureMode parseCaptureMode(String s) {
+    if (s == null || s.isBlank()) {
+      return CaptureMode.CM_METADATA_AND_STATS;
+    }
+    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+      case "METADATA_ONLY", "CM_METADATA_ONLY" -> CaptureMode.CM_METADATA_ONLY;
+      case "METADATA_AND_STATS", "CM_METADATA_AND_STATS" -> CaptureMode.CM_METADATA_AND_STATS;
+      case "STATS_ONLY", "CM_STATS_ONLY" -> CaptureMode.CM_STATS_ONLY;
+      default -> throw new IllegalArgumentException("invalid capture mode: " + s);
+    };
+  }
+
+  private JobState parseJobState(String s) {
+    if (s == null || s.isBlank()) {
+      return JobState.JS_UNSPECIFIED;
+    }
+    return switch (s.trim().toUpperCase(Locale.ROOT)) {
+      case "QUEUED", "JS_QUEUED" -> JobState.JS_QUEUED;
+      case "RUNNING", "JS_RUNNING" -> JobState.JS_RUNNING;
+      case "SUCCEEDED", "SUCCESS", "JS_SUCCEEDED" -> JobState.JS_SUCCEEDED;
+      case "FAILED", "JS_FAILED" -> JobState.JS_FAILED;
+      case "CANCELLING", "JS_CANCELLING" -> JobState.JS_CANCELLING;
+      case "CANCELLED", "JS_CANCELLED" -> JobState.JS_CANCELLED;
+      default -> JobState.JS_UNSPECIFIED;
+    };
+  }
+
+  private void printReconcileJobSummary(GetReconcileJobResponse job) {
+    out.printf(
+        "job_id=%s connector_id=%s state=%s mode=%s duration_ms=%d scanned=%d changed=%d"
+            + " snapshots=%d stats=%d errors=%d%n",
+        job.getJobId(),
+        job.getConnectorId(),
+        job.getState().name(),
+        job.getFullRescan() ? "full" : "incremental",
+        job.getDurationMs(),
+        job.getTablesScanned(),
+        job.getTablesChanged(),
+        job.getSnapshotsProcessed(),
+        job.getStatsProcessed(),
+        job.getErrors());
+    if (job.getMessage() != null && !job.getMessage().isBlank()) {
+      out.println("message: " + job.getMessage());
+    }
+  }
+
+  private void printReconcileJob(GetReconcileJobResponse job) {
+    out.printf(
+        "job_id=%s connector_id=%s state=%s mode=%s started=%s finished=%s duration_ms=%d"
+            + " scanned=%d changed=%d snapshots=%d stats=%d errors=%d%n",
+        job.getJobId(),
+        job.getConnectorId(),
+        job.getState().name(),
+        job.getFullRescan() ? "full" : "incremental",
+        ts(job.getStartedAt()),
+        ts(job.getFinishedAt()),
+        job.getDurationMs(),
+        job.getTablesScanned(),
+        job.getTablesChanged(),
+        job.getSnapshotsProcessed(),
+        job.getStatsProcessed(),
+        job.getErrors());
+    if (job.getMessage() != null && !job.getMessage().isBlank()) {
+      var lines = splitErrorLines(job.getMessage());
+      if (lines.isEmpty()) {
+        out.println("message: " + job.getMessage());
+      } else if (lines.size() == 1) {
+        out.println("message: " + lines.get(0));
+      } else {
+        out.println("message:");
+        for (String line : lines) {
+          out.println("  - " + line);
+        }
+      }
+    }
+  }
+
+  private void printReconcilerSettings(GetReconcilerSettingsResponse settings) {
+    out.printf(
+        "auto_enabled=%s default_interval_sec=%d default_mode=%s finished_job_retention_sec=%d%n",
+        settings.getAutoEnabled(),
+        durationSeconds(settings.getDefaultInterval()),
+        settings.getDefaultMode().name(),
+        durationSeconds(settings.getFinishedJobRetention()));
+  }
+
+  private void printReconcilerSettings(UpdateReconcilerSettingsResponse settings) {
+    out.printf(
+        "auto_enabled=%s default_interval_sec=%d default_mode=%s finished_job_retention_sec=%d%n",
+        settings.getAutoEnabled(),
+        durationSeconds(settings.getDefaultInterval()),
+        settings.getDefaultMode().name(),
+        durationSeconds(settings.getFinishedJobRetention()));
+  }
+
+  private long durationSeconds(Duration d) {
+    if (d == null) {
+      return 0L;
+    }
+    return d.getSeconds();
+  }
+
   private List<String> tokenize(String line) {
     List<String> out = new ArrayList<>();
     StringBuilder cur = new StringBuilder();
@@ -3742,6 +4052,21 @@ public class Shell implements Runnable {
 
   private long parseLongFlag(List<String> a, String f, long d) {
     return parseFlag(a, f, d, Long::parseLong);
+  }
+
+  private boolean hasFlag(List<String> args, String flag) {
+    return args.contains(flag);
+  }
+
+  private List<Long> parseSnapshotIds(String s) {
+    if (s == null || s.isBlank()) {
+      return List.of();
+    }
+    var out = new ArrayList<Long>();
+    for (String token : csvList(s)) {
+      out.add(Long.parseUnsignedLong(token));
+    }
+    return out;
   }
 
   private <T, R> List<T> collectPages(

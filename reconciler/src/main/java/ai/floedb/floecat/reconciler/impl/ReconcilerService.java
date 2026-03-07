@@ -46,7 +46,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import com.google.protobuf.ByteString;
-import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -64,6 +63,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
@@ -77,8 +77,20 @@ public class ReconcilerService {
   private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
 
   public enum CaptureMode {
-    METADATA_ONLY_CORE,
-    STATS_ONLY_ASYNC
+    METADATA_ONLY,
+    METADATA_AND_STATS,
+    STATS_ONLY
+  }
+
+  @FunctionalInterface
+  public interface ProgressListener {
+    void onProgress(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message);
   }
 
   @Inject ReconcilerBackend backend;
@@ -91,7 +103,14 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn) {
     return reconcile(
-        principal, connectorId, fullRescan, scopeIn, CaptureMode.STATS_ONLY_ASYNC, null);
+        principal,
+        connectorId,
+        fullRescan,
+        scopeIn,
+        CaptureMode.METADATA_AND_STATS,
+        null,
+        () -> false,
+        (s, c, e, sp, stp, m) -> {});
   }
 
   public Result reconcile(
@@ -100,7 +119,15 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn,
       CaptureMode captureMode) {
-    return reconcile(principal, connectorId, fullRescan, scopeIn, captureMode, null);
+    return reconcile(
+        principal,
+        connectorId,
+        fullRescan,
+        scopeIn,
+        captureMode,
+        null,
+        () -> false,
+        (s, c, e, sp, stp, m) -> {});
   }
 
   public Result reconcile(
@@ -110,34 +137,61 @@ public class ReconcilerService {
       ReconcileScope scopeIn,
       CaptureMode captureMode,
       String bearerToken) {
+    return reconcile(
+        principal,
+        connectorId,
+        fullRescan,
+        scopeIn,
+        captureMode,
+        bearerToken,
+        () -> false,
+        (s, c, e, sp, stp, m) -> {});
+  }
+
+  public Result reconcile(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode,
+      String bearerToken,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     long scanned = 0;
     long changed = 0;
     long errors = 0;
+    long snapshotsProcessed = 0;
+    long statsProcessed = 0;
     ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
     String corr = ctx.correlationId();
 
     final ArrayList<String> errSummaries = new ArrayList<>();
+    final BooleanSupplier cancelCheck = cancelRequested == null ? () -> false : cancelRequested;
+    final ProgressListener progressOut = progress == null ? (s, c, e, sp, stp, m) -> {} : progress;
 
     final Connector stored;
     try {
       stored = backend.lookupConnector(ctx, connectorId);
     } catch (RuntimeException e) {
       return new Result(
-          0, 0, 1, new IllegalArgumentException("getConnector failed: " + connectorId.getId(), e));
+          0,
+          0,
+          1,
+          0,
+          0,
+          new IllegalArgumentException("getConnector failed: " + connectorId.getId(), e));
     }
 
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
       return new Result(
-          0, 0, 1, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
+          0, 0, 1, 0, 0, new IllegalStateException("Connector not ACTIVE: " + connectorId.getId()));
     }
 
     DestinationTarget.Builder destB =
         stored.hasDestination()
             ? stored.getDestination().toBuilder()
             : DestinationTarget.newBuilder();
-
-    FieldMask.Builder dmaskB = FieldMask.newBuilder();
 
     final SourceSelector source =
         stored.hasSource() ? stored.getSource() : SourceSelector.getDefaultInstance();
@@ -148,6 +202,7 @@ public class ReconcilerService {
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
     try (FloecatConnector connector = ConnectorFactory.create(resolved)) {
+      ensureNotCancelled(cancelCheck);
       final ResourceId destCatalogId = dest.getCatalogId();
 
       final String sourceNsFq;
@@ -155,7 +210,7 @@ public class ReconcilerService {
         sourceNsFq = fq(source.getNamespace().getSegmentsList());
       } else {
         return new Result(
-            0, 0, 1, new IllegalArgumentException("connector.source.namespace is required"));
+            0, 0, 1, 0, 0, new IllegalArgumentException("connector.source.namespace is required"));
       }
 
       final String destNsFq;
@@ -179,6 +234,8 @@ public class ReconcilerService {
             0,
             0,
             1,
+            0,
+            0,
             new IllegalArgumentException(
                 "Connector destination namespace "
                     + scopeNamespaceFq
@@ -188,7 +245,6 @@ public class ReconcilerService {
       if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
-        dmaskB.addAllPaths(List.of("destination.namespace_id", "destination.namespace"));
       }
 
       final List<String> tables =
@@ -201,6 +257,8 @@ public class ReconcilerService {
             scanned,
             changed,
             1,
+            snapshotsProcessed,
+            statsProcessed,
             new IllegalStateException("No tables found in source namespace: " + sourceNsFq));
       }
 
@@ -215,6 +273,7 @@ public class ReconcilerService {
       boolean matchedScope = false;
       for (String srcTable : tables) {
         try {
+          ensureNotCancelled(cancelCheck);
           var upstream = connector.describe(sourceNsFq, srcTable);
 
           final String destTableDisplay =
@@ -226,6 +285,13 @@ public class ReconcilerService {
 
           matchedScope = true;
           scanned++;
+          progressOut.onProgress(
+              scanned,
+              changed,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              "Processing table " + sourceNsFq + "." + srcTable + " (metadata)");
 
           var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
 
@@ -253,28 +319,83 @@ public class ReconcilerService {
           if (singleTableMode && !destB.hasTableId()) {
             destB.setTableId(destTableId);
             destB.clearTableDisplayName();
-            dmaskB.addAllPaths(List.of("destination.table_id", "destination.table_display_name"));
           }
 
-          boolean includeCoreMetadata = captureMode == CaptureMode.METADATA_ONLY_CORE;
-          boolean includeStats = captureMode == CaptureMode.STATS_ONLY_ASYNC;
-          var bundles =
+          boolean includeCoreMetadata =
+              captureMode == CaptureMode.METADATA_ONLY
+                  || captureMode == CaptureMode.METADATA_AND_STATS;
+          boolean includeStats =
+              captureMode == CaptureMode.STATS_ONLY
+                  || captureMode == CaptureMode.METADATA_AND_STATS;
+          Set<Long> targetSnapshotIds =
+              scope.hasSnapshotFilter() ? Set.copyOf(scope.destinationSnapshotIds()) : Set.of();
+          Set<Long> knownSnapshotIds =
+              fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
+          Set<Long> enumerationKnownSnapshotIds =
+              knownSnapshotIdsForEnumeration(fullRescan, knownSnapshotIds);
+          var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
-                  sourceNsFq, srcTable, destTableId, includeSelectors, includeStats);
+                  sourceNsFq,
+                  srcTable,
+                  destTableId,
+                  includeSelectors,
+                  new FloecatConnector.SnapshotEnumerationOptions(
+                      includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
+          var bundles =
+              filterBundlesForMode(
+                  upstreamBundles,
+                  fullRescan,
+                  includeCoreMetadata,
+                  includeStats,
+                  knownSnapshotIds,
+                  targetSnapshotIds,
+                  progressOut);
 
-          ingestAllSnapshotsAndStatsFiltered(
-              ctx,
-              destTableId,
-              connector,
-              effective,
-              bundles,
-              includeSelectors,
-              includeCoreMetadata,
-              includeStats);
-          changed++;
+          IngestCounts ingestCounts =
+              ingestAllSnapshotsAndStatsFiltered(
+                  ctx,
+                  destTableId,
+                  connector,
+                  effective,
+                  bundles,
+                  includeSelectors,
+                  includeCoreMetadata,
+                  includeStats,
+                  fullRescan,
+                  cancelCheck,
+                  progressOut,
+                  sourceNsFq,
+                  srcTable,
+                  scanned,
+                  changed,
+                  errors,
+                  snapshotsProcessed,
+                  statsProcessed);
+          snapshotsProcessed += ingestCounts.snapshotsProcessed;
+          statsProcessed += ingestCounts.statsProcessed;
+          if (tableChanged(bundles)) {
+            changed++;
+          }
+          progressOut.onProgress(
+              scanned,
+              changed,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              "Finished table " + sourceNsFq + "." + srcTable);
         } catch (Exception e) {
+          if (e instanceof ReconcileCancelledException) {
+            return new Result(scanned, changed, errors, snapshotsProcessed, statsProcessed, e);
+          }
           errors++;
           e.printStackTrace();
+          progressOut.onProgress(
+              scanned,
+              changed,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              "Error table " + sourceNsFq + "." + srcTable + ": " + rootCauseMessage(e));
           errSummaries.add(
               "ns="
                   + scopeNamespaceFq
@@ -292,13 +413,14 @@ public class ReconcilerService {
             0,
             0,
             1,
+            snapshotsProcessed,
+            statsProcessed,
             new IllegalArgumentException(
                 "No tables matched scope: " + scope.destinationTableDisplayName()));
       }
 
       DestinationTarget updated = destB.build();
-      FieldMask dMask = dmaskB.build();
-      if (!updated.equals(stored.getDestination()) && dMask.getPathsCount() > 0) {
+      if (!updated.equals(stored.getDestination())) {
         try {
           backend.updateConnectorDestination(ctx, stored.getResourceId(), updated);
         } catch (RuntimeException e) {
@@ -308,18 +430,27 @@ public class ReconcilerService {
       }
 
       if (errors == 0) {
-        return new Result(scanned, changed, 0, null);
+        return new Result(scanned, changed, 0, snapshotsProcessed, statsProcessed, null);
       } else {
         var summary = new StringBuilder();
         summary.append("Partial failure (errors=").append(errors).append("):");
         for (String s : errSummaries) {
           summary.append("\n - ").append(s);
         }
-        return new Result(scanned, changed, errors, new RuntimeException(summary.toString()));
+        return new Result(
+            scanned,
+            changed,
+            errors,
+            snapshotsProcessed,
+            statsProcessed,
+            new RuntimeException(summary.toString()));
       }
 
     } catch (Exception e) {
-      return new Result(scanned, changed, errors, e);
+      if (e instanceof InterruptedException) {
+        Thread.currentThread().interrupt();
+      }
+      return new Result(scanned, changed, errors, snapshotsProcessed, statsProcessed, e);
     }
   }
 
@@ -384,7 +515,7 @@ public class ReconcilerService {
       String connectorUri,
       String sourceNsFq,
       String sourceTable) {
-    if (captureMode == CaptureMode.METADATA_ONLY_CORE) {
+    if (captureMode != CaptureMode.STATS_ONLY) {
       return Optional.of(
           ensureTable(
               ctx,
@@ -513,6 +644,102 @@ public class ReconcilerService {
             .build());
   }
 
+  private List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      boolean fullRescan,
+      boolean includeCoreMetadata,
+      boolean includeStats,
+      Set<Long> existingSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      ProgressListener progress) {
+    if (bundles == null || bundles.isEmpty() || fullRescan) {
+      return filterBundlesForSnapshotScope(
+          bundles == null ? List.of() : bundles, targetSnapshotIds, progress);
+    }
+
+    List<FloecatConnector.SnapshotBundle> scoped =
+        filterBundlesForSnapshotScope(bundles, targetSnapshotIds, progress);
+    if (includeStats) {
+      return scoped;
+    }
+    if (!includeCoreMetadata) {
+      return scoped;
+    }
+    if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
+      return scoped;
+    }
+
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(scoped.size());
+    int skipped = 0;
+    for (FloecatConnector.SnapshotBundle bundle : scoped) {
+      if (bundle == null) {
+        continue;
+      }
+      long snapshotId = bundle.snapshotId();
+      if (snapshotId >= 0 && existingSnapshotIds.contains(snapshotId)) {
+        skipped++;
+        continue;
+      }
+      filtered.add(bundle);
+    }
+    if (skipped > 0) {
+      progress.onProgress(
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Incremental reconcile skipped " + skipped + " already-ingested snapshots");
+    }
+    return filtered;
+  }
+
+  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      Set<Long> targetSnapshotIds,
+      ProgressListener progress) {
+    if (bundles == null
+        || bundles.isEmpty()
+        || targetSnapshotIds == null
+        || targetSnapshotIds.isEmpty()) {
+      return bundles == null ? List.of() : bundles;
+    }
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
+    int skipped = 0;
+    for (FloecatConnector.SnapshotBundle bundle : bundles) {
+      if (bundle == null) {
+        continue;
+      }
+      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
+        skipped++;
+        continue;
+      }
+      filtered.add(bundle);
+    }
+    if (skipped > 0) {
+      progress.onProgress(
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
+    }
+    return filtered;
+  }
+
+  private static Set<Long> knownSnapshotIdsForEnumeration(
+      boolean fullRescan, Set<Long> knownSnapshotIds) {
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
+      return Set.of();
+    }
+    return Set.copyOf(knownSnapshotIds);
+  }
+
+  private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
+    return bundles != null && !bundles.isEmpty();
+  }
+
   private static <T> void applyField(
       Supplier<T> bundleValue,
       Supplier<T> existingValue,
@@ -545,7 +772,7 @@ public class ReconcilerService {
     }
   }
 
-  private void ingestAllSnapshotsAndStatsFiltered(
+  private IngestCounts ingestAllSnapshotsAndStatsFiltered(
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
@@ -553,8 +780,20 @@ public class ReconcilerService {
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<String> includeSelectors,
       boolean includeCoreMetadata,
-      boolean includeStats) {
+      boolean includeStats,
+      boolean fullRescan,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress,
+      String sourceNs,
+      String sourceTable,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessedBase,
+      long statsProcessedBase) {
 
+    long snapshotsProcessed = 0L;
+    long statsProcessed = 0L;
     var seen = new HashSet<Long>();
     var schemaCache =
         new LinkedHashMap<String, SchemaDescriptor>(16, 0.75f, true) {
@@ -567,6 +806,7 @@ public class ReconcilerService {
         };
 
     for (var snapshotBundle : bundles) {
+      ensureNotCancelled(cancelRequested);
       if (snapshotBundle == null) {
         continue;
       }
@@ -575,6 +815,14 @@ public class ReconcilerService {
       if (snapshotId < 0 || !seen.add(snapshotId)) {
         continue;
       }
+      progress.onProgress(
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessedBase + snapshotsProcessed,
+          statsProcessedBase + statsProcessed,
+          "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
+      snapshotsProcessed++;
 
       if (includeCoreMetadata) {
         ensureSnapshot(ctx, tableId, snapshotBundle);
@@ -584,7 +832,7 @@ public class ReconcilerService {
         continue;
       }
 
-      if (backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
+      if (!fullRescan && backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
         continue;
       }
 
@@ -592,6 +840,7 @@ public class ReconcilerService {
       if (tsIn != null) {
         var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
         backend.putTableStats(ctx, tableId, tStats);
+        statsProcessed++;
       }
 
       var colsIn = snapshotBundle.columnStats();
@@ -638,6 +887,7 @@ public class ReconcilerService {
 
         if (!filtered.isEmpty()) {
           backend.putColumnStats(ctx, filtered);
+          statsProcessed += filtered.size();
         }
       }
 
@@ -652,8 +902,10 @@ public class ReconcilerService {
                 (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
                 fileStatsIn);
         backend.putFileColumnStats(ctx, fileStatsOut);
+        statsProcessed += fileStatsOut.size();
       }
     }
+    return new IngestCounts(snapshotsProcessed, statsProcessed);
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
@@ -848,13 +1100,21 @@ public class ReconcilerService {
   }
 
   public static final class Result {
-    public final long scanned, changed, errors;
+    public final long scanned, changed, errors, snapshotsProcessed, statsProcessed;
     public final Exception error;
 
-    public Result(long scanned, long changed, long errors, Exception error) {
+    public Result(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        Exception error) {
       this.scanned = scanned;
       this.changed = changed;
       this.errors = errors;
+      this.snapshotsProcessed = snapshotsProcessed;
+      this.statsProcessed = statsProcessed;
       this.error = error;
     }
 
@@ -862,8 +1122,34 @@ public class ReconcilerService {
       return error == null;
     }
 
+    public boolean cancelled() {
+      return error instanceof ReconcileCancelledException;
+    }
+
     public String message() {
       return ok() ? "OK" : rootCauseMessage(error);
+    }
+  }
+
+  private static void ensureNotCancelled(BooleanSupplier cancelRequested) {
+    if (cancelRequested != null && cancelRequested.getAsBoolean()) {
+      throw new ReconcileCancelledException();
+    }
+  }
+
+  private static final class ReconcileCancelledException extends RuntimeException {
+    private ReconcileCancelledException() {
+      super("Cancelled");
+    }
+  }
+
+  private static final class IngestCounts {
+    final long snapshotsProcessed;
+    final long statsProcessed;
+
+    private IngestCounts(long snapshotsProcessed, long statsProcessed) {
+      this.snapshotsProcessed = snapshotsProcessed;
+      this.statsProcessed = statsProcessed;
     }
   }
 }

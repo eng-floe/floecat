@@ -18,6 +18,11 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, and properties.
   - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
+    Connectors may also receive `SnapshotEnumerationOptions`, which carries:
+    - `includeStatistics`
+    - `fullRescan`
+    - `knownSnapshotIds`
+    This lets connectors short-circuit incremental runs instead of always scanning full upstream history.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -97,6 +102,9 @@ interface FloecatConnector extends Closeable {
   List<SnapshotBundle> enumerateSnapshotsWithStats(...);
 }
 ```
+For incremental reconcile, the runtime now passes the set of already-ingested destination snapshot ids
+into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
+only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
 with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
 should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,

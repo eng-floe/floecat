@@ -36,8 +36,21 @@ class ServiceTelemetryContributorTest {
     MetricDef errors = registry.metric(ServiceMetrics.Flight.ERRORS.name());
     MetricDef cancelled = registry.metric(ServiceMetrics.Flight.CANCELLED.name());
     MetricDef inflight = registry.metric(ServiceMetrics.Flight.INFLIGHT.name());
-    MetricDef syncCapture = registry.metric(ServiceMetrics.Reconcile.SYNC_CAPTURE.name());
-    MetricDef triggerReconcile = registry.metric(ServiceMetrics.Reconcile.TRIGGER.name());
+    MetricDef captureNow = registry.metric(ServiceMetrics.Reconcile.CAPTURE_NOW.name());
+    MetricDef startCapture = registry.metric(ServiceMetrics.Reconcile.START_CAPTURE.name());
+    MetricDef getJob = registry.metric(ServiceMetrics.Reconcile.GET_JOB.name());
+    MetricDef listJobs = registry.metric(ServiceMetrics.Reconcile.LIST_JOBS.name());
+    MetricDef cancelJob = registry.metric(ServiceMetrics.Reconcile.CANCEL_JOB.name());
+    MetricDef getSettings = registry.metric(ServiceMetrics.Reconcile.GET_SETTINGS.name());
+    MetricDef updateSettings = registry.metric(ServiceMetrics.Reconcile.UPDATE_SETTINGS.name());
+    MetricDef reconcileJobs = registry.metric(ServiceMetrics.Reconcile.JOBS.name());
+    MetricDef reconcileJobLatency = registry.metric(ServiceMetrics.Reconcile.JOB_LATENCY.name());
+    MetricDef queued = registry.metric(ServiceMetrics.Reconcile.JOBS_QUEUED.name());
+    MetricDef oldestAge = registry.metric(ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE.name());
+    MetricDef plannerTicks = registry.metric(ServiceMetrics.Reconcile.PLANNER_TICKS.name());
+    MetricDef plannerLatency =
+        registry.metric(ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name());
+    MetricDef plannerEnqueue = registry.metric(ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name());
 
     assertThat(requests).isNotNull();
     assertThat(requests.requiredTags())
@@ -65,17 +78,47 @@ class ServiceTelemetryContributorTest {
     assertThat(inflight.allowedTags())
         .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESOURCE);
 
-    assertThat(syncCapture).isNotNull();
-    assertThat(syncCapture.requiredTags())
+    assertThat(captureNow).isNotNull();
+    assertThat(captureNow.requiredTags())
         .containsExactlyInAnyOrder(
             TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER);
-    assertThat(syncCapture.allowedTags())
+    assertThat(captureNow.allowedTags())
         .containsExactlyInAnyOrder(
             TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.TRIGGER, TagKey.REASON);
 
-    assertThat(triggerReconcile).isNotNull();
-    assertThat(triggerReconcile.requiredTags()).isEqualTo(syncCapture.requiredTags());
-    assertThat(triggerReconcile.allowedTags()).isEqualTo(syncCapture.allowedTags());
+    assertThat(startCapture).isNotNull();
+    assertThat(startCapture.requiredTags()).isEqualTo(captureNow.requiredTags());
+    assertThat(startCapture.allowedTags()).isEqualTo(captureNow.allowedTags());
+
+    assertThat(getJob).isNotNull();
+    assertThat(getJob.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    assertThat(getJob.allowedTags())
+        .containsExactlyInAnyOrder(
+            TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.REASON);
+    assertThat(listJobs.requiredTags()).isEqualTo(getJob.requiredTags());
+    assertThat(cancelJob.requiredTags()).isEqualTo(getJob.requiredTags());
+    assertThat(getSettings.requiredTags()).isEqualTo(getJob.requiredTags());
+    assertThat(updateSettings.requiredTags()).isEqualTo(getJob.requiredTags());
+
+    assertThat(reconcileJobs).isNotNull();
+    assertThat(reconcileJobs.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE);
+    assertThat(reconcileJobs.allowedTags())
+        .containsExactlyInAnyOrder(
+            TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
+    assertThat(reconcileJobLatency.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
+
+    assertThat(queued).isNotNull();
+    assertThat(queued.requiredTags()).containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(queued.allowedTags()).containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(oldestAge.requiredTags()).isEqualTo(queued.requiredTags());
+
+    assertThat(plannerTicks).isNotNull();
+    assertThat(plannerTicks.requiredTags()).isEqualTo(getJob.requiredTags());
+    assertThat(plannerTicks.allowedTags()).isEqualTo(getJob.allowedTags());
+    assertThat(plannerLatency.requiredTags()).isEqualTo(getJob.requiredTags());
+    assertThat(plannerEnqueue.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
 
     // Ensure the new Flight metric IDs are all present in the registry.
     assertThat(registry.metrics().keySet())
@@ -86,7 +129,26 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Flight.ERRORS.name(),
                 ServiceMetrics.Flight.CANCELLED.name(),
                 ServiceMetrics.Flight.INFLIGHT.name(),
-                ServiceMetrics.Reconcile.SYNC_CAPTURE.name(),
-                ServiceMetrics.Reconcile.TRIGGER.name()));
+                ServiceMetrics.Reconcile.CAPTURE_NOW.name(),
+                ServiceMetrics.Reconcile.START_CAPTURE.name(),
+                ServiceMetrics.Reconcile.GET_JOB.name(),
+                ServiceMetrics.Reconcile.LIST_JOBS.name(),
+                ServiceMetrics.Reconcile.CANCEL_JOB.name(),
+                ServiceMetrics.Reconcile.GET_SETTINGS.name(),
+                ServiceMetrics.Reconcile.UPDATE_SETTINGS.name(),
+                ServiceMetrics.Reconcile.JOBS.name(),
+                ServiceMetrics.Reconcile.JOB_LATENCY.name(),
+                ServiceMetrics.Reconcile.SNAPSHOTS_PROCESSED.name(),
+                ServiceMetrics.Reconcile.STATS_PROCESSED.name(),
+                ServiceMetrics.Reconcile.TABLES_SCANNED.name(),
+                ServiceMetrics.Reconcile.TABLES_CHANGED.name(),
+                ServiceMetrics.Reconcile.ERRORS.name(),
+                ServiceMetrics.Reconcile.JOBS_QUEUED.name(),
+                ServiceMetrics.Reconcile.JOBS_RUNNING.name(),
+                ServiceMetrics.Reconcile.JOBS_CANCELLING.name(),
+                ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE.name(),
+                ServiceMetrics.Reconcile.PLANNER_TICKS.name(),
+                ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name(),
+                ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name()));
   }
 }
