@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.defaults.engine.DefaultEngine;
@@ -44,13 +45,18 @@ final class DeltaConnectorFactory {
 
   enum DeltaSource {
     UNITY,
+    GLUE,
     FILESYSTEM
   }
 
   static FloecatConnector create(
-      String uri, Map<String, String> options, AuthProvider authProvider) {
+      String uri,
+      Map<String, String> options,
+      AuthProvider authProvider,
+      Map<String, String> authProps) {
     Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
     Map<String, String> effectiveOptions = new LinkedHashMap<>(opts);
+    Map<String, String> effectiveAuthProps = authProps == null ? Map.of() : authProps;
 
     DeltaSource source = selectSource(effectiveOptions);
     String tableRoot = effectiveOptions.getOrDefault("delta.table-root", "");
@@ -93,6 +99,17 @@ final class DeltaConnectorFactory {
             namespaceFq,
             tableName);
       }
+      case GLUE -> {
+        var glue = AwsGlueClientFactory.create(effectiveOptions, effectiveAuthProps);
+        yield new DeltaGlueConnector(
+            "delta-glue",
+            new GlueDeltaCatalog(glue),
+            engineContext.engine(),
+            engineContext.parquetInput(),
+            ndvEnabled,
+            ndvSampleFraction,
+            ndvMaxFiles);
+      }
       case UNITY -> {
         Objects.requireNonNull(uri, "Unity base uri");
         String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
@@ -124,6 +141,7 @@ final class DeltaConnectorFactory {
       String normalized = source.trim().toLowerCase(Locale.ROOT);
       return switch (normalized) {
         case "unity" -> DeltaSource.UNITY;
+        case "glue" -> DeltaSource.GLUE;
         case "filesystem" -> DeltaSource.FILESYSTEM;
         default -> throw new IllegalArgumentException("Unsupported delta.source: " + source);
       };
