@@ -267,17 +267,28 @@ public class TableCommitMaterializationService {
       return null;
     }
     List<Map<String, Object>> schemas = ensureSchemas(metadata.schemas());
-    Integer currentSchemaId = firstNonNull(metadata.currentSchemaId(), firstSchemaId(schemas), 0);
+    Integer currentSchemaId =
+        firstNonNull(nonNegative(metadata.currentSchemaId()), firstSchemaId(schemas), 0);
     Integer lastColumnId =
-        firstNonNull(metadata.lastColumnId(), maxColumnIdFromSchemas(schemas), 0);
+        firstNonNull(nonNegative(metadata.lastColumnId()), maxColumnIdFromSchemas(schemas), 0);
     List<Map<String, Object>> partitionSpecs = ensurePartitionSpecs(metadata.partitionSpecs());
-    Integer defaultSpecId = firstNonNull(metadata.defaultSpecId(), firstSpecId(partitionSpecs), 0);
+    Integer defaultSpecId =
+        firstNonNull(nonNegative(metadata.defaultSpecId()), firstSpecId(partitionSpecs), 0);
     Integer lastPartitionId =
-        firstNonNull(metadata.lastPartitionId(), maxPartitionFieldId(partitionSpecs), 0);
+        firstNonNull(
+            nonNegative(metadata.lastPartitionId()), maxPartitionFieldId(partitionSpecs), 0);
     List<Map<String, Object>> sortOrders = ensureSortOrders(metadata.sortOrders());
     Integer defaultSortOrderId =
-        firstNonNull(metadata.defaultSortOrderId(), firstSortOrderId(sortOrders), 0);
+        firstNonNull(nonNegative(metadata.defaultSortOrderId()), firstSortOrderId(sortOrders), 0);
     Integer formatVersion = metadata.formatVersion();
+    Map<String, String> normalizedProperties =
+        normalizeRequiredIdProperties(
+            metadata.properties(),
+            currentSchemaId,
+            lastColumnId,
+            defaultSpecId,
+            lastPartitionId,
+            defaultSortOrderId);
 
     return new TableMetadataView(
         formatVersion,
@@ -285,7 +296,7 @@ public class TableCommitMaterializationService {
         metadata.location(),
         metadata.metadataLocation(),
         metadata.lastUpdatedMs(),
-        metadata.properties(),
+        normalizedProperties,
         lastColumnId,
         currentSchemaId,
         defaultSpecId,
@@ -302,6 +313,33 @@ public class TableCommitMaterializationService {
         metadata.statistics(),
         metadata.partitionStatistics(),
         metadata.snapshots());
+  }
+
+  private Map<String, String> normalizeRequiredIdProperties(
+      Map<String, String> properties,
+      Integer currentSchemaId,
+      Integer lastColumnId,
+      Integer defaultSpecId,
+      Integer lastPartitionId,
+      Integer defaultSortOrderId) {
+    Map<String, String> normalized =
+        properties == null ? new LinkedHashMap<>() : new LinkedHashMap<>(properties);
+    if (currentSchemaId != null) {
+      normalized.put("current-schema-id", currentSchemaId.toString());
+    }
+    if (lastColumnId != null) {
+      normalized.put("last-column-id", lastColumnId.toString());
+    }
+    if (defaultSpecId != null) {
+      normalized.put("default-spec-id", defaultSpecId.toString());
+    }
+    if (lastPartitionId != null) {
+      normalized.put("last-partition-id", lastPartitionId.toString());
+    }
+    if (defaultSortOrderId != null) {
+      normalized.put("default-sort-order-id", defaultSortOrderId.toString());
+    }
+    return normalized;
   }
 
   private TableMetadataView preferExistingTableDefinitions(
@@ -369,7 +407,7 @@ public class TableCommitMaterializationService {
 
   private List<Map<String, Object>> ensureSchemas(List<Map<String, Object>> schemas) {
     if (schemas != null && !schemas.isEmpty()) {
-      return schemas;
+      return ensureNonNegativeEntryId(schemas, "schema-id");
     }
     Map<String, Object> schema = new LinkedHashMap<>();
     schema.put("type", "struct");
@@ -380,7 +418,7 @@ public class TableCommitMaterializationService {
 
   private List<Map<String, Object>> ensurePartitionSpecs(List<Map<String, Object>> specs) {
     if (specs != null && !specs.isEmpty()) {
-      return specs;
+      return ensureNonNegativeEntryId(specs, "spec-id");
     }
     Map<String, Object> spec = new LinkedHashMap<>();
     spec.put("spec-id", 0);
@@ -390,7 +428,7 @@ public class TableCommitMaterializationService {
 
   private List<Map<String, Object>> ensureSortOrders(List<Map<String, Object>> sortOrders) {
     if (sortOrders != null && !sortOrders.isEmpty()) {
-      return sortOrders;
+      return ensureNonNegativeEntryId(sortOrders, "order-id");
     }
     Map<String, Object> order = new LinkedHashMap<>();
     order.put("order-id", 0);
@@ -402,21 +440,83 @@ public class TableCommitMaterializationService {
     if (schemas == null || schemas.isEmpty()) {
       return null;
     }
-    return asInteger(schemas.getFirst().get("schema-id"));
+    for (Map<String, Object> schema : schemas) {
+      if (schema == null) {
+        continue;
+      }
+      Integer id = nonNegative(asInteger(schema.get("schema-id")));
+      if (id != null) {
+        return id;
+      }
+    }
+    return null;
   }
 
   private Integer firstSpecId(List<Map<String, Object>> specs) {
     if (specs == null || specs.isEmpty()) {
       return null;
     }
-    return asInteger(specs.getFirst().get("spec-id"));
+    for (Map<String, Object> spec : specs) {
+      if (spec == null) {
+        continue;
+      }
+      Integer id = nonNegative(asInteger(spec.get("spec-id")));
+      if (id != null) {
+        return id;
+      }
+    }
+    return null;
   }
 
   private Integer firstSortOrderId(List<Map<String, Object>> sortOrders) {
     if (sortOrders == null || sortOrders.isEmpty()) {
       return null;
     }
-    return asInteger(sortOrders.getFirst().get("order-id"));
+    for (Map<String, Object> sortOrder : sortOrders) {
+      if (sortOrder == null) {
+        continue;
+      }
+      Integer id = nonNegative(asInteger(sortOrder.get("order-id")));
+      if (id != null) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  private List<Map<String, Object>> ensureNonNegativeEntryId(
+      List<Map<String, Object>> entries, String idKey) {
+    if (entries == null || entries.isEmpty()) {
+      return entries;
+    }
+    for (Map<String, Object> entry : entries) {
+      if (entry == null) {
+        continue;
+      }
+      Integer id = nonNegative(asInteger(entry.get(idKey)));
+      if (id != null) {
+        return entries;
+      }
+    }
+
+    List<Map<String, Object>> normalized = new ArrayList<>(entries.size());
+    boolean patched = false;
+    for (Map<String, Object> entry : entries) {
+      if (!patched && entry != null) {
+        Map<String, Object> copy = new LinkedHashMap<>(entry);
+        copy.put(idKey, 0);
+        normalized.add(Map.copyOf(copy));
+        patched = true;
+      } else {
+        normalized.add(entry);
+      }
+    }
+    if (!patched) {
+      Map<String, Object> fallback = new LinkedHashMap<>();
+      fallback.put(idKey, 0);
+      normalized.set(0, Map.copyOf(fallback));
+    }
+    return normalized;
   }
 
   private Integer maxColumnIdFromSchemas(List<Map<String, Object>> schemas) {
@@ -506,6 +606,10 @@ public class TableCommitMaterializationService {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private Integer nonNegative(Integer value) {
+    return value == null || value < 0 ? null : value;
   }
 
   @SafeVarargs

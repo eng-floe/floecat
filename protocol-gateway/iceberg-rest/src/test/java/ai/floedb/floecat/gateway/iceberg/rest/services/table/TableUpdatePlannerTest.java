@@ -204,6 +204,52 @@ class TableUpdatePlannerTest {
     assertTrue(plan.spec().build().getSchemaJson().contains("\"schema-id\":0"));
   }
 
+  @Test
+  void planUpdatesResolvesSetLastSentinelsForTableDefinitionIds() {
+    when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
+    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "add-schema",
+                    "schema",
+                    Map.of(
+                        "schema-id",
+                        7,
+                        "type",
+                        "struct",
+                        "fields",
+                        List.of(
+                            Map.of("id", 1, "name", "id", "required", false, "type", "int"),
+                            Map.of("id", 2, "name", "v", "required", false, "type", "string")))),
+                Map.of("action", "set-current-schema", "schema-id", -1),
+                Map.of("action", "add-spec", "spec", Map.of("spec-id", 9, "fields", List.of())),
+                Map.of("action", "set-default-spec", "spec-id", -1),
+                Map.of(
+                    "action",
+                    "add-sort-order",
+                    "sort-order",
+                    Map.of("order-id", 11, "fields", List.of())),
+                Map.of("action", "set-default-sort-order", "sort-order-id", -1)));
+
+    TableUpdatePlanner.UpdatePlan plan =
+        planner.planUpdates(
+            command(request),
+            tableSupplier(),
+            ResourceId.newBuilder().setId("cat:db:orders").build());
+
+    assertFalse(plan.hasError());
+    Map<String, String> props = plan.spec().build().getPropertiesMap();
+    assertEquals("2", props.get("last-column-id"));
+    assertEquals("7", props.get("current-schema-id"));
+    assertEquals("9", props.get("default-spec-id"));
+    assertEquals("11", props.get("default-sort-order-id"));
+  }
+
   private Supplier<Table> tableSupplier() {
     Table table = Table.newBuilder().putProperties("existing", "value").build();
     return () -> table;

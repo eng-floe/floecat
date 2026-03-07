@@ -33,11 +33,17 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.ws.rs.core.Response;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -59,6 +65,11 @@ class TableCommitServiceTest {
       org.mockito.Mockito.mock(TableGatewaySupport.class);
   private final TransactionCommitService transactionCommitService =
       org.mockito.Mockito.mock(TransactionCommitService.class);
+  private final TableCreateTransactionMapper tableCreateTransactionMapper =
+      org.mockito.Mockito.mock(TableCreateTransactionMapper.class);
+  private final StagedTableService stagedTableService =
+      org.mockito.Mockito.mock(StagedTableService.class);
+  private final AccountContext accountContext = org.mockito.Mockito.mock(AccountContext.class);
 
   @BeforeEach
   void setUp() {
@@ -67,10 +78,16 @@ class TableCommitServiceTest {
     service.responseBuilder = responseBuilder;
     service.tableFormatSupport = new TableFormatSupport();
     service.transactionCommitService = transactionCommitService;
+    service.tableCreateTransactionMapper = tableCreateTransactionMapper;
+    service.stagedTableService = stagedTableService;
+    service.accountContext = accountContext;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompatConfig));
     when(deltaCompatConfig.enabled()).thenReturn(false);
     when(deltaCompatConfig.readOnly()).thenReturn(true);
+    when(accountContext.getAccountId()).thenReturn("account-1");
+    when(stagedTableService.findSingleStage(any(), any(), any(), any()))
+        .thenReturn(Optional.empty());
   }
 
   @Test
@@ -91,9 +108,33 @@ class TableCommitServiceTest {
         .thenReturn(table.getResourceId());
     when(tableLifecycleService.getTable(table.getResourceId())).thenReturn(table);
 
-    Response response = service.commit(command(emptyCommitRequest()));
+    Response response = service.commit(command(commitWithSingleUpdate()));
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+  }
+
+  @Test
+  void commitReturnsConflictWhenStageIsAborted() {
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
+    StagedTableEntry staged =
+        new StagedTableEntry(
+            new StagedTableKey("account-1", "catalog", List.of("db"), "orders", "stage-1"),
+            ResourceId.newBuilder().setId("cat").build(),
+            ResourceId.newBuilder().setId("cat:db").build(),
+            createRequest(),
+            ai.floedb.floecat.catalog.rpc.TableSpec.newBuilder().build(),
+            List.of(Map.of("type", "assert-create")),
+            StageState.ABORTED,
+            Instant.now(),
+            Instant.now(),
+            "idem");
+    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+
+    Response response = service.commit(commandWithStage(emptyCommitRequest(), "stage-1"));
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    verify(transactionCommitService, never()).commit(any(), any(), any(), any());
   }
 
   @Test
@@ -139,7 +180,7 @@ class TableCommitServiceTest {
     when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
-    Response response = service.commit(command(emptyCommitRequest()));
+    Response response = service.commit(command(commitWithSingleUpdate()));
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     ArgumentCaptor<TransactionCommitRequest> txRequestCaptor =
@@ -154,6 +195,7 @@ class TableCommitServiceTest {
 
   @Test
   void commitDelegatesOriginalUpdatesWithoutLocalMetadataInjection() {
+    TableRequests.Commit request = commitWithSingleUpdate();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table = tableRecord("cat:db:orders");
     when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
@@ -195,7 +237,7 @@ class TableCommitServiceTest {
     when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(dto);
 
-    Response response = service.commit(command(emptyCommitRequest()));
+    Response response = service.commit(command(request));
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     ArgumentCaptor<TransactionCommitRequest> txRequestCaptor =
@@ -203,9 +245,92 @@ class TableCommitServiceTest {
     verify(transactionCommitService)
         .commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
     var updates = txRequestCaptor.getValue().tableChanges().get(0).updates();
-    assertTrue(
-        updates.isEmpty(),
+    assertEquals(
+        request.updates(),
+        updates,
         "single-table commit should forward caller updates unchanged at this layer");
+  }
+
+  @Test
+  void commitMergesStagedCreateIntoSingleAtomicTransactionWhenTableMissing() {
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResourceId.newBuilder().setId("cat:db:orders").build());
+    Table created = tableRecord("cat:db:orders");
+    when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
+        .thenReturn(created);
+    when(tableSupport.loadCurrentMetadata(created))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+
+    StagedTableEntry staged =
+        new StagedTableEntry(
+            new StagedTableKey("account-1", "catalog", List.of("db"), "orders", "stage-1"),
+            ResourceId.newBuilder().setId("cat").build(),
+            ResourceId.newBuilder().setId("cat:db").build(),
+            createRequest(),
+            ai.floedb.floecat.catalog.rpc.TableSpec.newBuilder().build(),
+            List.of(Map.of("type", "assert-create")),
+            StageState.STAGED,
+            Instant.now(),
+            Instant.now(),
+            "idem");
+    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+
+    TransactionCommitRequest stagedCreateTx =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto(
+                        List.of("db"), "orders"),
+                    List.of(Map.of("type", "assert-create")),
+                    List.of(Map.of("action", "add-schema")))));
+    when(tableCreateTransactionMapper.buildCreateRequest(any(), any(), any(), any(), any(), any()))
+        .thenReturn(stagedCreateTx);
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    CommitTableResponseDto dto =
+        new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
+    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(dto);
+
+    Response response = service.commit(commandWithStage(commitWithSingleUpdate(), "stage-1"));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    ArgumentCaptor<TransactionCommitRequest> txRequestCaptor =
+        ArgumentCaptor.forClass(TransactionCommitRequest.class);
+    verify(transactionCommitService)
+        .commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
+    var change = txRequestCaptor.getValue().tableChanges().get(0);
+    assertEquals(2, change.updates().size());
+    assertEquals("add-schema", change.updates().get(0).get("action"));
+    assertEquals("set-properties", change.updates().get(1).get("action"));
+    verify(stagedTableService).deleteStage(staged.key());
   }
 
   @Test
@@ -233,6 +358,33 @@ class TableCommitServiceTest {
     return new TableRequests.Commit(List.of(), List.of());
   }
 
+  private TableRequests.Commit commitWithSingleUpdate() {
+    return new TableRequests.Commit(List.of(), List.of(Map.of("action", "set-properties")));
+  }
+
+  private TableRequests.Create createRequest() {
+    com.fasterxml.jackson.databind.ObjectMapper mapper =
+        new com.fasterxml.jackson.databind.ObjectMapper();
+    var schema =
+        mapper
+            .createObjectNode()
+            .put("schema-id", 1)
+            .put("last-column-id", 1)
+            .put("type", "struct")
+            .set(
+                "fields",
+                mapper
+                    .createArrayNode()
+                    .add(
+                        mapper
+                            .createObjectNode()
+                            .put("id", 1)
+                            .put("name", "id")
+                            .put("required", true)
+                            .put("type", "long")));
+    return new TableRequests.Create("orders", schema, null, Map.of(), null, null, true);
+  }
+
   private Table tableRecord(String id) {
     return Table.newBuilder()
         .setResourceId(ResourceId.newBuilder().setId(id))
@@ -242,6 +394,11 @@ class TableCommitServiceTest {
   }
 
   private TableCommitService.CommitCommand command(TableRequests.Commit request) {
+    return commandWithStage(request, null);
+  }
+
+  private TableCommitService.CommitCommand commandWithStage(
+      TableRequests.Commit request, String stageId) {
     return new TableCommitService.CommitCommand(
         "foo",
         "db",
@@ -251,7 +408,7 @@ class TableCommitServiceTest {
         ResourceId.newBuilder().setId("cat").build(),
         ResourceId.newBuilder().setId("cat:db").build(),
         "idem",
-        null,
+        stageId,
         null,
         request,
         tableSupport);

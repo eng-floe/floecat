@@ -43,10 +43,12 @@ public class CommitRequirementService {
     }
     Table table = tableSupplier.get();
     IcebergMetadata[] metadataHolder = new IcebergMetadata[1];
+    boolean[] metadataLoaded = new boolean[] {false};
     Supplier<IcebergMetadata> metadataSupplier =
         () -> {
-          if (metadataHolder[0] == null) {
+          if (!metadataLoaded[0]) {
             metadataHolder[0] = tableSupport.loadCurrentMetadata(table);
+            metadataLoaded[0] = true;
           }
           return metadataHolder[0];
         };
@@ -93,8 +95,12 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-current-schema-id requires current-schema-id");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual = metadata != null ? metadata.getCurrentSchemaId() : null;
+          Integer actual =
+              resolveIntFromMetadataOrProperty(
+                  table,
+                  metadataSupplier,
+                  "current-schema-id",
+                  IcebergMetadata::getCurrentSchemaId);
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-current-schema-id failed");
           }
@@ -105,8 +111,9 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-last-assigned-field-id requires last-assigned-field-id");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual = metadata != null ? metadata.getLastColumnId() : null;
+          Integer actual =
+              resolveIntFromMetadataOrProperty(
+                  table, metadataSupplier, "last-column-id", IcebergMetadata::getLastColumnId);
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-field-id failed");
           }
@@ -117,8 +124,12 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-last-assigned-partition-id requires last-assigned-partition-id");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual = metadata != null ? metadata.getLastPartitionId() : null;
+          Integer actual =
+              resolveIntFromMetadataOrProperty(
+                  table,
+                  metadataSupplier,
+                  "last-partition-id",
+                  IcebergMetadata::getLastPartitionId);
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-last-assigned-partition-id failed");
           }
@@ -128,8 +139,9 @@ public class CommitRequirementService {
           if (expected == null) {
             return validationErrorFactory.apply("assert-default-spec-id requires default-spec-id");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual = metadata != null ? metadata.getDefaultSpecId() : null;
+          Integer actual =
+              resolveIntFromMetadataOrProperty(
+                  table, metadataSupplier, "default-spec-id", IcebergMetadata::getDefaultSpecId);
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-spec-id failed");
           }
@@ -140,8 +152,12 @@ public class CommitRequirementService {
             return validationErrorFactory.apply(
                 "assert-default-sort-order-id requires default-sort-order-id");
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Integer actual = metadata != null ? metadata.getDefaultSortOrderId() : null;
+          Integer actual =
+              resolveIntFromMetadataOrProperty(
+                  table,
+                  metadataSupplier,
+                  "default-sort-order-id",
+                  IcebergMetadata::getDefaultSortOrderId);
           if (!Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-default-sort-order-id failed");
           }
@@ -212,5 +228,33 @@ public class CommitRequirementService {
       return asLong(table.getPropertiesMap().get("current-snapshot-id"));
     }
     return null;
+  }
+
+  private static Integer resolveIntFromMetadataOrProperty(
+      Table table,
+      Supplier<IcebergMetadata> metadataSupplier,
+      String propertyKey,
+      Function<IcebergMetadata, Integer> metadataExtractor) {
+    Integer propertyValue =
+        propertyInt(table == null ? null : table.getPropertiesMap(), propertyKey);
+    IcebergMetadata metadata = metadataSupplier.get();
+    if (metadata == null) {
+      return propertyValue;
+    }
+    Integer metadataValue = metadataExtractor.apply(metadata);
+    if (metadataValue == null || metadataValue < 0) {
+      return propertyValue;
+    }
+    if (metadataValue == 0 && propertyValue != null && propertyValue != 0) {
+      return propertyValue;
+    }
+    return metadataValue;
+  }
+
+  private static Integer propertyInt(Map<String, String> props, String key) {
+    if (props == null || key == null || key.isBlank()) {
+      return null;
+    }
+    return asInteger(props.get(key));
   }
 }

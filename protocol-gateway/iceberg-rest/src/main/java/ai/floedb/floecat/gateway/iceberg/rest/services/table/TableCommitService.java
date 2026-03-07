@@ -24,28 +24,36 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableCommitService {
-  private static final Logger LOG = Logger.getLogger(TableCommitService.class);
-
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject CommitResponseBuilder responseBuilder;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject TransactionCommitService transactionCommitService;
+  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
+  @Inject StagedTableService stagedTableService;
+  @Inject AccountContext accountContext;
 
   public Response commit(CommitCommand command) {
     if (command == null) {
@@ -62,13 +70,21 @@ public class TableCommitService {
           "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
     }
 
+    Optional<StagedTableEntry> stagedEntryOpt = resolveStagedEntry(command);
+    if (stagedEntryOpt.isPresent() && stagedEntryOpt.get().state() == StageState.ABORTED) {
+      return IcebergErrorResponses.conflict(
+          "stage " + stagedEntryOpt.get().key().stageId() + " was aborted");
+    }
+    TableRequests.Commit effectiveReq =
+        mergeStagedCreateIntoCommit(command, req, stagedEntryOpt.orElse(null), preCommitTable);
+
     TransactionCommitRequest txRequest =
         new TransactionCommitRequest(
             List.of(
                 new TransactionCommitRequest.TableChange(
                     new TableIdentifierDto(command.namespacePath(), command.table()),
-                    req.requirements(),
-                    req.updates())));
+                    effectiveReq.requirements(),
+                    effectiveReq.updates())));
 
     Response txResponse =
         transactionCommitService.commit(
@@ -77,8 +93,9 @@ public class TableCommitService {
         || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
       return txResponse;
     }
+    stagedEntryOpt.ifPresent(entry -> stagedTableService.deleteStage(entry.key()));
 
-    return buildCommitResponse(command, req);
+    return buildCommitResponse(command, effectiveReq);
   }
 
   private Response buildCommitResponse(CommitCommand command, TableRequests.Commit req) {
@@ -90,12 +107,6 @@ public class TableCommitService {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
 
     Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
-    CommitTableResponseDto initialResponse =
-        responseBuilder.buildInitialResponse(
-            command.table(), committedTable, tableId, null, req, tableSupport, metadata);
-
-    CommitTableResponseDto responseDto = initialResponse;
-
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
             command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
@@ -151,5 +162,90 @@ public class TableCommitService {
     return deltaCompat.get().enabled()
         && deltaCompat.get().readOnly()
         && tableFormatSupport.isDelta(table);
+  }
+
+  private TableRequests.Commit mergeStagedCreateIntoCommit(
+      CommitCommand command,
+      TableRequests.Commit req,
+      StagedTableEntry stagedEntry,
+      Table tableState) {
+    if (req == null || stagedEntry == null) {
+      return req;
+    }
+    if (tableState != null || callerProvidesCreateInitialization(req)) {
+      return req;
+    }
+    TransactionCommitRequest stagedRequest =
+        tableCreateTransactionMapper.buildCreateRequest(
+            command.namespacePath(),
+            command.table(),
+            stagedEntry.catalogId(),
+            stagedEntry.namespaceId(),
+            stagedEntry.request(),
+            command.tableSupport());
+    var stagedChange = stagedRequest.tableChanges().get(0);
+    List<Map<String, Object>> requirements = new ArrayList<>(stagedChange.requirements());
+    if (req.requirements() != null && !req.requirements().isEmpty()) {
+      requirements.addAll(req.requirements());
+    }
+    List<Map<String, Object>> updates = new ArrayList<>(stagedChange.updates());
+    if (req.updates() != null && !req.updates().isEmpty()) {
+      updates.addAll(req.updates());
+    }
+    return new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
+  }
+
+  private Optional<StagedTableEntry> resolveStagedEntry(CommitCommand command) {
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return Optional.empty();
+    }
+    String stageId = resolveStageId(command);
+    if (stageId != null) {
+      StagedTableKey key =
+          new StagedTableKey(
+              accountId, command.catalogName(), command.namespacePath(), command.table(), stageId);
+      return stagedTableService.getStage(key);
+    }
+    return stagedTableService.findSingleStage(
+        accountId, command.catalogName(), command.namespacePath(), command.table());
+  }
+
+  private String resolveStageId(CommitCommand command) {
+    if (command.stageId() != null && !command.stageId().isBlank()) {
+      return command.stageId();
+    }
+    if (command.transactionId() != null && !command.transactionId().isBlank()) {
+      return command.transactionId();
+    }
+    return null;
+  }
+
+  private boolean callerProvidesCreateInitialization(TableRequests.Commit req) {
+    if (req == null || req.updates() == null || req.updates().isEmpty()) {
+      return false;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (isCreateInitializationUpdate(update)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean isCreateInitializationUpdate(Map<String, Object> update) {
+    if (update == null) {
+      return false;
+    }
+    Object action = update.get("action");
+    if (!(action instanceof String value)) {
+      return false;
+    }
+    return "add-schema".equals(value)
+        || "set-current-schema".equals(value)
+        || "add-spec".equals(value)
+        || "set-default-spec".equals(value)
+        || "add-sort-order".equals(value)
+        || "set-default-sort-order".equals(value);
   }
 }
