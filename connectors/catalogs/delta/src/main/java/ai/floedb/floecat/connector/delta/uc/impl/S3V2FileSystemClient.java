@@ -155,6 +155,7 @@ final class S3V2FileSystemClient implements FileIO {
       private Iterator<S3Object> pageIter = null;
       private boolean yieldedFirst = (firstStatus == null);
       private FileStatus firstToYield = firstStatus;
+      private FileStatus bufferedNext = null;
       private boolean closed = false;
 
       private void fetchNextPage() {
@@ -179,22 +180,7 @@ final class S3V2FileSystemClient implements FileIO {
         if (closed) {
           return false;
         }
-
-        if (!yieldedFirst && firstToYield != null) {
-          return true;
-        }
-
-        while (true) {
-          if (pageIter != null && pageIter.hasNext()) {
-            return true;
-          }
-
-          if (continuationToken == null && pageIter != null) {
-            return false;
-          }
-
-          fetchNextPage();
-        }
+        return ensureBufferedNext();
       }
 
       @Override
@@ -202,23 +188,38 @@ final class S3V2FileSystemClient implements FileIO {
         if (closed) {
           throw new NoSuchElementException("Iterator closed");
         }
+        if (!ensureBufferedNext()) {
+          throw new NoSuchElementException();
+        }
+        FileStatus out = bufferedNext;
+        bufferedNext = null;
+        return out;
+      }
+
+      @Override
+      public void close() {
+        closed = true;
+        pageIter = null;
+        bufferedNext = null;
+      }
+
+      private boolean ensureBufferedNext() {
+        if (bufferedNext != null) {
+          return true;
+        }
 
         if (!yieldedFirst && firstToYield != null) {
           yieldedFirst = true;
-          FileStatus out = firstToYield;
+          bufferedNext = firstToYield;
           firstToYield = null;
-          return out;
+          return true;
         }
+
         while (true) {
           if (pageIter != null && pageIter.hasNext()) {
             S3Object o = pageIter.next();
             String key = o.key();
-
-            if (key == null || key.endsWith("/")) {
-              continue;
-            }
-
-            if (!key.startsWith(dirPrefix)) {
+            if (key == null || key.endsWith("/") || !key.startsWith(dirPrefix)) {
               continue;
             }
 
@@ -228,19 +229,16 @@ final class S3V2FileSystemClient implements FileIO {
                 (o.lastModified() != null)
                     ? o.lastModified().toEpochMilli()
                     : Instant.now().toEpochMilli();
-            return FileStatus.of(fullPath, size, mod);
+            bufferedNext = FileStatus.of(fullPath, size, mod);
+            return true;
           }
-          if (continuationToken == null) {
-            throw new NoSuchElementException();
+
+          if (continuationToken == null && pageIter != null) {
+            return false;
           }
+
           fetchNextPage();
         }
-      }
-
-      @Override
-      public void close() {
-        closed = true;
-        pageIter = null;
       }
     };
   }
