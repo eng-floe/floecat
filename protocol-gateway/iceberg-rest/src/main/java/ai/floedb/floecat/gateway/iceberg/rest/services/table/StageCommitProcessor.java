@@ -63,7 +63,6 @@ public class StageCommitProcessor {
   @Inject SnapshotClient snapshotClient;
   @Inject ConnectorClient connectorClient;
   @Inject TransactionCommitService transactionCommitService;
-  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
 
   private TableGatewaySupport tableSupport;
 
@@ -125,16 +124,14 @@ public class StageCommitProcessor {
     Table tableRecord = existing;
     if (!tableExists) {
       Response txResponse =
-          transactionCommitService.commit(
+          transactionCommitService.commitCreate(
               prefix,
               entry.idempotencyKey(),
-              tableCreateTransactionMapper.buildCreateRequest(
-                  namespacePath,
-                  tableName,
-                  entry.catalogId(),
-                  entry.namespaceId(),
-                  entry.request(),
-                  tableSupport),
+              namespacePath,
+              tableName,
+              entry.catalogId(),
+              entry.namespaceId(),
+              entry.request(),
               tableSupport);
       if (txResponse == null
           || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {

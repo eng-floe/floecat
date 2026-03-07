@@ -195,12 +195,14 @@ public class CommitRequirementService {
     if (metadata != null) {
       if (metadata.getRefsMap().containsKey(refName)) {
         long snapshotId = metadata.getRefsOrThrow(refName).getSnapshotId();
-        if (snapshotId > 0L) {
+        if (snapshotId >= 0L) {
           return snapshotId;
         }
       }
       if ("main".equals(refName)) {
         long currentSnapshotId = metadata.getCurrentSnapshotId();
+        // currentSnapshotId defaults to 0 in proto3 when unset; only positive values are
+        // unambiguous here. Explicit version 0 is resolved via refs/properties.
         if (currentSnapshotId > 0L) {
           return currentSnapshotId;
         }

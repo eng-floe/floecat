@@ -108,6 +108,7 @@ public class TransactionCommitService {
   @Inject RequestContextFactory requestContextFactory;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCommitPlanner tableCommitPlanner;
+  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
   @Inject CommitResponseBuilder responseBuilder;
   @Inject TableCommitJournalService commitJournalService;
   @Inject TableCommitOutboxService commitOutboxService;
@@ -115,11 +116,38 @@ public class TransactionCommitService {
   @Inject SnapshotClient snapshotClient;
   @Inject TransactionClient transactionClient;
 
+  public Response commitCreate(
+      String prefix,
+      String idempotencyKey,
+      List<String> namespacePath,
+      String tableName,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      TableRequests.Create request,
+      TableGatewaySupport tableSupport) {
+    return commitInternal(
+        prefix,
+        idempotencyKey,
+        tableCreateTransactionMapper.buildCreateRequest(
+            namespacePath, tableName, catalogId, namespaceId, request, tableSupport),
+        tableSupport,
+        false);
+  }
+
   public Response commit(
       String prefix,
       String idempotencyKey,
       TransactionCommitRequest request,
       TableGatewaySupport tableSupport) {
+    return commitInternal(prefix, idempotencyKey, request, tableSupport, true);
+  }
+
+  private Response commitInternal(
+      String prefix,
+      String idempotencyKey,
+      TransactionCommitRequest request,
+      TableGatewaySupport tableSupport,
+      boolean preMaterializeAssertCreate) {
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
       return IcebergErrorResponses.validation("account context is required");
@@ -318,8 +346,10 @@ public class TransactionCommitService {
                   identifier.name(),
                   tableId,
                   updated,
+                  change.requirements() == null ? List.of() : List.copyOf(change.requirements()),
                   change.updates() == null ? List.of() : List.copyOf(change.updates()),
-                  tableSupport);
+                  tableSupport,
+                  preMaterializeAssertCreate);
           if (preMaterialized.error() != null) {
             maybeAbortOpenTransaction(
                 currentState, txId, "metadata materialization failed before atomic commit");
@@ -618,9 +648,15 @@ public class TransactionCommitService {
       String tableName,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table plannedTable,
+      List<Map<String, Object>> requirements,
       List<Map<String, Object>> updates,
-      TableGatewaySupport tableSupport) {
+      TableGatewaySupport tableSupport,
+      boolean preMaterializeAssertCreate) {
     if (plannedTable == null || tableSupport == null) {
+      return new PreMaterializedTable(plannedTable, null);
+    }
+    if (!preMaterializeAssertCreate && hasRequirementType(requirements, "assert-create")) {
+      // Keep create-table locations empty so engines can own first metadata materialization.
       return new PreMaterializedTable(plannedTable, null);
     }
     if (requestedMetadataLocation(updates) != null) {
@@ -1410,7 +1446,9 @@ public class TransactionCommitService {
             && metadata.getRefsOrThrow(refName).getSnapshotId() >= 0L) {
           return true;
         }
-        if ("main".equals(refName) && metadata.getCurrentSnapshotId() >= 0L) {
+        // currentSnapshotId defaults to 0 in proto3 when unset; only positive values are
+        // unambiguous here. Explicit version 0 is handled via refs/properties.
+        if ("main".equals(refName) && metadata.getCurrentSnapshotId() > 0L) {
           return true;
         }
       }

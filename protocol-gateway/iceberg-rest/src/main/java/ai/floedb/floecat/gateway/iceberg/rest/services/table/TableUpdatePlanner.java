@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 
@@ -31,6 +32,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -47,6 +50,7 @@ public class TableUpdatePlanner {
   @Inject CommitRequirementService commitRequirementService;
   @Inject TablePropertyService tablePropertyService;
   @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject ObjectMapper mapper;
 
   public UpdatePlan planUpdates(
       TableCommitService.CommitCommand command,
@@ -97,6 +101,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
     mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
@@ -164,6 +169,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
     mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
@@ -440,6 +446,35 @@ public class TableUpdatePlanner {
       return mergedProps;
     }
     return targetProps;
+  }
+
+  private void applyTableDefinitionSpecUpdates(
+      TableSpec.Builder spec, FieldMask.Builder mask, List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return;
+    }
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"add-schema".equals(action)) {
+        continue;
+      }
+      Map<String, Object> schema = asObjectMap(update.get("schema"));
+      if (schema == null || schema.isEmpty()) {
+        continue;
+      }
+      try {
+        String schemaJson = mapper.writeValueAsString(schema);
+        if (!schemaJson.isBlank()) {
+          spec.setSchemaJson(schemaJson);
+          mask.addPaths("schema_json");
+        }
+      } catch (JsonProcessingException e) {
+        throw new IllegalArgumentException("Invalid add-schema payload", e);
+      }
+    }
   }
 
   @SuppressWarnings("unchecked")

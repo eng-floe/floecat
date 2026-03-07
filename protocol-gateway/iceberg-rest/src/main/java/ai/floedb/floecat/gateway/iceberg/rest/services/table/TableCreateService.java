@@ -27,7 +27,6 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
@@ -64,14 +63,13 @@ public class TableCreateService {
       List.of(Map.of("type", "assert-create"));
 
   @Inject TableLifecycleService tableLifecycleService;
+  @Inject TransactionCommitService transactionCommitService;
   @Inject NamespaceClient namespaceClient;
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
   @Inject SnapshotClient snapshotClient;
   @Inject ObjectMapper mapper;
-  @Inject TransactionCommitService transactionCommitService;
-  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
 
   public Response create(
       NamespaceRequestContext namespaceContext,
@@ -104,10 +102,12 @@ public class TableCreateService {
           tableSupport);
     }
 
-    TransactionCommitRequest txRequest;
+    Response txResponse;
     try {
-      txRequest =
-          tableCreateTransactionMapper.buildCreateRequest(
+      txResponse =
+          transactionCommitService.commitCreate(
+              namespaceContext.prefix(),
+              idempotencyKey,
               namespaceContext.namespacePath(),
               tableName,
               namespaceContext.catalogId(),
@@ -117,17 +117,23 @@ public class TableCreateService {
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    Response txResponse =
-        transactionCommitService.commit(
-            namespaceContext.prefix(), idempotencyKey, txRequest, tableSupport);
     if (txResponse == null
         || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
       return txResponse;
     }
-    Table created =
-        tableLifecycleService.getTable(
-            tableLifecycleService.resolveTableId(
-                namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName));
+
+    Table created;
+    try {
+      var tableId =
+          tableLifecycleService.resolveTableId(
+              namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
+      created = tableLifecycleService.getTable(tableId);
+    } catch (Exception e) {
+      return IcebergErrorResponses.failure(
+          "Failed to load created table",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials;
     try {

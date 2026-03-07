@@ -40,6 +40,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
@@ -86,6 +87,8 @@ class TransactionCommitServiceTest {
   private final TableLifecycleService tableLifecycleService =
       Mockito.mock(TableLifecycleService.class);
   private final TableCommitPlanner tableCommitPlanner = Mockito.mock(TableCommitPlanner.class);
+  private final TableCreateTransactionMapper tableCreateTransactionMapper =
+      Mockito.mock(TableCreateTransactionMapper.class);
   private final TableCommitJournalService commitJournalService =
       Mockito.mock(TableCommitJournalService.class);
   private final TableCommitOutboxService commitOutboxService =
@@ -103,6 +106,7 @@ class TransactionCommitServiceTest {
     service.requestContextFactory = requestContextFactory;
     service.tableLifecycleService = tableLifecycleService;
     service.tableCommitPlanner = tableCommitPlanner;
+    service.tableCreateTransactionMapper = tableCreateTransactionMapper;
     service.commitJournalService = commitJournalService;
     service.commitOutboxService = commitOutboxService;
     service.materializationService = materializationService;
@@ -185,6 +189,181 @@ class TransactionCommitServiceTest {
   }
 
   @Test
+  void commitCreateBuildsMappedCreateRequestAndUsesTxPath() throws Exception {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    TransactionCommitRequest createTxRequest =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new TableIdentifierDto(List.of("db"), "orders"),
+                    List.of(Map.of("type", "assert-create")),
+                    List.of(
+                        Map.of(
+                            "action",
+                            "set-properties",
+                            "updates",
+                            Map.of("metadata-location", "s3://meta/00001.metadata.json"))))));
+    when(tableCreateTransactionMapper.buildCreateRequest(
+            eq(List.of("db")),
+            eq("orders"),
+            any(ResourceId.class),
+            any(ResourceId.class),
+            any(TableRequests.Create.class),
+            eq(tableSupport)))
+        .thenReturn(createTxRequest);
+
+    TableRequests.Create createRequest =
+        new TableRequests.Create(
+            "orders",
+            mapper()
+                .readTree(
+                    """
+                {
+                  "schema-id":1,
+                  "last-column-id":1,
+                  "type":"struct",
+                  "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+                }
+                """),
+            null,
+            null,
+            null,
+            null,
+            false);
+
+    Response response =
+        service.commitCreate(
+            "pref",
+            "idem",
+            List.of("db"),
+            "orders",
+            ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build(),
+            ResourceId.newBuilder().setAccountId("acct-1").setId("ns-id").build(),
+            createRequest,
+            tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(tableCreateTransactionMapper)
+        .buildCreateRequest(
+            eq(List.of("db")),
+            eq("orders"),
+            any(ResourceId.class),
+            any(ResourceId.class),
+            eq(createRequest),
+            eq(tableSupport));
+    verify(transactionClient).prepareTransaction(any());
+    verify(transactionClient).commitTransaction(any());
+  }
+
+  @Test
+  void commitCreateWithAssertCreateSkipsPreMaterializationWhenMetadataLocationMissing()
+      throws Exception {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+
+    TransactionCommitRequest createTxRequest =
+        new TransactionCommitRequest(
+            List.of(
+                new TransactionCommitRequest.TableChange(
+                    new TableIdentifierDto(List.of("db"), "orders"),
+                    List.of(Map.of("type", "assert-create")),
+                    List.of(
+                        Map.of("action", "set-location", "location", "s3://warehouse/orders")))));
+    when(tableCreateTransactionMapper.buildCreateRequest(
+            eq(List.of("db")),
+            eq("orders"),
+            any(ResourceId.class),
+            any(ResourceId.class),
+            any(TableRequests.Create.class),
+            eq(tableSupport)))
+        .thenReturn(createTxRequest);
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenThrow(new RuntimeException("missing pointer"));
+
+    TableRequests.Create createRequest =
+        new TableRequests.Create(
+            "orders",
+            mapper()
+                .readTree(
+                    """
+                {
+                  "schema-id":1,
+                  "last-column-id":1,
+                  "type":"struct",
+                  "fields":[{"id":1,"name":"id","required":true,"type":"long"}]
+                }
+                """),
+            null,
+            null,
+            null,
+            null,
+            false);
+
+    Response response =
+        service.commitCreate(
+            "pref",
+            "idem",
+            List.of("db"),
+            "orders",
+            ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build(),
+            ResourceId.newBuilder().setAccountId("acct-1").setId("ns-id").build(),
+            createRequest,
+            tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(materializationService, never())
+        .materializeMetadata(any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
   void commitReturnsNoContentWhenAlreadyAppliedAndReplaysSideEffects() {
     when(transactionClient.beginTransaction(any()))
         .thenReturn(
@@ -203,6 +382,10 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
+  }
+
+  private com.fasterxml.jackson.databind.ObjectMapper mapper() {
+    return new com.fasterxml.jackson.databind.ObjectMapper();
   }
 
   @Test
@@ -667,6 +850,49 @@ class TransactionCommitServiceTest {
                                                 .getTable()
                                                 .getPropertiesMap()
                                                 .get("metadata-location")))));
+  }
+
+  @Test
+  void commitWithAssertCreatePreMaterializesWhenMetadataLocationMissing() {
+    ResourceId plannedTableId =
+        ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-create").build();
+    Table planned = Table.newBuilder().setResourceId(plannedTableId).build();
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(planned, null));
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenThrow(new RuntimeException("missing pointer"));
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00001.metadata.json"));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -1658,6 +1884,42 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
+  }
+
+  @Test
+  void assertRefSnapshotIdNullDoesNotConflictWhenMetadataHasDefaultCurrentSnapshotZero() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+        .thenReturn(IcebergMetadata.getDefaultInstance());
+
+    Response response =
+        service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient).prepareTransaction(any());
+    verify(transactionClient).commitTransaction(any());
   }
 
   @Test

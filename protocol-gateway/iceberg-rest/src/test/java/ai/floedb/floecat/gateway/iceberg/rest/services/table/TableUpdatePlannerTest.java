@@ -34,6 +34,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
@@ -48,12 +50,16 @@ class TableUpdatePlannerTest {
   private final TableUpdatePlanner planner = new TableUpdatePlanner();
   private final CommitRequirementService requirements = mock(CommitRequirementService.class);
   private final TablePropertyService propertyService = mock(TablePropertyService.class);
+  private final SnapshotMetadataService snapshotMetadataService =
+      mock(SnapshotMetadataService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
   @BeforeEach
   void setUp() {
     planner.commitRequirementService = requirements;
     planner.tablePropertyService = propertyService;
+    planner.snapshotMetadataService = snapshotMetadataService;
+    planner.mapper = new ObjectMapper();
   }
 
   @Test
@@ -194,6 +200,8 @@ class TableUpdatePlannerTest {
     assertEquals("0", props.get("default-spec-id"));
     assertEquals("0", props.get("default-sort-order-id"));
     assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", props.get("location"));
+    assertTrue(plan.mask().build().getPathsList().contains("schema_json"));
+    assertTrue(plan.spec().build().getSchemaJson().contains("\"schema-id\":0"));
   }
 
   private Supplier<Table> tableSupplier() {
