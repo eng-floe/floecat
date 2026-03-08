@@ -11,13 +11,14 @@ Transactions provide optimistic, pointer-CAS-based atomic commit across one or m
 
 - `BeginTransaction` creates a transaction in `TS_OPEN`.
 - `PrepareTransaction` validates changes, writes intent records, then moves to `TS_PREPARED`.
-- `CommitTransaction` applies intents synchronously and returns a terminal apply state.
+- `CommitTransaction` transitions through `TS_APPLYING`, applies intents, then returns a terminal apply state.
 - `AbortTransaction` marks `TS_ABORTED` and cleans up intents.
 
 ## State Model
 
 - `TS_OPEN`: new transaction, no committed prepare yet.
 - `TS_PREPARED`: intents are persisted and ready to apply.
+- `TS_APPLYING`: apply phase started; non-abortable in-place.
 - `TS_ABORTED`: transaction aborted explicitly or due to expiration handling.
 - `TS_APPLIED`: all intent pointer updates applied.
 - `TS_APPLY_FAILED_RETRYABLE`: apply failed with a retryable/storage conflict.
@@ -52,7 +53,7 @@ Transactions provide optimistic, pointer-CAS-based atomic commit across one or m
    - transition to `TS_ABORTED`
    - return error (`transaction expired`)
 3. State handling:
-   - `TS_PREPARED` => return existing transaction
+   - `TS_PREPARED` => validate incoming request shape against stored intents, then return existing transaction
    - non-`TS_OPEN` => error
 4. Build intents from all changes:
    - resolve table ID
@@ -74,29 +75,32 @@ Note: prepared blob URIs are content-addressed; cleanup intentionally does not d
 ### CommitTransaction
 1. Load transaction by `tx_id`.
 2. Expired transaction:
-   - transition to `TS_ABORTED`
-   - clean up intents
-   - return error (`transaction expired`)
+   - only for non-`TS_APPLYING` states: transition to `TS_ABORTED`, clean up intents, return error (`transaction expired`)
+   - `TS_APPLYING` skips expiry teardown
 3. State handling:
    - `TS_APPLIED` => return as-is
    - `TS_APPLY_FAILED_CONFLICT` => return as-is
-   - allowed apply states: `TS_PREPARED`, `TS_APPLY_FAILED_RETRYABLE`
+   - allowed apply states: `TS_PREPARED`, `TS_APPLYING`, `TS_APPLY_FAILED_RETRYABLE`
    - other states => error
-4. Load intents by tx; empty intent set is an error.
-5. Apply intents via pointer batch CAS:
+4. Load intents by tx; empty intent set is an error; apply order is deterministic (sorted by target key).
+5. If not already `TS_APPLYING`, transition from `TS_PREPARED`/`TS_APPLY_FAILED_RETRYABLE` to `TS_APPLYING`.
+6. Apply intents via pointer batch CAS:
    - table intents include by-id pointer plus table name-pointer ownership updates
    - max pointer CAS ops per apply is 100
-6. Commit result mapping:
+7. Commit result mapping:
    - apply success => `TS_APPLIED`
-   - deterministic conflict => annotate intents, `TS_APPLY_FAILED_CONFLICT`
+   - conflict:
+     - if pointers already match intent blob URIs, finalize `TS_APPLIED` (recovery path)
+     - otherwise annotate intents and return `TS_APPLY_FAILED_CONFLICT`
    - retryable apply failure => annotate intents, `TS_APPLY_FAILED_RETRYABLE`
-7. On successful apply, intent index cleanup is best-effort; warnings are logged if not fully removed.
+8. On successful apply, intent index cleanup is best-effort; warnings are logged if not fully removed.
 
 ### AbortTransaction
 1. Load transaction by `tx_id`.
 2. State handling:
    - already `TS_ABORTED` => return as-is
-   - committed family (`TS_APPLIED`, `TS_APPLY_FAILED_CONFLICT`) => error
+   - `TS_APPLYING` => error (`transaction apply is in progress`)
+   - terminal non-abortable states (`TS_APPLIED`, `TS_APPLY_FAILED_CONFLICT`) => error
    - `TS_APPLY_FAILED_RETRYABLE` => abort is allowed to release intent locks
 3. Transition to `TS_ABORTED`.
 4. Delete intents for that tx (best-effort via index deletes).
@@ -133,6 +137,10 @@ The Iceberg REST gateway uses this gRPC flow as follows:
 6. Post-commit side effects (snapshot prune + connector stats sync/reconcile trigger) are outside backend atomic CAS boundary and are best-effort after apply (they no longer downgrade a committed apply to non-204).
 7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
 8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
+9. Ambiguous commit outcomes use a short bounded confirmation poll before returning unknown-state:
+   - `floecat.gateway.commit.confirm.max-attempts` (default `6`)
+   - `floecat.gateway.commit.confirm.initial-sleep-ms` (default `25`)
+   - `floecat.gateway.commit.confirm.max-sleep-ms` (default `200`)
 
 ## REST Single-Table Commit Bridge (Current Behavior)
 
@@ -148,10 +156,12 @@ planned table change:
 ## Failure and Concurrency Notes
 
 - Prepare may write blobs before intent creation; blob cleanup is intentionally skipped because blobs are content-addressed and may be shared.
-- Intent target locks are reclaimed from stale owners during prepare.
+- Intent target locks are reclaimed from stale owners during prepare (ownership-checked deletes).
 - `TS_APPLY_FAILED_RETRYABLE` owners are reclaimable once expired; before expiry they are treated as active.
+- `TS_APPLYING` is treated as in-flight and non-abortable/non-expirable in-place.
 - Commit conflict/retryable diagnostics are persisted onto each intent (`apply_error_*`) when possible.
 - Intent index cleanup is retried and verified but remains best-effort.
+- GC skips TTL collection for `TS_APPLYING` transactions and uses stale-owner semantics for dangling target-intent cleanup (`TS_ABORTED`, `TS_APPLIED`, `TS_APPLY_FAILED_CONFLICT`, and expired `TS_APPLY_FAILED_RETRYABLE`).
 
 ## Relevant Code
 

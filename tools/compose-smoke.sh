@@ -20,6 +20,14 @@ COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS:-sales}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG:-polaris_import}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE:-polaris_import.sales.trino_types}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE:-quickstart_catalog}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE:-trino_types}
+COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX:-s3://floecat/sales/us/trino_types/metadata/}
 
 is_truthy() {
   local raw="${1:-}"
@@ -46,6 +54,49 @@ should_run_client() {
   local client="$1"
   local normalized=",${COMPOSE_SMOKE_CLIENTS//[[:space:]]/},"
   [[ "$normalized" == *",$client,"* ]]
+}
+
+run_cli_script() {
+  local compose_cmd="$1"
+  local script="$2"
+  printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli"
+}
+
+wait_for_connector_job() {
+  local compose_cmd="$1"
+  local label="$2"
+  local job_id="$3"
+  local max_attempts="${4:-90}"
+  local sleep_seconds="${5:-2}"
+  local attempt
+  local out
+  local state
+
+  if [ -z "$job_id" ]; then
+    echo "[FAIL] $label missing reconcile job id"
+    return 1
+  fi
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    out=$(run_cli_script "$compose_cmd" "account t-0001
+connector job $job_id
+quit")
+    state=$(printf "%s\n" "$out" | sed -n 's/.*state=\([A-Z_]*\).*/\1/p' | head -n1)
+    if [ "$state" = "JS_SUCCEEDED" ]; then
+      echo "[PASS] $label job succeeded ($job_id)"
+      return 0
+    fi
+    if [ "$state" = "JS_FAILED" ] || [ "$state" = "JS_CANCELLED" ]; then
+      echo "$out"
+      echo "[FAIL] $label job terminal state=$state ($job_id)"
+      return 1
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  echo "$out"
+  echo "[FAIL] $label job timed out waiting for terminal success ($job_id)"
+  return 1
 }
 
 assert_contains() {
@@ -150,7 +201,14 @@ run_mode() {
   local kc_port="${6:-}"
 
   local compose_project="floecat-smoke-$label"
-  local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$profile COMPOSE_PROJECT_NAME=$compose_project"
+  local compose_profiles="$profile"
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+    compose_profiles="${profile},polaris"
+  fi
+  if { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
+    compose_profiles="${compose_profiles},trino"
+  fi
+  local mode_env="FLOECAT_ENV_FILE=$env_file COMPOSE_PROFILES=$compose_profiles COMPOSE_PROJECT_NAME=$compose_project"
 
   if [ -n "$kc_host" ]; then
     mode_env="$mode_env KC_HOSTNAME=$kc_host"
@@ -166,8 +224,8 @@ run_mode() {
     eval "$compose_cmd ps" || true
     echo "==> [SMOKE][DIAG] focused error excerpt"
     eval "$compose_cmd logs --no-color --tail=800" 2>&1 \
-      | grep -E "ERROR|WARN|Exception|FAIL|failed|timed out|currentSnapshot=<null>|snapshotCount=0" \
-      | grep -Ev "localstack.request.aws[[:space:]]+: AWS s3\.[A-Za-z]+ => 200|io\.qua\.htt\.access-log.*\"(GET|HEAD) .*\" 20[04]" \
+      | grep -aE "ERROR|WARN|Exception|FAIL|failed|timed out|currentSnapshot=<null>|snapshotCount=0" \
+      | grep -aEv "localstack.request.aws[[:space:]]+: AWS s3\.[A-Za-z]+ => 200|io\.qua\.htt\.access-log.*\"(GET|HEAD) .*\" 20[04]" \
       || true
     echo "==> [SMOKE][DIAG] fallback tail (last 120 lines)"
     eval "$compose_cmd logs --no-color --tail=120" || true
@@ -207,8 +265,29 @@ run_mode() {
   echo "==> [SMOKE] mode=$label"
   cleanup_mode "$compose_cmd"
 
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+    if [ -z "$pre_services" ]; then
+      pre_services="localstack polaris-db polaris-bootstrap polaris"
+    elif [[ ",$pre_services," != *",polaris,"* ]]; then
+      pre_services="$pre_services polaris-db polaris-bootstrap polaris"
+    fi
+  fi
+
   if [ -n "$pre_services" ]; then
-    eval "$compose_cmd up -d $pre_services"
+    if ! eval "$compose_cmd up -d $pre_services"; then
+      if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+        local polaris_bootstrap_logs
+        polaris_bootstrap_logs=$(eval "$compose_cmd logs --no-color polaris-bootstrap 2>&1" || true)
+        if echo "$polaris_bootstrap_logs" | grep -aq "already been bootstrapped"; then
+          echo "==> [SMOKE] polaris-bootstrap already initialized during pre-start; continuing"
+          eval "$compose_cmd up -d --no-deps polaris"
+        else
+          return 1
+        fi
+      else
+        return 1
+      fi
+    fi
   fi
 
   if [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; then
@@ -219,7 +298,25 @@ run_mode() {
     wait_for_url "http://localhost:8080/realms/floecat/.well-known/openid-configuration" 180 "Keycloak health"
   fi
 
-  eval "$compose_cmd up -d"
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+    local polaris_mgmt_port="${FLOECAT_POLARIS_MGMT_HOST_PORT:-8282}"
+    wait_for_url "http://localhost:${polaris_mgmt_port}/q/health" 180 "Polaris health"
+  fi
+
+  if ! eval "$compose_cmd up -d"; then
+    if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+      local polaris_bootstrap_logs
+      polaris_bootstrap_logs=$(eval "$compose_cmd logs --no-color polaris-bootstrap 2>&1" || true)
+        if echo "$polaris_bootstrap_logs" | grep -aq "already been bootstrapped"; then
+          echo "==> [SMOKE] polaris-bootstrap already initialized; continuing"
+          eval "$compose_cmd up -d --no-deps polaris"
+        else
+          return 1
+        fi
+    else
+      return 1
+    fi
+  fi
 
   local i
   for i in $(seq 1 180); do
@@ -261,6 +358,123 @@ run_mode() {
   echo "$out_delta_dv"
   assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
   assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
+
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
+    echo "==> [SMOKE] upstream iceberg rest import check"
+
+    local aws_cli
+    aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+    local localstack_container="${compose_project}-localstack-1"
+    local warehouse="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE"
+    local source_namespace="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS"
+    local source_table="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE"
+
+    docker exec "$localstack_container" sh -lc "cat > /tmp/polaris-trust.json <<'JSON'
+{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"sts:AssumeRole\"}]}
+JSON
+cat > /tmp/polaris-policy.json <<'JSON'
+{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\",\"s3:ListBucket\"],\"Resource\":[\"arn:aws:s3:::floecat\",\"arn:aws:s3:::floecat/*\"]}]}
+JSON
+awslocal iam create-role --role-name polaris --assume-role-policy-document file:///tmp/polaris-trust.json >/dev/null 2>&1 || true
+awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --policy-document file:///tmp/polaris-policy.json >/dev/null 2>&1 || true" >/dev/null
+
+    local metadata_key
+    metadata_key=$($aws_cli --endpoint-url http://localstack:4566 s3 ls "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX" --recursive \
+      | awk '$4 ~ /\.metadata\.json$/ {print $4}' \
+      | tail -n1)
+    if [ -z "$metadata_key" ]; then
+      echo "[FAIL] $label upstream iceberg metadata not found under $COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX"
+      return 1
+    fi
+    local metadata_uri
+    metadata_uri="s3://floecat/$metadata_key"
+    local bucket_root_uri
+    bucket_root_uri="s3://floecat/"
+    local metadata_dir_uri
+    metadata_dir_uri="s3://floecat/$(dirname "$metadata_key")/"
+
+    local polaris_token
+    polaris_token=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -X POST "http://polaris:8181/api/catalog/v1/oauth/tokens" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data "grant_type=client_credentials&client_id=root&client_secret=s3cr3t&scope=PRINCIPAL_ROLE:ALL" \
+      | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+    if [ -z "$polaris_token" ]; then
+      echo "[FAIL] $label upstream iceberg failed to obtain Polaris OAuth token"
+      return 1
+    fi
+
+    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -X POST "http://polaris:8181/api/management/v1/catalogs" \
+      -H "Authorization: Bearer $polaris_token" \
+      -H "Content-Type: application/json" \
+      -d "{\"catalog\":{\"name\":\"$warehouse\",\"type\":\"INTERNAL\",\"readOnly\":false,\"properties\":{\"default-base-location\":\"$bucket_root_uri\"},\"storageConfigInfo\":{\"storageType\":\"S3\",\"allowedLocations\":[\"$bucket_root_uri\",\"$metadata_dir_uri\"],\"pathStyleAccess\":true,\"roleArn\":\"arn:aws:iam::000000000000:role/polaris\"}}}" \
+      >/dev/null 2>&1 || true
+
+    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces" \
+      -H "Authorization: Bearer $polaris_token" \
+      -H "Content-Type: application/json" \
+      -d "{\"namespace\":[\"$source_namespace\"]}" \
+      >/dev/null 2>&1 || true
+
+    local register_resp
+    register_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -w "\n%{http_code}\n" \
+      -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces/$source_namespace/register" \
+      -H "Authorization: Bearer $polaris_token" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"$source_table\",\"metadata-location\":\"$metadata_uri\"}")
+    local register_code
+    register_code=$(printf "%s\n" "$register_resp" | tail -n1)
+    if [ "$register_code" != "200" ] && [ "$register_code" != "201" ] && [ "$register_code" != "409" ]; then
+      echo "[FAIL] $label upstream iceberg register failed (http=$register_code)"
+      echo "$register_resp"
+      return 1
+    fi
+
+    local rest_setup_out
+    rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --desc compose-smoke-upstream-iceberg
+connector create smoke-upstream-iceberg ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG --auth-scheme oauth2 --auth token=$polaris_token --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1 --props s3.access-key-id=test --props s3.secret-access-key=test
+quit")
+    echo "$rest_setup_out"
+    assert_contains "$label upstream iceberg connector setup" "$rest_setup_out" "smoke-upstream-iceberg"
+
+    local trigger_rest_out
+    trigger_rest_out=$(run_cli_script "$compose_cmd" "account t-0001
+connector trigger smoke-upstream-iceberg --full
+quit")
+    local rest_job_id
+    rest_job_id=$(
+      printf "%s\n" "$trigger_rest_out" \
+        | tr -d '\r' \
+        | sed -E 's/^floecat>[[:space:]]*//' \
+        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
+    )
+    wait_for_connector_job "$compose_cmd" "$label upstream iceberg connector" "$rest_job_id" 120 2
+
+    local out_upstream_iceberg
+    out_upstream_iceberg=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE
+quit")
+    echo "$out_upstream_iceberg"
+    assert_contains "$label upstream iceberg imported account" "$out_upstream_iceberg" "account set:"
+    assert_contains "$label upstream iceberg imported table" "$out_upstream_iceberg" "table id:"
+
+    local out_upstream_iceberg_stats
+    out_upstream_iceberg_stats=$(run_cli_script "$compose_cmd" "account t-0001
+stats files $COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE --current --limit 5
+quit")
+    echo "$out_upstream_iceberg_stats"
+    if echo "$out_upstream_iceberg_stats" | grep -q "No file stats found."; then
+      echo "[FAIL] $label upstream iceberg file stats missing"
+      return 1
+    fi
+    assert_contains "$label upstream iceberg file stats header" "$out_upstream_iceberg_stats" "PATH"
+  elif [ "$profile" = "localstack" ]; then
+    echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
+  fi
 
   if [ "$profile" = "localstack" ] && should_run_client trino; then
     local trino_host_port="${FLOECAT_TRINO_HOST_PORT:-8081}"

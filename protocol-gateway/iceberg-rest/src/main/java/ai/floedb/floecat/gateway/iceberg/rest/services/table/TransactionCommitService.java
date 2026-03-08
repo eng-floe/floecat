@@ -60,6 +60,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -67,6 +68,9 @@ public class TransactionCommitService {
   private static final int COMMIT_JOURNAL_VERSION = 1;
   private static final int COMMIT_OUTBOX_VERSION = 1;
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
+  private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
+  private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 25L;
+  private static final long DEFAULT_COMMIT_CONFIRM_MAX_SLEEP_MS = 200L;
   private static final Set<String> SUPPORTED_REQUIREMENT_TYPES =
       Set.of(
           "assert-create",
@@ -1169,8 +1173,25 @@ public class TransactionCommitService {
     if (txId == null || txId.isBlank()) {
       return false;
     }
-    final int maxAttempts = 3;
-    final long sleepMillis = 25L;
+    int maxAttempts =
+        Math.max(
+            1,
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.gateway.commit.confirm.max-attempts", Integer.class)
+                .orElse(DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS));
+    long sleepMillis =
+        Math.max(
+            0L,
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.gateway.commit.confirm.initial-sleep-ms", Long.class)
+                .orElse(DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS));
+    long maxSleepMillis =
+        Math.max(
+            sleepMillis,
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.gateway.commit.confirm.max-sleep-ms", Long.class)
+                .orElse(DEFAULT_COMMIT_CONFIRM_MAX_SLEEP_MS));
+
     for (int attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         var current =
@@ -1196,6 +1217,7 @@ public class TransactionCommitService {
           Thread.currentThread().interrupt();
           return false;
         }
+        sleepMillis = Math.min(maxSleepMillis, Math.max(1L, sleepMillis * 2L));
       }
     }
     return false;
