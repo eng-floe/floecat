@@ -28,6 +28,20 @@ COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_E
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE:-quickstart_catalog}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE:-trino_types}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX:-s3://floecat/sales/us/trino_types/metadata/}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-false}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI:-http://unity:8080}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS:-unity.default}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE:-call_center}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG:-unity_import}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS:-unity_smoke}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE:-unity_import.unity_smoke.call_center}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS:---auth-scheme none}
+COMPOSE_SMOKE_UNITY_HEALTH_PATH=${COMPOSE_SMOKE_UNITY_HEALTH_PATH:-/api/2.1/unity-catalog/catalogs}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION:-s3://floecat-delta/call_center}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT:-http://localstack:4566}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION:-us-east-1}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID:-test}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY:-test}
 
 is_truthy() {
   local raw="${1:-}"
@@ -205,6 +219,9 @@ run_mode() {
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
     compose_profiles="${profile},polaris"
   fi
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+    compose_profiles="${compose_profiles},unity"
+  fi
   if { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
     compose_profiles="${compose_profiles},trino"
   fi
@@ -272,6 +289,13 @@ run_mode() {
       pre_services="$pre_services polaris-db polaris-bootstrap polaris"
     fi
   fi
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+    if [ -z "$pre_services" ]; then
+      pre_services="localstack unity"
+    elif [[ ",$pre_services," != *",unity,"* ]]; then
+      pre_services="$pre_services unity"
+    fi
+  fi
 
   if [ -n "$pre_services" ]; then
     if ! eval "$compose_cmd up -d $pre_services"; then
@@ -301,6 +325,10 @@ run_mode() {
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
     local polaris_mgmt_port="${FLOECAT_POLARIS_MGMT_HOST_PORT:-8282}"
     wait_for_url "http://localhost:${polaris_mgmt_port}/q/health" 180 "Polaris health"
+  fi
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+    local unity_host_port="${FLOECAT_UNITY_HOST_PORT:-8083}"
+    wait_for_url "http://localhost:${unity_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" 180 "Unity Catalog health"
   fi
 
   if ! eval "$compose_cmd up -d"; then
@@ -474,6 +502,103 @@ quit")
     assert_contains "$label upstream iceberg file stats header" "$out_upstream_iceberg_stats" "PATH"
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
+  fi
+
+  if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+    echo "==> [SMOKE] upstream delta unity import check"
+
+    local unity_catalog="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS%%.*}"
+    local unity_schema="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS#*.}"
+    local unity_source_table="$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE"
+    local unity_storage_location="$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION"
+    if [ -z "$unity_catalog" ] || [ -z "$unity_schema" ] || [ "$unity_schema" = "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS" ]; then
+      echo "[FAIL] $label invalid COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS (expected catalog.schema): $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS"
+      return 1
+    fi
+
+    local unity_catalog_resp
+    unity_catalog_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -w "\n%{http_code}\n" \
+      -X POST "http://unity:8080/api/2.1/unity-catalog/catalogs" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
+    local unity_catalog_code
+    unity_catalog_code=$(printf "%s\n" "$unity_catalog_resp" | tail -n1)
+    if [ "$unity_catalog_code" != "200" ] && [ "$unity_catalog_code" != "201" ] && [ "$unity_catalog_code" != "409" ]; then
+      echo "[FAIL] $label unity catalog create failed (http=$unity_catalog_code)"
+      echo "$unity_catalog_resp"
+      return 1
+    fi
+
+    local unity_schema_resp
+    unity_schema_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -w "\n%{http_code}\n" \
+      -X POST "http://unity:8080/api/2.1/unity-catalog/schemas" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"$unity_schema\",\"catalog_name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
+    local unity_schema_code
+    unity_schema_code=$(printf "%s\n" "$unity_schema_resp" | tail -n1)
+    if [ "$unity_schema_code" != "200" ] && [ "$unity_schema_code" != "201" ] && [ "$unity_schema_code" != "409" ]; then
+      echo "[FAIL] $label unity schema create failed (http=$unity_schema_code)"
+      echo "$unity_schema_resp"
+      return 1
+    fi
+
+    local unity_table_resp
+    unity_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+      -w "\n%{http_code}\n" \
+      -X POST "http://unity:8080/api/2.1/unity-catalog/tables" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\":\"$unity_source_table\",\"catalog_name\":\"$unity_catalog\",\"schema_name\":\"$unity_schema\",\"table_type\":\"EXTERNAL\",\"data_source_format\":\"DELTA\",\"storage_location\":\"$unity_storage_location\"}")
+    local unity_table_code
+    unity_table_code=$(printf "%s\n" "$unity_table_resp" | tail -n1)
+    if [ "$unity_table_code" != "200" ] && [ "$unity_table_code" != "201" ] && [ "$unity_table_code" != "409" ]; then
+      echo "[FAIL] $label unity table register failed (http=$unity_table_code)"
+      echo "$unity_table_resp"
+      return 1
+    fi
+
+    local unity_setup_out
+    unity_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG --desc compose-smoke-upstream-delta-unity
+connector create smoke-upstream-delta-unity DELTA $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG --source-table $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE --dest-ns $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS --props delta.source=unity --props s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT --props s3.path-style-access=true --props s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION --props s3.access-key-id=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID --props s3.secret-access-key=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS
+quit")
+    echo "$unity_setup_out"
+    assert_contains "$label upstream delta unity connector setup" "$unity_setup_out" "smoke-upstream-delta-unity"
+
+    local trigger_unity_out
+    trigger_unity_out=$(run_cli_script "$compose_cmd" "account t-0001
+connector trigger smoke-upstream-delta-unity --full
+quit")
+    local unity_job_id
+    unity_job_id=$(
+      printf "%s\n" "$trigger_unity_out" \
+        | tr -d '\r' \
+        | sed -E 's/^floecat>[[:space:]]*//' \
+        | awk 'match($0, /[0-9a-fA-F-]{36}/) {id=substr($0, RSTART, RLENGTH)} END {print id}'
+    )
+    wait_for_connector_job "$compose_cmd" "$label upstream delta unity connector" "$unity_job_id" 120 2
+
+    local out_upstream_delta_unity
+    out_upstream_delta_unity=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE
+quit")
+    echo "$out_upstream_delta_unity"
+    assert_contains "$label upstream delta unity imported account" "$out_upstream_delta_unity" "account set:"
+    assert_contains "$label upstream delta unity imported table" "$out_upstream_delta_unity" "table id:"
+
+    local out_upstream_delta_unity_stats
+    out_upstream_delta_unity_stats=$(run_cli_script "$compose_cmd" "account t-0001
+stats files $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE --current --limit 5
+quit")
+    echo "$out_upstream_delta_unity_stats"
+    if echo "$out_upstream_delta_unity_stats" | grep -q "No file stats found."; then
+      echo "[FAIL] $label upstream delta unity file stats missing"
+      return 1
+    fi
+    assert_contains "$label upstream delta unity file stats header" "$out_upstream_delta_unity_stats" "PATH"
+  elif [ "$profile" = "localstack" ]; then
+    echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
   fi
 
   if [ "$profile" = "localstack" ] && should_run_client trino; then

@@ -220,6 +220,16 @@ services:
     networks:
       - floecat
 
+  unity:
+    image: ${FLOECAT_UNITY_IMAGE:-unitycatalog/unitycatalog:latest}
+    pull_policy: if_not_present
+    ports:
+      - "${FLOECAT_UNITY_HOST_PORT:-8083}:8080"
+    profiles:
+      - unity
+    networks:
+      - floecat
+
 networks:
   floecat:
     driver: bridge
