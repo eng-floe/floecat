@@ -24,13 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
@@ -64,7 +62,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
+import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -74,11 +75,17 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.Transaction;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
@@ -87,6 +94,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -95,6 +103,45 @@ import org.mockito.ArgumentCaptor;
 class TableResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
+
+  @InjectMock TransactionClient transactionClient;
+  @InjectMock TableCommitMaterializationService materializationService;
+
+  @BeforeEach
+  void setUpAtomicCommitDefaults() {
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
+        .thenAnswer(
+            invocation ->
+                MaterializeMetadataResult.success(
+                    invocation.getArgument(
+                        4,
+                        ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView
+                            .class),
+                    invocation.getArgument(5, String.class)));
+  }
 
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
     return Table.newBuilder()
@@ -411,16 +458,19 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:new_table").build();
 
     Table created =
-        baseTable(ResourceId.newBuilder().setId("cat:db:new_table").build(), nsId)
+        baseTable(tableId, nsId)
             .setDisplayName("new_table")
+            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
-    when(tableStub.updateTable(any()))
-        .thenReturn(UpdateTableResponse.newBuilder().setTable(created).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
     stubSnapshotMetadata(FIXTURE.metadataLocation());
 
     ResourceId connectorId =
@@ -465,6 +515,14 @@ class TableResourceTest extends AbstractRestResourceTest {
             "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
         .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
+    verify(transactionClient).prepareTransaction(any());
+    verify(transactionClient).commitTransaction(any());
+    verify(tableStub, never()).createTable(any());
+    ArgumentCaptor<UpdateTableRequest> tableUpdateCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(tableStub).updateTable(tableUpdateCaptor.capture());
+    assertEquals(List.of("upstream"), tableUpdateCaptor.getValue().getUpdateMask().getPathsList());
+
     ArgumentCaptor<CreateConnectorRequest> createReq =
         ArgumentCaptor.forClass(CreateConnectorRequest.class);
     verify(connectorsStub).createConnector(createReq.capture());
@@ -477,13 +535,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertEquals(
         FIXTURE.metadataLocation(),
         createReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
-
-    ArgumentCaptor<StartCaptureRequest> trigger =
-        ArgumentCaptor.forClass(StartCaptureRequest.class);
-    verify(reconcileControlStub).startCapture(trigger.capture());
-    assertEquals(connectorId, trigger.getValue().getScope().getConnectorId());
-    assertEquals(1, trigger.getValue().getScope().getDestinationNamespacePathsCount());
-    assertEquals("new_table", trigger.getValue().getScope().getDestinationTableDisplayName());
+    verify(reconcileControlStub, never()).startCapture(any());
   }
 
   @Test
@@ -491,8 +543,12 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-
-    when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:existing_table").build();
+    Table existing = baseTable(tableId, nsId).setDisplayName("existing_table").build();
+    when(directoryStub.resolveTable(any()))
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
     given()
         .contentType(MediaType.APPLICATION_JSON)
@@ -509,6 +565,9 @@ class TableResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(409)
         .body("error.type", equalTo("CommitFailedException"));
+
+    verify(transactionClient, never()).prepareTransaction(any());
+    verify(transactionClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -516,8 +575,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-
-    when(tableStub.createTable(any())).thenThrow(new StatusRuntimeException(Status.ALREADY_EXISTS));
 
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:existing_table").build();
     when(directoryStub.resolveTable(any()))
@@ -537,12 +594,12 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
             .putProperties("metadata-location", oldMetadata)
             .build();
-    when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
-
     Table updated = existing.toBuilder().putProperties("metadata-location", newMetadata).build();
-    when(tableStub.updateTable(any()))
-        .thenReturn(UpdateTableResponse.newBuilder().setTable(updated).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build())
+        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build())
+        .thenReturn(GetTableResponse.newBuilder().setTable(updated).build())
+        .thenReturn(GetTableResponse.newBuilder().setTable(updated).build());
     stubSnapshotMetadata(newMetadata);
 
     Connector connector =
@@ -582,18 +639,12 @@ class TableResourceTest extends AbstractRestResourceTest {
             "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
         .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
 
-    ArgumentCaptor<UpdateTableRequest> updateCaptor =
+    verify(transactionClient).prepareTransaction(any());
+    verify(transactionClient).commitTransaction(any());
+    ArgumentCaptor<UpdateTableRequest> tableUpdateCaptor =
         ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableStub, atLeast(1)).updateTable(updateCaptor.capture());
-    boolean updatedProps =
-        updateCaptor.getAllValues().stream()
-            .anyMatch(
-                req ->
-                    req.getSpec()
-                        .getPropertiesMap()
-                        .getOrDefault("metadata-location", "")
-                        .equals(newMetadata));
-    assertTrue(updatedProps);
+    verify(tableStub).updateTable(tableUpdateCaptor.capture());
+    assertEquals(List.of("upstream"), tableUpdateCaptor.getValue().getUpdateMask().getPathsList());
   }
 
   @Test
@@ -631,6 +682,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
     when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created =
@@ -638,8 +690,15 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setDisplayName("orders")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder().setTable(created).build(),
+            GetTableResponse.newBuilder()
+                .setTable(
+                    created.toBuilder()
+                        .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+                        .build())
+                .build());
     String requestBody = createTableRequest("orders");
 
     given()
@@ -651,13 +710,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         .statusCode(200)
         .body("'metadata-location'", equalTo(FIXTURE.metadataLocation()))
         .body("metadata.properties.'metadata-location'", nullValue());
-
-    Table existing =
-        created.toBuilder()
-            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .build();
-    when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 
     given().when().delete("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
 
@@ -715,6 +767,9 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created =
         Table.newBuilder()
@@ -723,8 +778,8 @@ class TableResourceTest extends AbstractRestResourceTest {
             .setNamespaceId(nsId)
             .setDisplayName("orders")
             .build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
     when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
     when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
@@ -757,10 +812,13 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created = baseTable(tableId, nsId).setDisplayName("orders").build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
 
     IcebergMetadata differentMetadata =
         FIXTURE.metadata().toBuilder()
@@ -946,8 +1004,12 @@ class TableResourceTest extends AbstractRestResourceTest {
   @Test
   void stageCreatePersistsMetadataWithoutRpc() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     given()
         .body(stageCreateRequest("orders"))
@@ -1008,8 +1070,12 @@ class TableResourceTest extends AbstractRestResourceTest {
   @Test
   void createTableUsesNamespaceLocationWhenMissingRequestLocation() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
     Namespace ns =
         Namespace.newBuilder()
             .setResourceId(nsId)
@@ -1021,14 +1087,14 @@ class TableResourceTest extends AbstractRestResourceTest {
 
     Table created =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .setDisplayName("orders")
             .putProperties("location", "s3://warehouse/db/orders")
             .build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
     when(snapshotStub.getSnapshot(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
     when(snapshotStub.listSnapshots(any())).thenReturn(ListSnapshotsResponse.newBuilder().build());
 
@@ -1062,14 +1128,17 @@ class TableResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
+    when(directoryStub.resolveTable(any()))
+        .thenThrow(Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
     Table created =
         baseTable(tableId, nsId)
             .setDisplayName("orders")
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .build();
-    when(tableStub.createTable(any()))
-        .thenReturn(CreateTableResponse.newBuilder().setTable(created).build());
+    when(tableStub.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
 
     ResourceId connectorId =
         ResourceId.newBuilder()

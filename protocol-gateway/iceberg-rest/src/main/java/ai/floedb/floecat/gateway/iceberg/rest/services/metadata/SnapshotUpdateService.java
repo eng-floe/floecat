@@ -301,10 +301,16 @@ public class SnapshotUpdateService {
         }
         metadataChanges.schemaIdsToRemove.addAll(schemaIds);
       } else if ("set-location".equals(action)
+          || "set-metadata-location".equals(action)
           || "set-properties".equals(action)
           || "remove-properties".equals(action)) {
         // Table-level updates are handled by table update planning; snapshot metadata flow is a
         // no-op.
+        continue;
+      } else if ("set-location".equals(action)
+          || "set-metadata-location".equals(action)
+          || "set-properties".equals(action)
+          || "remove-properties".equals(action)) {
         continue;
       } else {
         return validationError("unsupported commit update action: " + action);
@@ -435,6 +441,11 @@ public class SnapshotUpdateService {
         if (location == null || location.isBlank()) {
           return validationError("set-location requires location");
         }
+      } else if ("set-metadata-location".equals(action)) {
+        String location = asString(update.get("metadata-location"));
+        if (location == null || location.isBlank()) {
+          return validationError("set-metadata-location requires metadata-location");
+        }
       } else if ("set-properties".equals(action)) {
         @SuppressWarnings("unchecked")
         Map<String, Object> props =
@@ -560,56 +571,6 @@ public class SnapshotUpdateService {
         }
         throw e;
       }
-    }
-  }
-
-  public void updateSnapshotMetadataLocation(
-      ResourceId tableId, Long snapshotId, String metadataLocation) {
-    if (tableId == null || snapshotId == null || snapshotId <= 0) {
-      return;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    Snapshot snapshot;
-    try {
-      snapshot =
-          snapshotClient
-              .getSnapshot(
-                  GetSnapshotRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                      .build())
-              .getSnapshot();
-    } catch (StatusRuntimeException e) {
-      LOG.debugf(
-          e,
-          "Failed to load snapshot %s for metadata-location update (tableId=%s)",
-          snapshotId,
-          tableId == null ? "<null>" : tableId.getId());
-      return;
-    }
-    if (snapshot == null) {
-      return;
-    }
-    IcebergMetadata.Builder iceberg = snapshotMetadataBuilder(snapshot);
-    iceberg.setMetadataLocation(metadataLocation);
-    SnapshotSpec spec =
-        SnapshotSpec.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .putFormatMetadata(ICEBERG_METADATA_KEY, iceberg.build().toByteString())
-            .build();
-    FieldMask mask = FieldMask.newBuilder().addPaths("format_metadata").build();
-    try {
-      snapshotClient.updateSnapshot(
-          UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build());
-    } catch (StatusRuntimeException e) {
-      LOG.debugf(
-          e,
-          "Failed to update snapshot metadata-location tableId=%s snapshotId=%s",
-          tableId.getId(),
-          snapshotId);
     }
   }
 

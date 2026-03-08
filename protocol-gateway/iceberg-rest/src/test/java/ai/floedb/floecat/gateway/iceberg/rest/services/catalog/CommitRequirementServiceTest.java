@@ -350,6 +350,81 @@ class CommitRequirementServiceTest {
     assertTrue(resp.getEntity().toString().contains("assert-current-schema-id failed"));
   }
 
+  @Test
+  void validateRequirementsUsesTablePropertiesForAssignedIdsWhenMetadataMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("current-schema-id", "33")
+            .putProperties("last-column-id", "88")
+            .putProperties("last-partition-id", "5")
+            .putProperties("default-spec-id", "9")
+            .putProperties("default-sort-order-id", "2")
+            .build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(null);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(
+                Map.of("type", "assert-current-schema-id", "current-schema-id", 33),
+                Map.of("type", "assert-last-assigned-field-id", "last-assigned-field-id", 88),
+                Map.of(
+                    "type", "assert-last-assigned-partition-id", "last-assigned-partition-id", 5),
+                Map.of("type", "assert-default-spec-id", "default-spec-id", 9),
+                Map.of("type", "assert-default-sort-order-id", "default-sort-order-id", 2)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+    verify(tableSupport, times(1)).loadCurrentMetadata(table);
+  }
+
+  @Test
+  void validateRequirementsUsesPropertyFallbackWhenMetadataValuesDefaultToZero() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("last-column-id", "88")
+            .build();
+    IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setLastColumnId(0).build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-last-assigned-field-id", "last-assigned-field-id", 88)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+    verify(tableSupport, times(1)).loadCurrentMetadata(table);
+  }
+
+  @Test
+  void validateRequirementsUsesPropertyFallbackWhenMetadataValuesAreNegative() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
+            .putProperties("current-schema-id", "1")
+            .build();
+    IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setCurrentSchemaId(-1).build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 1)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+    verify(tableSupport, times(1)).loadCurrentMetadata(table);
+  }
+
   private Function<String, Response> validation() {
     return message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build();
   }

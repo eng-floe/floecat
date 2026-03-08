@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 
@@ -31,6 +32,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -47,6 +50,7 @@ public class TableUpdatePlanner {
   @Inject CommitRequirementService commitRequirementService;
   @Inject TablePropertyService tablePropertyService;
   @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject ObjectMapper mapper;
 
   public UpdatePlan planUpdates(
       TableCommitService.CommitCommand command,
@@ -97,6 +101,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
     mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
@@ -164,6 +169,7 @@ public class TableUpdatePlanner {
     }
     mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
     mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
@@ -233,6 +239,7 @@ public class TableUpdatePlanner {
           && !"set-default-sort-order".equals(action)
           && !"remove-partition-specs".equals(action)
           && !"remove-schemas".equals(action)
+          && !"set-metadata-location".equals(action)
           && !"set-statistics".equals(action)
           && !"remove-statistics".equals(action)
           && !"set-partition-statistics".equals(action)
@@ -375,6 +382,9 @@ public class TableUpdatePlanner {
             ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
             : mergedProps;
     boolean mutated = false;
+    Integer lastAddedSchemaId = null;
+    Integer lastAddedSpecId = null;
+    Integer lastAddedSortOrderId = null;
     for (Map<String, Object> update : updates) {
       if (update == null) {
         continue;
@@ -387,13 +397,22 @@ public class TableUpdatePlanner {
           mutated = true;
         }
       } else if ("add-schema".equals(action)) {
+        Map<String, Object> schema = asObjectMap(update.get("schema"));
+        Integer schemaId = asInteger(schema == null ? null : schema.get("schema-id"));
+        if (schemaId != null && schemaId >= 0) {
+          lastAddedSchemaId = schemaId;
+        }
         Integer lastColumnId = asInteger(update.get("last-column-id"));
+        if (lastColumnId == null) {
+          lastColumnId = maxSchemaFieldId(schema);
+        }
         if (lastColumnId != null && lastColumnId >= 0) {
           targetProps.put("last-column-id", Integer.toString(lastColumnId));
           mutated = true;
         }
       } else if ("set-current-schema".equals(action)) {
-        Integer schemaId = asInteger(update.get("schema-id"));
+        Integer schemaId =
+            resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
         if (schemaId != null && schemaId >= 0) {
           targetProps.put("current-schema-id", Integer.toString(schemaId));
           mutated = true;
@@ -403,6 +422,10 @@ public class TableUpdatePlanner {
         Map<String, Object> spec =
             update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
         if (spec != null) {
+          Integer specId = asInteger(spec.get("spec-id"));
+          if (specId != null && specId >= 0) {
+            lastAddedSpecId = specId;
+          }
           Integer partitionFieldMax = maxPartitionFieldId(spec);
           if (partitionFieldMax != null && partitionFieldMax >= 0) {
             targetProps.put("last-partition-id", Integer.toString(partitionFieldMax));
@@ -410,13 +433,24 @@ public class TableUpdatePlanner {
           }
         }
       } else if ("set-default-spec".equals(action)) {
-        Integer specId = asInteger(update.get("spec-id"));
+        Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
         if (specId != null && specId >= 0) {
           targetProps.put("default-spec-id", Integer.toString(specId));
           mutated = true;
         }
+      } else if ("add-sort-order".equals(action)) {
+        Map<String, Object> sortOrder = asObjectMap(update.get("sort-order"));
+        Integer sortOrderId =
+            asInteger(
+                firstNonNull(
+                    sortOrder == null ? null : sortOrder.get("sort-order-id"),
+                    sortOrder == null ? null : sortOrder.get("order-id")));
+        if (sortOrderId != null && sortOrderId >= 0) {
+          lastAddedSortOrderId = sortOrderId;
+        }
       } else if ("set-default-sort-order".equals(action)) {
-        Integer orderId = asInteger(update.get("sort-order-id"));
+        Integer orderId =
+            resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
         if (orderId != null && orderId >= 0) {
           targetProps.put("default-sort-order-id", Integer.toString(orderId));
           mutated = true;
@@ -427,12 +461,80 @@ public class TableUpdatePlanner {
           targetProps.put("location", location);
           mutated = true;
         }
+      } else if ("set-metadata-location".equals(action)) {
+        String metadataLocation = asString(update.get("metadata-location"));
+        if (metadataLocation != null && !metadataLocation.isBlank()) {
+          targetProps.put("metadata-location", metadataLocation);
+          mutated = true;
+        }
       }
     }
     if (!mutated) {
       return mergedProps;
     }
     return targetProps;
+  }
+
+  private Integer resolveLastAddedId(Integer requested, Integer lastAdded) {
+    if (requested == null) {
+      return null;
+    }
+    if (requested == -1) {
+      return lastAdded;
+    }
+    return requested;
+  }
+
+  @SuppressWarnings("unchecked")
+  private Integer maxSchemaFieldId(Map<String, Object> schema) {
+    if (schema == null || schema.isEmpty()) {
+      return null;
+    }
+    Object rawFields = schema.get("fields");
+    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+      return null;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
+        continue;
+      }
+      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("id"));
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max;
+  }
+
+  private void applyTableDefinitionSpecUpdates(
+      TableSpec.Builder spec, FieldMask.Builder mask, List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return;
+    }
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"add-schema".equals(action)) {
+        continue;
+      }
+      Map<String, Object> schema = asObjectMap(update.get("schema"));
+      if (schema == null || schema.isEmpty()) {
+        continue;
+      }
+      try {
+        String schemaJson = mapper.writeValueAsString(schema);
+        if (!schemaJson.isBlank()) {
+          spec.setSchemaJson(schemaJson);
+          mask.addPaths("schema_json");
+        }
+      } catch (JsonProcessingException e) {
+        throw new IllegalArgumentException("Invalid add-schema payload", e);
+      }
+    }
   }
 
   @SuppressWarnings("unchecked")

@@ -49,13 +49,16 @@ import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.Transactions;
+import ai.floedb.floecat.transaction.rpc.TxChange;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -250,7 +253,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                   if (txn.getState() == TransactionState.TS_ABORTED) {
                     return AbortTransactionResponse.newBuilder().setTransaction(txn).build();
                   }
-                  if (isCommittedFamily(txn.getState())) {
+                  if (txn.getState() == TransactionState.TS_APPLYING) {
+                    throw new IllegalArgumentException("transaction apply is in progress");
+                  }
+                  if (isTerminalNonAbortableState(txn.getState())) {
                     throw new IllegalArgumentException("transaction already committed");
                   }
                   Transaction aborted =
@@ -304,6 +310,32 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
   }
 
+  private Transaction transitionTransactionState(
+      String accountId,
+      String txId,
+      Set<TransactionState> expectedStates,
+      TransactionState nextState,
+      Timestamp now,
+      String conflictReason) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      Transaction current = getTransactionOrThrow(accountId, txId);
+      TransactionState currentState = current.getState();
+      if (currentState == nextState) {
+        return current;
+      }
+      if (!expectedStates.contains(currentState)) {
+        throw new PreconditionFailedException(
+            conflictReason + ": tx=" + txId + " state=" + currentState.name());
+      }
+      long version = txRepo.metaFor(accountId, txId).getPointerVersion();
+      Transaction updated = current.toBuilder().setState(nextState).setUpdatedAt(now).build();
+      if (txRepo.update(updated, version)) {
+        return updated;
+      }
+    }
+    throw new PreconditionFailedException("transaction update conflict: " + txId);
+  }
+
   private String requireAccountId(String accountId) {
     if (accountId == null || accountId.isBlank()) {
       throw new IllegalArgumentException("missing account_id");
@@ -349,6 +381,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       throw new IllegalArgumentException("transaction expired");
     }
     if (txn.getState() == TransactionState.TS_PREPARED) {
+      ensurePreparedRequestMatchesExistingIntents(accountId, txn.getTxId(), request);
       return txn;
     }
     if (txn.getState() != TransactionState.TS_OPEN) {
@@ -360,96 +393,44 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     List<PendingBlob> pendingBlobs = new ArrayList<>();
     int estimatedOps = 0;
 
-    try {
-      for (var change : request.getChangesList()) {
-        ResolvedTxTarget target = resolveTarget(accountId, change);
-        ResourceId tableId = target.tableId();
-        String pointerKey = target.pointerKey();
-        if (!seenTargets.add(pointerKey)) {
-          throw new IllegalArgumentException("duplicate change for " + pointerKey);
-        }
-        estimatedOps += isTableByIdPointer(pointerKey) ? 3 : 1;
-        if (estimatedOps > MAX_POINTER_TXN_OPS) {
-          throw new IllegalArgumentException(
-              "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
-        }
-        long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
-        Precondition pre = change.getPrecondition();
-        long expectedVersion = currentVersion;
-        if (pre != null && pre.hasExpectedVersion()) {
-          if (currentVersion != pre.getExpectedVersion()) {
-            throw new PreconditionFailedException("precondition failed for " + pointerKey);
-          }
-          expectedVersion = pre.getExpectedVersion();
-        }
-
-        String blobUri;
-        switch (change.getChangePayloadCase()) {
-          case INTENDED_BLOB_URI -> {
-            blobUri = change.getIntendedBlobUri().trim();
-            if (blobUri.isEmpty()) {
-              throw new IllegalArgumentException("intended_blob_uri is empty for " + pointerKey);
-            }
-            if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
-              throw new IllegalArgumentException(
-                  "intended_blob_uri outside account scope for " + pointerKey);
-            }
-          }
-          case TABLE -> {
-            if (tableId == null) {
-              throw new IllegalArgumentException(
-                  "table payload requires table_id/table_fq target for " + pointerKey);
-            }
-            var tablePayload = change.getTable();
-            if (!tablePayload.hasResourceId()) {
-              throw new IllegalArgumentException("table payload missing resource_id");
-            }
-            if (!tablePayload.getResourceId().getId().equals(tableId.getId())) {
-              throw new IllegalArgumentException("table payload resource_id does not match target");
-            }
-            if (!tablePayload.getResourceId().getAccountId().equals(accountId)) {
-              throw new IllegalArgumentException("table payload account mismatch for target");
-            }
-            String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
-            blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
-            pendingBlobs.add(
-                new PendingBlob(blobUri, tablePayload.toByteArray(), "application/x-protobuf"));
-          }
-          case PAYLOAD -> {
-            String sha = ResourceHash.sha256Hex(change.getPayload().toByteArray());
-            blobUri = Keys.transactionObjectBlobUri(accountId, txn.getTxId(), sha);
-            pendingBlobs.add(
-                new PendingBlob(
-                    blobUri, change.getPayload().toByteArray(), "application/octet-stream"));
-          }
-          case CHANGEPAYLOAD_NOT_SET -> {
-            throw new IllegalArgumentException(
-                "missing payload or intended_blob_uri for " + pointerKey);
-          }
-          default ->
-              throw new IllegalArgumentException(
-                  "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
-        }
-
-        var intentBuilder =
-            TransactionIntent.newBuilder()
-                .setTxId(txn.getTxId())
-                .setAccountId(accountId)
-                .setTargetPointerKey(pointerKey)
-                .setBlobUri(blobUri)
-                .setCreatedAt(now)
-                .setExpectedVersion(expectedVersion);
-        TransactionIntent intent = intentBuilder.build();
-        intents.add(intent);
+    for (var change : request.getChangesList()) {
+      PlannedIntent planned = planIntent(accountId, txn.getTxId(), change);
+      String pointerKey = planned.targetPointerKey();
+      if (!seenTargets.add(pointerKey)) {
+        throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-    } catch (RuntimeException e) {
-      throw e;
+      estimatedOps += isTableByIdPointer(pointerKey) ? 3 : 1;
+      if (estimatedOps > MAX_POINTER_TXN_OPS) {
+        throw new IllegalArgumentException(
+            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
+      }
+      if (planned.inlineBytes() != null) {
+        pendingBlobs.add(
+            new PendingBlob(
+                planned.blobUri(),
+                planned.inlineBytes(),
+                planned.inlineContentType() == null
+                    ? "application/octet-stream"
+                    : planned.inlineContentType()));
+      }
+
+      var intentBuilder =
+          TransactionIntent.newBuilder()
+              .setTxId(txn.getTxId())
+              .setAccountId(accountId)
+              .setTargetPointerKey(pointerKey)
+              .setBlobUri(planned.blobUri())
+              .setCreatedAt(now)
+              .setExpectedVersion(planned.expectedVersion());
+      TransactionIntent intent = intentBuilder.build();
+      intents.add(intent);
     }
 
     List<TransactionIntent> created = new ArrayList<>();
     try {
       for (var intent : intents) {
         ensureIntentTargetAvailable(accountId, txn.getTxId(), intent.getTargetPointerKey(), now);
+        // Relies on repository create path to enforce unique target ownership atomically.
         intentRepo.create(intent);
         created.add(intent);
       }
@@ -471,83 +452,298 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       throw e;
     }
 
-    Transaction updated =
-        txn.toBuilder().setState(TransactionState.TS_PREPARED).setUpdatedAt(now).build();
     try {
-      updateTransaction(updated);
+      return transitionTransactionState(
+          accountId,
+          txn.getTxId(),
+          Set.of(TransactionState.TS_OPEN),
+          TransactionState.TS_PREPARED,
+          now,
+          "cannot transition to prepared");
     } catch (RuntimeException e) {
       for (var intent : created) {
         intentRepo.deleteBothIndices(intent);
       }
       throw e;
     }
-    return updated;
   }
 
   private Transaction commitTransaction(
       String accountId, CommitTransactionRequest request, Timestamp now) {
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
-    if (isExpired(txn, now)) {
-      abortExpired(txn, now);
-      cleanupIntents(accountId, txn.getTxId());
-      throw new IllegalArgumentException("transaction expired");
-    }
     if (txn.getState() == TransactionState.TS_APPLIED) {
       return txn;
     }
     if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return txn;
     }
+    if (txn.getState() != TransactionState.TS_APPLYING && isExpired(txn, now)) {
+      abortExpired(txn, now);
+      cleanupIntents(accountId, txn.getTxId());
+      throw new IllegalArgumentException("transaction expired");
+    }
     if (txn.getState() != TransactionState.TS_PREPARED
+        && txn.getState() != TransactionState.TS_APPLYING
         && txn.getState() != TransactionState.TS_APPLY_FAILED_RETRYABLE) {
       throw new IllegalArgumentException("transaction not prepared: " + txn.getState().name());
     }
 
-    List<TransactionIntent> intents = intentRepo.listByTx(accountId, txn.getTxId());
+    List<TransactionIntent> intents =
+        new ArrayList<>(intentRepo.listByTx(accountId, txn.getTxId()));
     if (intents.isEmpty()) {
       throw new IllegalArgumentException("transaction has no intents");
     }
+    intents.sort(Comparator.comparing(TransactionIntent::getTargetPointerKey));
+
+    Transaction applyPhaseTxn = txn;
+    if (txn.getState() != TransactionState.TS_APPLYING) {
+      applyPhaseTxn =
+          transitionTransactionState(
+              accountId,
+              txn.getTxId(),
+              Set.of(TransactionState.TS_PREPARED, TransactionState.TS_APPLY_FAILED_RETRYABLE),
+              TransactionState.TS_APPLYING,
+              now,
+              "cannot transition to applying");
+    }
+
     for (var intent : intents) {
       var lockOwner = intentRepo.getByTarget(accountId, intent.getTargetPointerKey()).orElse(null);
-      if (lockOwner == null || !txn.getTxId().equals(lockOwner.getTxId())) {
-        Transaction failed =
-            txn.toBuilder()
-                .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE)
-                .setUpdatedAt(now)
-                .build();
-        updateTransaction(failed);
-        return failed;
+      if (lockOwner == null || !applyPhaseTxn.getTxId().equals(lockOwner.getTxId())) {
+        return transitionTransactionState(
+            accountId,
+            applyPhaseTxn.getTxId(),
+            Set.of(TransactionState.TS_APPLYING),
+            TransactionState.TS_APPLY_FAILED_RETRYABLE,
+            now,
+            "lock ownership mismatch");
       }
     }
 
     var outcome = intentApplierSupport.applyTransactionBestEffort(intents, intentRepo);
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
       Transaction applied =
-          txn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
-      updateTransaction(applied);
+          transitionTransactionState(
+              accountId,
+              applyPhaseTxn.getTxId(),
+              Set.of(TransactionState.TS_APPLYING),
+              TransactionState.TS_APPLIED,
+              now,
+              "cannot transition to applied");
       cleanupIntentsBestEffort(intents);
       return applied;
     }
 
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
+      if (intentsAlreadyApplied(intents)) {
+        Transaction applied =
+            transitionTransactionState(
+                accountId,
+                applyPhaseTxn.getTxId(),
+                Set.of(TransactionState.TS_APPLYING),
+                TransactionState.TS_APPLIED,
+                now,
+                "cannot finalize already-applied transaction");
+        cleanupIntentsBestEffort(intents);
+        return applied;
+      }
       annotateIntentApplyFailure(intents, outcome, now);
-      Transaction failed =
-          txn.toBuilder()
-              .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
-              .setUpdatedAt(now)
-              .build();
-      updateTransaction(failed);
-      return failed;
+      return transitionTransactionState(
+          accountId,
+          applyPhaseTxn.getTxId(),
+          Set.of(TransactionState.TS_APPLYING),
+          TransactionState.TS_APPLY_FAILED_CONFLICT,
+          now,
+          "cannot transition to apply_failed_conflict");
     }
 
     annotateIntentApplyFailure(intents, outcome, now);
-    Transaction failed =
-        txn.toBuilder()
-            .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE)
-            .setUpdatedAt(now)
-            .build();
-    updateTransaction(failed);
-    return failed;
+    return transitionTransactionState(
+        accountId,
+        applyPhaseTxn.getTxId(),
+        Set.of(TransactionState.TS_APPLYING),
+        TransactionState.TS_APPLY_FAILED_RETRYABLE,
+        now,
+        "cannot transition to apply_failed_retryable");
+  }
+
+  private boolean intentsAlreadyApplied(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return false;
+    }
+    for (var intent : intents) {
+      if (intent == null
+          || intent.getTargetPointerKey().isBlank()
+          || intent.getBlobUri().isBlank()) {
+        return false;
+      }
+      var ptr = pointerStore.get(intent.getTargetPointerKey()).orElse(null);
+      if (ptr == null || !intent.getBlobUri().equals(ptr.getBlobUri())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private void ensurePreparedRequestMatchesExistingIntents(
+      String accountId, String txId, PrepareTransactionRequest request) {
+    if (request == null) {
+      throw new IllegalArgumentException("prepare request is required");
+    }
+    List<TxChange> changes = request.getChangesList();
+    List<IntentFingerprint> expected = new ArrayList<>(changes.size());
+    for (var change : changes) {
+      PlannedIntent planned = planIntentForReplayMatch(accountId, txId, change);
+      Long explicitExpectedVersion =
+          change.hasPrecondition() && change.getPrecondition().hasExpectedVersion()
+              ? change.getPrecondition().getExpectedVersion()
+              : null;
+      expected.add(
+          new IntentFingerprint(
+              planned.targetPointerKey(), planned.blobUri(), explicitExpectedVersion));
+    }
+    expected.sort(Comparator.comparing(IntentFingerprint::targetPointerKey));
+
+    List<TransactionIntent> existing = new ArrayList<>(intentRepo.listByTx(accountId, txId));
+    existing.sort(Comparator.comparing(TransactionIntent::getTargetPointerKey));
+    if (expected.size() != existing.size()) {
+      throw new IllegalArgumentException(
+          "prepare request does not match already-prepared transaction intents");
+    }
+    for (int i = 0; i < expected.size(); i++) {
+      IntentFingerprint exp = expected.get(i);
+      TransactionIntent actual = existing.get(i);
+      if (!exp.targetPointerKey().equals(actual.getTargetPointerKey())
+          || !exp.blobUri().equals(actual.getBlobUri())) {
+        throw new IllegalArgumentException(
+            "prepare request does not match already-prepared transaction intents");
+      }
+      // For replay matching, omitted expected_version is treated as request-shape equivalence only.
+      if (exp.explicitExpectedVersion() != null
+          && (!actual.hasExpectedVersion()
+              || exp.explicitExpectedVersion() != actual.getExpectedVersion())) {
+        throw new IllegalArgumentException(
+            "prepare request does not match already-prepared transaction intents");
+      }
+    }
+  }
+
+  private PlannedIntent planIntent(String accountId, String txId, TxChange change) {
+    ResolvedTxTarget target = resolveTarget(accountId, change);
+    ResourceId tableId = target.tableId();
+    String pointerKey = target.pointerKey();
+
+    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    Precondition pre = change.getPrecondition();
+    long expectedVersion = currentVersion;
+    if (pre != null && pre.hasExpectedVersion()) {
+      if (currentVersion != pre.getExpectedVersion()) {
+        throw new PreconditionFailedException("precondition failed for " + pointerKey);
+      }
+      expectedVersion = pre.getExpectedVersion();
+    }
+
+    String blobUri;
+    byte[] inlineBytes = null;
+    String inlineContentType = null;
+    switch (change.getChangePayloadCase()) {
+      case INTENDED_BLOB_URI -> {
+        blobUri = change.getIntendedBlobUri().trim();
+        if (blobUri.isEmpty()) {
+          throw new IllegalArgumentException("intended_blob_uri is empty for " + pointerKey);
+        }
+        if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
+          throw new IllegalArgumentException(
+              "intended_blob_uri outside account scope for " + pointerKey);
+        }
+      }
+      case TABLE -> {
+        if (tableId == null) {
+          throw new IllegalArgumentException(
+              "table payload requires table_id/table_fq target for " + pointerKey);
+        }
+        var tablePayload = change.getTable();
+        if (!tablePayload.hasResourceId()) {
+          throw new IllegalArgumentException("table payload missing resource_id");
+        }
+        if (!tablePayload.getResourceId().getId().equals(tableId.getId())) {
+          throw new IllegalArgumentException("table payload resource_id does not match target");
+        }
+        if (!tablePayload.getResourceId().getAccountId().equals(accountId)) {
+          throw new IllegalArgumentException("table payload account mismatch for target");
+        }
+        String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
+        blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
+        inlineBytes = tablePayload.toByteArray();
+        inlineContentType = "application/x-protobuf";
+      }
+      case PAYLOAD -> {
+        byte[] payload = change.getPayload().toByteArray();
+        String sha = ResourceHash.sha256Hex(payload);
+        blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
+        inlineBytes = payload;
+        inlineContentType = "application/octet-stream";
+      }
+      case CHANGEPAYLOAD_NOT_SET -> {
+        throw new IllegalArgumentException(
+            "missing payload or intended_blob_uri for " + pointerKey);
+      }
+      default ->
+          throw new IllegalArgumentException(
+              "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
+    }
+    return new PlannedIntent(pointerKey, blobUri, expectedVersion, inlineBytes, inlineContentType);
+  }
+
+  private PlannedIntent planIntentForReplayMatch(String accountId, String txId, TxChange change) {
+    ResolvedTxTarget target = resolveTarget(accountId, change);
+    ResourceId tableId = target.tableId();
+    String pointerKey = target.pointerKey();
+
+    String blobUri;
+    switch (change.getChangePayloadCase()) {
+      case INTENDED_BLOB_URI -> {
+        blobUri = change.getIntendedBlobUri().trim();
+        if (blobUri.isEmpty()) {
+          throw new IllegalArgumentException("intended_blob_uri is empty for " + pointerKey);
+        }
+        if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
+          throw new IllegalArgumentException(
+              "intended_blob_uri outside account scope for " + pointerKey);
+        }
+      }
+      case TABLE -> {
+        if (tableId == null) {
+          throw new IllegalArgumentException(
+              "table payload requires table_id/table_fq target for " + pointerKey);
+        }
+        var tablePayload = change.getTable();
+        if (!tablePayload.hasResourceId()) {
+          throw new IllegalArgumentException("table payload missing resource_id");
+        }
+        if (!tablePayload.getResourceId().getId().equals(tableId.getId())) {
+          throw new IllegalArgumentException("table payload resource_id does not match target");
+        }
+        if (!tablePayload.getResourceId().getAccountId().equals(accountId)) {
+          throw new IllegalArgumentException("table payload account mismatch for target");
+        }
+        String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
+        blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
+      }
+      case PAYLOAD -> {
+        byte[] payload = change.getPayload().toByteArray();
+        String sha = ResourceHash.sha256Hex(payload);
+        blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
+      }
+      case CHANGEPAYLOAD_NOT_SET -> {
+        throw new IllegalArgumentException(
+            "missing payload or intended_blob_uri for " + pointerKey);
+      }
+      default ->
+          throw new IllegalArgumentException(
+              "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
+    }
+    return new PlannedIntent(pointerKey, blobUri, 0L, null, null);
   }
 
   private void annotateIntentApplyFailure(
@@ -606,7 +802,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (txn == null) {
       return txn;
     }
-    if (txn.getState() == TransactionState.TS_ABORTED || isCommittedFamily(txn.getState())) {
+    if (txn.getState() == TransactionState.TS_ABORTED
+        || txn.getState() == TransactionState.TS_APPLYING
+        || isTerminalNonAbortableState(txn.getState())) {
       return txn;
     }
     Transaction aborted =
@@ -706,7 +904,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return com.google.protobuf.Duration.newBuilder().setSeconds(600).build();
   }
 
-  private boolean isCommittedFamily(TransactionState state) {
+  private boolean isTerminalNonAbortableState(TransactionState state) {
     return state == TransactionState.TS_APPLIED
         || state == TransactionState.TS_APPLY_FAILED_CONFLICT;
   }
@@ -728,6 +926,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (!isIntentOwnerStale(accountId, existing.getTxId(), now)) {
         throw new PreconditionFailedException(
             "target already locked by transaction: " + existing.getTxId());
+      }
+      boolean targetReleased =
+          intentRepo.deleteByTargetIfOwned(
+              accountId, existing.getTargetPointerKey(), existing.getTxId());
+      if (targetReleased) {
+        intentRepo.deleteByTxIfOwned(accountId, existing.getTxId(), existing.getTargetPointerKey());
+        continue;
       }
       throw new PreconditionFailedException(
           "target locked by stale transaction: " + existing.getTxId());
@@ -752,6 +957,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         || owner.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return true;
     }
+    if (owner.getState() == TransactionState.TS_APPLYING) {
+      return false;
+    }
     if (owner.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE) {
       return isExpired(owner, now);
     }
@@ -763,6 +971,16 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private record ResolvedTxTarget(String pointerKey, ResourceId tableId) {}
+
+  private record IntentFingerprint(
+      String targetPointerKey, String blobUri, Long explicitExpectedVersion) {}
+
+  private record PlannedIntent(
+      String targetPointerKey,
+      String blobUri,
+      long expectedVersion,
+      byte[] inlineBytes,
+      String inlineContentType) {}
 
   private record PendingBlob(String uri, byte[] bytes, String contentType) {}
 }

@@ -97,6 +97,10 @@ public class TransactionGc {
     if (txn.getState() == TransactionState.TS_ABORTED) {
       return true;
     }
+    if (txn.getState() == TransactionState.TS_APPLYING) {
+      // In-flight apply phase is not eligible for TTL-based collection.
+      return false;
+    }
     if (txn.getState() == TransactionState.TS_APPLIED
         || txn.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE
         || txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
@@ -145,17 +149,24 @@ public class TransactionGc {
     do {
       List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : rows) {
-        String target = decodeTargetFromTxIntentKey(p.getKey());
-        if (!target.isBlank()) {
-          String targetKey = Keys.transactionIntentPointerByTarget(accountId, target);
-          pointerStore
-              .get(targetKey)
-              .ifPresent(
-                  ptr -> {
-                    if (p.getBlobUri().equals(ptr.getBlobUri())) {
-                      pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion());
-                    }
-                  });
+        TransactionIntent byTxIntent = readIntent(p.getBlobUri());
+        if (byTxIntent != null) {
+          if (txId.equals(byTxIntent.getTxId()) && !byTxIntent.getTargetPointerKey().isBlank()) {
+            deleteTargetIfOwned(accountId, byTxIntent);
+          }
+        } else {
+          String target = decodeTargetFromTxIntentKey(p.getKey());
+          if (!target.isBlank()) {
+            String targetKey = Keys.transactionIntentPointerByTarget(accountId, target);
+            pointerStore
+                .get(targetKey)
+                .ifPresent(
+                    ptr -> {
+                      if (p.getBlobUri().equals(ptr.getBlobUri())) {
+                        pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion());
+                      }
+                    });
+          }
         }
         if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
           deleted++;
@@ -186,7 +197,9 @@ public class TransactionGc {
           continue;
         }
         Transaction txn = readTransactionById(accountId, intent.getTxId());
-        if (txn == null || txn.getState() == TransactionState.TS_ABORTED) {
+        if (isIntentOwnerStale(txn, System.currentTimeMillis())) {
+          // Prefer reclaiming the by-target lock even if by-tx cleanup fails in this pass:
+          // target lock leakage blocks progress, while by-tx orphans are recoverable later.
           deleteByTxIfOwned(accountId, intent);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
@@ -208,7 +221,65 @@ public class TransactionGc {
         Keys.transactionIntentPointerByTx(accountId, intent.getTxId(), targetPointerKey);
     pointerStore
         .get(byTxKey)
-        .ifPresent(ptr -> pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion()));
+        .ifPresent(
+            ptr -> {
+              TransactionIntent byTxIntent = readIntent(ptr.getBlobUri());
+              if (byTxIntent == null) {
+                return;
+              }
+              if (intent.getTxId().equals(byTxIntent.getTxId())
+                  && targetPointerKey.equals(byTxIntent.getTargetPointerKey())) {
+                pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion());
+              }
+            });
+  }
+
+  private void deleteTargetIfOwned(String accountId, TransactionIntent intent) {
+    String targetPointerKey = intent.getTargetPointerKey();
+    if (targetPointerKey == null || targetPointerKey.isBlank()) {
+      return;
+    }
+    String byTargetKey = Keys.transactionIntentPointerByTarget(accountId, targetPointerKey);
+    pointerStore
+        .get(byTargetKey)
+        .ifPresent(
+            ptr -> {
+              TransactionIntent byTargetIntent = readIntent(ptr.getBlobUri());
+              if (byTargetIntent == null) {
+                return;
+              }
+              if (intent.getTxId().equals(byTargetIntent.getTxId())
+                  && targetPointerKey.equals(byTargetIntent.getTargetPointerKey())) {
+                pointerStore.compareAndDelete(ptr.getKey(), ptr.getVersion());
+              }
+            });
+  }
+
+  private boolean isIntentOwnerStale(Transaction txn, long nowMs) {
+    if (txn == null) {
+      return true;
+    }
+    TransactionState state = txn.getState();
+    if (state == TransactionState.TS_ABORTED
+        || state == TransactionState.TS_APPLIED
+        || state == TransactionState.TS_APPLY_FAILED_CONFLICT) {
+      return true;
+    }
+    if (state == TransactionState.TS_APPLYING) {
+      return false;
+    }
+    if (state == TransactionState.TS_APPLY_FAILED_RETRYABLE) {
+      return isExpired(txn, nowMs);
+    }
+    return isExpired(txn, nowMs);
+  }
+
+  private boolean isExpired(Transaction txn, long nowMs) {
+    if (txn == null || !txn.hasExpiresAt()) {
+      return false;
+    }
+    long exp = com.google.protobuf.util.Timestamps.toMillis(txn.getExpiresAt());
+    return exp < nowMs;
   }
 
   private TransactionIntent readIntent(String blobUri) {

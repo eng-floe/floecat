@@ -121,6 +121,13 @@ pointer mutations, and commits atomically. The endpoint returns:
 - `409` for deterministic conflicts/failed preconditions.
 - `5xx` when commit state is unknown.
 
+For ambiguous backend outcomes (for example retryable/aborted ambiguity), the gateway performs a
+short bounded confirmation poll before returning unknown-state errors. Poll behavior is configurable:
+
+- `floecat.gateway.commit.confirm.max-attempts` (default `6`)
+- `floecat.gateway.commit.confirm.initial-sleep-ms` (default `25`)
+- `floecat.gateway.commit.confirm.max-sleep-ms` (default `200`)
+
 ---
 
 ## Scan Planning & Task Consumption

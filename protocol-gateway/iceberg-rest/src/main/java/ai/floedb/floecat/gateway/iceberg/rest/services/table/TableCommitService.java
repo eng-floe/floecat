@@ -23,38 +23,37 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
+import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableCommitService {
-  private static final Logger LOG = Logger.getLogger(TableCommitService.class);
-
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject TableCommitSideEffectService sideEffectService;
   @Inject CommitResponseBuilder responseBuilder;
-  @Inject SnapshotMetadataService snapshotMetadataService;
-  @Inject TableMetadataImportService tableMetadataImportService;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject TransactionCommitService transactionCommitService;
+  @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
+  @Inject StagedTableService stagedTableService;
+  @Inject AccountContext accountContext;
 
   public Response commit(CommitCommand command) {
     if (command == null) {
@@ -71,13 +70,21 @@ public class TableCommitService {
           "Delta compatibility mode is read-only; table commits are disabled for Delta tables");
     }
 
+    Optional<StagedTableEntry> stagedEntryOpt = resolveStagedEntry(command);
+    if (stagedEntryOpt.isPresent() && stagedEntryOpt.get().state() == StageState.ABORTED) {
+      return IcebergErrorResponses.conflict(
+          "stage " + stagedEntryOpt.get().key().stageId() + " was aborted");
+    }
+    TableRequests.Commit effectiveReq =
+        mergeStagedCreateIntoCommit(command, req, stagedEntryOpt.orElse(null), preCommitTable);
+
     TransactionCommitRequest txRequest =
         new TransactionCommitRequest(
             List.of(
                 new TransactionCommitRequest.TableChange(
                     new TableIdentifierDto(command.namespacePath(), command.table()),
-                    req.requirements(),
-                    req.updates())));
+                    effectiveReq.requirements(),
+                    effectiveReq.updates())));
 
     Response txResponse =
         transactionCommitService.commit(
@@ -86,8 +93,9 @@ public class TableCommitService {
         || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
       return txResponse;
     }
+    stagedEntryOpt.ifPresent(entry -> stagedTableService.deleteStage(entry.key()));
 
-    return buildCommitResponse(command, req);
+    return buildCommitResponse(command, effectiveReq);
   }
 
   private Response buildCommitResponse(CommitCommand command, TableRequests.Commit req) {
@@ -99,31 +107,6 @@ public class TableCommitService {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
 
     Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
-    CommitTableResponseDto initialResponse =
-        responseBuilder.buildInitialResponse(
-            command.table(), committedTable, tableId, null, req, tableSupport, metadata);
-
-    CommitTableResponseDto responseDto = initialResponse;
-    if (!responseBuilder.containsSnapshotUpdates(req)) {
-      syncExternalSnapshotsIfNeeded(
-          tableSupport,
-          tableId,
-          command.namespacePath(),
-          command.table(),
-          committedTable,
-          responseDto,
-          req,
-          command.idempotencyKey());
-      syncSnapshotMetadataFromCommit(
-          tableSupport,
-          tableId,
-          command.namespacePath(),
-          command.table(),
-          committedTable,
-          responseDto,
-          command.idempotencyKey());
-    }
-
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(
             command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
@@ -154,131 +137,6 @@ public class TableCommitService {
     }
   }
 
-  private void syncExternalSnapshotsIfNeeded(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Table committedTable,
-      CommitTableResponseDto responseDto,
-      TableRequests.Commit req,
-      String idempotencyKey) {
-    String metadataLocation = responseDto == null ? null : responseDto.metadataLocation();
-    if (!isExternalLocationTable(committedTable, metadataLocation)) {
-      return;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    String previousLocation =
-        committedTable == null
-            ? null
-            : MetadataLocationUtil.metadataLocation(committedTable.getPropertiesMap());
-    if (previousLocation != null && metadataLocation.equals(previousLocation)) {
-      return;
-    }
-    try {
-      Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
-      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
-      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
-          tableSupport,
-          tableId,
-          namespacePath,
-          tableName,
-          () -> committedTable,
-          imported,
-          idempotencyKey,
-          true);
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Snapshot sync from metadata failed for %s.%s (metadata=%s)",
-          namespacePath,
-          tableName,
-          metadataLocation);
-    }
-  }
-
-  private void syncSnapshotMetadataFromCommit(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Table committedTable,
-      CommitTableResponseDto responseDto,
-      String idempotencyKey) {
-    if (tableId == null || responseDto == null) {
-      return;
-    }
-    String metadataLocation = responseDto.metadataLocation();
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    Map<String, String> ioProps = resolveCommitIoProperties(tableSupport, committedTable);
-    try {
-      var imported = tableMetadataImportService.importMetadata(metadataLocation, ioProps);
-      snapshotMetadataService.syncSnapshotsFromImportedMetadata(
-          tableSupport,
-          tableId,
-          namespacePath,
-          tableName,
-          () -> committedTable,
-          imported,
-          idempotencyKey,
-          false);
-    } catch (Exception e) {
-      LOG.warnf(
-          e,
-          "Snapshot sync from commit metadata failed for %s.%s (metadata=%s)",
-          namespacePath,
-          tableName,
-          metadataLocation);
-    }
-  }
-
-  private boolean isExternalLocationTable(Table table, String metadataLocation) {
-    if (table == null) {
-      return false;
-    }
-    if (!table.hasUpstream()) {
-      return metadataLocation != null && !metadataLocation.isBlank();
-    }
-    String uri = table.getUpstream().getUri();
-    return uri != null && !uri.isBlank();
-  }
-
-  private Map<String, String> resolveCommitIoProperties(
-      TableGatewaySupport tableSupport, Table committedTable) {
-    Map<String, String> merged = new LinkedHashMap<>();
-    if (tableSupport != null) {
-      merged.putAll(tableSupport.defaultFileIoProperties());
-    }
-    if (committedTable != null) {
-      merged.putAll(FileIoFactory.filterIoProperties(committedTable.getPropertiesMap()));
-    }
-    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
-  }
-
-  public void runConnectorSync(
-      TableGatewaySupport tableSupport,
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName) {
-    try {
-      sideEffectService.runConnectorSync(tableSupport, connectorId, namespacePath, tableName);
-    } catch (Throwable e) {
-      String namespace =
-          namespacePath == null
-              ? "<missing>"
-              : (namespacePath.isEmpty() ? "<empty>" : String.join(".", namespacePath));
-      LOG.warnf(
-          e,
-          "Post-commit connector sync failed for %s.%s",
-          namespace,
-          tableName == null ? "<missing>" : tableName);
-    }
-  }
-
   public record CommitCommand(
       String prefix,
       String namespace,
@@ -304,5 +162,90 @@ public class TableCommitService {
     return deltaCompat.get().enabled()
         && deltaCompat.get().readOnly()
         && tableFormatSupport.isDelta(table);
+  }
+
+  private TableRequests.Commit mergeStagedCreateIntoCommit(
+      CommitCommand command,
+      TableRequests.Commit req,
+      StagedTableEntry stagedEntry,
+      Table tableState) {
+    if (req == null || stagedEntry == null) {
+      return req;
+    }
+    if (tableState != null || callerProvidesCreateInitialization(req)) {
+      return req;
+    }
+    TransactionCommitRequest stagedRequest =
+        tableCreateTransactionMapper.buildCreateRequest(
+            command.namespacePath(),
+            command.table(),
+            stagedEntry.catalogId(),
+            stagedEntry.namespaceId(),
+            stagedEntry.request(),
+            command.tableSupport());
+    var stagedChange = stagedRequest.tableChanges().get(0);
+    List<Map<String, Object>> requirements = new ArrayList<>(stagedChange.requirements());
+    if (req.requirements() != null && !req.requirements().isEmpty()) {
+      requirements.addAll(req.requirements());
+    }
+    List<Map<String, Object>> updates = new ArrayList<>(stagedChange.updates());
+    if (req.updates() != null && !req.updates().isEmpty()) {
+      updates.addAll(req.updates());
+    }
+    return new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
+  }
+
+  private Optional<StagedTableEntry> resolveStagedEntry(CommitCommand command) {
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return Optional.empty();
+    }
+    String stageId = resolveStageId(command);
+    if (stageId != null) {
+      StagedTableKey key =
+          new StagedTableKey(
+              accountId, command.catalogName(), command.namespacePath(), command.table(), stageId);
+      return stagedTableService.getStage(key);
+    }
+    return stagedTableService.findSingleStage(
+        accountId, command.catalogName(), command.namespacePath(), command.table());
+  }
+
+  private String resolveStageId(CommitCommand command) {
+    if (command.stageId() != null && !command.stageId().isBlank()) {
+      return command.stageId();
+    }
+    if (command.transactionId() != null && !command.transactionId().isBlank()) {
+      return command.transactionId();
+    }
+    return null;
+  }
+
+  private boolean callerProvidesCreateInitialization(TableRequests.Commit req) {
+    if (req == null || req.updates() == null || req.updates().isEmpty()) {
+      return false;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (isCreateInitializationUpdate(update)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean isCreateInitializationUpdate(Map<String, Object> update) {
+    if (update == null) {
+      return false;
+    }
+    Object action = update.get("action");
+    if (!(action instanceof String value)) {
+      return false;
+    }
+    return "add-schema".equals(value)
+        || "set-current-schema".equals(value)
+        || "add-spec".equals(value)
+        || "set-default-spec".equals(value)
+        || "add-sort-order".equals(value)
+        || "set-default-sort-order".equals(value);
   }
 }

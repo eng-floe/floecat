@@ -30,6 +30,7 @@ enum TransactionState {
   TS_APPLY_FAILED_CONFLICT = 5;
   TS_APPLIED = 7;
   TS_APPLY_FAILED_RETRYABLE = 8;
+  TS_APPLYING = 9;
 }
 
 message Transaction {

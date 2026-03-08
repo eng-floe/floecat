@@ -98,7 +98,7 @@ class TransactionGcTest {
   }
 
   @Test
-  void appliedWithIntentsIsNotCollected() throws Exception {
+  void appliedWithIntentsAreReclaimedAsStaleOwners() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
 
@@ -124,9 +124,119 @@ class TransactionGcTest {
     String txPtr = Keys.transactionPointerById(accountId, txId);
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    assertTrue(pointers.get(txPtr).isPresent(), "tx pointer should remain while intents exist");
-    assertTrue(pointers.get(byTarget).isPresent(), "by-target intent pointer should remain");
-    assertTrue(pointers.get(byTx).isPresent(), "by-tx intent pointer should remain");
+    assertTrue(
+        pointers.get(txPtr).isPresent(),
+        "tx pointer remains until a subsequent pass after intents");
+    assertTrue(pointers.get(byTarget).isEmpty(), "applied owner target intent should be reclaimed");
+    assertTrue(pointers.get(byTx).isEmpty(), "applied owner by-tx intent should be reclaimed");
+  }
+
+  @Test
+  void danglingTargetIntentForAppliedOwnerIsReclaimed() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String txId = "tx-applied";
+    String targetKey = "/accounts/acct/tables/by-id/t1";
+
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_APPLIED,
+        Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
+    putIntent(pointers, blobs, accountId, txId, targetKey);
+    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
+    pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
+
+    var gc = new TransactionGc();
+    inject(gc, "pointerStore", pointers);
+    inject(gc, "blobStore", blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    assertTrue(pointers.get(byTarget).isEmpty(), "dangling by-target intent should be reclaimed");
+  }
+
+  @Test
+  void danglingTargetIntentForExpiredRetryableOwnerIsReclaimed() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String txId = "tx-retryable-expired";
+    String targetKey = "/accounts/acct/tables/by-id/t2";
+
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_APPLY_FAILED_RETRYABLE,
+        Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
+    putIntent(pointers, blobs, accountId, txId, targetKey);
+    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
+    pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
+
+    var gc = new TransactionGc();
+    inject(gc, "pointerStore", pointers);
+    inject(gc, "blobStore", blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    assertTrue(
+        pointers.get(byTarget).isEmpty(),
+        "dangling by-target intent for expired retryable owner should be reclaimed");
+  }
+
+  @Test
+  void cleanupIntentsForTxDoesNotDeleteDifferentOwnerTargetIntent() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String staleTxId = "tx-stale";
+    String activeTxId = "tx-active";
+    String targetKey = "/accounts/acct/tables/by-id/t1";
+
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        staleTxId,
+        TransactionState.TS_ABORTED,
+        Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        activeTxId,
+        TransactionState.TS_OPEN,
+        Timestamps.fromMillis(System.currentTimeMillis() + 300_000L));
+
+    var activeIntentBlob = putIntentBlob(blobs, accountId, activeTxId, targetKey);
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    pointers.compareAndSet(
+        byTarget,
+        0L,
+        Pointer.newBuilder().setKey(byTarget).setBlobUri(activeIntentBlob).setVersion(1L).build());
+
+    // Simulate stale by-tx row pointing to someone else's intent blob.
+    String staleByTx = Keys.transactionIntentPointerByTx(accountId, staleTxId, targetKey);
+    pointers.compareAndSet(
+        staleByTx,
+        0L,
+        Pointer.newBuilder().setKey(staleByTx).setBlobUri(activeIntentBlob).setVersion(1L).build());
+
+    var gc = new TransactionGc();
+    inject(gc, "pointerStore", pointers);
+    inject(gc, "blobStore", blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(byTarget).isPresent(),
+        "by-target intent owned by different tx should not be deleted");
+    assertTrue(
+        pointers.get(staleByTx).isEmpty(), "stale by-tx row should be cleaned up for aborted tx");
   }
 
   private void assertCollected(TransactionState state) throws Exception {
@@ -183,6 +293,19 @@ class TransactionGcTest {
       String accountId,
       String txId,
       String targetKey) {
+    String intentBlob = putIntentBlob(blobs, accountId, txId, targetKey);
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    pointers.compareAndSet(
+        byTarget,
+        0L,
+        Pointer.newBuilder().setKey(byTarget).setBlobUri(intentBlob).setVersion(1L).build());
+    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
+    pointers.compareAndSet(
+        byTx, 0L, Pointer.newBuilder().setKey(byTx).setBlobUri(intentBlob).setVersion(1L).build());
+  }
+
+  private String putIntentBlob(
+      InMemoryBlobStore blobs, String accountId, String txId, String targetKey) {
     var intent =
         TransactionIntent.newBuilder()
             .setTxId(txId)
@@ -195,15 +318,7 @@ class TransactionGcTest {
     var intentSha = ResourceHash.sha256Hex(intent.toByteArray());
     var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
     blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
-
-    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
-    pointers.compareAndSet(
-        byTarget,
-        0L,
-        Pointer.newBuilder().setKey(byTarget).setBlobUri(intentBlob).setVersion(1L).build());
-    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    pointers.compareAndSet(
-        byTx, 0L, Pointer.newBuilder().setKey(byTx).setBlobUri(intentBlob).setVersion(1L).build());
+    return intentBlob;
   }
 
   private static Timestamp now() {

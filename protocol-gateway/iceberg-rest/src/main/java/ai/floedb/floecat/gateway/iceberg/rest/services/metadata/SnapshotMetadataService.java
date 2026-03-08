@@ -28,7 +28,6 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.StatusRuntimeException;
@@ -44,7 +43,6 @@ import java.util.function.Supplier;
 public class SnapshotMetadataService {
 
   @Inject SnapshotClient snapshotClient;
-  @Inject SnapshotImportCoordinator importCoordinator;
   @Inject SnapshotUpdateService updateService;
 
   public List<Map<String, Object>> snapshotAdditions(List<Map<String, Object>> updates) {
@@ -93,44 +91,6 @@ public class SnapshotMetadataService {
 
   public Response validateSnapshotUpdates(List<Map<String, Object>> updates) {
     return updateService.validateSnapshotUpdates(updates);
-  }
-
-  public Response ensureImportedCurrentSnapshot(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Supplier<Table> tableSupplier,
-      ImportedMetadata importedMetadata,
-      String idempotencyKey) {
-    return importCoordinator.ensureImportedCurrentSnapshot(
-        tableSupport,
-        tableId,
-        namespacePath,
-        tableName,
-        tableSupplier,
-        importedMetadata,
-        idempotencyKey);
-  }
-
-  public void syncSnapshotsFromImportedMetadata(
-      TableGatewaySupport tableSupport,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      Supplier<Table> tableSupplier,
-      ImportedMetadata importedMetadata,
-      String idempotencyKey,
-      boolean pruneMissing) {
-    importCoordinator.syncSnapshotsFromImportedMetadata(
-        tableSupport,
-        tableId,
-        namespacePath,
-        tableName,
-        tableSupplier,
-        importedMetadata,
-        idempotencyKey,
-        pruneMissing);
   }
 
   Response ensureSnapshotExists(
@@ -227,11 +187,6 @@ public class SnapshotMetadataService {
       snapshotClient.createSnapshot(
           CreateSnapshotRequest.newBuilder().setSpec(spec.build()).build());
     }
-  }
-
-  public void updateSnapshotMetadataLocation(
-      ResourceId tableId, Long snapshotId, String metadataLocation) {
-    updateService.updateSnapshotMetadataLocation(tableId, snapshotId, metadataLocation);
   }
 
   // Snapshot metadata parsing lives in SnapshotMetadataUtil.
