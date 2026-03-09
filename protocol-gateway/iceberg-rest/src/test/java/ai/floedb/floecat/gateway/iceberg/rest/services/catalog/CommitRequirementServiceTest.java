@@ -220,6 +220,23 @@ class CommitRequirementServiceTest {
   }
 
   @Test
+  void validateRequirementsUsesPropertyWhenMetadataLastColumnIdIsStale() {
+    Table table = Table.newBuilder().putProperties("last-column-id", "3").build();
+    IcebergMetadata staleMetadata = IcebergMetadata.newBuilder().setLastColumnId(2).build();
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(staleMetadata);
+
+    Response resp =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-last-assigned-field-id", "last-assigned-field-id", 3)),
+            () -> table,
+            validation(),
+            conflict());
+
+    assertNull(resp);
+  }
+
+  @Test
   void validateRequirementsRejectsNullRequirementEntry() {
     List<Map<String, Object>> requirements = new java.util.ArrayList<>();
     requirements.add(null);

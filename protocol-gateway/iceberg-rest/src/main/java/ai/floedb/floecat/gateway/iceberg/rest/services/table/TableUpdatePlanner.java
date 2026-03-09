@@ -317,6 +317,12 @@ public class TableUpdatePlanner {
     } else {
       targetProps.put(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(refs));
     }
+    Long mainSnapshotId = mainRefSnapshotId(refs);
+    if (mainSnapshotId != null && mainSnapshotId > 0) {
+      targetProps.put("current-snapshot-id", Long.toString(mainSnapshotId));
+    } else {
+      targetProps.remove("current-snapshot-id");
+    }
     return targetProps;
   }
 
@@ -567,6 +573,17 @@ public class TableUpdatePlanner {
             ? mergedProps.get(RefPropertyUtil.PROPERTY_KEY)
             : tableSupplier.get().getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
     return RefPropertyUtil.decode(encoded);
+  }
+
+  private Long mainRefSnapshotId(Map<String, Map<String, Object>> refs) {
+    if (refs == null || refs.isEmpty()) {
+      return null;
+    }
+    Map<String, Object> main = refs.get("main");
+    if (main == null || main.isEmpty()) {
+      return null;
+    }
+    return asLong(main.get("snapshot-id"));
   }
 
   private Map<String, String> stripFileIoProperties(Map<String, String> mergedProps) {

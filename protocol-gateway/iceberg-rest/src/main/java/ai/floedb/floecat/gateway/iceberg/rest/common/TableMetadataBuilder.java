@@ -138,7 +138,7 @@ public final class TableMetadataBuilder {
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
             : null;
-    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(props.get("format-version")));
+    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(formatVersionProperty(props)));
     if (tableUuid == null) {
       String candidate = props.get("table-uuid");
       if (candidate != null && !candidate.isBlank()) {
@@ -353,7 +353,7 @@ public final class TableMetadataBuilder {
     if (defaultSortOrderId == null) {
       throw new IllegalArgumentException("write-order requires sort-order-id");
     }
-    Integer formatVersion = normalizeFormatVersion(maybeInt(props.get("format-version")), null);
+    Integer formatVersion = normalizeFormatVersion(maybeInt(formatVersionProperty(props)), null);
     props.putIfAbsent("format-version", formatVersion.toString());
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
@@ -678,5 +678,17 @@ public final class TableMetadataBuilder {
 
   private static String nextMetadataFileName() {
     return String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
+  }
+
+  private static String formatVersionProperty(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String hyphen = props.get("format-version");
+    if (hyphen != null && !hyphen.isBlank()) {
+      return hyphen;
+    }
+    String underscore = props.get("format_version");
+    return (underscore == null || underscore.isBlank()) ? null : underscore;
   }
 }

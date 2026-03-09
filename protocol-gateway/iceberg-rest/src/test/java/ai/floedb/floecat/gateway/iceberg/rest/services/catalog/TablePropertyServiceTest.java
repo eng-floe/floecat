@@ -82,6 +82,29 @@ class TablePropertyServiceTest {
   }
 
   @Test
+  void applyPropertyUpdatesDoesNotRemoveReservedFormatVersion() {
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("format-version", "1");
+    props.put("format_version", "1");
+    props.put("other", "value");
+
+    Response response =
+        service.applyPropertyUpdates(
+            props,
+            List.of(
+                Map.of(
+                    "action",
+                    "remove-properties",
+                    "removals",
+                    List.of("format-version", "format_version", "other"))));
+
+    assertNull(response);
+    assertEquals("1", props.get("format-version"));
+    assertEquals("1", props.get("format_version"));
+    assertFalse(props.containsKey("other"));
+  }
+
+  @Test
   void applyLocationUpdateRequiresSingleLocation() {
     var response =
         service.applyLocationUpdate(

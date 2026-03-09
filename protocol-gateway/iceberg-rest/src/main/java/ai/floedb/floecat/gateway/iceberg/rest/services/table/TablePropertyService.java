@@ -30,12 +30,15 @@ import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TablePropertyService {
   private static final Logger LOG = Logger.getLogger(TablePropertyService.class);
+  private static final Set<String> RESERVED_REMOVE_PROPERTIES =
+      Set.of("format-version", "format_version");
 
   public void stripMetadataLocation(Map<String, String> props) {
     if (props == null || props.isEmpty()) {
@@ -90,7 +93,13 @@ public class TablePropertyService {
           if (removals.isEmpty()) {
             return validationError("remove-properties requires removals");
           }
-          removals.forEach(properties::remove);
+          for (String removal : removals) {
+            if (RESERVED_REMOVE_PROPERTIES.contains(removal)) {
+              LOG.debugf("Ignored commit removal of reserved property %s", removal);
+              continue;
+            }
+            properties.remove(removal);
+          }
         }
         default -> {
           // ignore

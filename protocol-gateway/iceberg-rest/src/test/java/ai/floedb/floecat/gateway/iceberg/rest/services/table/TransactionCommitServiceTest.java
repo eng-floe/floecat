@@ -35,6 +35,9 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
@@ -141,6 +144,22 @@ class TransactionCommitServiceTest {
         .thenReturn(defaultCommitResponse());
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    when(tableSupport.getConnector(any()))
+        .thenAnswer(
+            invocation -> {
+              ResourceId connectorId = invocation.getArgument(0, ResourceId.class);
+              if (connectorId == null || connectorId.getId().isBlank()) {
+                return Optional.empty();
+              }
+              return Optional.of(
+                  Connector.newBuilder()
+                      .setResourceId(connectorId)
+                      .setDisplayName("existing-" + connectorId.getId())
+                      .setKind(ConnectorKind.CK_ICEBERG)
+                      .setUri("s3://existing")
+                      .setState(ConnectorState.CS_ACTIVE)
+                      .build());
+            });
     when(commitJournalService.get(any(), any(), any())).thenReturn(Optional.empty());
     when(commitOutboxService.toWorkItem(anyString(), any()))
         .thenAnswer(
@@ -473,6 +492,172 @@ class TransactionCommitServiceTest {
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))));
+  }
+
+  @Test
+  void commitAddsAtomicConnectorChangesForCreatePath() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties(
+                "metadata-location", "s3://floecat/iceberg/orders/metadata/00001.metadata.json")
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/connectors/by-id/"))
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/connectors/by-name/"))
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTable()
+                                        && change.getTable().hasUpstream()
+                                        && change.getTable().getUpstream().hasConnectorId()
+                                        && !change
+                                            .getTable()
+                                            .getUpstream()
+                                            .getConnectorId()
+                                            .getId()
+                                            .isBlank())));
+  }
+
+  @Test
+  void commitAddsAtomicConnectorChangesForExistingConnectorMetadataRefresh() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .putProperties(
+                "metadata-location", "s3://floecat/iceberg/orders/metadata/00002.metadata.json")
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(tableSupport.getConnector(eq(connectorId)))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("register:pref:db.orders")
+                    .setKind(ConnectorKind.CK_ICEBERG)
+                    .setUri("s3://floecat/iceberg/orders")
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .putProperties("iceberg.source", "filesystem")
+                    .build()));
+    when(transactionClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(transactionClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(transactionClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(transactionClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(transactionClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .filter(
+                            change ->
+                                change.hasTargetPointerKey()
+                                    && change.getTargetPointerKey().contains("/connectors/by-id/"))
+                        .findFirst()
+                        .map(
+                            change -> {
+                              try {
+                                Connector connector = Connector.parseFrom(change.getPayload());
+                                return "s3://floecat/iceberg/orders/metadata/00002.metadata.json"
+                                    .equals(
+                                        connector
+                                            .getPropertiesMap()
+                                            .get("external.metadata-location"));
+                              } catch (InvalidProtocolBufferException e) {
+                                return false;
+                              }
+                            })
+                        .orElse(false)));
   }
 
   @Test
@@ -1023,7 +1208,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitCreateFlowSkipsAtomicConnectorCreateWhenTableHasNoConnector() {
+  void commitCreateFlowAtomicallyCreatesConnectorWhenTableHasNoConnector() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     Table tableWithoutConnector =
         Table.newBuilder()
@@ -1085,8 +1270,16 @@ class TransactionCommitServiceTest {
                         && prepare.getChangesList().stream()
                             .anyMatch(
                                 change ->
+                                    change.hasTargetPointerKey()
+                                        && change
+                                            .getTargetPointerKey()
+                                            .contains("/connectors/by-id/"))
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
                                     change.hasTable()
-                                        && !change.getTable().hasUpstream()
+                                        && change.getTable().hasUpstream()
+                                        && change.getTable().getUpstream().hasConnectorId()
                                         && "s3://meta/new"
                                             .equals(
                                                 change

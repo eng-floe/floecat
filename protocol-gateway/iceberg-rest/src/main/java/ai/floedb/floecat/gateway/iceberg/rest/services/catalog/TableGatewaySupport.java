@@ -28,14 +28,18 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
+import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -60,6 +64,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
@@ -566,6 +571,67 @@ public class TableGatewaySupport {
       return null;
     }
     return response.getConnector().getResourceId();
+  }
+
+  public void refreshExternalConnectorMetadata(
+      ResourceId connectorId, String metadataLocation, String tableLocation) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return;
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return;
+    }
+    try {
+      GetConnectorResponse getResponse =
+          connectorClient.getConnector(
+              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      if (getResponse == null || !getResponse.hasConnector()) {
+        return;
+      }
+      var current = getResponse.getConnector();
+      Map<String, String> nextProperties = new LinkedHashMap<>(current.getPropertiesMap());
+      nextProperties.put("external.metadata-location", metadataLocation);
+
+      String nextUri =
+          (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : current.getUri();
+
+      ConnectorSpec.Builder spec = ConnectorSpec.newBuilder().putAllProperties(nextProperties);
+      FieldMask.Builder updateMask = FieldMask.newBuilder().addPaths("properties");
+      if (nextUri != null && !nextUri.isBlank() && !nextUri.equals(current.getUri())) {
+        spec.setUri(nextUri);
+        updateMask.addPaths("uri");
+      }
+
+      connectorClient.updateConnector(
+          UpdateConnectorRequest.newBuilder()
+              .setConnectorId(connectorId)
+              .setSpec(spec.build())
+              .setUpdateMask(updateMask.build())
+              .build());
+    } catch (StatusRuntimeException e) {
+      LOG.warnf(
+          e,
+          "Failed to refresh connector metadata-location connector=%s metadata=%s",
+          connectorId.getId(),
+          metadataLocation);
+    }
+  }
+
+  public Optional<Connector> getConnector(ResourceId connectorId) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      GetConnectorResponse response =
+          connectorClient.getConnector(
+              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
+      if (response == null || !response.hasConnector()) {
+        return Optional.empty();
+      }
+      return Optional.of(response.getConnector());
+    } catch (StatusRuntimeException e) {
+      return Optional.empty();
+    }
   }
 
   public void updateTableUpstream(

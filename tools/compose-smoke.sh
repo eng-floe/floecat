@@ -42,6 +42,9 @@ COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UN
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION:-us-east-1}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID:-test}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY:-test}
+COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-true}
+COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES:-45}
+COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS:-2}
 
 is_truthy() {
   local raw="${1:-}"
@@ -127,6 +130,67 @@ assert_contains() {
     echo "---- output end ----"
     return 1
   fi
+}
+
+assert_table_stats_available() {
+  local compose_cmd="$1"
+  local label="$2"
+  local table_fqn="$3"
+  local retries="$4"
+  local sleep_seconds="$5"
+  local attempt
+  local out
+  local snapshot_out
+  local snapshot_id
+  local snapshot_ids
+  local last_out=""
+
+  for attempt in $(seq 1 "$retries"); do
+    out=$(run_cli_script "$compose_cmd" "account t-0001
+stats files $table_fqn --current --limit 5
+quit")
+    last_out="$out"
+    if echo "$out" | grep -q "PATH" && ! echo "$out" | grep -q "No file stats found."; then
+      assert_contains "$label stats header" "$out" "PATH"
+      echo "[PASS] $label stats available for $table_fqn"
+      return 0
+    fi
+
+    # Current snapshot can briefly lag metrics writes; probe a few explicit snapshots as fallback.
+    snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
+snapshots $table_fqn
+quit")
+    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
+
+    for snapshot_id in $snapshot_ids; do
+      out=$(run_cli_script "$compose_cmd" "account t-0001
+stats files $table_fqn --snapshot $snapshot_id --limit 5
+quit")
+      last_out="$out"
+      if echo "$out" | grep -q "PATH" && ! echo "$out" | grep -q "No file stats found."; then
+        assert_contains "$label stats header" "$out" "PATH"
+        echo "[PASS] $label stats available for $table_fqn (snapshot=$snapshot_id)"
+        return 0
+      fi
+    done
+
+    sleep "$sleep_seconds"
+  done
+
+  echo "[FAIL] $label stats missing for $table_fqn"
+  echo "---- output begin ----"
+  echo "$last_out"
+  echo "---- output end ----"
+  return 1
+}
+
+maybe_assert_table_stats_available() {
+  local compose_cmd="$1"
+  local label="$2"
+  local table_fqn="$3"
+  local retries="$4"
+  local sleep_seconds="$5"
+  assert_table_stats_available "$compose_cmd" "$label" "$table_fqn" "$retries" "$sleep_seconds"
 }
 
 cleanup_mode() {
@@ -692,6 +756,12 @@ quit")
     assert_contains "$label duckdb time travel insert snapshot" "$duckdb_tt_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label duckdb time travel delete snapshot" "$duckdb_tt_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label duckdb time travel update snapshot" "$duckdb_tt_out" "mut_tt_after_update=2,4,a,c2"
+    maybe_assert_table_stats_available \
+      "$compose_cmd" \
+      "$label duckdb mutation baseline" \
+      "examples.iceberg.duckdb_mutation_smoke" \
+      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
 
     local alter_out
     if alter_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
@@ -714,6 +784,32 @@ quit")
     else
       assert_contains "$label duckdb drop table verification" "$drop_check_out" "Table with name duckdb_ctas_smoke does not exist"
       echo "[PASS] $label duckdb drop table verification (expected missing-table error after DROP TABLE)"
+    fi
+
+    if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
+      echo "==> [SMOKE] duckdb iceberg format-version matrix (v1,v2)"
+      local duckdb_fmt_out
+      if ! duckdb_fmt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+        duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v2_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v1_smoke (id INTEGER, v VARCHAR) WITH (format_version=1); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v1_smoke VALUES (101, 'duckdb_v1'); SELECT 'duckdb_fmt_v1_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v2_smoke (id INTEGER, v VARCHAR) WITH (format_version=2); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v2_smoke VALUES (201, 'duckdb_v2'); SELECT 'duckdb_fmt_v2_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v2_smoke;" 2>&1); then
+        echo "$duckdb_fmt_out"
+        echo "[FAIL] $label duckdb format-version matrix command failed"
+        return 1
+      fi
+      echo "$duckdb_fmt_out"
+      assert_contains "$label duckdb format v1 queryability" "$duckdb_fmt_out" "duckdb_fmt_v1_count=1,101,duckdb_v1,duckdb_v1"
+      assert_contains "$label duckdb format v2 queryability" "$duckdb_fmt_out" "duckdb_fmt_v2_count=1,201,duckdb_v2,duckdb_v2"
+      maybe_assert_table_stats_available \
+        "$compose_cmd" \
+        "$label duckdb format v1" \
+        "examples.iceberg.duckdb_fmt_v1_smoke" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+      maybe_assert_table_stats_available \
+        "$compose_cmd" \
+        "$label duckdb format v2" \
+        "examples.iceberg.duckdb_fmt_v2_smoke" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
     fi
   fi
 
@@ -944,6 +1040,119 @@ PY
     assert_contains "$label trino time travel insert snapshot" "$trino_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label trino time travel delete snapshot" "$trino_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label trino time travel update snapshot" "$trino_out" "mut_tt_after_update=2,4,a,c2"
+
+    if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
+      echo "==> [SMOKE] trino iceberg format-version matrix (v1,v2)"
+      local trino_fmt_out
+      if ! trino_fmt_out=$(docker run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$(should_run_client duckdb && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1
+import json
+import os
+import urllib.request
+
+TRINO_URL = "http://trino:8080/v1/statement"
+ICEBERG_REST_TABLE_URL = "http://iceberg-rest:9200/v1/examples/namespaces/iceberg/tables/{}"
+HEADERS = {
+    "X-Trino-User": "smoke",
+    "X-Trino-Source": "compose-smoke",
+    "X-Trino-Catalog": "floecat",
+    "X-Trino-Schema": "iceberg",
+}
+
+
+def run_sql(sql: str):
+    req = urllib.request.Request(
+        TRINO_URL,
+        data=sql.encode("utf-8"),
+        headers={**HEADERS, "Content-Type": "text/plain; charset=utf-8"},
+        method="POST",
+    )
+    rows = []
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    while True:
+        if payload.get("error"):
+            err = payload["error"]
+            raise RuntimeError(f"{err.get('errorName')}: {err.get('message')}")
+        if payload.get("data"):
+            rows.extend(payload["data"])
+        next_uri = payload.get("nextUri")
+        if not next_uri:
+            return rows
+        next_req = urllib.request.Request(next_uri, headers=HEADERS, method="GET")
+        with urllib.request.urlopen(next_req, timeout=60) as next_resp:
+            payload = json.loads(next_resp.read().decode("utf-8"))
+
+
+def scalar(sql: str) -> str:
+    rows = run_sql(sql)
+    if not rows or not rows[0]:
+        raise RuntimeError(f"No rows returned for: {sql}")
+    return str(rows[0][0])
+
+
+def rest_format_version(table_name: str) -> int:
+    req = urllib.request.Request(ICEBERG_REST_TABLE_URL.format(table_name), method="GET")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return int(payload["metadata"]["format-version"])
+
+run_sql("DROP TABLE IF EXISTS iceberg.trino_fmt_v2_smoke")
+run_sql("DROP TABLE IF EXISTS iceberg.trino_fmt_v1_smoke")
+run_sql("CREATE TABLE iceberg.trino_fmt_v1_smoke (id INTEGER, v VARCHAR) WITH (format_version = 1)")
+run_sql("INSERT INTO iceberg.trino_fmt_v1_smoke VALUES (301, 'trino_v1')")
+run_sql("CREATE TABLE iceberg.trino_fmt_v2_smoke (id INTEGER, v VARCHAR) WITH (format_version = 2)")
+run_sql("INSERT INTO iceberg.trino_fmt_v2_smoke VALUES (401, 'trino_v2')")
+
+print(
+    scalar(
+        "SELECT 'trino_fmt_v1_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) FROM iceberg.trino_fmt_v1_smoke"
+    )
+)
+print(
+    scalar(
+        "SELECT 'trino_fmt_v2_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) FROM iceberg.trino_fmt_v2_smoke"
+    )
+)
+print(f"trino_fmt_v1_format={rest_format_version('trino_fmt_v1_smoke')}")
+print(f"trino_fmt_v2_format={rest_format_version('trino_fmt_v2_smoke')}")
+run_sql("ALTER TABLE iceberg.trino_fmt_v1_smoke SET PROPERTIES format_version = 2")
+print(f"trino_fmt_v1_format_upgraded={rest_format_version('trino_fmt_v1_smoke')}")
+
+if os.getenv("CHECK_DUCKDB_FORMAT_TABLES", "").strip().lower() in {"1", "true", "yes", "on"}:
+    print(f"duckdb_fmt_v1_format={rest_format_version('duckdb_fmt_v1_smoke')}")
+    print(f"duckdb_fmt_v2_format={rest_format_version('duckdb_fmt_v2_smoke')}")
+PY
+); then
+        echo "$trino_fmt_out"
+        echo "[FAIL] $label trino format-version matrix command failed"
+        return 1
+      fi
+      echo "$trino_fmt_out"
+      assert_contains "$label trino format v1 queryability" "$trino_fmt_out" "trino_fmt_v1_count=1,301,trino_v1,trino_v1"
+      assert_contains "$label trino format v2 queryability" "$trino_fmt_out" "trino_fmt_v2_count=1,401,trino_v2,trino_v2"
+      assert_contains "$label trino format v1 metadata" "$trino_fmt_out" "trino_fmt_v1_format=1"
+      assert_contains "$label trino format v2 metadata" "$trino_fmt_out" "trino_fmt_v2_format=2"
+      assert_contains "$label trino format v1 alter upgrade metadata" "$trino_fmt_out" "trino_fmt_v1_format_upgraded=2"
+      if should_run_client duckdb; then
+        # Recent DuckDB+Iceberg paths materialize v2 metadata even when format_version=1 is requested.
+        assert_contains "$label duckdb format v1 metadata" "$trino_fmt_out" "duckdb_fmt_v1_format=2"
+        assert_contains "$label duckdb format v2 metadata" "$trino_fmt_out" "duckdb_fmt_v2_format=2"
+      fi
+      maybe_assert_table_stats_available \
+        "$compose_cmd" \
+        "$label trino format v1" \
+        "examples.iceberg.trino_fmt_v1_smoke" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+      maybe_assert_table_stats_available \
+        "$compose_cmd" \
+        "$label trino format v2" \
+        "examples.iceberg.trino_fmt_v2_smoke" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+    fi
   fi
 
   trap - ERR

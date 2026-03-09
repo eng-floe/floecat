@@ -16,12 +16,22 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
@@ -34,6 +44,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
@@ -42,6 +53,7 @@ import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -67,6 +79,7 @@ import org.jboss.logging.Logger;
 public class TransactionCommitService {
   private static final int COMMIT_JOURNAL_VERSION = 1;
   private static final int COMMIT_OUTBOX_VERSION = 1;
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
   private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 25L;
@@ -387,7 +400,27 @@ public class TransactionCommitService {
     for (var plan : planned) {
       var tableForTx = plan.table();
       ResourceId scopedTableId = scopeTableIdWithAccount(plan.tableId(), accountId);
-      ResourceId connectorId = resolveConnectorId(tableForTx);
+      ConnectorResolution connectorResolution =
+          resolveOrCreateConnectorForCommit(
+              accountId,
+              txId,
+              prefix,
+              tableSupport,
+              plan.namespacePath(),
+              plan.namespaceId(),
+              catalogId,
+              plan.tableName(),
+              scopedTableId,
+              tableForTx);
+      if (connectorResolution.error() != null) {
+        maybeAbortOpenTransaction(currentState, txId, "connector provisioning failed");
+        return connectorResolution.error();
+      }
+      tableForTx = connectorResolution.table();
+      ResourceId connectorId = connectorResolution.connectorId();
+      if (!connectorResolution.connectorTxChanges().isEmpty()) {
+        txChanges.addAll(connectorResolution.connectorTxChanges());
+      }
       List<Long> addedSnapshotIds = addedSnapshotIds(plan.updates());
       List<Long> removedSnapshotIds = removedSnapshotIds(plan.updates());
       txChanges.add(
@@ -398,7 +431,8 @@ public class TransactionCommitService {
               .build());
 
       SnapshotChangePlan snapshotChangePlan =
-          planAtomicSnapshotChanges(accountId, plan.tableId(), plan.updates(), alreadyApplied);
+          planAtomicSnapshotChanges(
+              accountId, plan.tableId(), tableForTx, tableSupport, plan.updates(), alreadyApplied);
       if (snapshotChangePlan.error() != null) {
         maybeAbortOpenTransaction(currentState, txId, "snapshot metadata planning failed");
         return snapshotChangePlan.error();
@@ -573,6 +607,12 @@ public class TransactionCommitService {
 
   private record PreMaterializedTable(ai.floedb.floecat.catalog.rpc.Table table, Response error) {}
 
+  private record ConnectorResolution(
+      ai.floedb.floecat.catalog.rpc.Table table,
+      ResourceId connectorId,
+      List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges,
+      Response error) {}
+
   private record PlannedChange(
       List<String> namespacePath,
       ResourceId namespaceId,
@@ -718,6 +758,8 @@ public class TransactionCommitService {
   private SnapshotChangePlan planAtomicSnapshotChanges(
       String accountId,
       ResourceId tableId,
+      ai.floedb.floecat.catalog.rpc.Table table,
+      TableGatewaySupport tableSupport,
       List<Map<String, Object>> updates,
       boolean alreadyApplied) {
     if (alreadyApplied || tableId == null || updates == null || updates.isEmpty()) {
@@ -755,7 +797,9 @@ public class TransactionCommitService {
 
       ai.floedb.floecat.catalog.rpc.Snapshot snapshot;
       try {
-        snapshot = fetchOrBuildSnapshotPayload(scopedTableId, snapshotId, snapshotMap);
+        snapshot =
+            fetchOrBuildSnapshotPayload(
+                scopedTableId, table, tableSupport, snapshotId, snapshotMap);
       } catch (StatusRuntimeException e) {
         return new SnapshotChangePlan(List.of(), mapPreCommitFailure(e));
       } catch (RuntimeException e) {
@@ -796,7 +840,11 @@ public class TransactionCommitService {
   }
 
   private ai.floedb.floecat.catalog.rpc.Snapshot fetchOrBuildSnapshotPayload(
-      ResourceId tableId, long snapshotId, Map<String, Object> snapshotMap) {
+      ResourceId tableId,
+      ai.floedb.floecat.catalog.rpc.Table table,
+      TableGatewaySupport tableSupport,
+      long snapshotId,
+      Map<String, Object> snapshotMap) {
     try {
       var resp =
           snapshotClient.getSnapshot(
@@ -805,7 +853,18 @@ public class TransactionCommitService {
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
                   .build());
       if (resp != null && resp.hasSnapshot()) {
-        return resp.getSnapshot();
+        ai.floedb.floecat.catalog.rpc.Snapshot existing = resp.getSnapshot();
+        if (!existing.getFormatMetadataMap().containsKey(ICEBERG_METADATA_KEY)) {
+          IcebergMetadata snapshotIcebergMetadata =
+              buildSnapshotIcebergMetadata(
+                  table, tableSupport, snapshotId, existing.getSequenceNumber());
+          if (snapshotIcebergMetadata != null) {
+            return existing.toBuilder()
+                .putFormatMetadata(ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString())
+                .build();
+          }
+        }
+        return existing;
       }
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
@@ -850,10 +909,89 @@ public class TransactionCommitService {
     if (!summary.isEmpty()) {
       builder.putAllSummary(summary);
     }
+    IcebergMetadata snapshotIcebergMetadata =
+        buildSnapshotIcebergMetadata(table, tableSupport, snapshotId, sequenceNumber);
+    if (snapshotIcebergMetadata != null) {
+      builder.putFormatMetadata(ICEBERG_METADATA_KEY, snapshotIcebergMetadata.toByteString());
+    }
     if (!builder.hasUpstreamCreatedAt()) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(clockMillis()));
     }
     return builder.build();
+  }
+
+  private IcebergMetadata buildSnapshotIcebergMetadata(
+      ai.floedb.floecat.catalog.rpc.Table table,
+      TableGatewaySupport tableSupport,
+      long snapshotId,
+      Long sequenceNumber) {
+    IcebergMetadata base = null;
+    if (tableSupport != null && table != null) {
+      try {
+        base = tableSupport.loadCurrentMetadata(table);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "Unable to load current metadata for snapshot format metadata tableId=%s",
+            table.getResourceId().getId());
+      }
+    }
+    IcebergMetadata.Builder builder =
+        base != null ? base.toBuilder() : IcebergMetadata.newBuilder();
+    if (table != null) {
+      Map<String, String> props = table.getPropertiesMap();
+      Integer formatVersion =
+          TableMappingUtil.asInteger(
+              props.get("format-version") != null
+                  ? props.get("format-version")
+                  : props.get("format_version"));
+      if (formatVersion != null && formatVersion > 0 && builder.getFormatVersion() <= 0) {
+        builder.setFormatVersion(formatVersion);
+      }
+      String metadataLocation = props.get("metadata-location");
+      if (metadataLocation != null
+          && !metadataLocation.isBlank()
+          && (builder.getMetadataLocation() == null || builder.getMetadataLocation().isBlank())) {
+        builder.setMetadataLocation(metadataLocation);
+      }
+      String tableUuid = props.get("table-uuid");
+      if (tableUuid != null && !tableUuid.isBlank() && builder.getTableUuid().isBlank()) {
+        builder.setTableUuid(tableUuid);
+      }
+      Integer lastColumnId = TableMappingUtil.asInteger(props.get("last-column-id"));
+      if (lastColumnId != null && lastColumnId >= 0 && builder.getLastColumnId() <= 0) {
+        builder.setLastColumnId(lastColumnId);
+      }
+      Integer currentSchemaId = TableMappingUtil.asInteger(props.get("current-schema-id"));
+      if (currentSchemaId != null && currentSchemaId >= 0 && builder.getCurrentSchemaId() < 0) {
+        builder.setCurrentSchemaId(currentSchemaId);
+      }
+      Integer defaultSpecId = TableMappingUtil.asInteger(props.get("default-spec-id"));
+      if (defaultSpecId != null && defaultSpecId >= 0 && builder.getDefaultSpecId() < 0) {
+        builder.setDefaultSpecId(defaultSpecId);
+      }
+      Integer lastPartitionId = TableMappingUtil.asInteger(props.get("last-partition-id"));
+      if (lastPartitionId != null && lastPartitionId >= 0 && builder.getLastPartitionId() < 0) {
+        builder.setLastPartitionId(lastPartitionId);
+      }
+      Integer defaultSortOrderId = TableMappingUtil.asInteger(props.get("default-sort-order-id"));
+      if (defaultSortOrderId != null
+          && defaultSortOrderId >= 0
+          && builder.getDefaultSortOrderId() < 0) {
+        builder.setDefaultSortOrderId(defaultSortOrderId);
+      }
+      Long lastSequenceNumber = TableMappingUtil.asLong(props.get("last-sequence-number"));
+      if (lastSequenceNumber != null
+          && lastSequenceNumber > 0
+          && builder.getLastSequenceNumber() <= 0) {
+        builder.setLastSequenceNumber(lastSequenceNumber);
+      }
+    }
+    builder.setCurrentSnapshotId(snapshotId);
+    if (sequenceNumber != null && sequenceNumber > 0) {
+      builder.setLastSequenceNumber(sequenceNumber);
+    }
+    return builder.getFormatVersion() > 0 ? builder.build() : null;
   }
 
   private Map<String, String> asStringMap(Object value) {
@@ -989,6 +1127,10 @@ public class TransactionCommitService {
         .setAccountId(accountId == null ? "" : accountId)
         .setTableId(tableId == null ? "" : tableId)
         .setCreatedAtMs(Math.max(0L, createdAtMs))
+        .setAttemptCount(0)
+        .setNextAttemptAtMs(0L)
+        .setLastAttemptAtMs(0L)
+        .setDeadLetteredAtMs(0L)
         .build();
   }
 
@@ -1409,6 +1551,12 @@ public class TransactionCommitService {
     if (tableName != null && !tableName.isBlank()) {
       builder.setDisplayName(tableName);
     }
+    builder.setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()));
+    builder.setUpstream(
+        UpstreamRef.newBuilder()
+            .setFormat(TableFormat.TF_ICEBERG)
+            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+            .build());
     return builder.build();
   }
 
@@ -1499,6 +1647,267 @@ public class TransactionCommitService {
 
   private String tableMetadataLocation(ai.floedb.floecat.catalog.rpc.Table table) {
     return table == null ? null : table.getPropertiesMap().get("metadata-location");
+  }
+
+  private ConnectorResolution resolveOrCreateConnectorForCommit(
+      String accountId,
+      String txId,
+      String prefix,
+      TableGatewaySupport tableSupport,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String tableName,
+      ResourceId tableId,
+      ai.floedb.floecat.catalog.rpc.Table table) {
+    if (table == null || tableId == null || tableName == null || tableName.isBlank()) {
+      return new ConnectorResolution(table, resolveConnectorId(table), List.of(), null);
+    }
+    String metadataLocation = tableMetadataLocation(table);
+    String requestedLocation = table.getPropertiesMap().get("location");
+    String resolvedTableLocation =
+        tableSupport.resolveTableLocation(requestedLocation, metadataLocation);
+    Timestamp nowTs = Timestamps.fromMillis(clockMillis());
+    ResourceId existing = resolveConnectorId(table);
+    if (existing != null) {
+      var existingConnector = tableSupport.getConnector(existing);
+      if (existingConnector.isEmpty()) {
+        LOG.warnf(
+            "Connector %s referenced by table %s was not found", existing.getId(), tableId.getId());
+        return new ConnectorResolution(
+            table,
+            null,
+            List.of(),
+            IcebergErrorResponses.failure(
+                "connector provisioning failed",
+                "CommitStateUnknownException",
+                Response.Status.SERVICE_UNAVAILABLE));
+      }
+      Connector.Builder updatedConnector = existingConnector.get().toBuilder().setUpdatedAt(nowTs);
+      String connectorUri = existingConnector.get().getUri();
+      Map<String, String> nextProperties =
+          new LinkedHashMap<>(existingConnector.get().getPropertiesMap());
+      if (metadataLocation != null && !metadataLocation.isBlank()) {
+        nextProperties.put("external.metadata-location", metadataLocation);
+      }
+      if (resolvedTableLocation != null && !resolvedTableLocation.isBlank()) {
+        connectorUri = resolvedTableLocation;
+      }
+      updatedConnector.clearProperties().putAllProperties(nextProperties);
+      if (connectorUri != null && !connectorUri.isBlank()) {
+        updatedConnector.setUri(connectorUri);
+      }
+      Connector connectorRecord = updatedConnector.build();
+      List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges =
+          connectorUpsertChanges(accountId, connectorRecord);
+      ai.floedb.floecat.catalog.rpc.Table enriched =
+          enrichTableUpstream(table, namespacePath, tableName, existing, connectorRecord.getUri());
+      return new ConnectorResolution(enriched, existing, connectorTxChanges, null);
+    }
+    if (!tableSupport.connectorIntegrationEnabled()) {
+      return new ConnectorResolution(table, null, List.of(), null);
+    }
+    var connectorTemplate = tableSupport.connectorTemplateFor(prefix);
+
+    Connector connectorRecord =
+        buildConnectorForCommit(
+            accountId,
+            txId,
+            prefix,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            tableName,
+            tableId,
+            metadataLocation,
+            resolvedTableLocation,
+            fileIoPropertiesForConnector(tableSupport, table),
+            connectorTemplate,
+            nowTs);
+    if (connectorRecord == null || !connectorRecord.hasResourceId()) {
+      return new ConnectorResolution(table, null, List.of(), null);
+    }
+    List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges =
+        connectorUpsertChanges(accountId, connectorRecord);
+    ai.floedb.floecat.catalog.rpc.Table enriched =
+        enrichTableUpstream(
+            table,
+            namespacePath,
+            tableName,
+            connectorRecord.getResourceId(),
+            connectorRecord.getUri());
+    return new ConnectorResolution(
+        enriched, connectorRecord.getResourceId(), connectorTxChanges, null);
+  }
+
+  private ai.floedb.floecat.catalog.rpc.Table enrichTableUpstream(
+      ai.floedb.floecat.catalog.rpc.Table table,
+      List<String> namespacePath,
+      String tableName,
+      ResourceId connectorId,
+      String upstreamUri) {
+    UpstreamRef.Builder upstream =
+        table.hasUpstream()
+            ? table.getUpstream().toBuilder()
+            : UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID);
+    upstream.setConnectorId(connectorId).clearNamespacePath().addAllNamespacePath(namespacePath);
+    if (tableName != null && !tableName.isBlank()) {
+      upstream.setTableDisplayName(tableName);
+    }
+    if (upstreamUri != null && !upstreamUri.isBlank()) {
+      upstream.setUri(upstreamUri);
+    }
+    return table.toBuilder().setUpstream(upstream).build();
+  }
+
+  private List<ai.floedb.floecat.transaction.rpc.TxChange> connectorUpsertChanges(
+      String accountId, Connector connector) {
+    if (connector == null || !connector.hasResourceId() || connector.getDisplayName().isBlank()) {
+      return List.of();
+    }
+    ByteString payload = ByteString.copyFrom(connector.toByteArray());
+    String connectorId = connector.getResourceId().getId();
+    String byIdPointer = Keys.connectorPointerById(accountId, connectorId);
+    String byNamePointer = Keys.connectorPointerByName(accountId, connector.getDisplayName());
+    return List.of(
+        ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+            .setTargetPointerKey(byIdPointer)
+            .setPayload(payload)
+            .build(),
+        ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+            .setTargetPointerKey(byNamePointer)
+            .setPayload(payload)
+            .build());
+  }
+
+  private Connector buildConnectorForCommit(
+      String accountId,
+      String txId,
+      String prefix,
+      List<String> namespacePath,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String tableName,
+      ResourceId tableId,
+      String metadataLocation,
+      String resolvedTableLocation,
+      Map<String, String> ioProperties,
+      ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig.RegisterConnectorTemplate
+          connectorTemplate,
+      Timestamp nowTs) {
+    String namespaceFq = namespacePath == null ? "" : String.join(".", namespacePath);
+    ResourceId connectorId = deterministicConnectorId(accountId, txId, tableId);
+    SourceSelector source =
+        SourceSelector.newBuilder()
+            .setNamespace(NamespacePath.newBuilder().addAllSegments(namespacePath).build())
+            .setTable(tableName)
+            .build();
+    DestinationTarget destination =
+        DestinationTarget.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setTableId(tableId)
+            .setTableDisplayName(tableName)
+            .build();
+    Connector.Builder connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(source)
+            .setDestination(destination)
+            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+            .setCreatedAt(nowTs)
+            .setUpdatedAt(nowTs)
+            .setState(ConnectorState.CS_ACTIVE);
+    if (connectorTemplate != null && connectorTemplate.uri() != null) {
+      String displayName =
+          connectorTemplate
+              .displayName()
+              .orElseGet(
+                  () ->
+                      "register:"
+                          + prefix
+                          + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
+                          + "."
+                          + tableName);
+      connector.setDisplayName(displayName).setUri(connectorTemplate.uri());
+      if (connectorTemplate.description().isPresent()) {
+        connector.setDescription(connectorTemplate.description().get());
+      }
+      if (connectorTemplate.properties() != null && !connectorTemplate.properties().isEmpty()) {
+        connector.putAllProperties(connectorTemplate.properties());
+      }
+      connector.putProperties(
+          "floecat.connector.capture-statistics",
+          Boolean.toString(connectorTemplate.captureStatistics()));
+      return connector.build();
+    }
+    String metadata =
+        metadataLocation != null && !metadataLocation.isBlank()
+            ? metadataLocation
+            : resolvedTableLocation;
+    if (metadata == null || metadata.isBlank()) {
+      return null;
+    }
+    String connectorUri =
+        (resolvedTableLocation != null && !resolvedTableLocation.isBlank())
+            ? resolvedTableLocation
+            : metadata;
+    String displayName =
+        "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("external.metadata-location", metadata);
+    props.put("iceberg.source", "filesystem");
+    props.put("external.table-name", tableName);
+    props.put("external.namespace", namespaceFq);
+    props.put("floecat.connector.capture-statistics", Boolean.toString(true));
+    if (ioProperties != null && !ioProperties.isEmpty()) {
+      ioProperties.forEach(
+          (k, v) -> {
+            if (FileIoFactory.isFileIoProperty(k) && v != null && !v.isBlank()) {
+              props.put(k, v.trim());
+            }
+          });
+    }
+    return connector
+        .setDisplayName(displayName)
+        .setUri(connectorUri)
+        .putAllProperties(props)
+        .build();
+  }
+
+  private ResourceId deterministicConnectorId(String accountId, String txId, ResourceId tableId) {
+    String seed = (txId == null ? "" : txId) + "|" + (tableId == null ? "" : tableId.getId());
+    UUID deterministicId = UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8));
+    return ResourceId.newBuilder()
+        .setAccountId(accountId == null ? "" : accountId)
+        .setId(deterministicId.toString())
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
+  }
+
+  private Map<String, String> fileIoPropertiesForConnector(
+      TableGatewaySupport tableSupport, ai.floedb.floecat.catalog.rpc.Table table) {
+    Map<String, String> ioProperties =
+        new LinkedHashMap<>(
+            tableSupport == null ? Map.of() : tableSupport.defaultFileIoProperties());
+    if (table == null || table.getPropertiesMap().isEmpty()) {
+      return ioProperties.isEmpty() ? Map.of() : Map.copyOf(ioProperties);
+    }
+    table
+        .getPropertiesMap()
+        .forEach(
+            (key, value) -> {
+              if (key != null
+                  && value != null
+                  && !value.isBlank()
+                  && FileIoFactory.isFileIoProperty(key)) {
+                ioProperties.put(key, value.trim());
+              }
+            });
+    return ioProperties.isEmpty() ? Map.of() : Map.copyOf(ioProperties);
   }
 
   private String requestedMetadataLocation(List<Map<String, Object>> updates) {

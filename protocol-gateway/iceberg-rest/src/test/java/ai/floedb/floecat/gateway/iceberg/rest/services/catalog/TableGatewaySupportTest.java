@@ -43,6 +43,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
+import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -278,6 +280,46 @@ class TableGatewaySupportTest {
     assertEquals("filesystem", request.getSpec().getPropertiesOrThrow("iceberg.source"));
     assertEquals("http://localhost:4566", request.getSpec().getPropertiesOrThrow("s3.endpoint"));
     assertFalse(request.getSpec().getPropertiesMap().containsKey("non-io"));
+  }
+
+  @Test
+  void refreshExternalConnectorMetadataUpdatesPropertiesAndUri() {
+    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    when(connectorClient.getConnector(any()))
+        .thenReturn(
+            GetConnectorResponse.newBuilder()
+                .setConnector(
+                    Connector.newBuilder()
+                        .setResourceId(connectorId)
+                        .setUri("s3://old/location")
+                        .putProperties("external.metadata-location", "s3://old/meta.json")
+                        .putProperties("iceberg.source", "filesystem")
+                        .build())
+                .build());
+
+    support.refreshExternalConnectorMetadata(
+        connectorId, "s3://new/metadata/00003.json", "s3://new/location");
+
+    ArgumentCaptor<UpdateConnectorRequest> captor =
+        ArgumentCaptor.forClass(UpdateConnectorRequest.class);
+    verify(connectorClient).updateConnector(captor.capture());
+    UpdateConnectorRequest request = captor.getValue();
+    assertEquals(connectorId, request.getConnectorId());
+    assertTrue(request.getUpdateMask().getPathsList().contains("properties"));
+    assertTrue(request.getUpdateMask().getPathsList().contains("uri"));
+    assertEquals("s3://new/location", request.getSpec().getUri());
+    assertEquals(
+        "s3://new/metadata/00003.json",
+        request.getSpec().getPropertiesOrThrow("external.metadata-location"));
+    assertEquals("filesystem", request.getSpec().getPropertiesOrThrow("iceberg.source"));
+  }
+
+  @Test
+  void refreshExternalConnectorMetadataSkipsWhenMissingMetadataLocation() {
+    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
+    support.refreshExternalConnectorMetadata(connectorId, "", "s3://new/location");
+    verify(connectorClient, never()).getConnector(any());
+    verify(connectorClient, never()).updateConnector(any());
   }
 
   @Test

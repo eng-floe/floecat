@@ -90,7 +90,9 @@ public class TableCreateTransactionMapper {
     Map<String, String> props = new LinkedHashMap<>(spec.getPropertiesMap());
     String tableLocation = blankToNull(props.remove("location"));
     String metadataLocation = blankToNull(props.remove("metadata-location"));
-    Integer formatVersion = firstNonNegativeInt(asInt(props.remove("format-version")), 2);
+    Integer formatVersion =
+        firstNonNegativeInt(
+            asInt(firstNonNull(props.remove("format-version"), props.remove("format_version"))), 2);
     props.putIfAbsent("last-sequence-number", "0");
 
     List<Map<String, Object>> updates = new ArrayList<>();
@@ -179,6 +181,10 @@ public class TableCreateTransactionMapper {
       }
     }
     return null;
+  }
+
+  private Object firstNonNull(Object first, Object second) {
+    return first != null ? first : second;
   }
 
   private String blankToNull(String value) {
