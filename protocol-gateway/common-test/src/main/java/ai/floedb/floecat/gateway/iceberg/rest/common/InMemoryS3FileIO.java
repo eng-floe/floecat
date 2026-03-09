@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Map;
+import java.util.Objects;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
@@ -52,7 +53,7 @@ public final class InMemoryS3FileIO implements SupportsPrefixOperations {
         props.getOrDefault(
             "fs.floecat.test-root",
             (sysRoot == null || sysRoot.isBlank()) ? DEFAULT_ROOT : sysRoot);
-    root = Paths.get(configuredRoot).toAbsolutePath();
+    root = Paths.get(configuredRoot).toAbsolutePath().normalize();
   }
 
   @Override
@@ -144,20 +145,46 @@ public final class InMemoryS3FileIO implements SupportsPrefixOperations {
   public void close() {}
 
   private Path toLocalPath(String location, boolean ensureParent) {
+    Path safeRoot =
+        Objects.requireNonNull(root, "InMemoryS3FileIO is not initialized; call initialize first")
+            .normalize();
     URI uri = URI.create(location);
     if (!"s3".equalsIgnoreCase(uri.getScheme())) {
       throw new IllegalArgumentException("Only s3:// URIs are supported: " + location);
+    }
+    if (uri.getQuery() != null || uri.getFragment() != null || uri.getUserInfo() != null) {
+      throw new IllegalArgumentException("Invalid s3 URI form: " + location);
     }
     String bucket = uri.getHost();
     if (bucket == null || bucket.isBlank()) {
       throw new IllegalArgumentException("Missing bucket in s3 URI: " + location);
     }
+    if (bucket.contains("/") || bucket.contains("\\") || bucket.contains("..")) {
+      throw new IllegalArgumentException("Invalid bucket in s3 URI: " + location);
+    }
     String key = uri.getPath();
     String suffix = key == null ? "" : key.replaceFirst("^/", "");
-    Path resolved =
-        suffix == null || suffix.isEmpty()
-            ? root.resolve(bucket)
-            : root.resolve(bucket).resolve(suffix);
+    if (suffix.contains("\\")) {
+      throw new IllegalArgumentException("Invalid key in s3 URI: " + location);
+    }
+
+    Path bucketRoot = safeRoot.resolve(bucket).normalize();
+    if (!bucketRoot.startsWith(safeRoot)) {
+      throw new IllegalArgumentException("Invalid bucket path in s3 URI: " + location);
+    }
+
+    Path resolved = bucketRoot;
+    if (!suffix.isEmpty()) {
+      Path keyPath = Paths.get(suffix).normalize();
+      if (keyPath.isAbsolute()) {
+        throw new IllegalArgumentException("Absolute key is not allowed in s3 URI: " + location);
+      }
+      resolved = bucketRoot.resolve(keyPath).normalize();
+    }
+    if (!resolved.startsWith(bucketRoot)) {
+      throw new IllegalArgumentException("Path traversal detected in s3 URI: " + location);
+    }
+
     if (ensureParent) {
       try {
         Path parent = resolved.getParent();
