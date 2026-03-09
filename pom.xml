@@ -119,6 +119,7 @@
 
       <!-- Extensions -->
       <module>extensions/floedb</module>
+      <module>extensions/example</module>
 
       <!-- Tools -->
       <module>tools/builtin-validator</module>
