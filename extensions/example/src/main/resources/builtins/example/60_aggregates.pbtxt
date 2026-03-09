@@ -31,6 +31,7 @@ aggregates {
   state_type  { name: "my_type" path: "example" }
   return_type { name: "my_type" path: "example" }
   engine_specific {
+    payload_type: "example.properties"
     properties { key: "description"      value: "replace with your aggregate description" }
     properties { key: "state_function"   value: "my_state_function" }
     properties { key: "final_function"   value: "my_final_function" }

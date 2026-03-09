@@ -22,6 +22,8 @@
 #   is_window       — true for window functions
 #
 # engine_specific:
+#   payload_type  — identifies the payload schema (required by the catalog validator).
+#                   Use a value like "example.properties" when there is no binary payload.
 #   min_version   — earliest engine version that supports this function (inclusive).
 #                   Functions with min_version are automatically excluded when Floecat
 #                   serves a catalog for an older engine version.
@@ -35,6 +37,7 @@ functions {
   argument_types { name: "my_type" path: "example" }
   return_type { name: "my_type" path: "example" }
   engine_specific {
+    payload_type: "example.properties"
     properties { key: "description" value: "replace with your function description" }
     properties { key: "volatility" value: "immutable" }
   }
@@ -48,6 +51,7 @@ functions {
   argument_types { name: "my_type" path: "example" }
   return_type { name: "my_type" path: "example" }
   engine_specific {
+    payload_type: "example.properties"
     min_version: "2.0"
     properties { key: "description" value: "replace: only available since engine version 2.0" }
   }

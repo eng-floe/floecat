@@ -20,24 +20,36 @@ make integration-test
 
 ## Builtin Catalog Validator
 
-Validate bundled or bespoke builtin catalog protobufs without running the service (merge the
-fragments listed in `_index.txt` before you run the validator; e.g., use the index as the source of truth:
-
-```
-dir=service/src/main/resources/builtins/floe-demo
-awk '!/^\s*($|#)/{print}' "$dir/_index.txt" | sed "s|^|$dir/|" | xargs cat > /tmp/floe-demo.pbtxt
-```
-
-Then point the validator at the merged file:
+Validate bundled or bespoke builtin catalog protobufs without running the service.
 
 ```bash
 mvn -pl tools/builtin-validator package
+```
+
+**Engine mode** – load via `ServiceLoader` (extension JAR must be on the classpath):
+
+```bash
 java -jar tools/builtin-validator/target/builtin-validator.jar \
-  /tmp/floe-demo.pbtxt
+  --engine example
+```
+
+**Directory mode** – point at a catalog directory; the validator reads `_index.txt` automatically:
+
+```bash
+java -jar tools/builtin-validator/target/builtin-validator.jar \
+  /path/to/builtins/example
+```
+
+**File mode** – validate a single merged protobuf file (binary or text format):
+
+```bash
+java -jar tools/builtin-validator/target/builtin-validator.jar \
+  /path/to/catalog.pbtxt
 ```
 
 Flags:
 
+- `--engine <kind>` – load the registered `EngineSystemCatalogExtension` for the given engine kind via `ServiceLoader` instead of reading a file.
 - `--json` – emit machine-readable output (for CI or scripting).
 - `--strict` – fail the run when warnings are present (warnings are currently reserved for future checks).
 

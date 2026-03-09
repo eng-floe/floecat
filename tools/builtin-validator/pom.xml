@@ -34,10 +34,12 @@
       <artifactId>floecat-catalog</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- Provides the 'example' engine extension for ServiceLoader in CLI tests -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-extension-floedb</artifactId>
+      <artifactId>floecat-extension-example</artifactId>
       <version>${project.version}</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

@@ -118,7 +118,6 @@
       <module>storage/aws</module>
 
       <!-- Extensions -->
-      <module>extensions/floedb</module>
       <module>extensions/example</module>
 
       <!-- Tools -->
