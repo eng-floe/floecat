@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -35,7 +36,6 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -186,15 +186,43 @@ public class NodeLoader {
         view.getNamespaceId(),
         view.getDisplayName(),
         view.getSql(),
-        "",
-        List.<SchemaColumn>of(),
-        List.<ResourceId>of(),
-        List.of(),
+        view.getDialect(),
+        view.getOutputColumnsList(),
+        parseBaseRelations(view.getBaseRelationsList()),
+        view.getCreationSearchPathList(),
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
         hints.columnHints(),
         hints.engineHints());
+  }
+
+  private static List<NameRef> parseBaseRelations(List<String> fqns) {
+    return fqns.stream().map(NodeLoader::parseFqn).toList();
+  }
+
+  /**
+   * Splits a fully-qualified name {@code "catalog[.path]*.name"} into a {@link NameRef}.
+   *
+   * <ul>
+   *   <li>1 segment → {@code name} only
+   *   <li>2 segments → {@code catalog} + {@code name}
+   *   <li>3+ segments → {@code catalog}, middle segments as {@code path}, {@code name}
+   * </ul>
+   *
+   * <p>Package-private for testing.
+   */
+  static NameRef parseFqn(String fqn) {
+    String[] parts = fqn.split("\\.", -1);
+    NameRef.Builder b = NameRef.newBuilder();
+    if (parts.length == 1) {
+      return b.setName(parts[0]).build();
+    }
+    b.setCatalog(parts[0]).setName(parts[parts.length - 1]);
+    for (int i = 1; i < parts.length - 1; i++) {
+      b.addPath(parts[i]);
+    }
+    return b.build();
   }
 
   static RelationHints relationHints(Map<String, String> properties) {

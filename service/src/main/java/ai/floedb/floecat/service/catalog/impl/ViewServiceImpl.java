@@ -82,7 +82,17 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject EngineHintSchemaCleaner hintCleaner;
 
   private static final Set<String> VIEW_MUTABLE_PATHS =
-      Set.of("display_name", "description", "sql", "properties", "catalog_id", "namespace_id");
+      Set.of(
+          "display_name",
+          "description",
+          "sql",
+          "properties",
+          "catalog_id",
+          "namespace_id",
+          "dialect",
+          "output_columns",
+          "base_relations",
+          "creation_search_path");
   private static final String VIEW_TOKEN_PREFIX = "view:";
 
   private static final Logger LOG = Logger.getLogger(ViewService.class);
@@ -277,6 +287,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var tsNow = nowTs();
 
+                  if (spec.getOutputColumnsList().isEmpty()) {
+                    throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
+                  }
+
                   var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
                   var normName = normalizeName(rawName);
 
@@ -300,6 +314,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           .setSql(mustNonEmpty(spec.getSql(), "spec.sql", corr))
                           .setCreatedAt(tsNow)
                           .putAllProperties(spec.getPropertiesMap())
+                          .setDialect(spec.getDialect())
+                          .addAllBaseRelations(spec.getBaseRelationsList())
+                          .addAllCreationSearchPath(spec.getCreationSearchPathList())
+                          .addAllOutputColumns(spec.getOutputColumnsList())
                           .build();
 
                   if (idempotencyKey == null) {
@@ -701,6 +719,25 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       b.clearProperties().putAllProperties(spec.getPropertiesMap());
     }
 
+    if (maskTargets(mask, "dialect")) {
+      b.setDialect(spec.getDialect());
+    }
+
+    if (maskTargets(mask, "output_columns")) {
+      if (spec.getOutputColumnsList().isEmpty()) {
+        throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
+      }
+      b.clearOutputColumns().addAllOutputColumns(spec.getOutputColumnsList());
+    }
+
+    if (maskTargets(mask, "base_relations")) {
+      b.clearBaseRelations().addAllBaseRelations(spec.getBaseRelationsList());
+    }
+
+    if (maskTargets(mask, "creation_search_path")) {
+      b.clearCreationSearchPath().addAllCreationSearchPath(spec.getCreationSearchPathList());
+    }
+
     boolean catalogChanged = false;
     boolean namespaceChanged = false;
 
@@ -801,6 +838,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .setDescription(view.getDescription())
         .setSql(view.getSql())
         .putAllProperties(view.getPropertiesMap())
+        .setDialect(view.getDialect())
+        .addAllBaseRelations(view.getBaseRelationsList())
+        .addAllCreationSearchPath(view.getCreationSearchPathList())
+        .addAllOutputColumns(view.getOutputColumnsList())
         .build();
   }
 }

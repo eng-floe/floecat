@@ -155,7 +155,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   var metadata =
                       metadataAssembler.assemble(
-                          correlationId, request.getInputsList(), asOfDefault);
+                          correlationId, request.getInputsList(), asOfDefault, catalogId);
 
                   byte[] expansionBytes = metadata.expansionMap().toByteArray();
                   byte[] snapshotBytes = metadata.snapshotSet().toByteArray();

@@ -79,7 +79,10 @@ public class QueryInputResolverTest {
 
     var res =
         resolver.resolveInputs(
-            "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty());
+            "cid",
+            List.of(QueryInput.newBuilder().setName(n).build()),
+            Optional.empty(),
+            Optional.empty());
 
     assertEquals("T1", res.resolved().get(0).getId());
   }
@@ -93,7 +96,10 @@ public class QueryInputResolverTest {
 
     var res =
         resolver.resolveInputs(
-            "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty());
+            "cid",
+            List.of(QueryInput.newBuilder().setName(n).build()),
+            Optional.empty(),
+            Optional.empty());
 
     assertEquals("V1", res.resolved().get(0).getId());
   }
@@ -108,7 +114,10 @@ public class QueryInputResolverTest {
         StatusRuntimeException.class,
         () ->
             resolver.resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty()));
+                "cid",
+                List.of(QueryInput.newBuilder().setName(n).build()),
+                Optional.empty(),
+                Optional.empty()));
   }
 
   /** Name resolution should fail if no table or view exists for the given NameRef. */
@@ -121,7 +130,10 @@ public class QueryInputResolverTest {
         StatusRuntimeException.class,
         () ->
             resolver.resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty()));
+                "cid",
+                List.of(QueryInput.newBuilder().setName(n).build()),
+                Optional.empty(),
+                Optional.empty()));
   }
 
   /** When a QueryInput specifies a snapshot_id override, the resolver must use it verbatim. */
@@ -138,7 +150,10 @@ public class QueryInputResolverTest {
             .build();
 
     SnapshotPin p =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPins(0);
 
     assertEquals("T2", p.getTableId().getId());
     assertEquals(777, p.getSnapshotId());
@@ -162,7 +177,10 @@ public class QueryInputResolverTest {
             .build();
 
     SnapshotPin p =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPins(0);
 
     assertEquals("T2Z", p.getTableId().getId());
     assertTrue(p.hasSnapshotId());
@@ -191,7 +209,10 @@ public class QueryInputResolverTest {
             .build();
 
     SnapshotPin p =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPins(0);
 
     assertFalse(p.hasSnapshotId());
     assertEquals(ts, p.getAsOf());
@@ -215,7 +236,10 @@ public class QueryInputResolverTest {
     SnapshotPin p =
         resolver
             .resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.of(ts))
+                "cid",
+                List.of(QueryInput.newBuilder().setName(n).build()),
+                Optional.of(ts),
+                Optional.empty())
             .snapshotSet()
             .getPins(0);
 
@@ -240,7 +264,10 @@ public class QueryInputResolverTest {
     SnapshotPin p =
         resolver
             .resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty())
+                "cid",
+                List.of(QueryInput.newBuilder().setName(n).build()),
+                Optional.empty(),
+                Optional.empty())
             .snapshotSet()
             .getPins(0);
 
@@ -259,7 +286,10 @@ public class QueryInputResolverTest {
     SnapshotPin p =
         resolver
             .resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setTableId(rid).build()), Optional.empty())
+                "cid",
+                List.of(QueryInput.newBuilder().setTableId(rid).build()),
+                Optional.empty(),
+                Optional.empty())
             .snapshotSet()
             .getPins(0);
 
@@ -274,7 +304,10 @@ public class QueryInputResolverTest {
 
     var res =
         resolver.resolveInputs(
-            "cid", List.of(QueryInput.newBuilder().setViewId(rid).build()), Optional.empty());
+            "cid",
+            List.of(QueryInput.newBuilder().setViewId(rid).build()),
+            Optional.empty(),
+            Optional.empty());
 
     assertEquals("VIEWX", res.resolved().get(0).getId());
     assertTrue(res.snapshotSet().getPinsList().isEmpty());
@@ -285,14 +318,17 @@ public class QueryInputResolverTest {
     ResourceId base1 = rid("BASE1");
     ResourceId base2 = rid("BASE2");
     ResourceId viewId = viewRid("VIEW_A");
-    metadataGraph.addNode(viewNode(viewId, List.of(base1, base2)));
+    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base1), nameRef(base2))));
     metadataGraph.setCurrentSnapshot(base1, 101);
     metadataGraph.setCurrentSnapshot(base2, 202);
 
     List<SnapshotPin> pins =
         resolver
             .resolveInputs(
-                "cid", List.of(QueryInput.newBuilder().setViewId(viewId).build()), Optional.empty())
+                "cid",
+                List.of(QueryInput.newBuilder().setViewId(viewId).build()),
+                Optional.empty(),
+                Optional.empty())
             .snapshotSet()
             .getPinsList();
 
@@ -310,8 +346,8 @@ public class QueryInputResolverTest {
     ResourceId table = rid("TABLE_B");
     ResourceId innerView = viewRid("VIEW_INNER");
     ResourceId outerView = viewRid("VIEW_OUTER");
-    metadataGraph.addNode(viewNode(innerView, List.of(table)));
-    metadataGraph.addNode(viewNode(outerView, List.of(innerView)));
+    metadataGraph.addNode(viewNode(innerView, List.of(nameRef(table))));
+    metadataGraph.addNode(viewNode(outerView, List.of(nameRef(innerView))));
     metadataGraph.setCurrentSnapshot(table, 303);
 
     List<SnapshotPin> pins =
@@ -319,6 +355,7 @@ public class QueryInputResolverTest {
             .resolveInputs(
                 "cid",
                 List.of(QueryInput.newBuilder().setViewId(outerView).build()),
+                Optional.empty(),
                 Optional.empty())
             .snapshotSet()
             .getPinsList();
@@ -356,7 +393,10 @@ public class QueryInputResolverTest {
     QueryInput qi = QueryInput.newBuilder().setName(n).setSnapshot(ref).build();
 
     SnapshotPin p =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPins(0);
 
     assertEquals(0L, p.getSnapshotId());
     assertEquals(ts, p.getAsOf());
@@ -384,6 +424,7 @@ public class QueryInputResolverTest {
             List.of(
                 QueryInput.newBuilder().setName(n1).build(),
                 QueryInput.newBuilder().setName(n2).build()),
+            Optional.empty(),
             Optional.empty());
 
     assertEquals(List.of("T1", "T2"), res.resolved().stream().map(ResourceId::getId).toList());
@@ -400,7 +441,10 @@ public class QueryInputResolverTest {
 
     var res =
         resolver.resolveInputs(
-            "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty());
+            "cid",
+            List.of(QueryInput.newBuilder().setName(n).build()),
+            Optional.empty(),
+            Optional.empty());
 
     assertEquals("NESTED", res.resolved().get(0).getId());
   }
@@ -422,7 +466,10 @@ public class QueryInputResolverTest {
 
     var res =
         resolver.resolveInputs(
-            "cid", List.of(QueryInput.newBuilder().setName(n).build()), Optional.empty());
+            "cid",
+            List.of(QueryInput.newBuilder().setName(n).build()),
+            Optional.empty(),
+            Optional.empty());
 
     assertEquals("DIRECT", res.resolved().get(0).getId());
   }
@@ -439,7 +486,10 @@ public class QueryInputResolverTest {
         QueryInput.newBuilder().setName(n).setSnapshot(SnapshotRef.newBuilder().build()).build();
 
     SnapshotPin pin =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPins(0);
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPins(0);
 
     assertEquals(999, pin.getSnapshotId());
   }
@@ -464,6 +514,7 @@ public class QueryInputResolverTest {
             List.of(
                 QueryInput.newBuilder().setName(n).build(),
                 QueryInput.newBuilder().setTableId(ridB).build()),
+            Optional.empty(),
             Optional.empty());
 
     assertEquals(List.of("tblA", "tblB"), res.resolved().stream().map(ResourceId::getId).toList());
@@ -480,7 +531,7 @@ public class QueryInputResolverTest {
 
     assertThrows(
         StatusRuntimeException.class,
-        () -> resolver.resolveInputs("cid", List.of(qi), Optional.empty()));
+        () -> resolver.resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty()));
   }
 
   /**
@@ -491,7 +542,7 @@ public class QueryInputResolverTest {
   void view_with_asof_override_applies_to_base_pins() {
     ResourceId base = rid("BASE_ASOF");
     ResourceId viewId = viewRid("V1");
-    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(202).build();
 
@@ -502,7 +553,10 @@ public class QueryInputResolverTest {
             .build();
 
     List<SnapshotPin> pins =
-        resolver.resolveInputs("cid", List.of(qi), Optional.empty()).snapshotSet().getPinsList();
+        resolver
+            .resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty())
+            .snapshotSet()
+            .getPinsList();
 
     assertEquals(1, pins.size());
     assertEquals("BASE_ASOF", pins.get(0).getTableId().getId());
@@ -527,7 +581,7 @@ public class QueryInputResolverTest {
   void view_with_snapshot_override_is_invalid() {
     ResourceId base = rid("BASE_INVALID");
     ResourceId viewId = viewRid("V_INVALID");
-    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
 
     QueryInput qi =
         QueryInput.newBuilder()
@@ -537,14 +591,14 @@ public class QueryInputResolverTest {
 
     assertThrows(
         StatusRuntimeException.class,
-        () -> resolver.resolveInputs("cid", List.of(qi), Optional.empty()));
+        () -> resolver.resolveInputs("cid", List.of(qi), Optional.empty(), Optional.empty()));
   }
 
   @Test
   void stronger_pin_wins_when_same_table_seen_twice() {
     ResourceId base = rid("BASE_STRONG");
     ResourceId viewId = viewRid("V_STRONG");
-    metadataGraph.addNode(viewNode(viewId, List.of(base)));
+    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(300).build();
 
@@ -561,6 +615,7 @@ public class QueryInputResolverTest {
                         .setTableId(base)
                         .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
                         .build()),
+                Optional.empty(),
                 Optional.empty())
             .snapshotSet()
             .getPinsList();
@@ -569,6 +624,99 @@ public class QueryInputResolverTest {
     assertEquals("BASE_STRONG", pins.get(0).getTableId().getId());
     assertEquals(888, pins.get(0).getSnapshotId());
     assertEquals(0, pins.get(0).getAsOf().getSeconds());
+  }
+
+  // ----------------------------------------------------------------------
+  // Base-relation enrichment (catalog + search-path fallback)
+  // ----------------------------------------------------------------------
+
+  @Test
+  void base_relation_blank_catalog_filled_from_default_catalog() {
+    ResourceId catalogId =
+        ResourceId.newBuilder().setId("CAT_ID").setKind(ResourceKind.RK_CATALOG).build();
+    metadataGraph.setCatalogName(catalogId, "mycat");
+
+    // Base relation NameRef has no catalog — just path + name
+    NameRef baseName = NameRef.newBuilder().addPath("sales").setName("customers").build();
+    ResourceId tableId = rid("CUST_TABLE");
+    // After enrichment catalog will be "mycat", so bind the enriched form
+    metadataGraph.bind(
+        NameRef.newBuilder().setCatalog("mycat").addPath("sales").setName("customers").build(),
+        tableId);
+    metadataGraph.setCurrentSnapshot(tableId, 42);
+
+    ResourceId viewId = viewRid("VIEW_ENRICH_CAT");
+    metadataGraph.addNode(viewNode(viewId, List.of(baseName)));
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(QueryInput.newBuilder().setViewId(viewId).build()),
+                Optional.empty(),
+                Optional.of(catalogId))
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals("CUST_TABLE", pins.get(0).getTableId().getId());
+  }
+
+  @Test
+  void base_relation_empty_path_filled_from_creation_search_path() {
+    // Base relation NameRef has catalog but no path
+    NameRef baseName = NameRef.newBuilder().setCatalog("mycat").setName("orders").build();
+    ResourceId tableId = rid("ORDERS_TABLE");
+    // After enrichment path will be ["reporting"], so bind the enriched form
+    metadataGraph.bind(
+        NameRef.newBuilder().setCatalog("mycat").addPath("reporting").setName("orders").build(),
+        tableId);
+    metadataGraph.setCurrentSnapshot(tableId, 55);
+
+    ResourceId viewId = viewRid("VIEW_ENRICH_PATH");
+    // Build a ViewNode with creationSearchPath = ["reporting"]
+    metadataGraph.addNode(viewNodeWithSearchPath(viewId, List.of(baseName), List.of("reporting")));
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(QueryInput.newBuilder().setViewId(viewId).build()),
+                Optional.empty(),
+                Optional.empty()) // no default catalog needed since catalog already set
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals("ORDERS_TABLE", pins.get(0).getTableId().getId());
+  }
+
+  @Test
+  void base_relation_resource_id_ref_bypasses_enrichment() {
+    ResourceId catalogId =
+        ResourceId.newBuilder().setId("CAT2").setKind(ResourceKind.RK_CATALOG).build();
+    metadataGraph.setCatalogName(catalogId, "wrongcat");
+
+    ResourceId tableId = rid("DIRECT_TABLE");
+    // NameRef with resource_id — should resolve directly, not enriched with catalog
+    NameRef baseName = NameRef.newBuilder().setResourceId(tableId).build();
+    metadataGraph.setCurrentSnapshot(tableId, 77);
+
+    ResourceId viewId = viewRid("VIEW_DIRECT");
+    metadataGraph.addNode(viewNode(viewId, List.of(baseName)));
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(QueryInput.newBuilder().setViewId(viewId).build()),
+                Optional.empty(),
+                Optional.of(catalogId))
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals("DIRECT_TABLE", pins.get(0).getTableId().getId());
   }
 
   // ----------------------------------------------------------------------
@@ -581,8 +729,30 @@ public class QueryInputResolverTest {
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
     private final Map<String, Long> currentSnapshots = new HashMap<>();
     private final List<PinCall> pinCalls = new ArrayList<>();
+    private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
     FakeGraph() {}
+
+    void setCatalogName(ResourceId id, String name) {
+      catalogNames.put(id, name);
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+      String name = catalogNames.get(id);
+      if (name == null) return Optional.empty();
+      return Optional.of(
+          new ai.floedb.floecat.metagraph.model.CatalogNode(
+              id,
+              1L,
+              java.time.Instant.EPOCH,
+              name,
+              Map.of(),
+              Optional.empty(),
+              Optional.empty(),
+              Optional.empty(),
+              Map.of()));
+    }
 
     // MIMIC MetadataGraph API ---------------------------------------------
 
@@ -652,7 +822,16 @@ public class QueryInputResolverTest {
         Optional<Timestamp> asOfDefault) {}
   }
 
-  private ViewNode viewNode(ResourceId id, List<ResourceId> baseRelations) {
+  private static NameRef nameRef(ResourceId id) {
+    return NameRef.newBuilder().setResourceId(id).build();
+  }
+
+  private ViewNode viewNode(ResourceId id, List<NameRef> baseRelations) {
+    return viewNodeWithSearchPath(id, baseRelations, List.of());
+  }
+
+  private ViewNode viewNodeWithSearchPath(
+      ResourceId id, List<NameRef> baseRelations, List<String> searchPath) {
     ResourceId catalog =
         ResourceId.newBuilder().setId("catalog").setKind(ResourceKind.RK_CATALOG).build();
     ResourceId namespace =
@@ -668,7 +847,7 @@ public class QueryInputResolverTest {
         "dialect",
         List.of(),
         baseRelations,
-        List.of(),
+        searchPath,
         GraphNodeOrigin.USER,
         Map.of(),
         Optional.empty(),

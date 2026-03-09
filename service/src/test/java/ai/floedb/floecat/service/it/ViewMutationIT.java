@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -335,6 +336,8 @@ class ViewMutationIT {
 
     var key = IdempotencyKey.newBuilder().setKey(viewPrefix + "k-view-1").build();
 
+    var defaultCol = SchemaColumn.newBuilder().setName("_col0").setNullable(true).build();
+
     var specA =
         ViewSpec.newBuilder()
             .setCatalogId(cat.getResourceId())
@@ -342,6 +345,7 @@ class ViewMutationIT {
             .setDisplayName("idem_view")
             .setDescription("desc-a")
             .setSql("SELECT 1")
+            .addOutputColumns(defaultCol)
             .build();
 
     var specB =
@@ -351,6 +355,7 @@ class ViewMutationIT {
             .setDisplayName("idem_view")
             .setDescription("desc-a")
             .setSql("SELECT 2")
+            .addOutputColumns(defaultCol)
             .build();
 
     view.createView(CreateViewRequest.newBuilder().setSpec(specA).setIdempotency(key).build());
@@ -364,5 +369,114 @@ class ViewMutationIT {
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
+  }
+
+  @Test
+  void viewSemanticFieldsRoundTrip() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_sem", "vcat-sem");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "sem_ns", List.of("db_sem"), "semantic ns");
+
+    var col =
+        SchemaColumn.newBuilder()
+            .setName("order_id")
+            .setNullable(false)
+            .setLogicalType("INT")
+            .build();
+
+    var created =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("sem_view")
+                            .setSql("SELECT order_id FROM mycat.sales.orders")
+                            .setDialect("spark")
+                            .addBaseRelations("mycat.sales.orders")
+                            .addCreationSearchPath("sales")
+                            .addOutputColumns(col))
+                    .build())
+            .getView();
+
+    var fetched =
+        view.getView(GetViewRequest.newBuilder().setViewId(created.getResourceId()).build())
+            .getView();
+
+    assertEquals("spark", fetched.getDialect());
+    assertEquals(List.of("mycat.sales.orders"), fetched.getBaseRelationsList());
+    assertEquals(List.of("sales"), fetched.getCreationSearchPathList());
+    assertEquals(1, fetched.getOutputColumnsCount());
+    assertEquals("order_id", fetched.getOutputColumns(0).getName());
+    assertEquals("INT", fetched.getOutputColumns(0).getLogicalType());
+    assertFalse(fetched.getOutputColumns(0).getNullable());
+  }
+
+  @Test
+  void viewCreateRejectsWhenOutputColumnsMissing() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_req", "vcat-req");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "req_ns", List.of("db_req"), "required ns");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                view.createView(
+                    CreateViewRequest.newBuilder()
+                        .setSpec(
+                            ViewSpec.newBuilder()
+                                .setCatalogId(cat.getResourceId())
+                                .setNamespaceId(ns.getResourceId())
+                                .setDisplayName("no_cols_view")
+                                .setSql("SELECT 1"))
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "output columns");
+  }
+
+  @Test
+  void viewUpdateSemanticFields() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_upd", "vcat-upd");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "upd_ns", List.of("db_upd"), "update ns");
+
+    var colV1 =
+        SchemaColumn.newBuilder().setName("id").setNullable(false).setLogicalType("INT").build();
+    var created =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("upd_view")
+                            .setSql("SELECT id FROM t")
+                            .setDialect("spark")
+                            .addOutputColumns(colV1))
+                    .build())
+            .getView();
+
+    var colV2 =
+        SchemaColumn.newBuilder().setName("id").setNullable(true).setLogicalType("BIGINT").build();
+    var mask = FieldMask.newBuilder().addPaths("dialect").addPaths("output_columns").build();
+    var updated =
+        view.updateView(
+                UpdateViewRequest.newBuilder()
+                    .setViewId(created.getResourceId())
+                    .setSpec(ViewSpec.newBuilder().setDialect("trino").addOutputColumns(colV2))
+                    .setUpdateMask(mask)
+                    .build())
+            .getView();
+
+    assertEquals("trino", updated.getDialect());
+    assertEquals(1, updated.getOutputColumnsCount());
+    assertEquals("BIGINT", updated.getOutputColumns(0).getLogicalType());
+    assertTrue(updated.getOutputColumns(0).getNullable());
   }
 }

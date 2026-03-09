@@ -25,10 +25,13 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationResolution;
+import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
@@ -328,7 +331,10 @@ class UserObjectBundleServiceTest {
         new QueryInputResolver() {
           @Override
           public ResolutionResult resolveInputs(
-              String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), SnapshotSet.getDefaultInstance(), null);
           }
@@ -780,5 +786,81 @@ class UserObjectBundleServiceTest {
             System.setProperty(key, value);
           }
         });
+  }
+
+  @Test
+  void viewWithBaseRelationsEmitsEagerBaseTable() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_1")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId baseId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("BASE_TABLE")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("base_tbl").build();
+    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "my_view",
+            "SELECT base_col FROM cat.base_tbl",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(baseNameRef),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("my_view").build());
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    // header + resolutions (view + eagerly-emitted base table) + end = 3 chunks
+    assertThat(chunks).hasSize(3);
+    assertThat(chunks.get(0).hasHeader()).isTrue();
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertThat(resolutions.getItemsCount()).isEqualTo(2);
+
+    RelationResolution viewRes = resolutions.getItems(0);
+    assertThat(viewRes.getInputIndex()).isEqualTo(0);
+    assertThat(viewRes.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(viewRes.getRelation().getRelationId()).isEqualTo(viewId);
+    assertThat(viewRes.getRelation().hasViewDefinition()).isTrue();
+
+    RelationResolution baseRes = resolutions.getItems(1);
+    assertThat(baseRes.getInputIndex()).isEqualTo(-1); // synthetic/eagerly-emitted
+    assertThat(baseRes.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(baseRes.getRelation().getRelationId()).isEqualTo(baseId);
+
+    // End chunk counts only the explicitly-requested view
+    assertThat(chunks.get(2).getEnd().getResolutionCount()).isEqualTo(1);
+    assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+
+    // Resolver was called twice: once for the view pin, once for the base table pin
+    assertThat(resolver.recordedInputs()).hasSize(2);
   }
 }

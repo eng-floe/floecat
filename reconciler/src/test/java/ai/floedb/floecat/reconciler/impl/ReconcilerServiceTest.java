@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -30,9 +31,12 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -43,6 +47,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import java.lang.reflect.Method;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -201,6 +206,11 @@ class ReconcilerServiceTest {
     @Override
     public void updateConnectorDestination(
         ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       throw new UnsupportedOperationException();
     }
   }
@@ -492,5 +502,337 @@ class ReconcilerServiceTest {
     Method method = ReconcilerService.class.getDeclaredMethod("tableChanged", List.class);
     method.setAccessible(true);
     return (boolean) method.invoke(null, bundles);
+  }
+
+  // -------------------------------------------------------------------------
+  // View pass tests
+  // -------------------------------------------------------------------------
+
+  @Test
+  void viewPassSyncsViewsViaEnsureView() {
+    FloecatConnector.ViewDescriptor viewDesc =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"), // schema-only; connector strips catalog prefix (fix 3)
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    ViewSpec spec = capturingBackend.capturedViews.get(0);
+    assertThat(spec.getDisplayName()).isEqualTo("revenue_view");
+    assertThat(spec.getSql()).isEqualTo("SELECT amount FROM sales");
+    assertThat(spec.getDialect()).isEqualTo("spark");
+    assertThat(spec.getOutputColumnsCount()).isEqualTo(1);
+    assertThat(spec.getOutputColumns(0).getName()).isEqualTo("amount");
+    assertThat(spec.getOutputColumns(0).getLogicalType()).isEqualTo("DOUBLE");
+    assertThat(spec.getCreationSearchPathList()).containsExactly("src_ns");
+    assertThat(capturingBackend.capturedIdempotencyKeys).containsExactly("dest_ns.revenue_view");
+  }
+
+  @Test
+  void viewPassCountsErrorWhenListViewDescriptorsThrows() {
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String ns) {
+                throw new RuntimeException("UC unavailable");
+              }
+            };
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.errors).isGreaterThanOrEqualTo(1);
+    assertThat(capturingBackend.capturedViews).isEmpty();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage()).contains("listViewDescriptors");
+  }
+
+  @Test
+  void viewPassSkipsViewWithBlankSql() {
+    FloecatConnector.ViewDescriptor noSql =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns", "empty_view", "", "spark", List.of(), "");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(noSql));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.ok()).isTrue();
+    // Blank SQL views are filtered before scanned++ — they should not count as scanned.
+    assertThat(result.scanned).isEqualTo(0);
+    assertThat(result.changed).isEqualTo(0);
+    assertThat(capturingBackend.capturedViews).isEmpty();
+  }
+
+  @Test
+  void viewPassSkipsViewWithNoOutputColumns() {
+    // schemaJson present but resolves to 0 leaf columns (empty struct)
+    FloecatConnector.ViewDescriptor noSchema =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "no_cols_view",
+            "SELECT 1",
+            "spark",
+            List.of(),
+            "{\"type\":\"struct\",\"fields\":[]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(noSchema));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.ok()).isTrue();
+    // Empty-column views are filtered before scanned++ — they should not count as scanned.
+    assertThat(result.scanned).isEqualTo(0);
+    assertThat(result.changed).isEqualTo(0);
+    assertThat(capturingBackend.capturedViews).isEmpty();
+  }
+
+  @Test
+  void viewPassCountsErrorWhenEnsureViewThrows() {
+    FloecatConnector.ViewDescriptor view1 =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "bad_view",
+            "SELECT a FROM t",
+            "spark",
+            List.of("src_cat", "src_ns"),
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"a\",\"type\":\"int\",\"nullable\":true}]}");
+    FloecatConnector.ViewDescriptor view2 =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "good_view",
+            "SELECT b FROM t",
+            "spark",
+            List.of("src_cat", "src_ns"),
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"b\",\"type\":\"double\",\"nullable\":true}]}");
+
+    // ensureView throws for the first view, succeeds for the second.
+    var capturingBackend =
+        new ViewCapturingBackend(activeConnector()) {
+          @Override
+          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+            if ("dest_ns.bad_view".equals(idempotencyKey)) {
+              throw new RuntimeException("backend error for " + spec.getDisplayName());
+            }
+            return super.ensureView(ctx, spec, idempotencyKey);
+          }
+        };
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(view1, view2));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    // One error from the failing view; one change from the succeeding view.
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.changed).isEqualTo(1);
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage()).contains("bad_view");
+    // The good view must still have been synced despite the earlier failure.
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("good_view");
+  }
+
+  @Test
+  void viewPassDoesNotCountAlreadyExistingView() {
+    FloecatConnector.ViewDescriptor viewDesc =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "existing_view",
+            "SELECT x FROM t",
+            "spark",
+            List.of("src_cat", "src_ns"),
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"x\",\"type\":\"int\",\"nullable\":false}]}");
+
+    // ensureView returns getDefaultInstance() — signals ALREADY_EXISTS.
+    var capturingBackend =
+        new ViewCapturingBackend(activeConnector()) {
+          @Override
+          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+            capturedViews.add(spec);
+            capturedIdempotencyKeys.add(idempotencyKey);
+            return ResourceId.getDefaultInstance(); // empty id → already exists
+          }
+        };
+    service.backend = capturingBackend;
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    var result = service.reconcile(principal, connectorId, true, null);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    // View already existed → should NOT be counted as a change.
+    assertThat(result.changed).isEqualTo(0);
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+  }
+
+  @Test
+  void viewsOnlyNamespaceWithTableFilterSyncsViews() {
+    // Verifies fix for issue 1: the "No tables matched scope" guard must not prevent the view pass
+    // from running. A table-filtered reconcile on a views-only namespace should record the miss as
+    // an error AND still sync all views.
+    FloecatConnector.ViewDescriptor viewDesc =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var capturingBackend = new ViewCapturingBackend(activeConnector());
+    service.backend = capturingBackend;
+    // FakeConnector has no tables (views-only namespace).
+    service.connectorOpener = cfg -> new FakeConnector(List.of(viewDesc));
+
+    // Scope carries a table filter even though the namespace has no tables.
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "some_table", List.of());
+
+    var result = service.reconcile(principal, connectorId, true, scope);
+
+    // Table filter didn't match → one error recorded …
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage()).contains("No tables matched scope");
+    // … but the view pass still ran and synced the view.
+    assertThat(capturingBackend.capturedViews).hasSize(1);
+    assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
+  }
+
+  /** A minimal {@link Connector} proto configured as CS_ACTIVE with source + destination. */
+  private Connector activeConnector() {
+    ResourceId destCatalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId destNamespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    return Connector.newBuilder()
+        .setResourceId(connectorId)
+        .setState(ConnectorState.CS_ACTIVE)
+        .setKind(ConnectorKind.CK_DELTA)
+        .setSource(
+            SourceSelector.newBuilder()
+                .setNamespace(
+                    NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+        .setDestination(
+            DestinationTarget.newBuilder()
+                .setCatalogId(destCatalogId)
+                .setNamespaceId(destNamespaceId))
+        .build();
+  }
+
+  /**
+   * Backend that tracks {@link #ensureView} calls and provides enough plumbing for the view pass to
+   * run end-to-end (no table snapshots needed since FakeConnector returns empty tables list).
+   */
+  private static class ViewCapturingBackend extends DefaultBackend {
+    private final Connector connector;
+    final List<ViewSpec> capturedViews = new ArrayList<>();
+    final List<String> capturedIdempotencyKeys = new ArrayList<>();
+
+    ViewCapturingBackend(Connector connector) {
+      this.connector = connector;
+    }
+
+    @Override
+    public Connector lookupConnector(ReconcileContext ctx, ResourceId connectorId) {
+      return connector;
+    }
+
+    @Override
+    public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+      return "dest_cat";
+    }
+
+    @Override
+    public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+      return "dest_ns";
+    }
+
+    @Override
+    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+      capturedViews.add(spec);
+      capturedIdempotencyKeys.add(idempotencyKey);
+      return ResourceId.newBuilder().setId("view-1").build();
+    }
+
+    @Override
+    public void updateConnectorDestination(
+        ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
+      // no-op — destination already has namespaceId set
+    }
+  }
+
+  /**
+   * A no-op {@link FloecatConnector} that returns empty tables and a configurable list of view
+   * descriptors. Connectors are auto-closed; {@link #close()} is a no-op.
+   */
+  private static class FakeConnector implements FloecatConnector {
+    private final List<FloecatConnector.ViewDescriptor> viewDescriptors;
+
+    FakeConnector(List<FloecatConnector.ViewDescriptor> viewDescriptors) {
+      this.viewDescriptors = viewDescriptors;
+    }
+
+    @Override
+    public String id() {
+      return "fake";
+    }
+
+    @Override
+    public ConnectorFormat format() {
+      return ConnectorFormat.CF_DELTA;
+    }
+
+    @Override
+    public List<String> listNamespaces() {
+      return List.of();
+    }
+
+    @Override
+    public List<String> listTables(String namespaceFq) {
+      return List.of();
+    }
+
+    @Override
+    public TableDescriptor describe(String namespaceFq, String tableName) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public List<SnapshotBundle> enumerateSnapshotsWithStats(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        Set<String> includeColumns) {
+      return List.of();
+    }
+
+    @Override
+    public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String namespaceFq) {
+      return viewDescriptors;
+    }
+
+    @Override
+    public void close() {}
   }
 }

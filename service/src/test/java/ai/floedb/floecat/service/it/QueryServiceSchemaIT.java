@@ -224,9 +224,9 @@ class QueryServiceSchemaIT {
 
     assertEquals(1, response.getSchemasCount());
     assertEquals(
-        0,
+        1,
         response.getSchemas(0).getColumnsCount(),
-        "view schema should currently be empty (no stored output columns)");
+        "view schema should contain the output columns stored at creation time");
   }
 
   @Test
@@ -295,6 +295,8 @@ class QueryServiceSchemaIT {
     assertEquals(2, resp.getSchemasCount());
     assertTrue(resp.getSchemas(0).getColumnsCount() > 0, "first schema should correspond to table");
     assertEquals(
-        0, resp.getSchemas(1).getColumnsCount(), "second schema is the view and currently empty");
+        1,
+        resp.getSchemas(1).getColumnsCount(),
+        "second schema is the view with its stored output columns");
   }
 }

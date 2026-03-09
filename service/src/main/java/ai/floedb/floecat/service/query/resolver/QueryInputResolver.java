@@ -18,15 +18,18 @@ package ai.floedb.floecat.service.query.resolver;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.query.ViewContextUtils;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -62,6 +65,10 @@ import java.util.Set;
  *   <li>Apply as-of defaults when present
  *   <li>Fallback to SNAPSHOT(CURRENT) for tables
  *   <li>Views never use snapshots
+ *   <li>View base-relation NameRefs are enriched before resolution: if {@code catalog} is blank the
+ *       query's default catalog is substituted; if {@code path} is empty the view's {@code
+ *       creationSearchPath} is used — this ensures base relations re-resolve exactly as they did at
+ *       view-creation time, regardless of the current query search-path.
  * </ol>
  *
  * <p>No side effects: this class only computes resolution, it does not mutate or persist anything.
@@ -79,42 +86,32 @@ public class QueryInputResolver {
   public record ResolutionResult(
       List<ResourceId> resolved, SnapshotSet snapshotSet, byte[] asOfDefaultBytes) {}
 
-  // Helper method to compute effective as-of timestamp for dependency pinning
-  private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
-    if (override != null && override.hasAsOf()) {
-      return Optional.of(override.getAsOf());
+  // =============================================================================
+  // Per-call accumulation state
+  // =============================================================================
+
+  /**
+   * Mutable accumulation state for a single {@link #resolveInputs} call.
+   *
+   * <p>Bundles the values that are constant across the entire resolution pass ({@code
+   * correlationId}, {@code asOfDefault}, {@code defaultCatalog}) together with the two collections
+   * that are built up incrementally ({@code resolved}, {@code pinByTableId}). Passing a single
+   * state object instead of individual parameters keeps the private helper signatures concise.
+   */
+  private static final class ResolutionState {
+    final String correlationId;
+    final Optional<Timestamp> asOfDefault;
+    final Optional<String> defaultCatalog;
+    final List<ResourceId> resolved = new ArrayList<>();
+    // Keep insertion order (matching input order) while deduplicating by table ID.
+    final Map<ResourceId, SnapshotPin> pinByTableId = new LinkedHashMap<>();
+
+    ResolutionState(
+        String correlationId, Optional<Timestamp> asOfDefault, Optional<String> defaultCatalog) {
+      this.correlationId = correlationId;
+      this.asOfDefault = asOfDefault;
+      this.defaultCatalog = defaultCatalog;
     }
-    return asOfDefault;
-  }
-
-  private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {
-    if (override != null && override.hasSnapshotId()) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, QUERY_INPUT_VIEW_CANNOT_USE_SNAPSHOT_ID, Map.of("id", viewId.getId()));
-    }
-  }
-
-  private void addResolvedAndPins(
-      String correlationId,
-      ResourceId rid,
-      SnapshotRef override,
-      Optional<Timestamp> asOfDefault,
-      List<ResourceId> resolved,
-      Map<ResourceId, SnapshotPin> pinByTableId) {
-
-    resolved.add(rid);
-
-    if (rid.getKind() == ResourceKind.RK_VIEW) {
-      // Views are not pinned directly. We only pin their base tables.
-      // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
-      validateViewOverride(correlationId, rid, override);
-      collectBaseTables(
-          correlationId, rid, effectiveAsOf(override, asOfDefault), new HashSet<>(), pinByTableId);
-      return;
-    }
-
-    SnapshotPin pin = pinForResource(correlationId, rid, override, asOfDefault);
-    mergePin(pinByTableId, pin);
   }
 
   // =============================================================================
@@ -131,13 +128,23 @@ public class QueryInputResolver {
    *   <li>as-of-default ⇒ timestamp pin
    *   <li>fallback for tables ⇒ CURRENT snapshot
    * </ul>
+   *
+   * <p>{@code defaultCatalogId} is used only when expanding view base relations: if a base-relation
+   * {@link NameRef} has a blank catalog or empty path it is enriched with the query's default
+   * catalog / creation search-path before resolution. Non-view inputs are unaffected.
    */
   public ResolutionResult resolveInputs(
-      String correlationId, List<QueryInput> inputs, Optional<Timestamp> asOfDefault) {
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId) {
 
-    List<ResourceId> resolved = new ArrayList<>();
-    // Keep snapshots in insertion order (matching input order) while deduplicating by table ID.
-    Map<ResourceId, SnapshotPin> pinByTableId = new LinkedHashMap<>();
+    // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
+    // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
+    Optional<String> defaultCatalog =
+        defaultCatalogId.flatMap(id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
+
+    var state = new ResolutionState(correlationId, asOfDefault, defaultCatalog);
 
     for (QueryInput in : inputs) {
       SnapshotRef override = in.getSnapshot();
@@ -153,32 +160,41 @@ public class QueryInputResolver {
                               correlationId,
                               QUERY_INPUT_UNRESOLVED,
                               Map.of("name", in.getName().toString())));
-          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
+          addResolvedAndPins(state, rid, override);
         }
 
-        case TABLE_ID -> {
-          ResourceId rid = in.getTableId();
-          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
-        }
+        case TABLE_ID -> addResolvedAndPins(state, in.getTableId(), override);
 
-        case VIEW_ID -> {
-          ResourceId rid = in.getViewId();
-          addResolvedAndPins(correlationId, rid, override, asOfDefault, resolved, pinByTableId);
-        }
+        case VIEW_ID -> addResolvedAndPins(state, in.getViewId(), override);
 
         default -> throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_INVALID, Map.of());
       }
     }
 
     return new ResolutionResult(
-        resolved,
-        SnapshotSet.newBuilder().addAllPins(pinByTableId.values()).build(),
+        state.resolved,
+        SnapshotSet.newBuilder().addAllPins(state.pinByTableId.values()).build(),
         asOfDefault.map(Timestamp::toByteArray).orElse(null));
   }
 
   // =============================================================================
   // Pin resolution
   // =============================================================================
+
+  private void addResolvedAndPins(ResolutionState state, ResourceId rid, SnapshotRef override) {
+    state.resolved.add(rid);
+
+    if (rid.getKind() == ResourceKind.RK_VIEW) {
+      // Views are not pinned directly. We only pin their base tables.
+      // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
+      validateViewOverride(state.correlationId, rid, override);
+      collectBaseTables(state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>());
+      return;
+    }
+
+    mergePin(
+        state.pinByTableId, pinForResource(state.correlationId, rid, override, state.asOfDefault));
+  }
 
   private SnapshotPin pinForResource(
       String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
@@ -195,19 +211,33 @@ public class QueryInputResolver {
     };
   }
 
+  private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {
+    if (override != null && override.hasSnapshotId()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, QUERY_INPUT_VIEW_CANNOT_USE_SNAPSHOT_ID, Map.of("id", viewId.getId()));
+    }
+  }
+
+  // Helper method to compute effective as-of timestamp for dependency pinning
+  private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (override != null && override.hasAsOf()) {
+      return Optional.of(override.getAsOf());
+    }
+    return asOfDefault;
+  }
+
   private void collectBaseTables(
-      String correlationId,
+      ResolutionState state,
       ResourceId relationId,
       Optional<Timestamp> effectiveAsOf,
-      Set<String> seen,
-      Map<ResourceId, SnapshotPin> pinByTableId) {
+      Set<String> seen) {
     String key = relationId.getKind().name() + ":" + relationId.getId();
     if (!seen.add(key)) {
       return;
     }
     if (relationId.getKind() == ResourceKind.RK_TABLE) {
-      SnapshotPin pin = pinForResource(correlationId, relationId, null, effectiveAsOf);
-      mergePin(pinByTableId, pin);
+      mergePin(
+          state.pinByTableId, pinForResource(state.correlationId, relationId, null, effectiveAsOf));
       return;
     }
     metadataGraph
@@ -216,8 +246,13 @@ public class QueryInputResolver {
         .map(ViewNode.class::cast)
         .ifPresent(
             view -> {
-              for (ResourceId base : view.baseRelations()) {
-                collectBaseTables(correlationId, base, effectiveAsOf, seen, pinByTableId);
+              for (var base : view.baseRelations()) {
+                metadataGraph
+                    .resolveName(
+                        state.correlationId,
+                        ViewContextUtils.enrichForViewContext(
+                            base, view, state.defaultCatalog.orElse("")))
+                    .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
               }
             });
   }
