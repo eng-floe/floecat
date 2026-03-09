@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 class AggregateHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String AGG_PAYLOAD_TYPE = "builtin.systemcatalog.aggregate.properties";
 
   @Test

@@ -153,6 +153,12 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-extension-example</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-connectors-iceberg</artifactId>
       <version>${project.version}</version>
     </dependency>

@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 class FunctionHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String FUNCTION_PAYLOAD_TYPE = "builtin.systemcatalog.function.properties";
 
   @Test

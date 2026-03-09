@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 class CollationHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String COLLATION_PAYLOAD_TYPE = "builtin.systemcatalog.collation.properties";
 
   @Test

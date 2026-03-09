@@ -162,7 +162,7 @@ class SystemTableFlightProducerBaseTest {
   @Test
   void getFlightInfoWithTranslatedTableIdKeepsCallerAccount() {
     ResourceId canonical =
-        SystemNodeRegistry.resourceId("floe-demo", ResourceKind.RK_TABLE, TABLE_NAME);
+        SystemNodeRegistry.resourceId("example", ResourceKind.RK_TABLE, TABLE_NAME);
     ResourceId callerHint = canonical.toBuilder().setAccountId("caller-account").build();
     producer.registerTableId(canonical, TABLE_NAME);
     producer.setContext(makeContext("header"));
