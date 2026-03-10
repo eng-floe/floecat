@@ -124,15 +124,14 @@ final class SystemResourceIdGeneratorTest {
     ResourceId idA =
         SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_VIEW, "pg_catalog.pg_type");
     ResourceId idB =
-        SystemNodeRegistry.resourceId("floe-demo", ResourceKind.RK_VIEW, "pg_catalog.pg_type");
+        SystemNodeRegistry.resourceId("example", ResourceKind.RK_VIEW, "pg_catalog.pg_type");
 
     assertThat(idA.getId()).isNotEqualTo(idB.getId());
   }
 
   @Test
   void maskUniquenessGuard() {
-    List<String> engines =
-        List.of("floedb", "floe-demo", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    List<String> engines = List.of("floedb", "example", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
 
     long uniqueCount =
         engines.stream()

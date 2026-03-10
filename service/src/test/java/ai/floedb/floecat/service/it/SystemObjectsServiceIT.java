@@ -44,7 +44,7 @@ class SystemObjectsServiceIT {
 
   @Test
   void returnsCatalogWhenVersionProvided() {
-    var stub = withEngineHeaders("floe-demo", "16.0");
+    var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "16.0");
 
     var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
 
@@ -83,6 +83,16 @@ class SystemObjectsServiceIT {
   }
 
   @Test
+  void exampleExtensionRegistersAndResponds() {
+    // Verifies the example extension is on the classpath, discovered via ServiceLoader, and the
+    // service responds without error for this engine kind.  No assertions on specific object names:
+    // the bundled pbtxt files are user-replaceable templates, so catalog content is not fixed.
+    var stub = withEngineHeaders("example", "1.0");
+    var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
+    assertThat(resp.hasRegistry()).isTrue();
+  }
+
+  @Test
   void missingHeaderFails() {
     assertThatThrownBy(
             () -> builtins.getSystemObjects(GetSystemObjectsRequest.newBuilder().build()))
@@ -93,7 +103,7 @@ class SystemObjectsServiceIT {
 
   @Test
   void unknownEngineVersionReturnsOnlyRuleFreeObjects() {
-    var stub = withEngineHeaders("floe-demo", "does-not-exist");
+    var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "does-not-exist");
 
     var resp = stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance());
     assertThat(resp.hasRegistry()).isTrue();

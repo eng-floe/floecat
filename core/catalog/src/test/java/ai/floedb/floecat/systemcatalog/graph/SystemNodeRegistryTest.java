@@ -59,7 +59,7 @@ import org.junit.jupiter.api.Test;
 
 class SystemNodeRegistryTest {
 
-  private static final String FLOE_KIND = "floe-demo"; // main engine under test
+  private static final String FLOE_KIND = "example"; // main engine under test
   private static final String PG_KIND = "pg"; // alternate engine
   private static final String TEST_PAYLOAD_TYPE = "test.payload";
   private static final String HINT_ENGINE = "hint-engine";
@@ -88,7 +88,7 @@ class SystemNodeRegistryTest {
     var nodeRegistry = registryWith(registry);
 
     // ---------------------------------
-    // floe-demo / version 16.0
+    // example / version 16.0
     // ---------------------------------
     var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
@@ -102,7 +102,7 @@ class SystemNodeRegistryTest {
         .doesNotContain("pg_catalog.pg_fn", "pg_catalog.pg_legacy");
 
     // ---------------------------------
-    // floe-demo / version 17.0
+    // example / version 17.0
     // ---------------------------------
     var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
 
@@ -285,8 +285,8 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var nodesLower = nodeRegistry.nodesFor("floe-demo", "16.0");
-    var nodesUpper = nodeRegistry.nodesFor("FLOE-DEMO", "16.0");
+    var nodesLower = nodeRegistry.nodesFor("example", "16.0");
+    var nodesUpper = nodeRegistry.nodesFor("EXAMPLE", "16.0");
 
     // Same logical catalog, same instance from cache
     assertThat(nodesLower).isSameAs(nodesUpper);

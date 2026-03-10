@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 class OperatorHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String OPERATOR_PAYLOAD_TYPE = "builtin.systemcatalog.operator.properties";
 
   @Test

@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
 
 final class SystemCatalogHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String HINT_ONE = "function.one";
   private static final String HINT_TWO = "function.two";
 

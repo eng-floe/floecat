@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
 
 class HintFingerprintTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
 
   @Test
   void fingerprintChangesWhenRuleChanges() {

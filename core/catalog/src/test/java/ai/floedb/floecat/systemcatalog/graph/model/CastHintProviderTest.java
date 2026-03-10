@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 class CastHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String CAST_PAYLOAD_TYPE = "builtin.systemcatalog.cast.properties";
 
   @Test
