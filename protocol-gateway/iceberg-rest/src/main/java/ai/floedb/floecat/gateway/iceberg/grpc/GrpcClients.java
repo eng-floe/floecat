@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.grpc;
 
-import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
@@ -51,7 +50,6 @@ public class GrpcClients implements AutoCloseable {
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
   private final ConnectorsGrpc.ConnectorsBlockingStub connectors;
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
-  private final AccountServiceGrpc.AccountServiceBlockingStub account;
   private final TransactionsGrpc.TransactionsBlockingStub transactions;
 
   public GrpcClients(IcebergGatewayConfig config) {
@@ -72,7 +70,6 @@ public class GrpcClients implements AutoCloseable {
     this.querySchema = QuerySchemaServiceGrpc.newBlockingStub(channel);
     this.connectors = ConnectorsGrpc.newBlockingStub(channel);
     this.reconcileControl = ReconcileControlGrpc.newBlockingStub(channel);
-    this.account = AccountServiceGrpc.newBlockingStub(channel);
     this.transactions = TransactionsGrpc.newBlockingStub(channel);
   }
 
@@ -122,10 +119,6 @@ public class GrpcClients implements AutoCloseable {
 
   public ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl() {
     return reconcileControl;
-  }
-
-  public AccountServiceGrpc.AccountServiceBlockingStub account() {
-    return account;
   }
 
   public TransactionsGrpc.TransactionsBlockingStub transactions() {

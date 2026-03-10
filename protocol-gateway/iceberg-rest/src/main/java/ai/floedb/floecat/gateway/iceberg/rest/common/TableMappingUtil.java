@@ -83,17 +83,6 @@ public final class TableMappingUtil {
     }
   }
 
-  public static Long maybeLong(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
-  }
-
   public static Object firstNonNull(Object first, Object second) {
     return first != null ? first : second;
   }

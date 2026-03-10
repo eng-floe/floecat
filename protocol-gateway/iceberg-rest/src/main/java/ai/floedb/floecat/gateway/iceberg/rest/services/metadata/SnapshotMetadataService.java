@@ -16,23 +16,15 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -42,24 +34,6 @@ public class SnapshotMetadataService {
 
   @Inject SnapshotClient snapshotClient;
   @Inject SnapshotUpdateService updateService;
-
-  public IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
-    try {
-      var resp =
-          snapshotClient.getSnapshot(
-              GetSnapshotRequest.newBuilder()
-                  .setTableId(tableId)
-                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                  .build());
-      if (resp == null || !resp.hasSnapshot()) {
-        return null;
-      }
-      Snapshot snapshot = resp.getSnapshot();
-      return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
-    } catch (StatusRuntimeException e) {
-      return null;
-    }
-  }
 
   public Response applySnapshotUpdates(
       TableGatewaySupport tableSupport,
@@ -102,76 +76,4 @@ public class SnapshotMetadataService {
   public void deleteSnapshots(ResourceId tableId, List<Long> snapshotIds) {
     updateService.deleteSnapshots(tableId, snapshotIds);
   }
-
-  public List<Snapshot> fetchSnapshots(ResourceId tableId, List<Long> snapshotIds) {
-    if (tableId == null || snapshotIds == null || snapshotIds.isEmpty()) {
-      return List.of();
-    }
-    List<Snapshot> out = new ArrayList<>();
-    for (Long snapshotId : snapshotIds) {
-      if (snapshotId == null || snapshotId <= 0) {
-        continue;
-      }
-      try {
-        var resp =
-            snapshotClient.getSnapshot(
-                GetSnapshotRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-                    .build());
-        if (resp != null && resp.hasSnapshot()) {
-          out.add(resp.getSnapshot());
-        }
-      } catch (StatusRuntimeException ignored) {
-      }
-    }
-    return out;
-  }
-
-  public void restoreSnapshots(ResourceId tableId, List<Snapshot> snapshots) {
-    if (tableId == null || snapshots == null || snapshots.isEmpty()) {
-      return;
-    }
-    for (Snapshot snapshot : snapshots) {
-      if (snapshot == null) {
-        continue;
-      }
-      SnapshotSpec.Builder spec =
-          SnapshotSpec.newBuilder().setTableId(tableId).setSnapshotId(snapshot.getSnapshotId());
-      if (snapshot.hasUpstreamCreatedAt()) {
-        spec.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
-      }
-      if (snapshot.hasIngestedAt()) {
-        spec.setIngestedAt(snapshot.getIngestedAt());
-      }
-      if (snapshot.getParentSnapshotId() > 0) {
-        spec.setParentSnapshotId(snapshot.getParentSnapshotId());
-      }
-      if (!snapshot.getSchemaJson().isBlank()) {
-        spec.setSchemaJson(snapshot.getSchemaJson());
-      }
-      if (snapshot.hasPartitionSpec()) {
-        spec.setPartitionSpec(snapshot.getPartitionSpec());
-      }
-      if (snapshot.getSequenceNumber() > 0) {
-        spec.setSequenceNumber(snapshot.getSequenceNumber());
-      }
-      if (!snapshot.getManifestList().isBlank()) {
-        spec.setManifestList(snapshot.getManifestList());
-      }
-      if (!snapshot.getSummaryMap().isEmpty()) {
-        spec.putAllSummary(snapshot.getSummaryMap());
-      }
-      if (snapshot.getSchemaId() != 0) {
-        spec.setSchemaId(snapshot.getSchemaId());
-      }
-      if (!snapshot.getFormatMetadataMap().isEmpty()) {
-        spec.putAllFormatMetadata(snapshot.getFormatMetadataMap());
-      }
-      snapshotClient.createSnapshot(
-          CreateSnapshotRequest.newBuilder().setSpec(spec.build()).build());
-    }
-  }
-
-  // Snapshot metadata parsing lives in SnapshotMetadataUtil.
 }

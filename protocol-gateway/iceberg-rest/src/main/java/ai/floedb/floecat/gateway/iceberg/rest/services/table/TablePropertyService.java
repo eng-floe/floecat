@@ -152,15 +152,6 @@ public class TablePropertyService {
     return new LinkedHashMap<>(table.getPropertiesMap());
   }
 
-  public Table tableWithPropertyOverrides(
-      Supplier<Table> tableSupplier, Map<String, String> propertyOverrides) {
-    Table table = tableSupplier.get();
-    if (propertyOverrides == null || propertyOverrides.isEmpty() || table == null) {
-      return table;
-    }
-    return table.toBuilder().clearProperties().putAllProperties(propertyOverrides).build();
-  }
-
   public Response applyLocationUpdate(
       TableSpec.Builder spec,
       FieldMask.Builder mask,

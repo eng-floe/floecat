@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -187,17 +186,6 @@ class TablePropertyServiceTest {
     assertEquals(table.getPropertiesMap(), map);
     map.put("new", "value");
     assertFalse(table.getPropertiesMap().containsKey("new"));
-  }
-
-  @Test
-  void tableWithPropertyOverridesReplacesProperties() {
-    Table table = Table.newBuilder().putProperties("old", "value").build();
-    Map<String, String> overrides = Map.of("new", "value");
-
-    Table updated = service.tableWithPropertyOverrides(() -> table, overrides);
-
-    assertSame("value", updated.getPropertiesOrThrow("new"));
-    assertFalse(updated.getPropertiesMap().containsKey("old"));
   }
 
   private Supplier<Table> tableSupplier() {

@@ -130,10 +130,6 @@ public class MaterializeMetadataService {
     }
   }
 
-  public void setConfig(IcebergGatewayConfig config) {
-    this.config = config;
-  }
-
   private TableMetadata parseMetadata(TableMetadataView metadata, String metadataLocation) {
     try {
       JsonNode node = mapper.valueToTree(metadata);
