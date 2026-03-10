@@ -74,35 +74,12 @@ public class SnapshotRepository {
 
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
     String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
-    String token = "";
     StringBuilder next = new StringBuilder();
-    Snapshot best = null;
-    long bestCreatedMs = Long.MIN_VALUE;
-
-    do {
-      List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
-      for (Snapshot snapshot : batch) {
-        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (best == null) {
-          best = snapshot;
-          bestCreatedMs = createdMs;
-          continue;
-        }
-        if (createdMs != bestCreatedMs) {
-          return Optional.of(best);
-        }
-        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
-          best = snapshot;
-        }
-      }
-      token = next.toString();
-      next.setLength(0);
-    } while (!token.isEmpty());
-
-    if (best == null) {
+    List<Snapshot> page = repo.listByPrefix(prefix, 1, "", next);
+    if (page.isEmpty()) {
       return Optional.empty();
     }
-    return Optional.of(best);
+    return Optional.of(page.get(0));
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
@@ -111,34 +88,19 @@ public class SnapshotRepository {
 
     String token = "";
     StringBuilder next = new StringBuilder();
-    Snapshot best = null;
-    boolean haveBest = false;
-    long bestCreatedMs = Long.MIN_VALUE;
     do {
       List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
       for (Snapshot snapshot : batch) {
         long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (!haveBest) {
-          if (createdMs > asOfMs) {
-            continue;
-          }
-          haveBest = true;
-          bestCreatedMs = createdMs;
-          best = snapshot;
-          continue;
-        }
-        if (createdMs != bestCreatedMs) {
-          return Optional.of(best);
-        }
-        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
-          best = snapshot;
+        if (createdMs <= asOfMs) {
+          return Optional.of(snapshot);
         }
       }
       token = next.toString();
       next.setLength(0);
     } while (!token.isEmpty());
 
-    return Optional.ofNullable(best);
+    return Optional.empty();
   }
 
   public List<Snapshot> list(

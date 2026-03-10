@@ -18,7 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -27,7 +27,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class TableCommitSideEffectService {
   private static final Logger LOG = Logger.getLogger(TableCommitSideEffectService.class);
-  @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject SnapshotUpdateService snapshotUpdateService;
 
   public boolean runPostCommitStatsSyncAttempt(
       TableGatewaySupport tableSupport,
@@ -75,7 +75,7 @@ public class TableCommitSideEffectService {
       return true;
     }
     try {
-      snapshotMetadataService.deleteSnapshots(tableId, snapshotIds);
+      snapshotUpdateService.deleteSnapshots(tableId, snapshotIds);
       return true;
     } catch (RuntimeException e) {
       LOG.warnf(e, "Snapshot prune failed tableId=%s snapshotIds=%s", tableId.getId(), snapshotIds);

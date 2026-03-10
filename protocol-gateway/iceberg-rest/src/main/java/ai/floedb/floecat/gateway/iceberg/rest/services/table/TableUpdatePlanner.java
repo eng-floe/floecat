@@ -27,7 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
@@ -43,7 +43,7 @@ public class TableUpdatePlanner {
 
   @Inject CommitRequirementService commitRequirementService;
   @Inject TablePropertyService tablePropertyService;
-  @Inject SnapshotMetadataService snapshotMetadataService;
+  @Inject SnapshotUpdateService snapshotUpdateService;
   @Inject ObjectMapper mapper;
 
   public UpdatePlan planUpdates(
@@ -106,7 +106,7 @@ public class TableUpdatePlanner {
           spec, mask, validationError("unsupported commit update action: " + unsupported));
     }
     if (validateSnapshotUpdates) {
-      Response snapshotValidation = snapshotMetadataService.validateSnapshotUpdates(req.updates());
+      Response snapshotValidation = snapshotUpdateService.validateSnapshotUpdates(req.updates());
       if (snapshotValidation != null) {
         return UpdatePlan.failure(spec, mask, snapshotValidation);
       }

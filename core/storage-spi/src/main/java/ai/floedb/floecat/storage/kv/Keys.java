@@ -69,9 +69,10 @@ public final class Keys {
     long sid = reqNonNegative("snapshot_id", snapshotId);
     long createdAtMs = reqNonNegative("upstream_created_at_ms", upstreamCreatedAtMs);
     long inverted = Long.MAX_VALUE - createdAtMs;
+    long invertedSnapshotId = Long.MAX_VALUE - sid;
     return String.format(
         "/accounts/%s/tables/%s/snapshots/by-time/%019d-%019d",
-        encodeSegment(aid), encodeSegment(tid), inverted, sid);
+        encodeSegment(aid), encodeSegment(tid), inverted, invertedSnapshotId);
   }
 
   public static String tableCommitJournalPointer(String accountId, String tableId, String txId) {
