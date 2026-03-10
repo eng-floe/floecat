@@ -84,6 +84,9 @@ import org.mockito.Mockito;
 
 class TransactionCommitServiceTest {
   private final TransactionCommitService service = new TransactionCommitService();
+  private final TablePropertyService tablePropertyService = new TablePropertyService();
+  private final ConnectorProvisioningService connectorProvisioningService =
+      new ConnectorProvisioningService();
   private final AccountContext accountContext = Mockito.mock(AccountContext.class);
   private final RequestContextFactory requestContextFactory =
       Mockito.mock(RequestContextFactory.class);
@@ -119,6 +122,8 @@ class TransactionCommitServiceTest {
     service.metadataMutator = metadataMutator;
     service.snapshotClient = snapshotClient;
     service.transactionClient = transactionClient;
+    service.tablePropertyService = tablePropertyService;
+    service.connectorProvisioningService = connectorProvisioningService;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
     when(requestContextFactory.catalog(any()))

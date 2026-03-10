@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import com.google.protobuf.FieldMask;
@@ -521,6 +522,56 @@ public class TablePropertyService {
       return null;
     }
     return asLong(main.get("snapshot-id"));
+  }
+
+  public Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadataView metadata) {
+    if (plannedTable == null || metadata == null) {
+      return plannedTable;
+    }
+    Map<String, String> props = new LinkedHashMap<>(plannedTable.getPropertiesMap());
+    putIntProperty(props, "format-version", metadata.formatVersion());
+    putIntProperty(props, "last-column-id", metadata.lastColumnId());
+    putIntProperty(props, "current-schema-id", metadata.currentSchemaId());
+    putIntProperty(props, "default-spec-id", metadata.defaultSpecId());
+    putIntProperty(props, "last-partition-id", metadata.lastPartitionId());
+    putIntProperty(props, "default-sort-order-id", metadata.defaultSortOrderId());
+    putLongProperty(props, "last-sequence-number", metadata.lastSequenceNumber());
+    syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
+    putStringProperty(props, "table-uuid", metadata.tableUuid());
+    putStringProperty(props, "location", metadata.location());
+    return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
+  }
+
+  private void putIntProperty(Map<String, String> props, String key, Integer value) {
+    if (props == null || key == null || value == null || value < 0) {
+      return;
+    }
+    props.put(key, Integer.toString(value));
+  }
+
+  private void putLongProperty(Map<String, String> props, String key, Long value) {
+    if (props == null || key == null || value == null || value < 0) {
+      return;
+    }
+    props.put(key, Long.toString(value));
+  }
+
+  private void putStringProperty(Map<String, String> props, String key, String value) {
+    if (props == null || key == null || value == null || value.isBlank()) {
+      return;
+    }
+    props.put(key, value);
+  }
+
+  private void syncLongProperty(Map<String, String> props, String key, Long value) {
+    if (props == null || key == null) {
+      return;
+    }
+    if (value == null || value < 0) {
+      props.remove(key);
+      return;
+    }
+    props.put(key, Long.toString(value));
   }
 
   // TableMappingUtil provides asString.
