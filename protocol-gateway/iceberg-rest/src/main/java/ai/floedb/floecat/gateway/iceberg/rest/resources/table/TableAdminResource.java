@@ -28,6 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TransactionCommitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.smallrye.common.annotation.Blocking;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
@@ -74,6 +75,7 @@ public class TableAdminResource {
 
   @Path("/transactions/commit")
   @POST
+  @Blocking
   public Response commitTransaction(
       @PathParam("prefix") String prefix,
       @HeaderParam("Idempotency-Key") String idempotencyKey,

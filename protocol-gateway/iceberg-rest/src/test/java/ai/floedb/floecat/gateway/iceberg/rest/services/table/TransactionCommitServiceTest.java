@@ -2977,10 +2977,15 @@ class TransactionCommitServiceTest {
 
   private boolean isValidBase64(String value) {
     try {
-      Base64.getDecoder().decode(value);
+      Base64.getUrlDecoder().decode(value);
       return true;
     } catch (IllegalArgumentException e) {
-      return false;
+      try {
+        Base64.getDecoder().decode(value);
+        return true;
+      } catch (IllegalArgumentException ignored) {
+        return false;
+      }
     }
   }
 

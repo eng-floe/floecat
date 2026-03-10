@@ -85,8 +85,15 @@ public class TransactionCommitService {
   private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
-  private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 25L;
+  private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 20L;
   private static final long DEFAULT_COMMIT_CONFIRM_MAX_SLEEP_MS = 200L;
+  private static final Set<TransactionState> CONFIRMABLE_COMMIT_STATES =
+      Set.of(
+          TransactionState.TS_UNSPECIFIED,
+          TransactionState.TS_OPEN,
+          TransactionState.TS_PREPARED,
+          TransactionState.TS_APPLYING,
+          TransactionState.TS_APPLY_FAILED_RETRYABLE);
   private static final Set<String> SUPPORTED_REQUIREMENT_TYPES =
       Set.of(
           "assert-create",
@@ -528,7 +535,7 @@ public class TransactionCommitService {
                 "CommitFailedException",
                 Response.Status.CONFLICT);
           }
-          if (waitForAppliedState(txId)) {
+          if (shouldConfirmAmbiguousCommitState(commitState) && waitForAppliedState(txId)) {
             applied = true;
           } else {
             return IcebergErrorResponses.failure(
@@ -599,7 +606,11 @@ public class TransactionCommitService {
     }
 
     if (!outboxWorkItems.isEmpty()) {
-      commitOutboxService.processPendingNow(tableSupport, outboxWorkItems);
+      try {
+        commitOutboxService.processPendingNow(tableSupport, outboxWorkItems);
+      } catch (RuntimeException e) {
+        LOG.warnf(e, "Best-effort outbox processing failed for tx=%s", txId);
+      }
     }
 
     return Response.noContent().build();
@@ -1290,7 +1301,7 @@ public class TransactionCommitService {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       byte[] hash = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
-      return Base64.getEncoder().encodeToString(hash);
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 not available", e);
     }
@@ -1452,7 +1463,7 @@ public class TransactionCommitService {
       } catch (RuntimeException ignored) {
         return false;
       }
-      if (attempt + 1 < maxAttempts) {
+      if (attempt + 1 < maxAttempts && sleepMillis > 0L) {
         try {
           Thread.sleep(sleepMillis);
         } catch (InterruptedException ie) {
@@ -1463,6 +1474,10 @@ public class TransactionCommitService {
       }
     }
     return false;
+  }
+
+  private boolean shouldConfirmAmbiguousCommitState(TransactionState state) {
+    return CONFIRMABLE_COMMIT_STATES.contains(state);
   }
 
   private Response mapPreCommitFailure(StatusRuntimeException failure) {

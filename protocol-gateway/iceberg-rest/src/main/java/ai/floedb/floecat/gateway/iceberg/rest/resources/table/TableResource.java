@@ -42,6 +42,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableLoadService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableMetricsService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRegisterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.smallrye.common.annotation.Blocking;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -107,6 +108,7 @@ public class TableResource {
 
   @POST
   @Path("/tables")
+  @Blocking
   public Response create(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
@@ -157,6 +159,7 @@ public class TableResource {
 
   @Path("/tables/{table}")
   @POST
+  @Blocking
   public Response commit(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
@@ -261,6 +264,7 @@ public class TableResource {
 
   @Path("/register")
   @POST
+  @Blocking
   public Response registerTable(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
