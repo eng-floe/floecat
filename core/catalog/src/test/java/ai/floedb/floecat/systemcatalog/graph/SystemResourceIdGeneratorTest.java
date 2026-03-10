@@ -131,8 +131,7 @@ final class SystemResourceIdGeneratorTest {
 
   @Test
   void maskUniquenessGuard() {
-    List<String> engines =
-        List.of("floedb", "example", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    List<String> engines = List.of("floedb", "example", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
 
     long uniqueCount =
         engines.stream()

@@ -46,27 +46,27 @@ import org.jboss.logging.Logger;
 /**
  * File-based catalog extension for Floecat.
  *
- * <p>Designed to work out of the box without any Java coding. Point it at a directory of
- * {@code .pbtxt} files describing your engine's catalog and Floecat will serve it.
+ * <p>Designed to work out of the box without any Java coding. Point it at a directory of {@code
+ * .pbtxt} files describing your engine's catalog and Floecat will serve it.
  *
  * <h2>Configuration</h2>
  *
  * <ul>
- *   <li>{@code floecat.extension.engine-kind} (env: {@code FLOECAT_EXTENSION_ENGINE_KIND}):
- *       the engine identifier this catalog is served under. Defaults to {@code "example"}.
- *   <li>{@code floecat.extension.builtins-dir} (env: {@code FLOECAT_EXTENSION_BUILTINS_DIR}):
- *       path to a directory of {@code *.pbtxt} catalog files, loaded alphabetically. When absent,
- *       the bundled format-reference catalog is loaded from the classpath.
+ *   <li>{@code floecat.extension.engine-kind} (env: {@code FLOECAT_EXTENSION_ENGINE_KIND}): the
+ *       engine identifier this catalog is served under. Defaults to {@code "example"}.
+ *   <li>{@code floecat.extension.builtins-dir} (env: {@code FLOECAT_EXTENSION_BUILTINS_DIR}): path
+ *       to a directory of {@code *.pbtxt} catalog files, loaded alphabetically. When absent, the
+ *       bundled format-reference catalog is loaded from the classpath.
  * </ul>
  *
  * <h2>PBtxt format</h2>
  *
- * Files must be valid {@code SystemObjectsRegistry} proto text format using core fields only.
- * See the bundled {@code builtins/example/} files for field-by-field format documentation.
+ * Files must be valid {@code SystemObjectsRegistry} proto text format using core fields only. See
+ * the bundled {@code builtins/example/} files for field-by-field format documentation.
  *
- * <p>Proto2 extension syntax ({@code [floe.ext.*]} blocks) is not supported.
- * The {@code engine_kind} field inside {@code engine_specific} blocks is ignored; the catalog's
- * configured engine kind always applies.
+ * <p>Proto2 extension syntax ({@code [floe.ext.*]} blocks) is not supported. The {@code
+ * engine_kind} field inside {@code engine_specific} blocks is ignored; the catalog's configured
+ * engine kind always applies.
  *
  * <h2>Error handling</h2>
  *

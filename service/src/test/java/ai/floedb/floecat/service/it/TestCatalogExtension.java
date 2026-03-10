@@ -49,8 +49,8 @@ public final class TestCatalogExtension implements EngineSystemCatalogExtension 
   static final String ENGINE_KIND = "test-engine";
 
   /**
-   * Version-constraining rule: functions carrying this rule are only served when the engine
-   * reports version {@code "16.0"} or higher. Functions with no rules are always served.
+   * Version-constraining rule: functions carrying this rule are only served when the engine reports
+   * version {@code "16.0"} or higher. Functions with no rules are always served.
    */
   private static final EngineSpecificRule RULE_MIN_16 =
       new EngineSpecificRule(ENGINE_KIND, "16.0", "", "test.payload", new byte[0], Map.of());
@@ -247,8 +247,8 @@ public final class TestCatalogExtension implements EngineSystemCatalogExtension 
   // ---------------------------------------------------------------------------
 
   /**
-   * Builds a {@link NameRef} from {@code "path.name"} notation (single-level path) or bare
-   * {@code "name"} (no path).
+   * Builds a {@link NameRef} from {@code "path.name"} notation (single-level path) or bare {@code
+   * "name"} (no path).
    */
   private static NameRef nr(String full) {
     int idx = full.indexOf('.');

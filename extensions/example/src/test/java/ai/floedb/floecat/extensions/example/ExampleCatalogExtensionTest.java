@@ -163,9 +163,7 @@ class ExampleCatalogExtensionTest {
             .findFirst();
     assertThat(fn).isPresent();
     var rule =
-        fn.get().engineSpecific().stream()
-            .filter(r -> !r.minVersion().isEmpty())
-            .findFirst();
+        fn.get().engineSpecific().stream().filter(r -> !r.minVersion().isEmpty()).findFirst();
     assertThat(rule).isPresent();
     assertThat(rule.get().minVersion()).isEqualTo("2.0");
   }
@@ -177,8 +175,7 @@ class ExampleCatalogExtensionTest {
             .filter(f -> f.name().getName().equals("my_function"))
             .findFirst();
     assertThat(fn).isPresent();
-    assertThat(fn.get().engineSpecific())
-        .allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
+    assertThat(fn.get().engineSpecific()).allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
   }
 
   @Test
@@ -257,7 +254,10 @@ class ExampleCatalogExtensionTest {
 
   @Test
   void filesystemLoadingWorkWithSingleFile(@TempDir Path dir) throws IOException {
-    writeFile(dir, "10_types.pbtxt", """
+    writeFile(
+        dir,
+        "10_types.pbtxt",
+        """
         types {
           name { name: "my_type" path: "example" }
           category: "N"
@@ -277,13 +277,19 @@ class ExampleCatalogExtensionTest {
   @Test
   void filesystemLoadingIsAlphabetical(@TempDir Path dir) throws IOException {
     // "a_" sorts before "b_"
-    writeFile(dir, "a_types.pbtxt", """
+    writeFile(
+        dir,
+        "a_types.pbtxt",
+        """
         types {
           name { name: "alpha_type" path: "example" }
           category: "N"
         }
         """);
-    writeFile(dir, "b_types.pbtxt", """
+    writeFile(
+        dir,
+        "b_types.pbtxt",
+        """
         types {
           name { name: "beta_type" path: "example" }
           category: "N"
@@ -302,7 +308,10 @@ class ExampleCatalogExtensionTest {
 
   @Test
   void filesystemOnlyLoadsPbtxtFiles(@TempDir Path dir) throws IOException {
-    writeFile(dir, "10_types.pbtxt", """
+    writeFile(
+        dir,
+        "10_types.pbtxt",
+        """
         types {
           name { name: "good_type" path: "example" }
           category: "N"
@@ -340,7 +349,10 @@ class ExampleCatalogExtensionTest {
   @Test
   void filesystemOverridesClasspathWhenDirSet(@TempDir Path dir) throws IOException {
     // Write only a custom type — bundled placeholder types must NOT appear
-    writeFile(dir, "10_types.pbtxt", """
+    writeFile(
+        dir,
+        "10_types.pbtxt",
+        """
         types {
           name { name: "custom_type" path: "example" }
           category: "N"
@@ -360,13 +372,19 @@ class ExampleCatalogExtensionTest {
 
   @Test
   void multipleFilesAreMergedFromFilesystem(@TempDir Path dir) throws IOException {
-    writeFile(dir, "10_types.pbtxt", """
+    writeFile(
+        dir,
+        "10_types.pbtxt",
+        """
         types {
           name { name: "type_a" path: "example" }
           category: "N"
         }
         """);
-    writeFile(dir, "20_more_types.pbtxt", """
+    writeFile(
+        dir,
+        "20_more_types.pbtxt",
+        """
         types {
           name { name: "type_b" path: "example" }
           category: "S"
@@ -394,7 +412,10 @@ class ExampleCatalogExtensionTest {
     // the engine_kind filter was removed before handing the registry to fromProto().
     // If stripping were absent, fromProto() would discard the rule (wrong engine kind)
     // and the property would not appear.
-    writeFile(dir, "10_types.pbtxt", """
+    writeFile(
+        dir,
+        "10_types.pbtxt",
+        """
         types {
           name { name: "tagged_type" path: "example" }
           category: "N"
@@ -410,17 +431,13 @@ class ExampleCatalogExtensionTest {
         dir.toString(),
         () -> {
           var types = ext().loadSystemCatalog().types();
-          var t =
-              types.stream()
-                  .filter(x -> x.name().getName().equals("tagged_type"))
-                  .findFirst();
+          var t = types.stream().filter(x -> x.name().getName().equals("tagged_type")).findFirst();
           assertThat(t).isPresent();
           // The rule must survive: engine_kind was stripped so it now matches any engine.
           var rules = t.get().engineSpecific();
           assertThat(rules).isNotEmpty();
           boolean markerPresent =
-              rules.stream()
-                  .anyMatch(r -> "present".equals(r.properties().get("marker")));
+              rules.stream().anyMatch(r -> "present".equals(r.properties().get("marker")));
           assertThat(markerPresent).isTrue();
         });
   }
@@ -445,7 +462,10 @@ class ExampleCatalogExtensionTest {
 
   @Test
   void invalidPbtxtFileIsSkippedAndOtherFilesStillLoad(@TempDir Path dir) throws IOException {
-    writeFile(dir, "10_valid.pbtxt", """
+    writeFile(
+        dir,
+        "10_valid.pbtxt",
+        """
         types {
           name { name: "good_type" path: "example" }
           category: "N"
@@ -534,8 +554,7 @@ class ExampleCatalogExtensionTest {
 
   @Test
   void onLoadErrorDoesNotThrow() {
-    assertThatNoException()
-        .isThrownBy(() -> ext().onLoadError(new RuntimeException("test error")));
+    assertThatNoException().isThrownBy(() -> ext().onLoadError(new RuntimeException("test error")));
   }
 
   @Test
