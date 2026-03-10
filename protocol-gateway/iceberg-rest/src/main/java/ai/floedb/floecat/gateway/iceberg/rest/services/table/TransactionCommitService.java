@@ -545,10 +545,6 @@ public class TransactionCommitService {
           }
         }
       } catch (StatusRuntimeException commitFailure) {
-        if (commitFailure.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed", "ValidationException", Response.Status.BAD_REQUEST);
-        }
         if (isDeterministicCommitFailure(commitFailure)) {
           return IcebergErrorResponses.failure(
               "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
@@ -563,32 +559,9 @@ public class TransactionCommitService {
                 "CommitStateUnknownException",
                 Response.Status.SERVICE_UNAVAILABLE);
           }
-        } else if (commitFailure.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed",
-              "CommitStateUnknownException",
-              Response.Status.SERVICE_UNAVAILABLE);
-        } else if (commitFailure.getStatus().getCode() == Status.Code.UNAUTHENTICATED) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed", "UnauthorizedException", Response.Status.UNAUTHORIZED);
-        } else if (commitFailure.getStatus().getCode() == Status.Code.PERMISSION_DENIED) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed", "ForbiddenException", Response.Status.FORBIDDEN);
-        } else if (commitFailure.getStatus().getCode() == Status.Code.UNKNOWN) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed",
-              "CommitStateUnknownException",
-              Response.Status.BAD_GATEWAY);
-        } else if (commitFailure.getStatus().getCode() == Status.Code.DEADLINE_EXCEEDED) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed",
-              "CommitStateUnknownException",
-              Response.Status.GATEWAY_TIMEOUT);
         } else {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed",
-              "CommitStateUnknownException",
-              Response.Status.INTERNAL_SERVER_ERROR);
+          Response mapped = mapCommitFailureByStatus(commitFailure.getStatus().getCode());
+          return mapped == null ? preCommitStateUnknown() : mapped;
         }
       } catch (RuntimeException commitFailure) {
         return IcebergErrorResponses.failure(
@@ -1482,10 +1455,6 @@ public class TransactionCommitService {
 
   private Response mapPreCommitFailure(StatusRuntimeException failure) {
     Status.Code code = failure.getStatus().getCode();
-    if (code == Status.Code.INVALID_ARGUMENT) {
-      return IcebergErrorResponses.failure(
-          "transaction commit failed", "ValidationException", Response.Status.BAD_REQUEST);
-    }
     if (code == Status.Code.NOT_FOUND) {
       return IcebergErrorResponses.failure(
           "transaction commit failed", "NoSuchTableException", Response.Status.NOT_FOUND);
@@ -1504,6 +1473,15 @@ public class TransactionCommitService {
       }
       return IcebergErrorResponses.failure(
           "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+    }
+    Response mapped = mapCommitFailureByStatus(code);
+    return mapped == null ? preCommitStateUnknown() : mapped;
+  }
+
+  private Response mapCommitFailureByStatus(Status.Code code) {
+    if (code == Status.Code.INVALID_ARGUMENT) {
+      return IcebergErrorResponses.failure(
+          "transaction commit failed", "ValidationException", Response.Status.BAD_REQUEST);
     }
     if (code == Status.Code.UNAVAILABLE) {
       return IcebergErrorResponses.failure(
@@ -1529,7 +1507,7 @@ public class TransactionCommitService {
           "CommitStateUnknownException",
           Response.Status.GATEWAY_TIMEOUT);
     }
-    return preCommitStateUnknown();
+    return null;
   }
 
   private Response preCommitStateUnknown() {

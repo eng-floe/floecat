@@ -51,52 +51,7 @@ public class TableUpdatePlanner {
       Supplier<Table> tableSupplier,
       Supplier<Table> requirementTableSupplier,
       ResourceId tableId) {
-    TableRequests.Commit req = command.request();
-    TableSpec.Builder spec = TableSpec.newBuilder();
-    FieldMask.Builder mask = FieldMask.newBuilder();
-    if (req == null) {
-      return UpdatePlan.failure(spec, mask, validationError("Request body is required"));
-    }
-    if (req.requirements() == null) {
-      return UpdatePlan.failure(spec, mask, validationError("requirements are required"));
-    }
-    if (req.updates() == null) {
-      return UpdatePlan.failure(spec, mask, validationError("updates are required"));
-    }
-    Response requirementError =
-        commitRequirementService.validateRequirements(
-            command.tableSupport(),
-            req.requirements(),
-            requirementTableSupplier,
-            this::validationError,
-            this::conflictError);
-    if (requirementError != null) {
-      return UpdatePlan.failure(spec, mask, requirementError);
-    }
-    Map<String, String> mergedProps = null;
-    Response locationError =
-        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
-    if (locationError != null) {
-      return UpdatePlan.failure(spec, mask, locationError);
-    }
-    String unsupported = unsupportedUpdateAction(req);
-    if (unsupported != null) {
-      return UpdatePlan.failure(
-          spec, mask, validationError("unsupported commit update action: " + unsupported));
-    }
-    var propertyResult =
-        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
-    if (propertyResult.hasError()) {
-      return UpdatePlan.failure(spec, mask, propertyResult.error());
-    }
-    mergedProps = propertyResult.properties();
-    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
-    mergedProps = stripFileIoProperties(mergedProps);
-    if (mergedProps != null) {
-      spec.clearProperties().putAllProperties(mergedProps);
-      mask.addPaths("properties");
-    }
-    return UpdatePlan.success(spec, mask);
+    return planInternal(command, tableSupplier, requirementTableSupplier, false);
   }
 
   public UpdatePlan planUpdates(
@@ -109,6 +64,14 @@ public class TableUpdatePlanner {
       Supplier<Table> tableSupplier,
       Supplier<Table> requirementTableSupplier,
       ResourceId tableId) {
+    return planInternal(command, tableSupplier, requirementTableSupplier, true);
+  }
+
+  private UpdatePlan planInternal(
+      TableCommitService.CommitCommand command,
+      Supplier<Table> tableSupplier,
+      Supplier<Table> requirementTableSupplier,
+      boolean validateSnapshotUpdates) {
     TableRequests.Commit req = command.request();
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
@@ -142,9 +105,11 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(
           spec, mask, validationError("unsupported commit update action: " + unsupported));
     }
-    Response snapshotValidation = snapshotMetadataService.validateSnapshotUpdates(req.updates());
-    if (snapshotValidation != null) {
-      return UpdatePlan.failure(spec, mask, snapshotValidation);
+    if (validateSnapshotUpdates) {
+      Response snapshotValidation = snapshotMetadataService.validateSnapshotUpdates(req.updates());
+      if (snapshotValidation != null) {
+        return UpdatePlan.failure(spec, mask, snapshotValidation);
+      }
     }
     var propertyResult =
         tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
