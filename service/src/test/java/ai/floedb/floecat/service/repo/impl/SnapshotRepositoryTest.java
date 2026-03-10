@@ -130,6 +130,96 @@ class SnapshotRepositoryTest {
     assertEquals(200, cur.getSnapshotId());
   }
 
+  @Test
+  void getCurrentSnapshotPrefersHighestSnapshotIdWhenUpstreamTimestampTies() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long createdMs = clock.millis() - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
+    seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
+
+    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(1L, current.getSnapshotId());
+  }
+
+  @Test
+  void getAsOfPrefersHighestSnapshotIdWhenUpstreamTimestampTies() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long createdMs = clock.millis() - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
+    seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
+
+    Snapshot asOf =
+        snapshotRepo
+            .getAsOf(tableRid, Timestamps.fromMillis(createdMs))
+            .orElseThrow(() -> new AssertionError("expected snapshot at as-of timestamp"));
+    assertEquals(1L, asOf.getSnapshotId());
+  }
+
+  @Test
+  void getCurrentSnapshotPrefersNewestTimestampBucketOverOlderHigherIds() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long newestCreatedMs = clock.millis() - 5_000;
+    long olderCreatedMs = newestCreatedMs - 1_000;
+
+    seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), newestCreatedMs);
+    seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), newestCreatedMs);
+    seedSnapshot(snapshotRepo, account, tableRid, 999, clock.millis(), olderCreatedMs);
+
+    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(1L, current.getSnapshotId());
+    assertEquals(Timestamps.fromMillis(newestCreatedMs), current.getUpstreamCreatedAt());
+  }
+
+  @Test
+  void getCurrentAndAsOfHandleTimestampTieAcrossPagination() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long tiedCreatedMs = clock.millis() - 10_000;
+    long olderCreatedMs = tiedCreatedMs - 1_000;
+
+    // Repository methods page by 200; seed 205 in the same timestamp bucket to span pages.
+    for (long snapshotId = 0; snapshotId <= 204; snapshotId++) {
+      seedSnapshot(snapshotRepo, account, tableRid, snapshotId, clock.millis(), tiedCreatedMs);
+    }
+    seedSnapshot(snapshotRepo, account, tableRid, 999, clock.millis(), olderCreatedMs);
+
+    Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(204L, current.getSnapshotId());
+
+    Snapshot asOf =
+        snapshotRepo
+            .getAsOf(tableRid, Timestamps.fromMillis(tiedCreatedMs))
+            .orElseThrow(() -> new AssertionError("expected snapshot at as-of timestamp"));
+    assertEquals(204L, asOf.getSnapshotId());
+  }
+
   private void seedSnapshot(
       SnapshotRepository snapshotRepo,
       String account,
