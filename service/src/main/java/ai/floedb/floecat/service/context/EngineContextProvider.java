@@ -40,6 +40,10 @@ public final class EngineContextProvider {
     return engineContext().normalizedVersion();
   }
 
+  public String effectiveEngineKind() {
+    return engineContext().effectiveEngineKind();
+  }
+
   public boolean isPresent() {
     return engineContext().hasEngineKind();
   }

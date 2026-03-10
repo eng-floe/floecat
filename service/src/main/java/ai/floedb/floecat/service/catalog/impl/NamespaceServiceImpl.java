@@ -51,7 +51,6 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -85,23 +84,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   private static final String NS_TOKEN_PREFIX = "ns:";
 
   private static final Logger LOG = Logger.getLogger(NamespaceService.class);
-
-  // ---------- SYSTEM immutability + strict collision helpers ----------
-
-  private void rejectIfSystemNamespace(ResourceId namespaceId, String corr) {
-    if (namespaceId == null) {
-      return;
-    }
-
-    boolean isSystem = SystemResourceIdGenerator.isSystemId(namespaceId);
-
-    if (isSystem) {
-      throw GrpcErrors.permissionDenied(
-          corr,
-          GeneratedErrorMessages.MessageKey.SYSTEM_OBJECT_IMMUTABLE,
-          Map.of("id", namespaceId.getId()));
-    }
-  }
 
   private List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
     if (catalogId == null) {
@@ -203,41 +185,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   final List<String> parentPath;
 
                   if (request.hasNamespaceId()) {
-                    // Repo-first for user namespaces, but allow SYSTEM namespace parents via
-                    // overlay.
-                    var parentId = request.getNamespaceId();
-                    var parentOpt = namespaceRepo.getById(parentId);
-
-                    if (parentOpt.isPresent()) {
-                      var parent = parentOpt.get();
-                      catalogId = parent.getCatalogId();
-                      parentPath = append(parent.getParentsList(), parent.getDisplayName());
-                    } else {
-                      var parentNode =
-                          overlay
-                              .resolve(parentId)
-                              .filter(NamespaceNode.class::isInstance)
-                              .map(NamespaceNode.class::cast)
-                              .orElseThrow(
-                                  () ->
-                                      GrpcErrors.notFound(
-                                          correlationId(),
-                                          GeneratedErrorMessages.MessageKey.NAMESPACE,
-                                          Map.of("id", parentId.getId())));
-                      catalogId = parentNode.catalogId();
-                      parentPath = append(parentNode.pathSegments(), parentNode.displayName());
-                    }
+                    // Overlay is source of truth for both user and system namespace parents.
+                    var parentNode =
+                        CatalogOverlayGuards.requireVisibleNamespaceNode(
+                            overlay, request.getNamespaceId(), correlationId());
+                    catalogId = parentNode.catalogId();
+                    parentPath = append(parentNode.pathSegments(), parentNode.displayName());
                   } else if (request.hasCatalogId()) {
-                    // Keep existing behavior: validate catalog existence via repo.
-                    catalogRepo
-                        .getById(request.getCatalogId())
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId(),
-                                    GeneratedErrorMessages.MessageKey.CATALOG,
-                                    Map.of("id", request.getCatalogId().getId())));
-                    catalogId = request.getCatalogId();
+                    // Overlay is source of truth for both user and synthetic system catalogs.
+                    catalogId =
+                        CatalogOverlayGuards.requireVisibleCatalogNode(
+                                overlay, request.getCatalogId(), correlationId())
+                            .id();
                     parentPath = new ArrayList<>(request.getPathList());
                   } else {
                     throw GrpcErrors.invalidArgument(
@@ -610,15 +569,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                       "spec.catalog_id",
                       correlationId);
                   var catalog =
-                      catalogRepo
-                          .getById(spec.getCatalogId())
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      correlationId,
-                                      GeneratedErrorMessages.MessageKey.CATALOG,
-                                      Map.of("id", spec.getCatalogId().getId())));
-                  String catalogName = catalog.getDisplayName();
+                      CatalogOverlayGuards.requireVisibleCatalogNode(
+                          overlay, spec.getCatalogId(), correlationId);
+                  CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), correlationId);
+                  String catalogName = catalog.displayName();
 
                   var tsNow = nowTs();
 
@@ -847,7 +801,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   ensureKind(nsId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
 
                   // SYSTEM namespaces are immutable
-                  rejectIfSystemNamespace(nsId, corr);
+                  CatalogOverlayGuards.rejectSystemNamespaceMutation(nsId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
@@ -955,7 +909,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId);
 
                   // SYSTEM namespaces are immutable
-                  rejectIfSystemNamespace(namespaceId, correlationId);
+                  CatalogOverlayGuards.rejectSystemNamespaceMutation(namespaceId, correlationId);
 
                   var namespace = namespaceRepo.getById(namespaceId).orElse(null);
                   var catalogId =
@@ -1129,12 +1083,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
       }
       var cat = spec.getCatalogId();
       ensureKind(cat, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-      catalogRepo
-          .getById(cat)
-          .orElseThrow(
-              () ->
-                  GrpcErrors.notFound(
-                      corr, GeneratedErrorMessages.MessageKey.CATALOG, Map.of("id", cat.getId())));
+      var catalog = CatalogOverlayGuards.requireVisibleCatalogNode(overlay, cat, corr);
+      CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
       b.setCatalogId(cat);
     }
 

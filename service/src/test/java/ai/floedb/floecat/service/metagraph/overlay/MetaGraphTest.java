@@ -519,6 +519,34 @@ class MetaGraphTest {
   }
 
   @Test
+  void resolveCatalog_prefersUserCatalogWhenNameMatchesEngineAlias() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("user-cat")
+            .build();
+
+    when(user.resolveCatalog("cid", context.effectiveEngineKind()))
+        .thenReturn(Optional.of(userCatalogId));
+
+    Optional<ResourceId> out = meta.resolveCatalog("cid", context.effectiveEngineKind());
+
+    assertThat(out).contains(userCatalogId);
+  }
+
+  @Test
+  void resolveCatalog_resolvesSystemCatalogFromEngineAlias() {
+    String alias = context.effectiveEngineKind().toUpperCase();
+    when(user.resolveCatalog("cid", alias)).thenReturn(Optional.empty());
+
+    Optional<ResourceId> out = meta.resolveCatalog("cid", alias);
+
+    assertThat(out)
+        .contains(SystemNodeRegistry.systemCatalogContainerId(context.effectiveEngineKind()));
+  }
+
+  @Test
   void engineAbsent_showsEmptySystemGraph() {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
