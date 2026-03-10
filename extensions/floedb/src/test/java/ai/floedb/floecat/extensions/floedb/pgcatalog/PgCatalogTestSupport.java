@@ -46,13 +46,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-final class PgCatalogTestSupport {
+public final class PgCatalogTestSupport {
 
-  static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
+  public static final EngineContext ENGINE_CTX = EngineContext.of("floedb", "1.0");
 
   private PgCatalogTestSupport() {}
 
-  static SystemObjectScanContext contextWithNamespaces(NamespaceNode... namespaces) {
+  public static SystemObjectScanContext contextWithNamespaces(NamespaceNode... namespaces) {
     TestCatalogOverlay overlay = new TestCatalogOverlay();
     boolean hasUser = false;
 
@@ -67,7 +67,7 @@ final class PgCatalogTestSupport {
         overlay, null, hasUser ? userCatalogId() : catalogId(), ENGINE_CTX);
   }
 
-  static SystemObjectScanContext contextWithRelations(RelationNode... nodes) {
+  public static SystemObjectScanContext contextWithRelations(RelationNode... nodes) {
     boolean hasUser =
         Arrays.stream(nodes)
             .map(RelationNode::id)
@@ -77,7 +77,7 @@ final class PgCatalogTestSupport {
     return contextWithRelations(ns, nodes);
   }
 
-  static SystemObjectScanContext contextWithRelations(
+  public static SystemObjectScanContext contextWithRelations(
       NamespaceNode namespace, RelationNode... nodes) {
     TestCatalogOverlay overlay = new TestCatalogOverlay();
     overlay.addNode(namespace);
@@ -87,7 +87,7 @@ final class PgCatalogTestSupport {
     return new SystemObjectScanContext(overlay, null, namespace.catalogId(), ENGINE_CTX);
   }
 
-  static SystemObjectScanContext contextWithSystemNodes(GraphNode... nodes) {
+  public static SystemObjectScanContext contextWithSystemNodes(GraphNode... nodes) {
     TestCatalogOverlay overlay = new TestCatalogOverlay();
     for (GraphNode node : nodes) {
       overlay.addNode(node);
@@ -95,7 +95,7 @@ final class PgCatalogTestSupport {
     return new SystemObjectScanContext(overlay, null, catalogId(), ENGINE_CTX);
   }
 
-  static SystemObjectScanContext systemCatalogContext(
+  public static SystemObjectScanContext systemCatalogContext(
       NamespaceNode namespace,
       List<TypeNode> types,
       List<TableNode> tables,
@@ -112,7 +112,7 @@ final class PgCatalogTestSupport {
     return new SystemObjectScanContext(overlay, null, namespace.catalogId(), ENGINE_CTX);
   }
 
-  static NamespaceNode systemNamespace(String name, Map<EngineHintKey, EngineHint> hints) {
+  public static NamespaceNode systemNamespace(String name, Map<EngineHintKey, EngineHint> hints) {
     return new NamespaceNode(
         PgCatalogTestIds.namespace(name),
         1,
@@ -125,7 +125,7 @@ final class PgCatalogTestSupport {
         hints);
   }
 
-  static NamespaceNode userNamespace(String name, Map<EngineHintKey, EngineHint> hints) {
+  public static NamespaceNode userNamespace(String name, Map<EngineHintKey, EngineHint> hints) {
     return new NamespaceNode(
         userNamespaceId(name),
         1,
@@ -138,7 +138,7 @@ final class PgCatalogTestSupport {
         hints);
   }
 
-  static NamespaceNode systemPgCatalogNamespace() {
+  public static NamespaceNode systemPgCatalogNamespace() {
     return new NamespaceNode(
         PgCatalogTestIds.namespace("pg_catalog"),
         1,
@@ -159,7 +159,7 @@ final class PgCatalogTestSupport {
                     .toByteArray())));
   }
 
-  static NamespaceNode userPgCatalogNamespace() {
+  public static NamespaceNode userPgCatalogNamespace() {
     ResourceId userCatalogId = userCatalogId();
     ResourceId userNsId = userNamespaceId("pg_catalog");
     return new NamespaceNode(
@@ -174,7 +174,7 @@ final class PgCatalogTestSupport {
         Map.of());
   }
 
-  static TableNode systemTable(
+  public static TableNode systemTable(
       ResourceId namespaceId,
       String name,
       List<SchemaColumn> columns,
@@ -193,7 +193,7 @@ final class PgCatalogTestSupport {
         "scanner");
   }
 
-  static TableNode userTable(
+  public static TableNode userTable(
       ResourceId namespaceId,
       String name,
       List<SchemaColumn> columns,
@@ -220,7 +220,7 @@ final class PgCatalogTestSupport {
         columnHints);
   }
 
-  static FunctionNode systemFunction(
+  public static FunctionNode systemFunction(
       ResourceId namespaceId,
       String name,
       boolean aggregate,
@@ -240,7 +240,7 @@ final class PgCatalogTestSupport {
         hints);
   }
 
-  static SystemObjectScanContext contextWithFunctions(
+  public static SystemObjectScanContext contextWithFunctions(
       NamespaceNode namespace, FunctionNode... functions) {
     TestCatalogOverlay overlay = new TestCatalogOverlay();
     overlay.addNode(namespace);
@@ -251,7 +251,7 @@ final class PgCatalogTestSupport {
         overlay, NameRef.getDefaultInstance(), namespace.catalogId(), ENGINE_CTX);
   }
 
-  static TypeNode systemType(String name, Map<EngineHintKey, EngineHint> hints) {
+  public static TypeNode systemType(String name, Map<EngineHintKey, EngineHint> hints) {
     return new TypeNode(
         PgCatalogTestIds.type(nameRef(name)),
         1,
@@ -264,7 +264,7 @@ final class PgCatalogTestSupport {
         hints);
   }
 
-  static NameRef nameRef(String qualified) {
+  public static NameRef nameRef(String qualified) {
     if (qualified == null || qualified.isBlank()) {
       return NameRef.getDefaultInstance();
     }
@@ -272,15 +272,15 @@ final class PgCatalogTestSupport {
     return NameRefUtil.name(parts);
   }
 
-  static ResourceId catalogId() {
+  public static ResourceId catalogId() {
     return PgCatalogTestIds.catalog();
   }
 
-  static ResourceId userCatalogId() {
+  public static ResourceId userCatalogId() {
     return PgCatalogTestIds.userCatalog();
   }
 
-  static ResourceId userNamespaceId(String name) {
+  public static ResourceId userNamespaceId(String name) {
     return PgCatalogTestIds.userNamespace(name);
   }
 }
