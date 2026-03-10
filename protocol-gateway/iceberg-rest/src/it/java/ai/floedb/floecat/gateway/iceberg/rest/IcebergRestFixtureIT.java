@@ -69,6 +69,7 @@ import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.builder.RequestSpecBuilder;
 import io.restassured.http.ContentType;
+import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 import java.io.IOException;
 import java.net.URI;
@@ -2041,7 +2042,7 @@ class IcebergRestFixtureIT {
     System.out.printf(
         "FixtureIT register namespace=%s table=%s metadata=%s overwrite=%s%n",
         namespace, table, metadataLocation, overwrite);
-    String responseLocation =
+    Response registerResponse =
         given()
             .spec(spec)
             .body(payload)
@@ -2050,9 +2051,42 @@ class IcebergRestFixtureIT {
             .then()
             .log()
             .ifValidationFails()
-            .statusCode(200)
+            .statusCode(anyOf(is(200), is(409)))
             .extract()
-            .path("'metadata-location'");
+            .response();
+    int status = registerResponse.statusCode();
+    String responseLocation;
+    if (status == 200) {
+      responseLocation = registerResponse.path("'metadata-location'");
+    } else if (status == 409 && !overwrite) {
+      // OpenAPI allows 409 when the table already exists. For fixture ITs, re-register
+      // with overwrite=true so each test starts from deterministic fixture metadata.
+      payload.put("overwrite", true);
+      Response overwriteResponse =
+          given()
+              .spec(spec)
+              .body(payload)
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/register")
+              .then()
+              .log()
+              .ifValidationFails()
+              .statusCode(200)
+              .extract()
+              .response();
+      responseLocation = overwriteResponse.path("'metadata-location'");
+    } else {
+      Assertions.fail(
+          "Unexpected register response status for "
+              + namespace
+              + "."
+              + table
+              + ": "
+              + status
+              + " body="
+              + registerResponse.asString());
+      return null;
+    }
     System.out.printf(
         "FixtureIT register response namespace=%s table=%s metadataLocation=%s%n",
         namespace, table, responseLocation);

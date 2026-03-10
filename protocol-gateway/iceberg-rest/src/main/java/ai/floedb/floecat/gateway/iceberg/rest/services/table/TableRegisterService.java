@@ -296,16 +296,12 @@ public class TableRegisterService {
     }
     List<Map<String, Object>> updates = new ArrayList<>();
     Map<String, String> props = mergedProps == null ? Map.of() : new LinkedHashMap<>(mergedProps);
-    props.remove("metadata-location");
     if (!props.isEmpty()) {
       updates.add(Map.of("action", "set-properties", "updates", props));
     }
     String location = props.get("location");
     if (location != null && !location.isBlank()) {
       updates.add(Map.of("action", "set-location", "location", location));
-    }
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      updates.add(Map.of("action", "set-metadata-location", "metadata-location", metadataLocation));
     }
     List<Long> importedSnapshotIds = new ArrayList<>();
     if (importedMetadata != null && importedMetadata.snapshots() != null) {

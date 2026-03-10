@@ -99,6 +99,8 @@ class TransactionCommitServiceTest {
   private final TableCommitMaterializationService materializationService =
       Mockito.mock(TableCommitMaterializationService.class);
   private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
+  private final TableCommitMetadataMutator metadataMutator =
+      Mockito.mock(TableCommitMetadataMutator.class);
   private final SnapshotClient snapshotClient = Mockito.mock(SnapshotClient.class);
   private final TransactionClient transactionClient = Mockito.mock(TransactionClient.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
@@ -114,6 +116,7 @@ class TransactionCommitServiceTest {
     service.commitOutboxService = commitOutboxService;
     service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
+    service.metadataMutator = metadataMutator;
     service.snapshotClient = snapshotClient;
     service.transactionClient = transactionClient;
 
@@ -142,6 +145,7 @@ class TransactionCommitServiceTest {
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
     when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(defaultCommitResponse());
+    when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     when(tableSupport.getConnector(any()))
@@ -2809,8 +2813,8 @@ class TransactionCommitServiceTest {
   private TransactionCommitRequest requestWithSetMetadataLocationAndAddSnapshot(
       String metadataLocation, long snapshotId) {
     Map<String, Object> setMetadataLocation = new LinkedHashMap<>();
-    setMetadataLocation.put("action", "set-metadata-location");
-    setMetadataLocation.put("metadata-location", metadataLocation);
+    setMetadataLocation.put("action", "set-properties");
+    setMetadataLocation.put("updates", Map.of("metadata-location", metadataLocation));
     Map<String, Object> snapshot = new LinkedHashMap<>();
     snapshot.put("snapshot-id", snapshotId);
     snapshot.put("schema-id", 1);

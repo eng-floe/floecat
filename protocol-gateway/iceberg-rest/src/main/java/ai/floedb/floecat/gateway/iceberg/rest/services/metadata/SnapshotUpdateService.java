@@ -301,14 +301,12 @@ public class SnapshotUpdateService {
         }
         metadataChanges.schemaIdsToRemove.addAll(schemaIds);
       } else if ("set-location".equals(action)
-          || "set-metadata-location".equals(action)
           || "set-properties".equals(action)
           || "remove-properties".equals(action)) {
         // Table-level updates are handled by table update planning; snapshot metadata flow is a
         // no-op.
         continue;
       } else if ("set-location".equals(action)
-          || "set-metadata-location".equals(action)
           || "set-properties".equals(action)
           || "remove-properties".equals(action)) {
         continue;
@@ -440,11 +438,6 @@ public class SnapshotUpdateService {
         String location = asString(update.get("location"));
         if (location == null || location.isBlank()) {
           return validationError("set-location requires location");
-        }
-      } else if ("set-metadata-location".equals(action)) {
-        String location = asString(update.get("metadata-location"));
-        if (location == null || location.isBlank()) {
-          return validationError("set-metadata-location requires metadata-location");
         }
       } else if ("set-properties".equals(action)) {
         @SuppressWarnings("unchecked")

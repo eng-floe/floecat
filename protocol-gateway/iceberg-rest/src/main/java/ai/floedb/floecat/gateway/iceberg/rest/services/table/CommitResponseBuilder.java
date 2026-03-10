@@ -48,12 +48,30 @@ public class CommitResponseBuilder {
   private static final Logger LOG = Logger.getLogger(CommitResponseBuilder.class);
 
   @Inject SnapshotClient snapshotClient;
+  @Inject TableCommitMetadataMutator metadataMutator;
 
   void setSnapshotClient(SnapshotClient snapshotClient) {
     this.snapshotClient = snapshotClient;
   }
 
   public String resolveRequestedMetadataLocation(TableRequests.Commit req) {
+    if (req == null || req.updates() == null) {
+      return null;
+    }
+    for (Map<String, Object> update : req.updates()) {
+      if (update == null) {
+        continue;
+      }
+      String action = asString(update.get("action"));
+      if (!"set-properties".equals(action)) {
+        continue;
+      }
+      Map<String, String> updates = asStringMap(update.get("updates"));
+      String location = updates.get("metadata-location");
+      if (location != null && !location.isBlank()) {
+        return location;
+      }
+    }
     return null;
   }
 
@@ -122,10 +140,7 @@ public class CommitResponseBuilder {
     stageAwareResponse = normalizeMetadataLocation(stageAwareResponse);
     stageAwareResponse =
         preferRequestedMetadata(stageAwareResponse, resolveRequestedMetadataLocation(req));
-    stageAwareResponse = preferRequestedSequence(stageAwareResponse, req);
-    stageAwareResponse = preferSnapshotSequence(stageAwareResponse, req);
-    stageAwareResponse = mergeTableDefinitionUpdates(stageAwareResponse, req);
-    return mergeSnapshotUpdates(stageAwareResponse, req);
+    return stageAwareResponse;
   }
 
   public CommitTableResponseDto buildFinalResponse(
@@ -156,7 +171,6 @@ public class CommitResponseBuilder {
     }
     finalResponse = normalizeMetadataLocation(finalResponse);
     finalResponse = preferRequestedMetadata(finalResponse, resolveRequestedMetadataLocation(req));
-    finalResponse = mergeTableDefinitionUpdates(finalResponse, req);
     return normalizeResponseMetadata(finalResponse);
   }
 
@@ -164,6 +178,9 @@ public class CommitResponseBuilder {
       CommitTableResponseDto response, TableRequests.Commit req) {
     if (response == null || response.metadata() == null || req == null || req.updates() == null) {
       return response;
+    }
+    if (metadataMutator != null) {
+      return commitResponse(metadataMutator.apply(response.metadata(), req));
     }
     TableMetadataView metadata = response.metadata();
     Integer formatVersion = metadata.formatVersion();
@@ -538,6 +555,9 @@ public class CommitResponseBuilder {
     if (response == null || response.metadata() == null) {
       return response;
     }
+    if (metadataMutator != null) {
+      return commitResponse(metadataMutator.apply(response.metadata(), req));
+    }
     Long requestedSequence = maxSequenceNumber(req);
     if (requestedSequence == null || requestedSequence <= 0) {
       return response;
@@ -588,6 +608,9 @@ public class CommitResponseBuilder {
     if (response == null || response.metadata() == null) {
       return response;
     }
+    if (metadataMutator != null) {
+      return commitResponse(metadataMutator.apply(response.metadata(), req));
+    }
     Long requested = requestedSequenceNumber(req);
     if (requested == null || requested <= 0) {
       return response;
@@ -633,6 +656,9 @@ public class CommitResponseBuilder {
       CommitTableResponseDto response, TableRequests.Commit req) {
     if (response == null || response.metadata() == null || req == null || req.updates() == null) {
       return response;
+    }
+    if (metadataMutator != null) {
+      return commitResponse(metadataMutator.apply(response.metadata(), req));
     }
     List<Map<String, Object>> addedSnapshots = extractSnapshots(req.updates());
     if (addedSnapshots.isEmpty()) {

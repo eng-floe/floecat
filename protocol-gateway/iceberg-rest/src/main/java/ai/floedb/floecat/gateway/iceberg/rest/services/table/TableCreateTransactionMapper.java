@@ -89,7 +89,6 @@ public class TableCreateTransactionMapper {
 
     Map<String, String> props = new LinkedHashMap<>(spec.getPropertiesMap());
     String tableLocation = blankToNull(props.remove("location"));
-    String metadataLocation = blankToNull(props.remove("metadata-location"));
     Integer formatVersion =
         firstNonNegativeInt(
             asInt(firstNonNull(props.remove("format-version"), props.remove("format_version"))), 2);
@@ -108,9 +107,6 @@ public class TableCreateTransactionMapper {
     updates.add(Map.of("action", "set-default-sort-order", "sort-order-id", sortOrderId));
     if (!props.isEmpty()) {
       updates.add(Map.of("action", "set-properties", "updates", props));
-    }
-    if (metadataLocation != null) {
-      updates.add(Map.of("action", "set-metadata-location", "metadata-location", metadataLocation));
     }
     return List.copyOf(updates);
   }

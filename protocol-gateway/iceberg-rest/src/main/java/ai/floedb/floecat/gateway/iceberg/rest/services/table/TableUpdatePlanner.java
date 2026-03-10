@@ -16,11 +16,8 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -28,7 +25,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
@@ -38,9 +34,7 @@ import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -80,15 +74,6 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(spec, mask, requirementError);
     }
     Map<String, String> mergedProps = null;
-    if (tablePropertyService.hasPropertyUpdates(req)) {
-      if (mergedProps == null) {
-        mergedProps = tablePropertyService.ensurePropertyMap(tableSupplier, null);
-      }
-      Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
-      if (updateError != null) {
-        return UpdatePlan.failure(spec, mask, updateError);
-      }
-    }
     Response locationError =
         tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
     if (locationError != null) {
@@ -99,10 +84,13 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(
           spec, mask, validationError("unsupported commit update action: " + unsupported));
     }
-    mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
-    mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    var propertyResult =
+        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
+    if (propertyResult.hasError()) {
+      return UpdatePlan.failure(spec, mask, propertyResult.error());
+    }
+    mergedProps = propertyResult.properties();
     applyTableDefinitionSpecUpdates(spec, mask, req.updates());
-    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
@@ -144,15 +132,6 @@ public class TableUpdatePlanner {
       return UpdatePlan.failure(spec, mask, requirementError);
     }
     Map<String, String> mergedProps = null;
-    if (tablePropertyService.hasPropertyUpdates(req)) {
-      if (mergedProps == null) {
-        mergedProps = tablePropertyService.ensurePropertyMap(tableSupplier, null);
-      }
-      Response updateError = tablePropertyService.applyPropertyUpdates(mergedProps, req.updates());
-      if (updateError != null) {
-        return UpdatePlan.failure(spec, mask, updateError);
-      }
-    }
     Response locationError =
         tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
     if (locationError != null) {
@@ -167,10 +146,13 @@ public class TableUpdatePlanner {
     if (snapshotValidation != null) {
       return UpdatePlan.failure(spec, mask, snapshotValidation);
     }
-    mergedProps = applySnapshotPropertyUpdates(mergedProps, tableSupplier, req.updates());
-    mergedProps = applyRefPropertyUpdates(mergedProps, tableSupplier, req.updates());
+    var propertyResult =
+        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
+    if (propertyResult.hasError()) {
+      return UpdatePlan.failure(spec, mask, propertyResult.error());
+    }
+    mergedProps = propertyResult.properties();
     applyTableDefinitionSpecUpdates(spec, mask, req.updates());
-    mergedProps = applyTableDefinitionPropertyUpdates(mergedProps, tableSupplier, req.updates());
     mergedProps = stripFileIoProperties(mergedProps);
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
@@ -239,7 +221,6 @@ public class TableUpdatePlanner {
           && !"set-default-sort-order".equals(action)
           && !"remove-partition-specs".equals(action)
           && !"remove-schemas".equals(action)
-          && !"set-metadata-location".equals(action)
           && !"set-statistics".equals(action)
           && !"remove-statistics".equals(action)
           && !"set-partition-statistics".equals(action)
@@ -250,268 +231,6 @@ public class TableUpdatePlanner {
       }
     }
     return null;
-  }
-
-  private Map<String, String> applyRefPropertyUpdates(
-      Map<String, String> mergedProps,
-      Supplier<Table> tableSupplier,
-      List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return mergedProps;
-    }
-    Map<String, Map<String, Object>> refs = loadStoredRefs(mergedProps, tableSupplier);
-    boolean mutated = false;
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if ("set-snapshot-ref".equals(action)) {
-        String refName = asString(update.get("ref-name"));
-        Long snapshotId = asLong(update.get("snapshot-id"));
-        if (refName == null || refName.isBlank() || snapshotId == null || snapshotId <= 0) {
-          continue;
-        }
-        Map<String, Object> refMap = new LinkedHashMap<>();
-        refMap.put("snapshot-id", snapshotId);
-        String type = asString(update.get("type"));
-        if (type != null && !type.isBlank()) {
-          refMap.put("type", type.toLowerCase(Locale.ROOT));
-        }
-        Long maxRefAge =
-            asLong(firstNonNull(update.get("max-ref-age-ms"), update.get("max_ref_age_ms")));
-        if (maxRefAge != null) {
-          refMap.put("max-ref-age-ms", maxRefAge);
-        }
-        Long maxSnapshotAge =
-            asLong(
-                firstNonNull(update.get("max-snapshot-age-ms"), update.get("max_snapshot_age_ms")));
-        if (maxSnapshotAge != null) {
-          refMap.put("max-snapshot-age-ms", maxSnapshotAge);
-        }
-        Integer minSnapshots =
-            asInteger(
-                firstNonNull(
-                    update.get("min-snapshots-to-keep"), update.get("min_snapshots_to_keep")));
-        if (minSnapshots != null) {
-          refMap.put("min-snapshots-to-keep", minSnapshots);
-        }
-        refs.put(refName, refMap);
-        mutated = true;
-      } else if ("remove-snapshot-ref".equals(action)) {
-        String refName = asString(update.get("ref-name"));
-        if (refName != null && refs.remove(refName) != null) {
-          mutated = true;
-        }
-      }
-    }
-    if (!mutated) {
-      return mergedProps;
-    }
-    Map<String, String> targetProps =
-        mergedProps == null
-            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
-            : mergedProps;
-    if (refs.isEmpty()) {
-      targetProps.remove(RefPropertyUtil.PROPERTY_KEY);
-    } else {
-      targetProps.put(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(refs));
-    }
-    Long mainSnapshotId = mainRefSnapshotId(refs);
-    if (mainSnapshotId != null && mainSnapshotId > 0) {
-      targetProps.put("current-snapshot-id", Long.toString(mainSnapshotId));
-    } else {
-      targetProps.remove("current-snapshot-id");
-    }
-    return targetProps;
-  }
-
-  private Map<String, String> applySnapshotPropertyUpdates(
-      Map<String, String> mergedProps,
-      Supplier<Table> tableSupplier,
-      List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return mergedProps;
-    }
-    Long latestSnapshotId = null;
-    Long latestSequence = null;
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if (!"add-snapshot".equals(action)) {
-        continue;
-      }
-      @SuppressWarnings("unchecked")
-      Map<String, Object> snapshot =
-          update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-      if (snapshot == null || snapshot.isEmpty()) {
-        continue;
-      }
-      Long snapshotId = asLong(snapshot.get("snapshot-id"));
-      if (snapshotId != null && snapshotId > 0) {
-        latestSnapshotId = snapshotId;
-      }
-      Long sequenceNumber = asLong(snapshot.get("sequence-number"));
-      if (sequenceNumber != null && sequenceNumber > 0) {
-        latestSequence =
-            latestSequence == null ? sequenceNumber : Math.max(latestSequence, sequenceNumber);
-      }
-    }
-    if (latestSnapshotId == null || latestSnapshotId <= 0) {
-      return mergedProps;
-    }
-    Map<String, String> targetProps =
-        mergedProps == null
-            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
-            : mergedProps;
-    targetProps.put("current-snapshot-id", Long.toString(latestSnapshotId));
-    if (latestSequence != null && latestSequence > 0) {
-      Long existing = asLong(targetProps.get("last-sequence-number"));
-      if (existing == null || existing < latestSequence) {
-        targetProps.put("last-sequence-number", Long.toString(latestSequence));
-      }
-    }
-    return targetProps;
-  }
-
-  private Map<String, String> applyTableDefinitionPropertyUpdates(
-      Map<String, String> mergedProps,
-      Supplier<Table> tableSupplier,
-      List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return mergedProps;
-    }
-    Map<String, String> targetProps =
-        mergedProps == null
-            ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
-            : mergedProps;
-    boolean mutated = false;
-    Integer lastAddedSchemaId = null;
-    Integer lastAddedSpecId = null;
-    Integer lastAddedSortOrderId = null;
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = asString(update.get("action"));
-      if ("upgrade-format-version".equals(action)) {
-        Integer version = asInteger(update.get("format-version"));
-        if (version != null && version > 0) {
-          targetProps.put("format-version", Integer.toString(version));
-          mutated = true;
-        }
-      } else if ("add-schema".equals(action)) {
-        Map<String, Object> schema = asObjectMap(update.get("schema"));
-        Integer schemaId = asInteger(schema == null ? null : schema.get("schema-id"));
-        if (schemaId != null && schemaId >= 0) {
-          lastAddedSchemaId = schemaId;
-        }
-        Integer lastColumnId = asInteger(update.get("last-column-id"));
-        if (lastColumnId == null) {
-          lastColumnId = maxSchemaFieldId(schema);
-        }
-        if (lastColumnId != null && lastColumnId >= 0) {
-          targetProps.put("last-column-id", Integer.toString(lastColumnId));
-          mutated = true;
-        }
-      } else if ("set-current-schema".equals(action)) {
-        Integer schemaId =
-            resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
-        if (schemaId != null && schemaId >= 0) {
-          targetProps.put("current-schema-id", Integer.toString(schemaId));
-          mutated = true;
-        }
-      } else if ("add-spec".equals(action)) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> spec =
-            update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-        if (spec != null) {
-          Integer specId = asInteger(spec.get("spec-id"));
-          if (specId != null && specId >= 0) {
-            lastAddedSpecId = specId;
-          }
-          Integer partitionFieldMax = maxPartitionFieldId(spec);
-          if (partitionFieldMax != null && partitionFieldMax >= 0) {
-            targetProps.put("last-partition-id", Integer.toString(partitionFieldMax));
-            mutated = true;
-          }
-        }
-      } else if ("set-default-spec".equals(action)) {
-        Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
-        if (specId != null && specId >= 0) {
-          targetProps.put("default-spec-id", Integer.toString(specId));
-          mutated = true;
-        }
-      } else if ("add-sort-order".equals(action)) {
-        Map<String, Object> sortOrder = asObjectMap(update.get("sort-order"));
-        Integer sortOrderId =
-            asInteger(
-                firstNonNull(
-                    sortOrder == null ? null : sortOrder.get("sort-order-id"),
-                    sortOrder == null ? null : sortOrder.get("order-id")));
-        if (sortOrderId != null && sortOrderId >= 0) {
-          lastAddedSortOrderId = sortOrderId;
-        }
-      } else if ("set-default-sort-order".equals(action)) {
-        Integer orderId =
-            resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
-        if (orderId != null && orderId >= 0) {
-          targetProps.put("default-sort-order-id", Integer.toString(orderId));
-          mutated = true;
-        }
-      } else if ("set-location".equals(action)) {
-        String location = asString(update.get("location"));
-        if (location != null && !location.isBlank()) {
-          targetProps.put("location", location);
-          mutated = true;
-        }
-      } else if ("set-metadata-location".equals(action)) {
-        String metadataLocation = asString(update.get("metadata-location"));
-        if (metadataLocation != null && !metadataLocation.isBlank()) {
-          targetProps.put("metadata-location", metadataLocation);
-          mutated = true;
-        }
-      }
-    }
-    if (!mutated) {
-      return mergedProps;
-    }
-    return targetProps;
-  }
-
-  private Integer resolveLastAddedId(Integer requested, Integer lastAdded) {
-    if (requested == null) {
-      return null;
-    }
-    if (requested == -1) {
-      return lastAdded;
-    }
-    return requested;
-  }
-
-  @SuppressWarnings("unchecked")
-  private Integer maxSchemaFieldId(Map<String, Object> schema) {
-    if (schema == null || schema.isEmpty()) {
-      return null;
-    }
-    Object rawFields = schema.get("fields");
-    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
-      return null;
-    }
-    Integer max = null;
-    for (Object fieldObj : fields) {
-      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
-        continue;
-      }
-      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("id"));
-      if (fieldId == null) {
-        continue;
-      }
-      max = max == null ? fieldId : Math.max(max, fieldId);
-    }
-    return max;
   }
 
   private void applyTableDefinitionSpecUpdates(
@@ -541,49 +260,6 @@ public class TableUpdatePlanner {
         throw new IllegalArgumentException("Invalid add-schema payload", e);
       }
     }
-  }
-
-  @SuppressWarnings("unchecked")
-  private Integer maxPartitionFieldId(Map<String, Object> spec) {
-    if (spec == null || spec.isEmpty()) {
-      return null;
-    }
-    Object rawFields = spec.get("fields");
-    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
-      return 0;
-    }
-    Integer max = null;
-    for (Object fieldObj : fields) {
-      if (!(fieldObj instanceof Map<?, ?> fieldMap)) {
-        continue;
-      }
-      Integer fieldId = asInteger(((Map<String, Object>) fieldMap).get("field-id"));
-      if (fieldId == null) {
-        continue;
-      }
-      max = max == null ? fieldId : Math.max(max, fieldId);
-    }
-    return max == null ? 0 : max;
-  }
-
-  private Map<String, Map<String, Object>> loadStoredRefs(
-      Map<String, String> mergedProps, Supplier<Table> tableSupplier) {
-    String encoded =
-        mergedProps != null
-            ? mergedProps.get(RefPropertyUtil.PROPERTY_KEY)
-            : tableSupplier.get().getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
-    return RefPropertyUtil.decode(encoded);
-  }
-
-  private Long mainRefSnapshotId(Map<String, Map<String, Object>> refs) {
-    if (refs == null || refs.isEmpty()) {
-      return null;
-    }
-    Map<String, Object> main = refs.get("main");
-    if (main == null || main.isEmpty()) {
-      return null;
-    }
-    return asLong(main.get("snapshot-id"));
   }
 
   private Map<String, String> stripFileIoProperties(Map<String, String> mergedProps) {

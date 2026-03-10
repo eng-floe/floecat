@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Error;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
@@ -49,6 +51,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetad
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -113,7 +116,6 @@ public class TransactionCommitService {
           "set-default-sort-order",
           "remove-partition-specs",
           "remove-schemas",
-          "set-metadata-location",
           "set-statistics",
           "remove-statistics",
           "set-partition-statistics",
@@ -127,6 +129,7 @@ public class TransactionCommitService {
   @Inject TableCommitPlanner tableCommitPlanner;
   @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
   @Inject CommitResponseBuilder responseBuilder;
+  @Inject TableCommitMetadataMutator metadataMutator;
   @Inject TableCommitJournalService commitJournalService;
   @Inject TableCommitOutboxService commitOutboxService;
   @Inject TableCommitMaterializationService materializationService;
@@ -703,9 +706,8 @@ public class TransactionCommitService {
       // Keep create-table locations empty so engines can own first metadata materialization.
       return new PreMaterializedTable(plannedTable, null);
     }
-    if (requestedMetadataLocation(updates) != null) {
-      return new PreMaterializedTable(plannedTable, null);
-    }
+    String requestedLocation = requestedMetadataLocation(updates);
+    boolean skipMaterialization = requestedLocation != null;
     // Materialize metadata for every commit so metadata-location advances atomically with table
     // state, including snapshot-mutating updates.
     IcebergMetadata metadata = null;
@@ -733,13 +735,22 @@ public class TransactionCommitService {
     if (commitView == null || commitView.metadata() == null) {
       return new PreMaterializedTable(plannedTable, null);
     }
+    var commitMetadata =
+        metadataMutator.apply(
+            commitView.metadata(),
+            new TableRequests.Commit(
+                List.of(), updates == null ? List.of() : List.copyOf(updates)));
+    Table canonicalizedTable = applyCanonicalMetadataProperties(plannedTable, commitMetadata);
+    if (skipMaterialization) {
+      return new PreMaterializedTable(canonicalizedTable, null);
+    }
     MaterializeMetadataResult result =
         materializationService.materializeMetadata(
             namespace,
             tableId,
             tableName,
-            plannedTable,
-            commitView.metadata(),
+            canonicalizedTable,
+            commitMetadata,
             commitView.metadataLocation());
     if (result == null) {
       return new PreMaterializedTable(plannedTable, null);
@@ -749,10 +760,10 @@ public class TransactionCommitService {
     }
     String location = result.metadataLocation();
     if (location == null || location.isBlank()) {
-      return new PreMaterializedTable(plannedTable, null);
+      return new PreMaterializedTable(canonicalizedTable, null);
     }
     return new PreMaterializedTable(
-        plannedTable.toBuilder().putProperties("metadata-location", location).build(), null);
+        canonicalizedTable.toBuilder().putProperties("metadata-location", location).build(), null);
   }
 
   private SnapshotChangePlan planAtomicSnapshotChanges(
@@ -945,46 +956,45 @@ public class TransactionCommitService {
               props.get("format-version") != null
                   ? props.get("format-version")
                   : props.get("format_version"));
-      if (formatVersion != null && formatVersion > 0 && builder.getFormatVersion() <= 0) {
+      if (formatVersion != null && formatVersion > 0) {
         builder.setFormatVersion(formatVersion);
       }
       String metadataLocation = props.get("metadata-location");
-      if (metadataLocation != null
-          && !metadataLocation.isBlank()
-          && (builder.getMetadataLocation() == null || builder.getMetadataLocation().isBlank())) {
+      if (metadataLocation != null && !metadataLocation.isBlank()) {
         builder.setMetadataLocation(metadataLocation);
       }
       String tableUuid = props.get("table-uuid");
-      if (tableUuid != null && !tableUuid.isBlank() && builder.getTableUuid().isBlank()) {
+      if (tableUuid != null && !tableUuid.isBlank()) {
         builder.setTableUuid(tableUuid);
       }
       Integer lastColumnId = TableMappingUtil.asInteger(props.get("last-column-id"));
-      if (lastColumnId != null && lastColumnId >= 0 && builder.getLastColumnId() <= 0) {
+      if (lastColumnId != null && lastColumnId >= 0) {
         builder.setLastColumnId(lastColumnId);
       }
       Integer currentSchemaId = TableMappingUtil.asInteger(props.get("current-schema-id"));
-      if (currentSchemaId != null && currentSchemaId >= 0 && builder.getCurrentSchemaId() < 0) {
+      if (currentSchemaId != null && currentSchemaId >= 0) {
         builder.setCurrentSchemaId(currentSchemaId);
       }
       Integer defaultSpecId = TableMappingUtil.asInteger(props.get("default-spec-id"));
-      if (defaultSpecId != null && defaultSpecId >= 0 && builder.getDefaultSpecId() < 0) {
+      if (defaultSpecId != null && defaultSpecId >= 0) {
         builder.setDefaultSpecId(defaultSpecId);
       }
       Integer lastPartitionId = TableMappingUtil.asInteger(props.get("last-partition-id"));
-      if (lastPartitionId != null && lastPartitionId >= 0 && builder.getLastPartitionId() < 0) {
+      if (lastPartitionId != null && lastPartitionId >= 0) {
         builder.setLastPartitionId(lastPartitionId);
       }
       Integer defaultSortOrderId = TableMappingUtil.asInteger(props.get("default-sort-order-id"));
-      if (defaultSortOrderId != null
-          && defaultSortOrderId >= 0
-          && builder.getDefaultSortOrderId() < 0) {
+      if (defaultSortOrderId != null && defaultSortOrderId >= 0) {
         builder.setDefaultSortOrderId(defaultSortOrderId);
       }
       Long lastSequenceNumber = TableMappingUtil.asLong(props.get("last-sequence-number"));
-      if (lastSequenceNumber != null
-          && lastSequenceNumber > 0
-          && builder.getLastSequenceNumber() <= 0) {
+      if (lastSequenceNumber != null && lastSequenceNumber > 0) {
         builder.setLastSequenceNumber(lastSequenceNumber);
+      }
+      Map<String, IcebergRef> refs = decodePropertyRefs(props.get(RefPropertyUtil.PROPERTY_KEY));
+      if (!refs.isEmpty()) {
+        builder.clearRefs();
+        builder.putAllRefs(refs);
       }
     }
     builder.setCurrentSnapshotId(snapshotId);
@@ -992,6 +1002,96 @@ public class TransactionCommitService {
       builder.setLastSequenceNumber(sequenceNumber);
     }
     return builder.getFormatVersion() > 0 ? builder.build() : null;
+  }
+
+  private Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadataView metadata) {
+    if (plannedTable == null || metadata == null) {
+      return plannedTable;
+    }
+    Map<String, String> props = new LinkedHashMap<>(plannedTable.getPropertiesMap());
+    putIntProperty(props, "format-version", metadata.formatVersion());
+    putIntProperty(props, "last-column-id", metadata.lastColumnId());
+    putIntProperty(props, "current-schema-id", metadata.currentSchemaId());
+    putIntProperty(props, "default-spec-id", metadata.defaultSpecId());
+    putIntProperty(props, "last-partition-id", metadata.lastPartitionId());
+    putIntProperty(props, "default-sort-order-id", metadata.defaultSortOrderId());
+    putLongProperty(props, "last-sequence-number", metadata.lastSequenceNumber());
+    syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
+    putStringProperty(props, "table-uuid", metadata.tableUuid());
+    putStringProperty(props, "location", metadata.location());
+    return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
+  }
+
+  private void putIntProperty(Map<String, String> props, String key, Integer value) {
+    if (props == null || key == null || value == null || value < 0) {
+      return;
+    }
+    props.put(key, Integer.toString(value));
+  }
+
+  private void putLongProperty(Map<String, String> props, String key, Long value) {
+    if (props == null || key == null || value == null || value < 0) {
+      return;
+    }
+    props.put(key, Long.toString(value));
+  }
+
+  private void putStringProperty(Map<String, String> props, String key, String value) {
+    if (props == null || key == null || value == null || value.isBlank()) {
+      return;
+    }
+    props.put(key, value);
+  }
+
+  private void syncLongProperty(Map<String, String> props, String key, Long value) {
+    if (props == null || key == null) {
+      return;
+    }
+    if (value == null || value < 0) {
+      props.remove(key);
+      return;
+    }
+    props.put(key, Long.toString(value));
+  }
+
+  private Map<String, IcebergRef> decodePropertyRefs(String encodedRefs) {
+    if (encodedRefs == null || encodedRefs.isBlank()) {
+      return Map.of();
+    }
+    Map<String, Map<String, Object>> decoded = RefPropertyUtil.decode(encodedRefs);
+    if (decoded.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, IcebergRef> refs = new LinkedHashMap<>();
+    for (Map.Entry<String, Map<String, Object>> entry : decoded.entrySet()) {
+      if (entry == null || entry.getKey() == null || entry.getValue() == null) {
+        continue;
+      }
+      Long snapshotId = TableMappingUtil.asLong(entry.getValue().get("snapshot-id"));
+      if (snapshotId == null || snapshotId <= 0) {
+        continue;
+      }
+      IcebergRef.Builder ref = IcebergRef.newBuilder().setSnapshotId(snapshotId);
+      String type = TableMappingUtil.asString(entry.getValue().get("type"));
+      if (type != null && !type.isBlank()) {
+        ref.setType(type);
+      }
+      Long maxRefAgeMs = TableMappingUtil.asLong(entry.getValue().get("max-ref-age-ms"));
+      if (maxRefAgeMs != null && maxRefAgeMs >= 0) {
+        ref.setMaxReferenceAgeMs(maxRefAgeMs);
+      }
+      Long maxSnapshotAgeMs = TableMappingUtil.asLong(entry.getValue().get("max-snapshot-age-ms"));
+      if (maxSnapshotAgeMs != null && maxSnapshotAgeMs >= 0) {
+        ref.setMaxSnapshotAgeMs(maxSnapshotAgeMs);
+      }
+      Integer minSnapshotsToKeep =
+          TableMappingUtil.asInteger(entry.getValue().get("min-snapshots-to-keep"));
+      if (minSnapshotsToKeep != null && minSnapshotsToKeep >= 0) {
+        ref.setMinSnapshotsToKeep(minSnapshotsToKeep);
+      }
+      refs.put(entry.getKey(), ref.build());
+    }
+    return refs.isEmpty() ? Map.of() : Map.copyOf(refs);
   }
 
   private Map<String, String> asStringMap(Object value) {
@@ -1918,12 +2018,16 @@ public class TransactionCommitService {
       if (update == null) {
         continue;
       }
-      if (!"set-metadata-location".equals(TableMappingUtil.asString(update.get("action")))) {
-        continue;
-      }
-      String location = TableMappingUtil.asString(update.get("metadata-location"));
-      if (location != null && !location.isBlank()) {
-        return location;
+      String action = TableMappingUtil.asString(update.get("action"));
+      if ("set-properties".equals(action)) {
+        Map<String, Object> props = TableMappingUtil.asObjectMap(update.get("updates"));
+        if (props == null || props.isEmpty()) {
+          continue;
+        }
+        String location = TableMappingUtil.asString(props.get("metadata-location"));
+        if (location != null && !location.isBlank()) {
+          return location;
+        }
       }
     }
     return null;

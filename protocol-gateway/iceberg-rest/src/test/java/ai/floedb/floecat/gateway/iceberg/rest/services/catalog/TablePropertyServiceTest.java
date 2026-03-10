@@ -40,14 +40,14 @@ class TablePropertyServiceTest {
   private final TablePropertyService service = new TablePropertyService();
 
   @Test
-  void stripMetadataLocationRemovesCanonicalKey() {
+  void stripMetadataLocationIsNoOp() {
     Map<String, String> props = new LinkedHashMap<>();
     props.put("metadata-location", "a");
     props.put("other", "value");
 
     service.stripMetadataLocation(props);
 
-    assertEquals(Map.of("other", "value"), props);
+    assertEquals(Map.of("metadata-location", "a", "other", "value"), props);
   }
 
   @Test
@@ -78,7 +78,7 @@ class TablePropertyServiceTest {
                 Map.of("action", "remove-properties", "removals", List.of("existing"))));
 
     assertNull(response);
-    assertEquals(Map.of("foo", "bar"), props);
+    assertEquals(Map.of("foo", "bar", "metadata-location", "ignored"), props);
   }
 
   @Test
