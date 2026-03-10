@@ -307,7 +307,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         if (out.size() >= want) {
                           break;
                         }
-                        out.add(it.node().toTableProtoTable());
+                        out.add(it.node().toTableProtoBuilder().setCatalogId(catalogId).build());
                         lastEmittedRel = it.rel();
                       }
                     }
