@@ -31,7 +31,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
@@ -102,7 +101,7 @@ public class TableRegisterService {
                 tableName,
                 metadataLocation,
                 idempotencyKey,
-                req.properties(),
+                ioProperties,
                 importedMetadata,
                 tableSupport)
             : createRegisteredTable(
@@ -110,6 +109,7 @@ public class TableRegisterService {
                 tableName,
                 metadataLocation,
                 idempotencyKey,
+                ioProperties,
                 importedMetadata,
                 tableSupport);
     if (commitResponse != null) {
@@ -120,21 +120,6 @@ public class TableRegisterService {
         tableLifecycleService.resolveTableId(
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
     Table created = tableLifecycleService.getTable(tableId);
-
-    String resolvedLocation =
-        tableSupport.resolveTableLocation(
-            importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
-    ResourceId connectorId =
-        configureConnector(
-            namespaceContext,
-            tableName,
-            created.getResourceId(),
-            metadataLocation,
-            resolvedLocation,
-            ioProperties,
-            null,
-            idempotencyKey,
-            tableSupport);
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
     List<Snapshot> snapshots =
@@ -161,6 +146,7 @@ public class TableRegisterService {
       String tableName,
       String metadataLocation,
       String idempotencyKey,
+      Map<String, String> ioProperties,
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
     Response response =
@@ -170,7 +156,7 @@ public class TableRegisterService {
             buildRegisterTransactionRequest(
                 namespaceContext.namespacePath(),
                 tableName,
-                mergeImportedProperties(null, importedMetadata, metadataLocation),
+                mergeImportedProperties(null, importedMetadata, metadataLocation, ioProperties),
                 metadataLocation,
                 importedMetadata,
                 List.of(),
@@ -189,7 +175,7 @@ public class TableRegisterService {
       String tableName,
       String metadataLocation,
       String idempotencyKey,
-      Map<String, String> registerProperties,
+      Map<String, String> ioProperties,
       ImportedMetadata importedMetadata,
       TableGatewaySupport tableSupport) {
     ResourceId tableId =
@@ -211,7 +197,8 @@ public class TableRegisterService {
     }
     List<Long> existingSnapshotIds = listSnapshotIds(tableId);
     Map<String, String> props =
-        mergeImportedProperties(existing.getPropertiesMap(), importedMetadata, metadataLocation);
+        mergeImportedProperties(
+            existing.getPropertiesMap(), importedMetadata, metadataLocation, ioProperties);
     Response response =
         transactionCommitService.commit(
             namespaceContext.prefix(),
@@ -229,39 +216,6 @@ public class TableRegisterService {
       return response;
     }
     Table updated = tableLifecycleService.getTable(tableId);
-
-    ResourceId connectorId =
-        existing.hasUpstream() && existing.getUpstream().hasConnectorId()
-            ? existing.getUpstream().getConnectorId()
-            : null;
-    String resolvedLocation =
-        tableSupport.resolveTableLocation(
-            importedMetadata != null ? importedMetadata.tableLocation() : null, metadataLocation);
-    Map<String, String> ioProperties =
-        tableSupport.resolveRegisterFileIoProperties(registerProperties);
-    if (connectorId == null) {
-      connectorId =
-          configureConnector(
-              namespaceContext,
-              tableName,
-              tableId,
-              metadataLocation,
-              resolvedLocation,
-              ioProperties,
-              null,
-              idempotencyKey,
-              tableSupport);
-    } else {
-      String existingUri =
-          existing.hasUpstream() && existing.getUpstream().getUri() != null
-              ? existing.getUpstream().getUri()
-              : null;
-      if (resolvedLocation != null
-          && (existingUri == null || !resolvedLocation.equals(existingUri))) {
-        tableSupport.updateTableUpstream(
-            tableId, namespaceContext.namespacePath(), tableName, connectorId, resolvedLocation);
-      }
-    }
 
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
     List<Snapshot> snapshots =
@@ -401,62 +355,11 @@ public class TableRegisterService {
     }
   }
 
-  private ResourceId configureConnector(
-      NamespaceRequestContext namespaceContext,
-      String tableName,
-      ResourceId tableId,
-      String metadataLocation,
-      String resolvedTableLocation,
-      Map<String, String> ioProperties,
-      String existingUpstreamUri,
-      String idempotencyKey,
-      TableGatewaySupport tableSupport) {
-    var connectorTemplate = tableSupport.connectorTemplateFor(namespaceContext.prefix());
-    ResourceId connectorId = null;
-    String upstreamUri = null;
-    if (connectorTemplate != null && connectorTemplate.uri() != null) {
-      connectorId =
-          tableSupport.createTemplateConnector(
-              namespaceContext.prefix(),
-              namespaceContext.namespacePath(),
-              namespaceContext.namespaceId(),
-              namespaceContext.catalogId(),
-              tableName,
-              tableId,
-              connectorTemplate,
-              idempotencyKey);
-      upstreamUri = connectorTemplate.uri();
-    } else if (resolvedTableLocation != null && !resolvedTableLocation.isBlank()) {
-      String metadata =
-          metadataLocation != null && !metadataLocation.isBlank()
-              ? metadataLocation
-              : resolvedTableLocation;
-      connectorId =
-          tableSupport.createExternalConnector(
-              namespaceContext.prefix(),
-              namespaceContext.namespacePath(),
-              namespaceContext.namespaceId(),
-              namespaceContext.catalogId(),
-              tableName,
-              tableId,
-              metadata,
-              resolvedTableLocation,
-              ioProperties,
-              idempotencyKey);
-      upstreamUri = resolvedTableLocation;
-    }
-    if (connectorId == null || upstreamUri == null || upstreamUri.isBlank()) {
-      return null;
-    }
-    if (existingUpstreamUri == null || !existingUpstreamUri.equals(upstreamUri)) {
-      tableSupport.updateTableUpstream(
-          tableId, namespaceContext.namespacePath(), tableName, connectorId, upstreamUri);
-    }
-    return connectorId;
-  }
-
   private Map<String, String> mergeImportedProperties(
-      Map<String, String> existing, ImportedMetadata importedMetadata, String metadataLocation) {
+      Map<String, String> existing,
+      ImportedMetadata importedMetadata,
+      String metadataLocation,
+      Map<String, String> registerIoProperties) {
     Map<String, String> merged = new LinkedHashMap<>();
     if (existing != null && !existing.isEmpty()) {
       merged.putAll(existing);
@@ -469,16 +372,11 @@ public class TableRegisterService {
         && !importedMetadata.tableLocation().isBlank()) {
       merged.put("location", importedMetadata.tableLocation());
     }
-    MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
-    removeManagedFileIoProperties(merged);
-    return merged;
-  }
-
-  private static void removeManagedFileIoProperties(Map<String, String> target) {
-    if (target == null || target.isEmpty()) {
-      return;
+    if (registerIoProperties != null && !registerIoProperties.isEmpty()) {
+      merged.putAll(registerIoProperties);
     }
-    target.keySet().removeIf(FileIoFactory::isFileIoProperty);
+    MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
+    return merged;
   }
 
   private String metadataLocation(Table table, IcebergMetadata metadata) {

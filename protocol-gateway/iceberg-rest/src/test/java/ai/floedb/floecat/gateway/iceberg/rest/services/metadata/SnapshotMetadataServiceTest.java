@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -60,18 +59,6 @@ class SnapshotMetadataServiceTest {
     updateService.snapshotClient = service.snapshotClient;
     service.updateService = updateService;
     tableSupport = mock(TableGatewaySupport.class);
-  }
-
-  @Test
-  void snapshotAdditionsFiltersNonAddActions() {
-    Map<String, Object> add = new LinkedHashMap<>();
-    add.put("action", "add-snapshot");
-    Map<String, Object> remove = Map.of("action", "remove-snapshots");
-
-    List<Map<String, Object>> additions = service.snapshotAdditions(List.of(add, remove));
-
-    assertEquals(1, additions.size());
-    assertSame(add, additions.get(0));
   }
 
   @Test

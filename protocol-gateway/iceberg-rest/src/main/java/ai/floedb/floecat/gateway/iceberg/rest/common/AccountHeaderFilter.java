@@ -52,14 +52,6 @@ public class AccountHeaderFilter implements ContainerRequestFilter {
   @Inject JsonWebToken jwt;
   @Inject Instance<TenantIdentityProvider> identityProvider;
 
-  public void setConfigInstance(Instance<IcebergGatewayConfig> config) {
-    this.config = config;
-  }
-
-  public void setAccountContext(AccountContext accountContext) {
-    this.accountContext = accountContext;
-  }
-
   private static final String DEFAULT_AUTH_HEADER = "authorization";
 
   @Override

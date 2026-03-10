@@ -48,10 +48,6 @@ public class MaterializeMetadataService {
   @Inject IcebergGatewayConfig config;
   @Inject TableGatewaySupport tableGatewaySupport;
 
-  public void setMapper(ObjectMapper mapper) {
-    this.mapper = mapper;
-  }
-
   public record MaterializeResult(String metadataLocation, TableMetadataView metadata) {}
 
   public MaterializeResult materialize(

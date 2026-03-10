@@ -21,25 +21,15 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorKind;
-import ai.floedb.floecat.connector.rpc.ConnectorSpec;
-import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
-import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
-import ai.floedb.floecat.connector.rpc.SourceSelector;
-import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -58,7 +48,6 @@ import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.FieldMask;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.LinkedHashMap;
@@ -73,8 +62,6 @@ public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
   private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
       List.of(new StorageCredentialDto("*", Map.of("type", "static")));
-  private static final String CONNECTOR_CAPTURE_STATS_PROPERTY =
-      "floecat.connector.capture-statistics";
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig config;
@@ -438,185 +425,6 @@ public class TableGatewaySupport {
     return templates.get(resolved);
   }
 
-  public ResourceId createTemplateConnector(
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String tableName,
-      ResourceId tableId,
-      IcebergGatewayConfig.RegisterConnectorTemplate template,
-      String idempotencyKey) {
-    NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
-    SourceSelector source =
-        SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
-    var dest =
-        DestinationTarget.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setTableId(tableId)
-            .setTableDisplayName(tableName)
-            .build();
-
-    String namespaceFq = String.join(".", namespacePath);
-    String displayName =
-        template
-            .displayName()
-            .orElseGet(
-                () ->
-                    "register:"
-                        + prefix
-                        + (namespaceFq.isBlank() ? "" : ":" + namespaceFq)
-                        + "."
-                        + tableName);
-
-    ConnectorSpec.Builder spec =
-        ConnectorSpec.newBuilder()
-            .setDisplayName(displayName)
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(template.uri())
-            .setSource(source)
-            .setDestination(dest);
-    spec.setAuth(
-        template
-            .auth()
-            .map(this::toAuthConfig)
-            .orElse(AuthConfig.newBuilder().setScheme("none").build()));
-    if (template.properties() != null && !template.properties().isEmpty()) {
-      spec.putAllProperties(template.properties());
-    }
-    spec.putProperties(
-        CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(template.captureStatistics()));
-    template.description().ifPresent(spec::setDescription);
-
-    CreateConnectorRequest.Builder request =
-        CreateConnectorRequest.newBuilder().setSpec(spec.build());
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(
-          IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
-    }
-    CreateConnectorResponse response = connectorClient.createConnector(request.build());
-    if (response == null || !response.hasConnector()) {
-      LOG.warnf(
-          "Connector service returned empty response for template register %s.%s",
-          prefix, tableName);
-      return null;
-    }
-    return response.getConnector().getResourceId();
-  }
-
-  public ResourceId createExternalConnector(
-      String prefix,
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      ResourceId catalogId,
-      String tableName,
-      ResourceId tableId,
-      String metadataLocation,
-      String tableLocation,
-      Map<String, String> ioProperties,
-      String idempotencyKey) {
-    NamespacePath nsPath = NamespacePath.newBuilder().addAllSegments(namespacePath).build();
-    SourceSelector source =
-        SourceSelector.newBuilder().setNamespace(nsPath).setTable(tableName).build();
-    var dest =
-        DestinationTarget.newBuilder()
-            .setCatalogId(catalogId)
-            .setNamespaceId(namespaceId)
-            .setTableId(tableId)
-            .setTableDisplayName(tableName)
-            .build();
-
-    String namespaceFq = String.join(".", namespacePath);
-    String displayName =
-        "register:" + prefix + (namespaceFq.isBlank() ? "" : ":" + namespaceFq) + "." + tableName;
-
-    String connectorUri =
-        (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : metadataLocation;
-    Map<String, String> props = new LinkedHashMap<>();
-    props.put("external.metadata-location", metadataLocation);
-    props.put("iceberg.source", "filesystem");
-    props.put("external.table-name", tableName);
-    props.put("external.namespace", namespaceFq);
-    props.put(CONNECTOR_CAPTURE_STATS_PROPERTY, Boolean.toString(true));
-    if (ioProperties != null && !ioProperties.isEmpty()) {
-      ioProperties.forEach(
-          (k, v) -> {
-            if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
-              props.put(k, v.trim());
-            }
-          });
-    }
-    ConnectorSpec.Builder spec =
-        ConnectorSpec.newBuilder()
-            .setDisplayName(displayName)
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri(connectorUri)
-            .setSource(source)
-            .setDestination(dest)
-            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
-            .putAllProperties(props);
-
-    CreateConnectorRequest.Builder request =
-        CreateConnectorRequest.newBuilder().setSpec(spec.build());
-    if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-      request.setIdempotency(
-          IdempotencyKey.newBuilder().setKey(idempotencyKey + ":connector").build());
-    }
-    CreateConnectorResponse response = connectorClient.createConnector(request.build());
-    if (response == null || !response.hasConnector()) {
-      LOG.warnf(
-          "Connector service returned empty response for external connector %s.%s",
-          prefix, tableName);
-      return null;
-    }
-    return response.getConnector().getResourceId();
-  }
-
-  public void refreshExternalConnectorMetadata(
-      ResourceId connectorId, String metadataLocation, String tableLocation) {
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return;
-    }
-    try {
-      GetConnectorResponse getResponse =
-          connectorClient.getConnector(
-              GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
-      if (getResponse == null || !getResponse.hasConnector()) {
-        return;
-      }
-      var current = getResponse.getConnector();
-      Map<String, String> nextProperties = new LinkedHashMap<>(current.getPropertiesMap());
-      nextProperties.put("external.metadata-location", metadataLocation);
-
-      String nextUri =
-          (tableLocation != null && !tableLocation.isBlank()) ? tableLocation : current.getUri();
-
-      ConnectorSpec.Builder spec = ConnectorSpec.newBuilder().putAllProperties(nextProperties);
-      FieldMask.Builder updateMask = FieldMask.newBuilder().addPaths("properties");
-      if (nextUri != null && !nextUri.isBlank() && !nextUri.equals(current.getUri())) {
-        spec.setUri(nextUri);
-        updateMask.addPaths("uri");
-      }
-
-      connectorClient.updateConnector(
-          UpdateConnectorRequest.newBuilder()
-              .setConnectorId(connectorId)
-              .setSpec(spec.build())
-              .setUpdateMask(updateMask.build())
-              .build());
-    } catch (StatusRuntimeException e) {
-      LOG.warnf(
-          e,
-          "Failed to refresh connector metadata-location connector=%s metadata=%s",
-          connectorId.getId(),
-          metadataLocation);
-    }
-  }
-
   public Optional<Connector> getConnector(ResourceId connectorId) {
     if (connectorId == null || connectorId.getId().isBlank()) {
       return Optional.empty();
@@ -632,31 +440,6 @@ public class TableGatewaySupport {
     } catch (StatusRuntimeException e) {
       return Optional.empty();
     }
-  }
-
-  public void updateTableUpstream(
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      ResourceId connectorId,
-      String connectorUri) {
-    UpstreamRef.Builder upstream =
-        UpstreamRef.newBuilder()
-            .setFormat(TableFormat.TF_ICEBERG)
-            .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-            .setConnectorId(connectorId)
-            .addAllNamespacePath(namespacePath)
-            .setTableDisplayName(tableName);
-    if (connectorUri != null && !connectorUri.isBlank()) {
-      upstream.setUri(connectorUri);
-    }
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(TableSpec.newBuilder().setUpstream(upstream).build())
-            .setUpdateMask(FieldMask.newBuilder().addPaths("upstream").build())
-            .build();
-    tableClient.updateTable(request);
   }
 
   public void runSyncStatisticsCapture(
@@ -737,18 +520,6 @@ public class TableGatewaySupport {
     if (snapshotIds != null && !snapshotIds.isEmpty()) {
       builder.addAllDestinationSnapshotIds(snapshotIds);
     }
-    return builder.build();
-  }
-
-  private AuthConfig toAuthConfig(IcebergGatewayConfig.AuthTemplate template) {
-    AuthConfig.Builder builder =
-        AuthConfig.newBuilder()
-            .setScheme(
-                template.scheme() == null || template.scheme().isBlank()
-                    ? "none"
-                    : template.scheme())
-            .putAllProperties(template.properties())
-            .putAllHeaderHints(template.headerHints());
     return builder.build();
   }
 

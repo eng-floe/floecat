@@ -23,7 +23,6 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -47,7 +46,6 @@ public class GrpcClients implements AutoCloseable {
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
   private final SchemaServiceGrpc.SchemaServiceBlockingStub schema;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
-  private final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
   private final QueryServiceGrpc.QueryServiceBlockingStub query;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
@@ -69,7 +67,6 @@ public class GrpcClients implements AutoCloseable {
     this.snapshot = SnapshotServiceGrpc.newBlockingStub(channel);
     this.schema = SchemaServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
-    this.stats = TableStatisticsServiceGrpc.newBlockingStub(channel);
     this.query = QueryServiceGrpc.newBlockingStub(channel);
     this.queryScan = QueryScanServiceGrpc.newBlockingStub(channel);
     this.querySchema = QuerySchemaServiceGrpc.newBlockingStub(channel);
@@ -105,10 +102,6 @@ public class GrpcClients implements AutoCloseable {
 
   public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
     return directory;
-  }
-
-  public TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats() {
-    return stats;
   }
 
   public QueryServiceGrpc.QueryServiceBlockingStub query() {

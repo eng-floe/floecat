@@ -44,7 +44,7 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeCreatesSequentialMetadataFiles() throws Exception {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.setMapper(MAPPER);
+    service.mapper = MAPPER;
 
     TableMetadataView metadata = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
 
@@ -66,7 +66,7 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeUsesTableLocationWhenMetadataLocationMissing() throws Exception {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.setMapper(MAPPER);
+    service.mapper = MAPPER;
 
     TableMetadataView base =
         TableMetadataBuilder.fromCatalog(
@@ -113,7 +113,7 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeRejectsInconsistentSequenceMetadata() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.setMapper(MAPPER);
+    service.mapper = MAPPER;
 
     TableMetadataView base =
         TableMetadataBuilder.fromCatalog(
@@ -169,7 +169,7 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeRejectsMainRefWhenCurrentSnapshotMissing() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.setMapper(MAPPER);
+    service.mapper = MAPPER;
 
     TableMetadataView base = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());

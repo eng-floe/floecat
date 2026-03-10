@@ -179,57 +179,6 @@ class ViewMetadataServiceTest {
   }
 
   @Test
-  void withSqlUpdatesCurrentVersionInsteadOfLastVersion() {
-    ViewMetadataView.ViewVersion v1 =
-        new ViewMetadataView.ViewVersion(
-            1,
-            10L,
-            0,
-            Map.of(),
-            List.of(new ViewMetadataView.ViewRepresentation("sql", "select 1", "ansi")),
-            List.of("db"),
-            null);
-    ViewMetadataView.ViewVersion v2 =
-        new ViewMetadataView.ViewVersion(
-            2,
-            11L,
-            0,
-            Map.of(),
-            List.of(new ViewMetadataView.ViewRepresentation("sql", "select 2", "ansi")),
-            List.of("db"),
-            null);
-    ViewMetadataView metadata =
-        new ViewMetadataView(
-            "uuid-1",
-            1,
-            "s3://loc",
-            1,
-            List.of(v1, v2),
-            List.of(),
-            List.of(),
-            Map.of("owner", "team"));
-    ViewMetadataService.MetadataContext context =
-        new ViewMetadataService.MetadataContext(metadata, Map.of("owner", "team"), "select 1");
-
-    ViewMetadataService.MetadataContext updated = service.withSql(context, "select 9");
-
-    assertEquals("select 9", updated.sql());
-    assertEquals("select 9", updated.metadata().versions().get(0).representations().get(0).sql());
-    assertEquals("select 2", updated.metadata().versions().get(1).representations().get(0).sql());
-  }
-
-  @Test
-  void withUserPropertiesRejectsReservedPrefix() {
-    ViewMetadataService.MetadataContext context = contextWithSingleVersion();
-
-    IllegalArgumentException ex =
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> service.withUserProperties(context, Map.of("polaris.internal", "x")));
-    assertTrue(ex.getMessage().contains("reserved prefix"));
-  }
-
-  @Test
   void extractDialectPicksFirstSqlRepresentation() {
     // contextWithSingleVersion() has dialect="ansi" in its first SQL representation
     ViewMetadataService.MetadataContext ctx = contextWithSingleVersion();

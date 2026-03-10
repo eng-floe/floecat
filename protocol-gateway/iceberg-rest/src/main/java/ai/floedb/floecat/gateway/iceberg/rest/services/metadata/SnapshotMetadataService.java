@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
-
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -44,20 +42,6 @@ public class SnapshotMetadataService {
 
   @Inject SnapshotClient snapshotClient;
   @Inject SnapshotUpdateService updateService;
-
-  public List<Map<String, Object>> snapshotAdditions(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (Map<String, Object> update : updates) {
-      String action = asString(update == null ? null : update.get("action"));
-      if ("add-snapshot".equals(action)) {
-        out.add(update);
-      }
-    }
-    return out;
-  }
 
   public IcebergMetadata loadSnapshotMetadata(ResourceId tableId, long snapshotId) {
     try {

@@ -260,29 +260,6 @@ public class ViewMetadataService {
     return new MetadataContext(metadata, Map.copyOf(userProps), sql);
   }
 
-  public MetadataContext withSql(MetadataContext context, String sql) {
-    if (sql == null || sql.isBlank()) {
-      throw new IllegalArgumentException("sql must be non-empty");
-    }
-    ViewMetadataView updated = updateCurrentVersionSql(context.metadata(), sql);
-    return new MetadataContext(updated, context.userProperties(), sql);
-  }
-
-  public MetadataContext withUserProperties(MetadataContext context, Map<String, String> props) {
-    Map<String, String> sanitized = sanitizeProperties(props);
-    ViewMetadataView updated =
-        new ViewMetadataView(
-            context.metadata().viewUuid(),
-            context.metadata().formatVersion(),
-            context.metadata().location(),
-            context.metadata().currentVersionId(),
-            context.metadata().versions(),
-            context.metadata().versionLog(),
-            context.metadata().schemas(),
-            sanitized);
-    return new MetadataContext(updated, sanitized, context.sql());
-  }
-
   public Map<String, String> buildPropertyMap(MetadataContext context) {
     Map<String, String> props = new LinkedHashMap<>(context.userProperties());
     props.put(METADATA_LOCATION_PROPERTY_KEY, context.metadata().location());

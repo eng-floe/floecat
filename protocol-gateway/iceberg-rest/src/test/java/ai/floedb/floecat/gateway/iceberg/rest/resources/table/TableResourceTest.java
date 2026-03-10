@@ -50,15 +50,11 @@ import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
-import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
@@ -75,7 +71,6 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
@@ -454,91 +449,6 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void registerTableCreatesAndEnqueuesReconcile() {
-    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
-    when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:new_table").build();
-
-    Table created =
-        baseTable(tableId, nsId)
-            .setDisplayName("new_table")
-            .putProperties("metadata-location", FIXTURE.metadataLocation())
-            .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
-            .build();
-    when(directoryStub.resolveTable(any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(created).build());
-    stubSnapshotMetadata(FIXTURE.metadataLocation());
-
-    ResourceId connectorId =
-        ResourceId.newBuilder()
-            .setId("conn-1")
-            .setKind(ResourceKind.RK_CONNECTOR)
-            .setAccountId("account1")
-            .build();
-    Connector connector =
-        Connector.newBuilder()
-            .setResourceId(connectorId)
-            .setDestination(
-                DestinationTarget.newBuilder()
-                    .setCatalogId(ResourceId.newBuilder().setId("cat:default").build())
-                    .setNamespaceId(nsId)
-                    .setTableId(created.getResourceId())
-                    .build())
-            .build();
-    when(connectorsStub.createConnector(any()))
-        .thenReturn(CreateConnectorResponse.newBuilder().setConnector(connector).build());
-    when(reconcileControlStub.startCapture(any()))
-        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
-
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(
-            """
-            {
-              "name":"new_table",
-              "metadata-location":"%s",
-              "properties":{"io-impl":"org.apache.iceberg.inmemory.InMemoryFileIO"}
-            }
-            """
-                .formatted(FIXTURE.metadataLocation()))
-        .when()
-        .post("/v1/foo/namespaces/db/register")
-        .then()
-        .statusCode(200)
-        .body("metadata-location", equalTo(FIXTURE.metadataLocation()))
-        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
-        .body(
-            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
-        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
-
-    verify(transactionClient).prepareTransaction(any());
-    verify(transactionClient).commitTransaction(any());
-    verify(tableStub, never()).createTable(any());
-    ArgumentCaptor<UpdateTableRequest> tableUpdateCaptor =
-        ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableStub).updateTable(tableUpdateCaptor.capture());
-    assertEquals(List.of("upstream"), tableUpdateCaptor.getValue().getUpdateMask().getPathsList());
-
-    ArgumentCaptor<CreateConnectorRequest> createReq =
-        ArgumentCaptor.forClass(CreateConnectorRequest.class);
-    verify(connectorsStub).createConnector(createReq.capture());
-    assertEquals(
-        FIXTURE.table().getPropertiesMap().get("location"),
-        createReq.getValue().getSpec().getUri());
-    assertEquals("new_table", createReq.getValue().getSpec().getSource().getTable());
-    assertEquals(nsId, createReq.getValue().getSpec().getDestination().getNamespaceId());
-    assertEquals("none", createReq.getValue().getSpec().getAuth().getScheme());
-    assertEquals(
-        FIXTURE.metadataLocation(),
-        createReq.getValue().getSpec().getPropertiesMap().get("external.metadata-location"));
-    verify(reconcileControlStub, never()).startCapture(any());
-  }
-
-  @Test
   void registerTableConflictsWhenExistsAndNoOverwrite() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
@@ -568,83 +478,6 @@ class TableResourceTest extends AbstractRestResourceTest {
 
     verify(transactionClient, never()).prepareTransaction(any());
     verify(transactionClient, never()).commitTransaction(any());
-  }
-
-  @Test
-  void registerTableOverwriteUpdatesMetadata() {
-    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
-    when(directoryStub.resolveNamespace(any()))
-        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
-
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:existing_table").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-
-    String oldMetadata =
-        TestS3Fixtures.bucketUri(
-            "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json");
-    String newMetadata =
-        TestS3Fixtures.bucketUri(
-            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json");
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("conn-1").setKind(ResourceKind.RK_CONNECTOR).build();
-    Table existing =
-        baseTable(tableId, nsId)
-            .setDisplayName("existing_table")
-            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", oldMetadata)
-            .build();
-    Table updated = existing.toBuilder().putProperties("metadata-location", newMetadata).build();
-    when(tableStub.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build())
-        .thenReturn(GetTableResponse.newBuilder().setTable(existing).build())
-        .thenReturn(GetTableResponse.newBuilder().setTable(updated).build())
-        .thenReturn(GetTableResponse.newBuilder().setTable(updated).build());
-    stubSnapshotMetadata(newMetadata);
-
-    Connector connector =
-        Connector.newBuilder()
-            .setResourceId(connectorId)
-            .setDestination(
-                DestinationTarget.newBuilder()
-                    .setCatalogId(ResourceId.newBuilder().setId("cat:default").build())
-                    .setNamespaceId(nsId)
-                    .setTableId(tableId)
-                    .build())
-            .build();
-    when(connectorsStub.getConnector(any()))
-        .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
-
-    when(connectorsStub.updateConnector(any()))
-        .thenReturn(UpdateConnectorResponse.newBuilder().setConnector(connector).build());
-
-    given()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(
-            """
-            {
-              "name":"existing_table",
-              "metadata-location":"%s",
-              "overwrite":true
-            }
-            """
-                .formatted(newMetadata))
-        .when()
-        .post("/v1/foo/namespaces/db/register")
-        .then()
-        .statusCode(200)
-        .body("metadata-location", equalTo(newMetadata))
-        .body("metadata.'current-snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
-        .body(
-            "metadata.refs.main.'snapshot-id'", equalTo(FIXTURE.metadata().getCurrentSnapshotId()))
-        .body("metadata.snapshots.size()", equalTo(FIXTURE.snapshots().size()));
-
-    verify(transactionClient).prepareTransaction(any());
-    verify(transactionClient).commitTransaction(any());
-    ArgumentCaptor<UpdateTableRequest> tableUpdateCaptor =
-        ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableStub).updateTable(tableUpdateCaptor.capture());
-    assertEquals(List.of("upstream"), tableUpdateCaptor.getValue().getUpdateMask().getPathsList());
   }
 
   @Test
@@ -1259,8 +1092,6 @@ class TableResourceTest extends AbstractRestResourceTest {
         .post("/v1/foo/namespaces/db/tables/orders/metrics")
         .then()
         .statusCode(204);
-
-    verify(statsStub, never()).putTableStats(any());
   }
 
   @Test

@@ -126,16 +126,6 @@ public class TablePlanService {
     planContexts.remove(planId);
   }
 
-  public TablePlanTasksResponseDto fetchTasks(String planId) {
-    PlanContext ctx = planContexts.get(planId);
-    if (ctx == null) {
-      throw new IllegalArgumentException("unknown plan id " + planId);
-    }
-    ScanBundle bundle = fetchScanBundle(ctx, planId);
-    planContexts.remove(planId);
-    return toScanTasksDto(bundle);
-  }
-
   private ScanBundle fetchScanBundle(PlanContext ctx, String queryId) {
     FetchScanBundleRequest.Builder builder =
         FetchScanBundleRequest.newBuilder().setQueryId(queryId).setTableId(ctx.tableId());

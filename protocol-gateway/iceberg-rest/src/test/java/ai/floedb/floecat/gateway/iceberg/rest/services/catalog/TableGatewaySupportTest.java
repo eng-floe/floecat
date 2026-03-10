@@ -37,14 +37,8 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
-import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -241,88 +235,6 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void createExternalConnectorBuildsExpectedRequest() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
-    ResourceId catalogId = ResourceId.newBuilder().setId("cat").build();
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.createConnector(any()))
-        .thenReturn(
-            CreateConnectorResponse.newBuilder()
-                .setConnector(Connector.newBuilder().setResourceId(connectorId).build())
-                .build());
-
-    ResourceId created =
-        support.createExternalConnector(
-            "cat",
-            List.of("db", "analytics"),
-            namespaceId,
-            catalogId,
-            "orders",
-            tableId,
-            "s3://bucket/orders/metadata/v1.metadata.json",
-            null,
-            Map.of("s3.endpoint", " http://localhost:4566 ", "non-io", "x"),
-            "idem-123");
-
-    assertEquals(connectorId, created);
-    ArgumentCaptor<CreateConnectorRequest> captor =
-        ArgumentCaptor.forClass(CreateConnectorRequest.class);
-    verify(connectorClient).createConnector(captor.capture());
-    CreateConnectorRequest request = captor.getValue();
-    assertEquals("idem-123:connector", request.getIdempotency().getKey());
-    assertEquals("register:cat:db.analytics.orders", request.getSpec().getDisplayName());
-    assertEquals("s3://bucket/orders/metadata/v1.metadata.json", request.getSpec().getUri());
-    assertEquals(
-        "s3://bucket/orders/metadata/v1.metadata.json",
-        request.getSpec().getPropertiesOrThrow("external.metadata-location"));
-    assertEquals("filesystem", request.getSpec().getPropertiesOrThrow("iceberg.source"));
-    assertEquals("http://localhost:4566", request.getSpec().getPropertiesOrThrow("s3.endpoint"));
-    assertFalse(request.getSpec().getPropertiesMap().containsKey("non-io"));
-  }
-
-  @Test
-  void refreshExternalConnectorMetadataUpdatesPropertiesAndUri() {
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
-    when(connectorClient.getConnector(any()))
-        .thenReturn(
-            GetConnectorResponse.newBuilder()
-                .setConnector(
-                    Connector.newBuilder()
-                        .setResourceId(connectorId)
-                        .setUri("s3://old/location")
-                        .putProperties("external.metadata-location", "s3://old/meta.json")
-                        .putProperties("iceberg.source", "filesystem")
-                        .build())
-                .build());
-
-    support.refreshExternalConnectorMetadata(
-        connectorId, "s3://new/metadata/00003.json", "s3://new/location");
-
-    ArgumentCaptor<UpdateConnectorRequest> captor =
-        ArgumentCaptor.forClass(UpdateConnectorRequest.class);
-    verify(connectorClient).updateConnector(captor.capture());
-    UpdateConnectorRequest request = captor.getValue();
-    assertEquals(connectorId, request.getConnectorId());
-    assertTrue(request.getUpdateMask().getPathsList().contains("properties"));
-    assertTrue(request.getUpdateMask().getPathsList().contains("uri"));
-    assertEquals("s3://new/location", request.getSpec().getUri());
-    assertEquals(
-        "s3://new/metadata/00003.json",
-        request.getSpec().getPropertiesOrThrow("external.metadata-location"));
-    assertEquals("filesystem", request.getSpec().getPropertiesOrThrow("iceberg.source"));
-  }
-
-  @Test
-  void refreshExternalConnectorMetadataSkipsWhenMissingMetadataLocation() {
-    ResourceId connectorId = ResourceId.newBuilder().setId("connector-1").build();
-    support.refreshExternalConnectorMetadata(connectorId, "", "s3://new/location");
-    verify(connectorClient, never()).getConnector(any());
-    verify(connectorClient, never()).updateConnector(any());
-  }
-
-  @Test
   void deleteConnectorSkipsNullAndSwallowsFailures() {
     support.deleteConnector(null);
     verify(connectorClient, never()).deleteConnector(any());
@@ -348,122 +260,6 @@ class TableGatewaySupportTest {
     assertSame(directTemplate, support.connectorTemplateFor("direct"));
     assertSame(mappedTemplate, support.connectorTemplateFor("alias"));
     assertNull(support.connectorTemplateFor("missing"));
-  }
-
-  @Test
-  void createTemplateConnectorBuildsRequestAndSupportsIdempotency() {
-    IcebergGatewayConfig.RegisterConnectorTemplate template =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    IcebergGatewayConfig.AuthTemplate authTemplate = mock(IcebergGatewayConfig.AuthTemplate.class);
-    when(template.uri()).thenReturn("s3://template/location");
-    when(template.displayName()).thenReturn(Optional.empty());
-    when(template.description()).thenReturn(Optional.of("desc"));
-    when(template.properties()).thenReturn(Map.of("k1", "v1"));
-    when(template.captureStatistics()).thenReturn(false);
-    when(template.auth()).thenReturn(Optional.of(authTemplate));
-    when(authTemplate.scheme()).thenReturn("bearer");
-    when(authTemplate.properties()).thenReturn(Map.of("authp", "authv"));
-    when(authTemplate.headerHints()).thenReturn(Map.of("Authorization", "Bearer ..."));
-    ResourceId connectorId = ResourceId.newBuilder().setId("template-connector").build();
-    when(connectorClient.createConnector(any()))
-        .thenReturn(
-            CreateConnectorResponse.newBuilder()
-                .setConnector(Connector.newBuilder().setResourceId(connectorId).build())
-                .build());
-
-    ResourceId created =
-        support.createTemplateConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            template,
-            "idem-key");
-
-    assertEquals(connectorId, created);
-    ArgumentCaptor<CreateConnectorRequest> captor =
-        ArgumentCaptor.forClass(CreateConnectorRequest.class);
-    verify(connectorClient).createConnector(captor.capture());
-    CreateConnectorRequest request = captor.getValue();
-    assertEquals("idem-key:connector", request.getIdempotency().getKey());
-    assertEquals("register:cat:db.orders", request.getSpec().getDisplayName());
-    assertEquals("desc", request.getSpec().getDescription());
-    assertEquals(
-        "false", request.getSpec().getPropertiesOrThrow("floecat.connector.capture-statistics"));
-    assertEquals("v1", request.getSpec().getPropertiesOrThrow("k1"));
-    assertEquals("bearer", request.getSpec().getAuth().getScheme());
-    assertEquals("authv", request.getSpec().getAuth().getPropertiesOrThrow("authp"));
-  }
-
-  @Test
-  void createTemplateConnectorReturnsNullForEmptyResponse() {
-    IcebergGatewayConfig.RegisterConnectorTemplate template =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    when(template.uri()).thenReturn("s3://template/location");
-    when(template.displayName()).thenReturn(Optional.of("display"));
-    when(template.description()).thenReturn(Optional.empty());
-    when(template.properties()).thenReturn(Map.of());
-    when(template.captureStatistics()).thenReturn(true);
-    when(template.auth()).thenReturn(Optional.empty());
-    when(connectorClient.createConnector(any()))
-        .thenReturn(CreateConnectorResponse.newBuilder().build());
-
-    ResourceId created =
-        support.createTemplateConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            template,
-            null);
-
-    assertNull(created);
-  }
-
-  @Test
-  void updateTableUpstreamIncludesConnectorNamespaceAndUri() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("connector-9").setKind(ResourceKind.RK_CONNECTOR).build();
-
-    support.updateTableUpstream(
-        tableId, List.of("db", "analytics"), "orders", connectorId, "s3://target/orders");
-
-    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableClient).updateTable(captor.capture());
-    UpdateTableRequest request = captor.getValue();
-    assertEquals(tableId, request.getTableId());
-    assertEquals(List.of("upstream"), request.getUpdateMask().getPathsList());
-    assertEquals(connectorId, request.getSpec().getUpstream().getConnectorId());
-    assertEquals(
-        List.of("db", "analytics"), request.getSpec().getUpstream().getNamespacePathList());
-    assertEquals("orders", request.getSpec().getUpstream().getTableDisplayName());
-    assertEquals("s3://target/orders", request.getSpec().getUpstream().getUri());
-  }
-
-  @Test
-  void createExternalConnectorReturnsNullForEmptyResponse() {
-    when(connectorClient.createConnector(any()))
-        .thenReturn(CreateConnectorResponse.newBuilder().build());
-
-    ResourceId created =
-        support.createExternalConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            "s3://bucket/orders/metadata/v1.metadata.json",
-            "s3://bucket/orders",
-            Map.of(),
-            null);
-
-    assertNull(created);
   }
 
   @Test

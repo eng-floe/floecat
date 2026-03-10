@@ -34,7 +34,6 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
@@ -106,7 +105,6 @@ public abstract class AbstractRestResourceTest {
   protected NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceStub;
   protected ViewServiceGrpc.ViewServiceBlockingStub viewStub;
   protected SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
-  protected TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statsStub;
   protected QueryServiceBlockingStub queryStub;
   protected QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScanStub;
   protected QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchemaStub;
@@ -121,7 +119,6 @@ public abstract class AbstractRestResourceTest {
     namespaceStub = Mockito.mock(NamespaceServiceGrpc.NamespaceServiceBlockingStub.class);
     viewStub = Mockito.mock(ViewServiceGrpc.ViewServiceBlockingStub.class);
     snapshotStub = Mockito.mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
-    statsStub = Mockito.mock(TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub.class);
     queryStub = Mockito.mock(QueryServiceGrpc.QueryServiceBlockingStub.class);
     queryScanStub = Mockito.mock(QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
     querySchemaStub = Mockito.mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
@@ -133,7 +130,6 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(clients.namespace()).thenReturn(namespaceStub);
     Mockito.when(clients.view()).thenReturn(viewStub);
     Mockito.when(clients.snapshot()).thenReturn(snapshotStub);
-    Mockito.when(clients.stats()).thenReturn(statsStub);
     Mockito.when(clients.query()).thenReturn(queryStub);
     Mockito.when(clients.queryScan()).thenReturn(queryScanStub);
     Mockito.when(clients.querySchema()).thenReturn(querySchemaStub);
@@ -145,7 +141,6 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(grpc.withHeaders(namespaceStub)).thenReturn(namespaceStub);
     Mockito.when(grpc.withHeaders(viewStub)).thenReturn(viewStub);
     Mockito.when(grpc.withHeaders(snapshotStub)).thenReturn(snapshotStub);
-    Mockito.when(grpc.withHeaders(statsStub)).thenReturn(statsStub);
     Mockito.when(grpc.withHeaders(queryStub)).thenReturn(queryStub);
     Mockito.when(grpc.withHeaders(queryScanStub)).thenReturn(queryScanStub);
     Mockito.when(grpc.withHeaders(querySchemaStub)).thenReturn(querySchemaStub);
