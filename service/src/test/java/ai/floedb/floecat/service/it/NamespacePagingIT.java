@@ -211,6 +211,36 @@ class NamespacesPagingIT {
         ex, Status.Code.ALREADY_EXISTS, ErrorCode.MC_CONFLICT, "already exists");
   }
 
+  @Test
+  void listNamespaces_acceptsSyntheticSystemCatalogId() {
+    ResourceId systemCatalogId =
+        catalogs
+            .listCatalogs(
+                ListCatalogsRequest.newBuilder()
+                    .setPage(PageRequest.newBuilder().setPageSize(200))
+                    .build())
+            .getCatalogsList()
+            .stream()
+            .map(Catalog::getResourceId)
+            .filter(id -> "_system".equals(id.getAccountId()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("missing synthetic system catalog"));
+
+    var resp =
+        namespaces.listNamespaces(
+            ListNamespacesRequest.newBuilder()
+                .setCatalogId(systemCatalogId)
+                .setChildrenOnly(true)
+                .setRecursive(false)
+                .setPage(PageRequest.newBuilder().setPageSize(100))
+                .build());
+
+    assertTrue(
+        resp.getNamespacesList().stream()
+            .map(Namespace::getDisplayName)
+            .anyMatch("information_schema"::equals));
+  }
+
   private List<Namespace> collectAllNamespacesAtRootChildrenOnly(int pageSize) {
     var all = new ArrayList<Namespace>();
     String token = "";

@@ -39,6 +39,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
@@ -181,7 +182,8 @@ public final class MetaGraph implements CatalogOverlay {
   /**
    * Resolves a catalog by name.
    *
-   * <p>Catalogs are only user-defined; system catalogs are implicit.
+   * <p>Catalog resolution is user-first, with a system fallback alias equal to the current engine
+   * kind.
    *
    * @param correlationId correlation ID for error reporting
    * @param name the catalog name to resolve
@@ -189,7 +191,27 @@ public final class MetaGraph implements CatalogOverlay {
    */
   @Override
   public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
-    return userGraph.resolveCatalog(correlationId, name);
+    Optional<ResourceId> user = userGraph.resolveCatalog(correlationId, name);
+    if (user.isPresent()) {
+      return user;
+    }
+
+    EngineContext ctx = engineContext();
+    if (isSystemCatalogAlias(name, ctx)) {
+      return Optional.of(SystemNodeRegistry.systemCatalogContainerId(ctx.effectiveEngineKind()));
+    }
+    return Optional.empty();
+  }
+
+  private boolean isSystemCatalogAlias(String name, EngineContext ctx) {
+    if (name == null) {
+      return false;
+    }
+    String candidate = name.trim();
+    if (candidate.isEmpty()) {
+      return false;
+    }
+    return candidate.equalsIgnoreCase(ctx.effectiveEngineKind());
   }
 
   /**
@@ -505,7 +527,7 @@ public final class MetaGraph implements CatalogOverlay {
   /**
    * Resolves a catalog node by its resource ID.
    *
-   * <p>Catalogs are only user-defined; system catalogs are implicit.
+   * <p>Looks up user catalogs first, then the synthetic system catalog for the current engine.
    *
    * @param id the catalog resource ID
    * @return the catalog node, or empty if not found

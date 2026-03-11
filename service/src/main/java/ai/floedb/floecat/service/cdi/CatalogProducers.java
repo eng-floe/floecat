@@ -48,10 +48,8 @@ public class CatalogProducers {
   @Produces
   @ApplicationScoped
   public SystemNodeRegistry produceBuiltinNodeRegistry(
-      SystemDefinitionRegistry defs,
-      SystemObjectScannerProvider internalProvider,
-      List<SystemObjectScannerProvider> providers) {
-    return new SystemNodeRegistry(defs, internalProvider, providers);
+      SystemDefinitionRegistry defs, ServiceLoaderSystemCatalogProvider loader) {
+    return new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
   }
 
   @Produces

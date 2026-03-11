@@ -18,21 +18,29 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -185,6 +193,79 @@ class ViewServiceImplSystemViewTest {
     verifyNoInteractions(viewRepo);
   }
 
+  @Test
+  void updateView_catalogIdSetToSystemCatalog_permissionDenied() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_v")
+            .build();
+    ResourceId systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_v")
+            .build();
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("view_user_v")
+            .build();
+
+    overlay.addNode(
+        new CatalogNode(
+            systemCatalogId,
+            1L,
+            Instant.now(),
+            "engine",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            1L,
+            Instant.now(),
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addNode(userViewNode(viewId, userCatalogId, namespaceId));
+
+    when(viewRepo.metaFor(viewId)).thenReturn(MutationMeta.getDefaultInstance());
+    when(viewRepo.getById(viewId))
+        .thenReturn(
+            Optional.of(
+                View.newBuilder()
+                    .setResourceId(viewId)
+                    .setCatalogId(userCatalogId)
+                    .setNamespaceId(namespaceId)
+                    .setDisplayName("v_orders")
+                    .setSql("select 1")
+                    .build()));
+
+    var req =
+        UpdateViewRequest.newBuilder()
+            .setViewId(viewId)
+            .setSpec(ViewSpec.newBuilder().setCatalogId(systemCatalogId).build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("catalog_id").build())
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.updateView(req).await().indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(viewRepo, never()).update(any(), anyLong());
+  }
+
   private ViewNode systemViewNode(ResourceId id) {
     var catalogId =
         ResourceId.newBuilder()
@@ -213,6 +294,26 @@ class ViewServiceImplSystemViewTest {
         List.of(),
         List.of(),
         GraphNodeOrigin.SYSTEM,
+        Map.of(),
+        Optional.empty(),
+        Map.of(),
+        Map.<EngineHintKey, EngineHint>of());
+  }
+
+  private ViewNode userViewNode(ResourceId id, ResourceId catalogId, ResourceId namespaceId) {
+    return new ViewNode(
+        id,
+        1L,
+        Instant.now(),
+        catalogId,
+        namespaceId,
+        "user_view_" + id.getId(),
+        "select 1",
+        "sql",
+        List.<SchemaColumn>of(),
+        List.of(),
+        List.of(),
+        GraphNodeOrigin.USER,
         Map.of(),
         Optional.empty(),
         Map.of(),
