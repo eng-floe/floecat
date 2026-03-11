@@ -91,7 +91,7 @@ public final class BuiltinTestSupport {
         Instant.EPOCH,
         "16.0",
         namespaceId,
-        fullname,
+        fn.getName(),
         argIds,
         retId,
         false,

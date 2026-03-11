@@ -37,6 +37,7 @@ public record FunctionNode(
     implements GraphNode {
 
   public FunctionNode {
+    displayName = displayName == null ? "" : displayName;
     argumentTypes = List.copyOf(argumentTypes == null ? List.of() : argumentTypes);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }

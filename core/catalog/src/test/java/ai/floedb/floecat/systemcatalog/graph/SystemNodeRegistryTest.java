@@ -92,38 +92,30 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
-    assertThat(floe16.functions())
-        .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.pg_only");
+    assertThat(floe16.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
     assertThat(floe16.functions())
         .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.shared_fn")
-        .doesNotContain("pg_catalog.pg_fn", "pg_catalog.pg_legacy");
+        .contains("shared_fn")
+        .doesNotContain("pg_fn", "pg_legacy");
 
     // ---------------------------------
     // example / version 17.0
     // ---------------------------------
     var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
 
-    assertThat(floe17.functions())
-        .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.pg_only");
+    assertThat(floe17.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
-    assertThat(floe17.functions())
-        .extracting(fn -> fn.displayName())
-        .doesNotContain("pg_catalog.pg_legacy");
+    assertThat(floe17.functions()).extracting(fn -> fn.displayName()).doesNotContain("pg_legacy");
 
     // ---------------------------------
     // pg / version 16.0   (alternate engine)
     // ---------------------------------
     var pg16 = nodeRegistry.nodesFor(PG_KIND, "16.0");
 
-    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_catalog.pg_fn");
+    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_fn");
 
-    assertThat(pg16.functions())
-        .extracting(fn -> fn.displayName())
-        .doesNotContain("pg_catalog.pg_only");
+    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).doesNotContain("pg_only");
 
     // ---------------------------------
     // Extract persisted rules in catalog
@@ -165,8 +157,7 @@ class SystemNodeRegistryTest {
     assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
         .extracting(fn -> fn.displayName())
         .contains(
-            "pg_catalog.shared_fn",
-            "pg_catalog.pg_legacy" // maxVersion applies only when version is known
+            "shared_fn", "pg_legacy" // maxVersion applies only when version is known
             );
   }
 
@@ -346,7 +337,7 @@ class SystemNodeRegistryTest {
 
     var built = nodes.functions().get(0);
 
-    assertThat(built.displayName()).isEqualTo("pg.abs");
+    assertThat(built.displayName()).isEqualTo("abs");
     String expectedTypeId =
         SystemNodeRegistry.resourceId(FLOE_KIND, ResourceKind.RK_TYPE, nr("pg.int4")).getId();
     assertThat(built.argumentTypes().get(0).getId()).isEqualTo(expectedTypeId);
@@ -403,10 +394,8 @@ class SystemNodeRegistryTest {
             SystemNodeRegistry.resourceId(FLOE_KIND, fText).getId());
     assertThat(ids).containsExactlyInAnyOrderElementsOf(expected);
 
-    // sanity: both are for the same display name (safeName) but distinct IDs
-    assertThat(nodes.functions())
-        .extracting(fn -> fn.displayName())
-        .containsOnly("pg_catalog.overloaded");
+    // sanity: both are for the same leaf display name but distinct IDs
+    assertThat(nodes.functions()).extracting(fn -> fn.displayName()).containsOnly("overloaded");
   }
 
   @Test

@@ -643,7 +643,7 @@ public class SystemNodeRegistry {
         Instant.EPOCH,
         engineKind,
         nsId,
-        safeName(def.name()),
+        localName(def.name()),
         def.argumentTypes().stream()
             .map(arg -> resourceId(engineKind, ResourceKind.RK_TYPE, arg))
             .toList(),
@@ -663,7 +663,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.leftType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.rightType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType()),
@@ -681,7 +681,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         def.category(),
         def.array(),
         def.elementType() == null
@@ -715,7 +715,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         def.locale(),
         hints);
   }
@@ -730,7 +730,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         def.argumentTypes().stream()
             .map(arg -> resourceId(engineKind, ResourceKind.RK_TYPE, arg))
             .toList(),
@@ -787,17 +787,12 @@ public class SystemNodeRegistry {
     return resourceId(engineKind, ResourceKind.RK_CATALOG, "");
   }
 
-  /**
-   * Builds a display-friendly (case-preserving) identifier for graph nodes and ResourceIds.
-   *
-   * <p>This deliberately keeps the original casing so `_system:pg.pg_catalog.pg_fn` matches what
-   * planners expect. For maps/overrides we use {@link
-   * ai.floedb.floecat.systemcatalog.util.NameRefUtil#canonical}.
-   */
-  public static String safeName(NameRef ref) {
-    if (ref == null) return "";
-    String path = String.join(".", ref.getPathList());
-    return path.isEmpty() ? ref.getName() : path + "." + ref.getName();
+  /** Returns the leaf/object name portion of a qualified NameRef. */
+  private static String localName(NameRef ref) {
+    if (ref == null || ref.getName() == null) {
+      return "";
+    }
+    return ref.getName();
   }
 
   private static List<EngineSpecificRule> matchingRules(

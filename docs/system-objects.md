@@ -23,6 +23,8 @@ These translator helpers keep ID/name wrangling centralized, which makes it obvi
 
 Every builtin object (namespaces, tables, views, functions, operators, etc.) **must be namespace-qualified**; definitions without a namespace (no dot in the canonical name) are ignored while building the `_system` graph. This keeps the namespace buckets deterministic and avoids accidentally seeding the graph with tables that should live in the root namespace. When designing engine-specific catalog fragments, always include the namespace path (e.g., `pg_catalog.pg_class`, not just `pg_class`).
 
+`SystemNodeRegistry` uses that canonical qualified name for identity (`ResourceId`) and namespace resolution, but display labels are intentionally independent. By default the registry materializes the **leaf name** (`name.name`) for function/operator/type/collation/aggregate node `displayName`s, while namespace/table/view display labels still come from the catalog definition. Providers may still override display labels explicitly when they need qualified names for their own UX.
+
 ### Architecture overview
 
 ```
