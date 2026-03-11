@@ -58,6 +58,7 @@ class TableUpdatePlannerTest {
     planner.tablePropertyService = propertyService;
     planner.snapshotUpdateService = snapshotUpdateService;
     planner.mapper = new ObjectMapper();
+    propertyService.metadataMutator = new TableCommitMetadataMutator();
   }
 
   @Test
@@ -137,12 +138,7 @@ class TableUpdatePlannerTest {
                 Map.of("action", "set-current-schema", "schema-id", 0),
                 Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
                 Map.of("action", "set-default-spec", "spec-id", 0),
-                Map.of("action", "set-default-sort-order", "sort-order-id", 0),
-                Map.of(
-                    "action",
-                    "set-location",
-                    "location",
-                    "s3://floecat/iceberg/duckdb_mutation_smoke")));
+                Map.of("action", "set-default-sort-order", "sort-order-id", 0)));
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(
@@ -158,7 +154,6 @@ class TableUpdatePlannerTest {
     assertEquals("0", props.get("last-partition-id"));
     assertEquals("0", props.get("default-spec-id"));
     assertEquals("0", props.get("default-sort-order-id"));
-    assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", props.get("location"));
     assertTrue(plan.mask().build().getPathsList().contains("schema_json"));
     assertTrue(plan.spec().build().getSchemaJson().contains("\"schema-id\":0"));
   }

@@ -148,7 +148,7 @@ public class ConnectorProvisioningService {
     return table == null ? null : table.getPropertiesMap().get("metadata-location");
   }
 
-  private ResourceId resolveConnectorId(ai.floedb.floecat.catalog.rpc.Table tableRecord) {
+  public ResourceId resolveConnectorId(ai.floedb.floecat.catalog.rpc.Table tableRecord) {
     if (tableRecord == null
         || !tableRecord.hasUpstream()
         || !tableRecord.getUpstream().hasConnectorId()) {

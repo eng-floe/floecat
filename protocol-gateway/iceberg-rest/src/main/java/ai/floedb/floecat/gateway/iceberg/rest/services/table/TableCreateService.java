@@ -27,8 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
@@ -47,10 +46,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -60,7 +57,7 @@ import org.jboss.logging.Logger;
 public class TableCreateService {
   private static final Logger LOG = Logger.getLogger(TableCreateService.class);
   private static final List<Map<String, Object>> STAGE_CREATE_REQUIREMENTS =
-      List.of(Map.of("type", "assert-create"));
+      CommitUpdateInspector.assertCreateRequirements();
 
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TransactionCommitService transactionCommitService;
@@ -141,55 +138,30 @@ public class TableCreateService {
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-    LoadTableResultDto loadResult;
+    Response response;
     try {
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
       List<Snapshot> snapshots =
           SnapshotLister.fetchSnapshots(
               snapshotClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
-      loadResult =
-          TableResponseMapper.toLoadResult(
+      response =
+          TableResponseMapper.toLoadResponse(
               tableName, created, metadata, snapshots, tableConfig, credentials);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
-
-    var responseMetadata = loadResult.metadata();
-    String responseMetadataLocation = loadResult.metadataLocation();
-    if (responseMetadata != null && responseMetadataLocation != null) {
-      responseMetadata = responseMetadata.withMetadataLocation(responseMetadataLocation);
+    Object entity = response.getEntity();
+    if (!(entity instanceof LoadTableResultDto loadResult)) {
+      return response;
     }
-    Map<String, String> responseConfig =
-        loadResult.config() == null
-            ? new LinkedHashMap<>()
-            : new LinkedHashMap<>(loadResult.config());
-    if (responseMetadataLocation != null && !responseMetadataLocation.isBlank()) {
-      String metadataDirectory =
-          MetadataLocationUtil.canonicalMetadataDirectory(responseMetadataLocation);
-      if (metadataDirectory != null && !metadataDirectory.isBlank()) {
-        responseConfig.put("write.metadata.path", metadataDirectory);
-      }
-    }
-    loadResult =
-        new LoadTableResultDto(
-            responseMetadataLocation,
-            responseMetadata,
-            Map.copyOf(responseConfig),
-            loadResult.storageCredentials());
     LOG.infof(
         "Create table response namespace=%s table=%s metadata=%s location=%s configKeys=%s",
         namespaceContext.namespacePath(),
         tableName,
-        responseMetadata == null ? "<null>" : responseMetadata.metadataLocation(),
-        responseMetadataLocation,
+        loadResult.metadata() == null ? "<null>" : loadResult.metadata().metadataLocation(),
+        loadResult.metadataLocation(),
         loadResult.config().keySet());
-
-    Response.ResponseBuilder builder = Response.ok(loadResult);
-    if (responseMetadataLocation != null) {
-      builder.header(
-          HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(responseMetadataLocation));
-    }
-    return builder.build();
+    return response;
   }
 
   private Response handleStageCreate(

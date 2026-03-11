@@ -26,6 +26,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -216,7 +217,7 @@ public class StageCommitProcessor {
       if (type == null || type.isBlank()) {
         throw StageCommitException.validation("stage requirement missing type");
       }
-      if ("assert-create".equals(type)) {
+      if (CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE.equals(type)) {
         if (tableExists) {
           throw StageCommitException.conflict("assert-create failed");
         }

@@ -684,11 +684,7 @@ public final class TableMetadataBuilder {
     if (props == null || props.isEmpty()) {
       return null;
     }
-    String hyphen = props.get("format-version");
-    if (hyphen != null && !hyphen.isBlank()) {
-      return hyphen;
-    }
-    String underscore = props.get("format_version");
-    return (underscore == null || underscore.isBlank()) ? null : underscore;
+    String value = props.get("format-version");
+    return (value == null || value.isBlank()) ? null : value;
   }
 }

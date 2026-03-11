@@ -23,6 +23,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -241,11 +242,6 @@ public class TableCommitService {
     if (!(action instanceof String value)) {
       return false;
     }
-    return "add-schema".equals(value)
-        || "set-current-schema".equals(value)
-        || "add-spec".equals(value)
-        || "set-default-spec".equals(value)
-        || "add-sort-order".equals(value)
-        || "set-default-sort-order".equals(value);
+    return CommitUpdateInspector.isCreateInitializationAction(value);
   }
 }

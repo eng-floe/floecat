@@ -31,6 +31,7 @@ import jakarta.ws.rs.core.Response;
 public class TableDeleteService {
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableDropCleanupService tableDropCleanupService;
+  @Inject ConnectorProvisioningService connectorProvisioningService;
 
   public Response delete(
       TableRequestContext tableContext,
@@ -42,9 +43,7 @@ public class TableDeleteService {
     Table existing = null;
     try {
       existing = tableLifecycleService.getTable(tableId);
-      if (existing.hasUpstream() && existing.getUpstream().hasConnectorId()) {
-        connectorId = existing.getUpstream().getConnectorId();
-      }
+      connectorId = connectorProvisioningService.resolveConnectorId(existing);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
         throw e;

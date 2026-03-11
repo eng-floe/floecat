@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class TableMappingUtil {
@@ -116,5 +117,45 @@ public final class TableMappingUtil {
       return 2;
     }
     return resolved;
+  }
+
+  public static Integer maxFieldId(
+      Map<String, Object> container, String fieldsKey, String... candidateIdKeys) {
+    if (container == null || container.isEmpty()) {
+      return null;
+    }
+    Object rawFields = container.get(fieldsKey);
+    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+      return null;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      Map<String, Object> field = asObjectMap(fieldObj);
+      if (field == null || field.isEmpty()) {
+        continue;
+      }
+      Integer fieldId = firstNonNegativeInt(field, candidateIdKeys);
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max;
+  }
+
+  private static Integer firstNonNegativeInt(Map<String, Object> source, String... candidateKeys) {
+    if (source == null || source.isEmpty() || candidateKeys == null) {
+      return null;
+    }
+    for (String key : candidateKeys) {
+      if (key == null || key.isBlank()) {
+        continue;
+      }
+      Integer value = asInteger(source.get(key));
+      if (value != null && value >= 0) {
+        return value;
+      }
+    }
+    return null;
   }
 }

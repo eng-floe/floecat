@@ -18,19 +18,18 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-class CommitResponseBuilderTest {
+class TableCommitMetadataMutatorTest {
 
-  private final CommitResponseBuilder builder = new CommitResponseBuilder();
+  private final TableCommitMetadataMutator mutator = new TableCommitMetadataMutator();
 
   @Test
-  void mergeTableDefinitionUpdatesUpsertsById() {
+  void applyUpsertsDefinitionEntriesById() {
     TableMetadataView metadata =
         new TableMetadataView(
             2,
@@ -56,8 +55,6 @@ class CommitResponseBuilderTest {
             List.of(),
             List.of());
 
-    CommitTableResponseDto response =
-        new CommitTableResponseDto(metadata.metadataLocation(), metadata);
     TableRequests.Commit request =
         new TableRequests.Commit(
             List.of(),
@@ -90,20 +87,20 @@ class CommitResponseBuilderTest {
                     "location",
                     "s3://floecat/iceberg/duckdb_mutation_smoke")));
 
-    CommitTableResponseDto merged = builder.mergeTableDefinitionUpdates(response, request);
+    TableMetadataView merged = mutator.apply(metadata, request);
 
-    assertEquals(1, merged.metadata().schemas().size(), "schema-id should be unique");
-    assertEquals(1, merged.metadata().partitionSpecs().size(), "spec-id should be unique");
-    assertEquals(1, merged.metadata().sortOrders().size(), "order-id should be unique");
+    assertEquals(1, merged.schemas().size(), "schema-id should be unique");
+    assertEquals(1, merged.partitionSpecs().size(), "spec-id should be unique");
+    assertEquals(1, merged.sortOrders().size(), "order-id should be unique");
     assertEquals(
         "s3://floecat/iceberg/duckdb_mutation_smoke",
-        merged.metadata().location(),
+        merged.location(),
         "set-location update should populate metadata location field");
-    assertEquals("0", merged.metadata().properties().get("current-schema-id"));
+    assertEquals("0", merged.properties().get("current-schema-id"));
   }
 
   @Test
-  void mergeSnapshotUpdatesPrefersCommittedCurrentSnapshotOverStaleMetadata() {
+  void applyPrefersCommittedCurrentSnapshotOverStaleMetadata() {
     long staleSnapshotId = 7105637631842704244L;
     long newSnapshotId = 1772624629860L;
     TableMetadataView metadata =
@@ -131,8 +128,6 @@ class CommitResponseBuilderTest {
             List.of(),
             List.of(Map.of("snapshot-id", staleSnapshotId, "timestamp-ms", 1L)));
 
-    CommitTableResponseDto response =
-        new CommitTableResponseDto(metadata.metadataLocation(), metadata);
     TableRequests.Commit request =
         new TableRequests.Commit(
             List.of(),
@@ -160,15 +155,14 @@ class CommitResponseBuilderTest {
                     "type",
                     "branch")));
 
-    CommitTableResponseDto merged = builder.mergeSnapshotUpdates(response, request);
+    TableMetadataView merged = mutator.apply(metadata, request);
 
-    assertEquals(newSnapshotId, merged.metadata().currentSnapshotId());
-    assertEquals(
-        Long.toString(newSnapshotId), merged.metadata().properties().get("current-snapshot-id"));
+    assertEquals(newSnapshotId, merged.currentSnapshotId());
+    assertEquals(Long.toString(newSnapshotId), merged.properties().get("current-snapshot-id"));
   }
 
   @Test
-  void mergeTableDefinitionUpdatesResolvesSetLastSentinelIds() {
+  void applyResolvesSetLastSentinelIds() {
     TableMetadataView metadata =
         new TableMetadataView(
             2,
@@ -194,8 +188,6 @@ class CommitResponseBuilderTest {
             List.of(),
             List.of());
 
-    CommitTableResponseDto response =
-        new CommitTableResponseDto(metadata.metadataLocation(), metadata);
     TableRequests.Commit request =
         new TableRequests.Commit(
             List.of(),
@@ -223,12 +215,12 @@ class CommitResponseBuilderTest {
                     Map.of("order-id", 5, "fields", List.of())),
                 Map.of("action", "set-default-sort-order", "sort-order-id", -1)));
 
-    CommitTableResponseDto merged = builder.mergeTableDefinitionUpdates(response, request);
+    TableMetadataView merged = mutator.apply(metadata, request);
 
-    assertEquals(1, merged.metadata().currentSchemaId());
-    assertEquals(3, merged.metadata().defaultSpecId());
-    assertEquals(5, merged.metadata().defaultSortOrderId());
-    assertEquals("1", merged.metadata().properties().get("current-schema-id"));
-    assertEquals("2", merged.metadata().properties().get("last-column-id"));
+    assertEquals(1, merged.currentSchemaId());
+    assertEquals(3, merged.defaultSpecId());
+    assertEquals(5, merged.defaultSortOrderId());
+    assertEquals("1", merged.properties().get("current-schema-id"));
+    assertEquals("2", merged.properties().get("last-column-id"));
   }
 }

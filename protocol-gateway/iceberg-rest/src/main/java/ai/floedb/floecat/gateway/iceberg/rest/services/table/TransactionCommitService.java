@@ -26,8 +26,10 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
@@ -84,41 +86,6 @@ public class TransactionCommitService {
           TransactionState.TS_PREPARED,
           TransactionState.TS_APPLYING,
           TransactionState.TS_APPLY_FAILED_RETRYABLE);
-  private static final Set<String> SUPPORTED_REQUIREMENT_TYPES =
-      Set.of(
-          "assert-create",
-          "assert-table-uuid",
-          "assert-current-schema-id",
-          "assert-last-assigned-field-id",
-          "assert-last-assigned-partition-id",
-          "assert-default-spec-id",
-          "assert-default-sort-order-id",
-          "assert-ref-snapshot-id");
-  private static final Set<String> SUPPORTED_UPDATE_ACTIONS =
-      Set.of(
-          "set-properties",
-          "remove-properties",
-          "set-location",
-          "add-snapshot",
-          "remove-snapshots",
-          "set-snapshot-ref",
-          "remove-snapshot-ref",
-          "assign-uuid",
-          "upgrade-format-version",
-          "add-schema",
-          "set-current-schema",
-          "add-spec",
-          "set-default-spec",
-          "add-sort-order",
-          "set-default-sort-order",
-          "remove-partition-specs",
-          "remove-schemas",
-          "set-statistics",
-          "remove-statistics",
-          "set-partition-statistics",
-          "remove-partition-statistics",
-          "add-encryption-key",
-          "remove-encryption-key");
   private static final Logger LOG = Logger.getLogger(TransactionCommitService.class);
   @Inject AccountContext accountContext;
   @Inject RequestContextFactory requestContextFactory;
@@ -274,7 +241,9 @@ public class TransactionCommitService {
           maybeAbortOpenTransaction(currentState, txId, "updates are missing");
           return IcebergErrorResponses.validation("updates are required");
         }
-        boolean assertCreateRequested = hasRequirementType(change.requirements(), "assert-create");
+        boolean assertCreateRequested =
+            hasRequirementType(
+                change.requirements(), CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE);
         Response requirementTypeError = validateKnownRequirementTypes(change.requirements());
         if (requirementTypeError != null) {
           maybeAbortOpenTransaction(currentState, txId, "requirements include unknown type");
@@ -423,8 +392,10 @@ public class TransactionCommitService {
       if (!connectorResolution.connectorTxChanges().isEmpty()) {
         txChanges.addAll(connectorResolution.connectorTxChanges());
       }
-      List<Long> addedSnapshotIds = addedSnapshotIds(plan.updates());
-      List<Long> removedSnapshotIds = removedSnapshotIds(plan.updates());
+      CommitUpdateInspector.Parsed parsedUpdates =
+          CommitUpdateInspector.inspectUpdates(plan.updates());
+      List<Long> addedSnapshotIds = parsedUpdates.addedSnapshotIds();
+      List<Long> removedSnapshotIds = parsedUpdates.removedSnapshotIds();
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
               .setTableId(plan.tableId())
@@ -672,11 +643,13 @@ public class TransactionCommitService {
     if (plannedTable == null || tableSupport == null) {
       return new PreMaterializedTable(plannedTable, null);
     }
-    if (!preMaterializeAssertCreate && hasRequirementType(requirements, "assert-create")) {
+    if (!preMaterializeAssertCreate
+        && hasRequirementType(requirements, CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE)) {
       // Keep create-table locations empty so engines can own first metadata materialization.
       return new PreMaterializedTable(plannedTable, null);
     }
-    String requestedLocation = requestedMetadataLocation(updates);
+    String requestedLocation =
+        CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
     boolean skipMaterialization = requestedLocation != null;
     // Materialize metadata for every commit so metadata-location advances atomically with table
     // state, including snapshot-mutating updates.
@@ -922,43 +895,40 @@ public class TransactionCommitService {
         base != null ? base.toBuilder() : IcebergMetadata.newBuilder();
     if (table != null) {
       Map<String, String> props = table.getPropertiesMap();
-      Integer formatVersion =
-          TableMappingUtil.asInteger(
-              props.get("format-version") != null
-                  ? props.get("format-version")
-                  : props.get("format_version"));
+      TableMetadataView metadata = tablePropertyService.metadataFromProperties(props);
+      Integer formatVersion = metadata.formatVersion();
       if (formatVersion != null && formatVersion > 0) {
         builder.setFormatVersion(formatVersion);
       }
-      String metadataLocation = props.get("metadata-location");
+      String metadataLocation = metadata.metadataLocation();
       if (metadataLocation != null && !metadataLocation.isBlank()) {
         builder.setMetadataLocation(metadataLocation);
       }
-      String tableUuid = props.get("table-uuid");
+      String tableUuid = metadata.tableUuid();
       if (tableUuid != null && !tableUuid.isBlank()) {
         builder.setTableUuid(tableUuid);
       }
-      Integer lastColumnId = TableMappingUtil.asInteger(props.get("last-column-id"));
+      Integer lastColumnId = metadata.lastColumnId();
       if (lastColumnId != null && lastColumnId >= 0) {
         builder.setLastColumnId(lastColumnId);
       }
-      Integer currentSchemaId = TableMappingUtil.asInteger(props.get("current-schema-id"));
+      Integer currentSchemaId = metadata.currentSchemaId();
       if (currentSchemaId != null && currentSchemaId >= 0) {
         builder.setCurrentSchemaId(currentSchemaId);
       }
-      Integer defaultSpecId = TableMappingUtil.asInteger(props.get("default-spec-id"));
+      Integer defaultSpecId = metadata.defaultSpecId();
       if (defaultSpecId != null && defaultSpecId >= 0) {
         builder.setDefaultSpecId(defaultSpecId);
       }
-      Integer lastPartitionId = TableMappingUtil.asInteger(props.get("last-partition-id"));
+      Integer lastPartitionId = metadata.lastPartitionId();
       if (lastPartitionId != null && lastPartitionId >= 0) {
         builder.setLastPartitionId(lastPartitionId);
       }
-      Integer defaultSortOrderId = TableMappingUtil.asInteger(props.get("default-sort-order-id"));
+      Integer defaultSortOrderId = metadata.defaultSortOrderId();
       if (defaultSortOrderId != null && defaultSortOrderId >= 0) {
         builder.setDefaultSortOrderId(defaultSortOrderId);
       }
-      Long lastSequenceNumber = TableMappingUtil.asLong(props.get("last-sequence-number"));
+      Long lastSequenceNumber = metadata.lastSequenceNumber();
       if (lastSequenceNumber != null && lastSequenceNumber > 0) {
         builder.setLastSequenceNumber(lastSequenceNumber);
       }
@@ -1027,52 +997,6 @@ public class TransactionCommitService {
       out.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
     }
     return out;
-  }
-
-  private List<Long> addedSnapshotIds(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return List.of();
-    }
-    List<Long> out = new ArrayList<>();
-    for (Map<String, Object> update : updates) {
-      String action = TableMappingUtil.asString(update == null ? null : update.get("action"));
-      if (!"add-snapshot".equals(action)) {
-        continue;
-      }
-      Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
-      if (snapshotMap == null || snapshotMap.isEmpty()) {
-        continue;
-      }
-      Long snapshotId = TableMappingUtil.asLong(snapshotMap.get("snapshot-id"));
-      if (snapshotId != null && snapshotId >= 0L) {
-        out.add(snapshotId);
-      }
-    }
-    return out.isEmpty() ? List.of() : List.copyOf(out);
-  }
-
-  private List<Long> removedSnapshotIds(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return List.of();
-    }
-    List<Long> out = new ArrayList<>();
-    for (Map<String, Object> update : updates) {
-      String action = TableMappingUtil.asString(update == null ? null : update.get("action"));
-      if (!"remove-snapshots".equals(action)) {
-        continue;
-      }
-      Object raw = update.get("snapshot-ids");
-      if (!(raw instanceof List<?> ids)) {
-        continue;
-      }
-      for (Object id : ids) {
-        Long value = TableMappingUtil.asLong(id);
-        if (value != null && value >= 0) {
-          out.add(value);
-        }
-      }
-    }
-    return out.isEmpty() ? List.of() : List.copyOf(out);
   }
 
   private ResourceId scopeTableIdWithAccount(ResourceId tableId, String accountId) {
@@ -1486,7 +1410,7 @@ public class TransactionCommitService {
       if (type == null || type.isBlank()) {
         return IcebergErrorResponses.validation("commit requirement missing type");
       }
-      if (!SUPPORTED_REQUIREMENT_TYPES.contains(type)) {
+      if (!CommitUpdateInspector.isSupportedRequirementType(type)) {
         return IcebergErrorResponses.validation("unsupported commit requirement: " + type);
       }
     }
@@ -1496,7 +1420,7 @@ public class TransactionCommitService {
   private Response validateAssertCreateRequirement(
       List<Map<String, Object>> requirements,
       ai.floedb.floecat.catalog.rpc.GetTableResponse tableResponse) {
-    if (!hasRequirementType(requirements, "assert-create")) {
+    if (!hasRequirementType(requirements, CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE)) {
       return null;
     }
     if (tableResponse != null && tableResponse.hasTable()) {
@@ -1516,7 +1440,7 @@ public class TransactionCommitService {
       if (action == null || action.isBlank()) {
         return IcebergErrorResponses.validation("unsupported commit update action: <missing>");
       }
-      if (!SUPPORTED_UPDATE_ACTIONS.contains(action)) {
+      if (!CommitUpdateInspector.isSupportedUpdateAction(action)) {
         return IcebergErrorResponses.validation("unsupported commit update action: " + action);
       }
     }
@@ -1667,29 +1591,6 @@ public class TransactionCommitService {
 
   private String tableMetadataLocation(ai.floedb.floecat.catalog.rpc.Table table) {
     return table == null ? null : table.getPropertiesMap().get("metadata-location");
-  }
-
-  private String requestedMetadataLocation(List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return null;
-    }
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = TableMappingUtil.asString(update.get("action"));
-      if ("set-properties".equals(action)) {
-        Map<String, Object> props = TableMappingUtil.asObjectMap(update.get("updates"));
-        if (props == null || props.isEmpty()) {
-          continue;
-        }
-        String location = TableMappingUtil.asString(props.get("metadata-location"));
-        if (location != null && !location.isBlank()) {
-          return location;
-        }
-      }
-    }
-    return null;
   }
 
   private String tableUuid(ai.floedb.floecat.catalog.rpc.Table table) {

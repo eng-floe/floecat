@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
@@ -169,29 +170,7 @@ public class TableUpdatePlanner {
       if (action == null || action.isBlank()) {
         return "<missing>";
       }
-      if (!"set-properties".equals(action)
-          && !"remove-properties".equals(action)
-          && !"set-location".equals(action)
-          && !"add-snapshot".equals(action)
-          && !"remove-snapshots".equals(action)
-          && !"set-snapshot-ref".equals(action)
-          && !"remove-snapshot-ref".equals(action)
-          && !"assign-uuid".equals(action)
-          && !"upgrade-format-version".equals(action)
-          && !"add-schema".equals(action)
-          && !"set-current-schema".equals(action)
-          && !"add-spec".equals(action)
-          && !"set-default-spec".equals(action)
-          && !"add-sort-order".equals(action)
-          && !"set-default-sort-order".equals(action)
-          && !"remove-partition-specs".equals(action)
-          && !"remove-schemas".equals(action)
-          && !"set-statistics".equals(action)
-          && !"remove-statistics".equals(action)
-          && !"set-partition-statistics".equals(action)
-          && !"remove-partition-statistics".equals(action)
-          && !"add-encryption-key".equals(action)
-          && !"remove-encryption-key".equals(action)) {
+      if (!CommitUpdateInspector.isSupportedUpdateAction(action)) {
         return action;
       }
     }

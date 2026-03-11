@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
@@ -84,7 +85,6 @@ class TablePropertyServiceTest {
   void applyPropertyUpdatesDoesNotRemoveReservedFormatVersion() {
     Map<String, String> props = new LinkedHashMap<>();
     props.put("format-version", "1");
-    props.put("format_version", "1");
     props.put("other", "value");
 
     Response response =
@@ -95,11 +95,10 @@ class TablePropertyServiceTest {
                     "action",
                     "remove-properties",
                     "removals",
-                    List.of("format-version", "format_version", "other"))));
+                    List.of("format-version", "other"))));
 
     assertNull(response);
     assertEquals("1", props.get("format-version"));
-    assertEquals("1", props.get("format_version"));
     assertFalse(props.containsKey("other"));
   }
 
@@ -186,6 +185,41 @@ class TablePropertyServiceTest {
     assertEquals(table.getPropertiesMap(), map);
     map.put("new", "value");
     assertFalse(table.getPropertiesMap().containsKey("new"));
+  }
+
+  @Test
+  void applyCommitPropertyUpdatesAppliesSnapshotRefMutationsInOrder() {
+    Map<String, Map<String, Object>> initialRefs = new LinkedHashMap<>();
+    initialRefs.put("main", new LinkedHashMap<>(Map.of("snapshot-id", 10L, "type", "branch")));
+    Table table =
+        Table.newBuilder()
+            .putProperties(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(initialRefs))
+            .putProperties("current-snapshot-id", "10")
+            .build();
+
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of("action", "set-snapshot-ref", "ref-name", "main", "snapshot-id", 22L),
+            Map.of("action", "remove-snapshot-ref", "ref-name", "main"),
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "snapshot-id",
+                33L,
+                "min_snapshots_to_keep",
+                7));
+
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+
+    assertNull(result.error());
+    assertEquals("33", result.properties().get("current-snapshot-id"));
+    Map<String, Map<String, Object>> refs =
+        RefPropertyUtil.decode(result.properties().get(RefPropertyUtil.PROPERTY_KEY));
+    assertEquals(1, refs.size());
+    assertEquals(33L, ((Number) refs.get("main").get("snapshot-id")).longValue());
+    assertEquals(7, ((Number) refs.get("main").get("min-snapshots-to-keep")).intValue());
   }
 
   private Supplier<Table> tableSupplier() {
