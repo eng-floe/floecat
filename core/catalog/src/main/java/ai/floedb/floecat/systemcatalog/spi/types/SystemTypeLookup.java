@@ -16,46 +16,89 @@
 
 package ai.floedb.floecat.systemcatalog.spi.types;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.ResourceIdUtils;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Lookup helper that indexes {@link TypeNode}s by their canonical name. */
+/** Lookup helper keyed by namespace identity and local type name. */
 public final class SystemTypeLookup implements TypeLookup {
 
-  private final Map<String, TypeNode> types;
+  private final Map<String, ResourceId> namespaceIdByCanonicalName;
+  private final Map<TypeKey, TypeNode> byIdentityAndName;
 
-  public SystemTypeLookup(List<TypeNode> nodes) {
-    Objects.requireNonNull(nodes, "nodes");
-    Map<String, TypeNode> index = new HashMap<>();
-    for (TypeNode node : nodes) {
-      String canonical = canonical(node.displayName());
-      if (!canonical.isEmpty()) {
-        index.put(canonical, node);
-      }
-    }
-    this.types = Map.copyOf(index);
+  public SystemTypeLookup(MetadataResolutionContext ctx) {
+    Objects.requireNonNull(ctx, "ctx");
+    this.namespaceIdByCanonicalName = namespaceIndex(ctx.overlay().listNamespaces(ctx.catalogId()));
+    this.byIdentityAndName = typeIndex(ctx.overlay().listTypes(ctx.catalogId()));
   }
 
   @Override
   public Optional<TypeNode> findByName(String namespace, String name) {
-    String key = canonical(namespace, name);
-    if (key.isEmpty()) {
+    String canonicalNamespace = canonical(namespace);
+    String localName = localName(canonical(name));
+    if (canonicalNamespace.isEmpty() || localName.isEmpty()) {
       return Optional.empty();
     }
-    return Optional.ofNullable(types.get(key));
+    ResourceId namespaceId = namespaceIdByCanonicalName.get(canonicalNamespace);
+    if (namespaceId == null) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(byIdentityAndName.get(new TypeKey(namespaceId, localName)));
   }
 
-  private static String canonical(String namespace, String name) {
-    String normalizedName = canonical(name);
-    if (normalizedName.isEmpty()) {
-      return "";
+  private static Map<String, ResourceId> namespaceIndex(List<NamespaceNode> namespaces) {
+    Map<String, ResourceId> index = new HashMap<>();
+    for (NamespaceNode namespace : namespaces) {
+      ResourceId namespaceId = namespace.id();
+      if (!ResourceIdUtils.hasIdentity(namespaceId)) {
+        continue;
+      }
+      String canonicalName = NameRefUtil.canonical(namespace.toNameRef());
+      if (canonicalName.isEmpty()) {
+        continue;
+      }
+      ResourceId previous = index.putIfAbsent(canonicalName, namespaceId);
+      if (previous != null && !previous.equals(namespaceId)) {
+        throw new IllegalStateException(
+            "Duplicate namespace name in lookup scope: "
+                + canonicalName
+                + " ("
+                + previous.getId()
+                + ", "
+                + namespaceId.getId()
+                + ")");
+      }
     }
-    String ns = canonical(namespace);
-    return ns.isEmpty() ? normalizedName : ns + "." + normalizedName;
+    return Map.copyOf(index);
+  }
+
+  private static Map<TypeKey, TypeNode> typeIndex(List<TypeNode> types) {
+    Map<TypeKey, TypeNode> index = new HashMap<>();
+    for (TypeNode type : types) {
+      ResourceId namespaceId = type.namespaceId();
+      if (!ResourceIdUtils.hasIdentity(namespaceId)) {
+        continue;
+      }
+      String localName = localName(canonical(type.displayName()));
+      if (localName.isEmpty()) {
+        continue;
+      }
+      index.putIfAbsent(new TypeKey(namespaceId, localName), type);
+    }
+    return Map.copyOf(index);
+  }
+
+  private static String localName(String canonicalName) {
+    int idx = canonicalName.lastIndexOf('.');
+    return idx >= 0 ? canonicalName.substring(idx + 1) : canonicalName;
   }
 
   private static String canonical(String value) {
@@ -65,4 +108,6 @@ public final class SystemTypeLookup implements TypeLookup {
     String trimmed = value.trim();
     return trimmed.isEmpty() ? "" : trimmed.toLowerCase();
   }
+
+  private record TypeKey(ResourceId namespaceId, String localName) {}
 }

@@ -150,11 +150,33 @@ public final class BuiltinTestSupport {
         1L,
         Instant.EPOCH,
         engine,
-        name,
+        namespaceIdForQualifiedName(engine, name),
+        leafName(name),
         "",
         false,
         null,
         Map.of());
+  }
+
+  public static ResourceId namespaceIdForQualifiedName(String engine, String qualifiedName) {
+    NameRef ref = nr(qualifiedName);
+    if (ref.getPathCount() == 0) {
+      return ResourceId.getDefaultInstance();
+    }
+    NameRef.Builder b = NameRef.newBuilder();
+    if (ref.getPathCount() > 1) {
+      b.addAllPath(ref.getPathList().subList(0, ref.getPathCount() - 1));
+    }
+    b.setName(ref.getPath(ref.getPathCount() - 1));
+    return SystemNodeRegistry.resourceId(engine, ResourceKind.RK_NAMESPACE, b.build());
+  }
+
+  public static String leafName(String qualifiedName) {
+    if (qualifiedName == null || qualifiedName.isBlank()) {
+      return "";
+    }
+    int idx = qualifiedName.lastIndexOf('.');
+    return idx < 0 ? qualifiedName : qualifiedName.substring(idx + 1);
   }
 
   // --- Build collation nodes ----------------------------------------------

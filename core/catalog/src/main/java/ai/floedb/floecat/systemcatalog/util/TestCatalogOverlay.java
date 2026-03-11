@@ -30,16 +30,17 @@ import java.util.Optional;
 /** Shared stub implementation of {@link BaseTestCatalogOverlay} for unit tests. */
 public class TestCatalogOverlay extends BaseTestCatalogOverlay {
 
-  private final Map<String, TypeNode> typesByQName = new HashMap<>();
+  private final Map<TypeKey, TypeNode> typesByQName = new HashMap<>();
 
-  public TestCatalogOverlay addType(ResourceId namespaceId, TypeNode type) {
+  public TestCatalogOverlay addType(TypeNode type) {
     addNode(type);
-    typesByQName.put(namespaceId.getId() + "." + type.displayName(), type);
+    ResourceId namespaceId = type.namespaceId();
+    typesByQName.put(new TypeKey(namespaceId, type.displayName()), type);
     return this;
   }
 
-  public Optional<TypeNode> findType(String namespace, String name) {
-    return Optional.ofNullable(typesByQName.get(namespace + "." + name));
+  public Optional<TypeNode> findType(ResourceId namespaceId, String name) {
+    return Optional.ofNullable(typesByQName.get(new TypeKey(namespaceId, name)));
   }
 
   @Override
@@ -54,4 +55,6 @@ public class TestCatalogOverlay extends BaseTestCatalogOverlay {
     }
     return List.of();
   }
+
+  private record TypeKey(ResourceId namespaceId, String name) {}
 }

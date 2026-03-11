@@ -200,7 +200,7 @@ public class SystemNodeRegistry {
             .toList();
     List<TypeNode> typeNodes =
         typeDefs.stream()
-            .map(def -> toTypeNode(normalizedKind, normalizedVersion, version, def))
+            .map(def -> toTypeNode(normalizedKind, normalizedVersion, version, def, namespaceIds))
             .toList();
 
     // --- Casts ---
@@ -673,14 +673,25 @@ public class SystemNodeRegistry {
   }
 
   private TypeNode toTypeNode(
-      String engineKind, String engineVersion, long version, SystemTypeDef def) {
+      String engineKind,
+      String engineVersion,
+      long version,
+      SystemTypeDef def,
+      Map<String, ResourceId> namespaceIds) {
     Map<EngineHintKey, EngineHint> hints =
         EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+    ResourceId namespaceId =
+        findNamespaceId(def.name(), namespaceIds)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "No namespace found for type definition: " + def.name()));
     return new TypeNode(
         resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
+        namespaceId,
         localName(def.name()),
         def.category(),
         def.array(),

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.metagraph.model;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.time.Instant;
 import java.util.List;
@@ -43,6 +44,13 @@ public record NamespaceNode(
     pathSegments = List.copyOf(pathSegments);
     properties = Map.copyOf(properties);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+  }
+
+  /** Returns a {@link NameRef} representing this namespace's qualified name. */
+  public NameRef toNameRef() {
+    NameRef.Builder b = NameRef.newBuilder().setName(displayName);
+    pathSegments.forEach(b::addPath);
+    return b.build();
   }
 
   @Override

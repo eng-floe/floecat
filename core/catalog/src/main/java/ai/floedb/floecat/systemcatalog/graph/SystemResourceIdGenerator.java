@@ -19,6 +19,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
+import ai.floedb.floecat.metagraph.model.ResourceIdUtils;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -177,7 +178,7 @@ public final class SystemResourceIdGenerator {
   }
 
   public static boolean isSystemId(ResourceId id) {
-    if (id == null || id.getId() == null || id.getId().isBlank()) {
+    if (!ResourceIdUtils.hasIdentity(id)) {
       return false;
     }
     try {
