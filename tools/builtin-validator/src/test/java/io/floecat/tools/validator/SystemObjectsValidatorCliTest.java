@@ -254,7 +254,7 @@ class SystemObjectsValidatorCliTest {
     int exit =
         new SystemObjectsValidatorCli()
             .run(
-                new String[] {"--engine", "floe-demo"},
+                new String[] {"--engine", "example"},
                 new PrintStream(stdout),
                 new PrintStream(stderr));
     assertEquals(0, exit);

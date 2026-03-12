@@ -790,8 +790,8 @@ public class SystemNodeRegistry {
   /**
    * Builds a display-friendly (case-preserving) identifier for graph nodes and ResourceIds.
    *
-   * <p>This deliberately keeps the original casing so `_system:floe-demo.pg_catalog.pg_fn` matches
-   * what planners expect. For maps/overrides we use {@link
+   * <p>This deliberately keeps the original casing so `_system:pg.pg_catalog.pg_fn` matches what
+   * planners expect. For maps/overrides we use {@link
    * ai.floedb.floecat.systemcatalog.util.NameRefUtil#canonical}.
    */
   public static String safeName(NameRef ref) {

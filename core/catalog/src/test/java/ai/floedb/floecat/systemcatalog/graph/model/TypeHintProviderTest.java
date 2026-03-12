@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 
 class TypeHintProviderTest {
 
-  private static final String ENGINE = "floe-demo";
+  private static final String ENGINE = "example";
   private static final String TYPE_PAYLOAD_TYPE = "builtin.systemcatalog.type.properties";
 
   @Test

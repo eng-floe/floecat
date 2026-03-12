@@ -111,7 +111,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   ensureKind(
                       namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
 
-                  NamespaceNode nsNode = requireVisibleNamespaceNode(namespaceId, correlationId());
+                  NamespaceNode nsNode =
+                      CatalogOverlayGuards.requireVisibleNamespaceNode(
+                          overlay, namespaceId, correlationId());
                   var catalogId = nsNode.catalogId();
 
                   var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
@@ -260,28 +262,22 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var catalogId = spec.getCatalogId();
                   ensureKind(catalogId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-                  catalogRepo
-                      .getById(catalogId)
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
+                  var catalog =
+                      CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catalogId, corr);
+                  CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
 
                   var namespaceId = spec.getNamespaceId();
                   ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
                   var namespace =
-                      namespaceRepo
-                          .getById(namespaceId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      corr, NAMESPACE, Map.of("id", namespaceId.getId())));
-                  if (!namespace.getCatalogId().getId().equals(catalogId.getId())) {
+                      CatalogOverlayGuards.requireWritableNamespaceNode(overlay, namespaceId, corr);
+                  var nsCatalogId = namespace.catalogId();
+                  if (nsCatalogId == null || !nsCatalogId.getId().equals(catalogId.getId())) {
                     throw GrpcErrors.invalidArgument(
                         corr,
                         NAMESPACE_CATALOG_MISMATCH,
                         Map.of(
                             "namespace_id", namespaceId.getId(),
-                            "namespace.catalog_id", namespace.getCatalogId().getId(),
+                            "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
                             "catalog_id", catalogId.getId()));
                   }
 
@@ -662,19 +658,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
     return new String(bytes, StandardCharsets.UTF_8);
   }
 
-  private NamespaceNode requireVisibleNamespaceNode(ResourceId namespaceId, String corr) {
-    if (namespaceId == null) {
-      throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", "<missing_namespace_id>"));
-    }
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-
-    return overlay
-        .resolve(namespaceId)
-        .filter(NamespaceNode.class::isInstance)
-        .map(NamespaceNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId())));
-  }
-
   private static void validateViewMaskOrThrow(FieldMask mask, String corr) {
     var paths = normalizedMaskPaths(mask);
     if (paths.isEmpty()) {
@@ -747,9 +730,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       }
       var catId = spec.getCatalogId();
       ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-      catalogRepo
-          .getById(catId)
-          .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catId.getId())));
+      var catalog = CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
+      CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -760,19 +742,17 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       }
       var nsId = spec.getNamespaceId();
       ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
-      var ns =
-          namespaceRepo
-              .getById(nsId)
-              .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", nsId.getId())));
+      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, nsId, corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+      var nsCatalogId = ns.catalogId();
+      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
             NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", nsId.getId(),
-                "namespace.catalog_id", ns.getCatalogId().getId(),
+                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
                 "catalog_id", effectiveCatalogId.getId()));
       }
       b.setNamespaceId(nsId);
@@ -781,20 +761,15 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns =
-          namespaceRepo
-              .getById(b.getNamespaceId())
-              .orElseThrow(
-                  () ->
-                      GrpcErrors.notFound(
-                          corr, NAMESPACE, Map.of("id", b.getNamespaceId().getId())));
-      if (!ns.getCatalogId().getId().equals(effectiveCatalogId.getId())) {
+      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, b.getNamespaceId(), corr);
+      var nsCatalogId = ns.catalogId();
+      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
         throw GrpcErrors.invalidArgument(
             corr,
             NAMESPACE_CATALOG_MISMATCH,
             Map.of(
                 "namespace_id", b.getNamespaceId().getId(),
-                "namespace.catalog_id", ns.getCatalogId().getId(),
+                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
                 "catalog_id", effectiveCatalogId.getId()));
       }
     }

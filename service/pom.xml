@@ -147,7 +147,7 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-extension-floedb</artifactId>
+      <artifactId>floecat-extension-example</artifactId>
       <version>${project.version}</version>
     </dependency>
 

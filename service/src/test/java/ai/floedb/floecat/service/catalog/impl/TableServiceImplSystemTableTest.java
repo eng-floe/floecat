@@ -17,26 +17,46 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.EngineHintKey;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -237,5 +257,101 @@ class TableServiceImplSystemTableTest {
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
 
     verifyNoInteractions(tableRepo);
+  }
+
+  @Test
+  void updateTable_catalogIdSetToSystemCatalog_isPermissionDenied() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_1")
+            .build();
+    ResourceId systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl_user_1")
+            .build();
+
+    overlay.addNode(
+        new CatalogNode(
+            systemCatalogId,
+            1L,
+            Instant.now(),
+            "engine",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            1L,
+            Instant.now(),
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+
+    when(tableRepo.metaFor(tableId)).thenReturn(MutationMeta.getDefaultInstance());
+    when(tableRepo.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setCatalogId(userCatalogId)
+                    .setNamespaceId(namespaceId)
+                    .setDisplayName("orders")
+                    .setSchemaJson("{}")
+                    .build()));
+
+    var req =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(TableSpec.newBuilder().setCatalogId(systemCatalogId).build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("catalog_id").build())
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(tableRepo, never()).update(any(), anyLong());
+  }
+
+  private UserTableNode userTableNode(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId) {
+    return new UserTableNode(
+        tableId,
+        1L,
+        Instant.now(),
+        catalogId,
+        namespaceId,
+        "orders",
+        TableFormat.TF_ICEBERG,
+        ColumnIdAlgorithm.CID_FIELD_ID,
+        "{}",
+        Map.of(),
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        List.of(),
+        Map.of(),
+        Map.<Long, Map<EngineHintKey, ai.floedb.floecat.metagraph.model.EngineHint>>of());
   }
 }

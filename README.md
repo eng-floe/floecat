@@ -141,6 +141,8 @@ catalogs, namespaces, tables, and snapshots.
 - Operations, testing, and observability: [`docs/operations.md`](docs/operations.md)
 - Docker compose modes and overrides: [`docs/docker.md`](docs/docker.md)
 
+- Example catalog extension (file-based, zero-code): [`docs/extension-example.md`](docs/extension-example.md)
+
 All additional component docs live under [`docs/`](docs).
 
 ## Contributing

@@ -119,21 +119,40 @@ Every `EngineSpecificRule` with a `payloadType` is mapped to a metagraph `Engine
 
 `ServiceLoaderSystemCatalogProvider` is the gatekeeper for engine plugins: it discovers every `EngineSystemCatalogExtension`, loads the normalized catalog snapshot for each engine kind, and fingerprints the raw data without applying any provider overlays. `SystemDefinitionRegistry` caches those snapshots keyed by `EngineContext.effectiveEngineKind()` (so blank headers collapse to `floecat_internal`) so the kind-level catalog only needs to parse once. The real layering happens in `SystemNodeRegistry`: on a cache miss it seeds the result with `FloecatInternalProvider` (the `floecat_internal` base that always brings `information_schema`), overlays the plugin catalog, and finally applies `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries when overlays are enabled (i.e., headers are present and the plugin exists). The floecat_internal layer only contributes namespace/table/view metadata (the shared `information_schema`/`pg_catalog` relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine plugins/providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal` and overlays are skipped, but the base definitions (and the shared `information_schema`) remain available. `SystemGraph` continues to reuse the merged `BuiltinNodes` to build `_system` snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogOverlay`/`SystemObjectGraphView`. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
-### Engine-specific Hint Resolution
-
-Engine-specific metadata can come from two places: an overlay hint attached by the plugin (which covers namespaced, relation, type, function, etc. descriptors) and synthetic defaults computed by `FloeHintResolver`. The rule is simple: an overlay payload always wins; when no hint is present the `FloeHintResolver` helper synthesizes deterministic defaults (including type defaults when the per-type payload is missing) so that scanners and bundle decorators never throw and always emit the same values. In practice both scanners and the catalog bundle decorator rely on `FloeHintResolver` so the overlay-or-default contract is enforced consistently.
-
-### Naming and Payload Intent
-
-The Floe extension exposes canonical engine metadata contracts that are intentionally minimal. `FloeColumnSpecific` now carries the immutable column identity (attname/atttypid/atttypmod/attnum/attnotnull/attisdropped/attcollation/atthasdef) while the resolver synthesizes safe defaults for the remaining PG-only columns (attlen/attalign/attstorage/attndims). These contracts are not tied to the Postgres scanners—they are the shared column/relation metadata that every scanner and decorator should project into rows or bundles. When adjusting the plugin, think in terms of “Floe column metadata”/“Floe relation metadata” rather than raw `pg_attribute`/`pg_class` tables: the scanner projects the shared fields into the table schema for compatibility while the decorator reuses the same canonical payload when attaching `EngineSpecific` blobs. Future engines should follow the same pattern; you can rename the helper classes (e.g., `FloeEngineMetadata`, `FloeColumnHints`) as long as the contract—the shared Floe*Specific protos—remains the single source of truth.
-
 ### Plugin Implementations
 
-Plugins inherit from the abstract `FloeCatalogExtension` base class and provide:
+Plugins implement `EngineSystemCatalogExtension` directly and provide:
 
-1. **Engine Kind** – A stable identifier (e.g., "floedb", "floe-demo")
-2. **Catalog Data** – Loads from a `.pbtxt` resource file and processes Floe-specific fields
+1. **Engine Kind** – A stable identifier (e.g., `”example”`)
+2. **Catalog Data** – Loads `.pbtxt` resources and returns a `SystemCatalogData` snapshot
 3. **Discovery** – Registered via ServiceLoader for automatic runtime discovery
+
+See `extensions/example/` for a complete reference implementation.
+
+### Hint Lifecycle
+
+`EngineSystemCatalogExtension` extends `SystemObjectScannerProvider`, so every plugin can also
+serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
+to catalog objects at runtime) can control when those hints are invalidated by implementing
+`decideHintClear`:
+
+```java
+default HintClearDecision decideHintClear(EngineContext ctx, HintClearContext context) {
+  return HintClearDecision.dropAll();   // safe default: clear everything on any schema change
+}
+```
+
+`HintClearContext` carries what changed: `resourceId`, field `mask`, and before/after `Table`/`View`
+snapshots. `HintClearDecision` controls what to clear:
+
+- `HintClearDecision.dropAll()` — clears all relation and column hints (safe default for simple plugins)
+- Fine-grained constructor — clears only specific `payloadType` sets or individual column IDs, for
+  plugins that want to avoid unnecessary hint recomputation on unrelated schema changes
+
+`SystemCatalogHintProvider` (in `ai.floedb.floecat.systemcatalog.hint`) automatically publishes
+each object's `engine_specific` rules as `EngineHint` entries keyed by `(engineKind, engineVersion,
+payloadType)`. Plugins that rely solely on `properties`-based metadata in their `.pbtxt` files get
+hint publishing for free without implementing `decideHintClear`.
 
 ## Core Components
 
@@ -143,7 +162,7 @@ The core envelope in `proto/src/main/proto/floecat/query/engine_specific.proto`:
 
 ```proto
 message EngineSpecific {
-  string engine_kind = 10;      // "floe-demo", "postgres", ...
+  string engine_kind = 10;       // "postgres", ...
   string min_version = 11;       // min engine version (inclusive)
   string max_version = 12;       // max engine version (inclusive)
   string payload_type = 20;      // e.g., "floe.function+proto"
@@ -226,31 +245,21 @@ public interface EngineBuiltinExtension {
 }
 ```
 
-### FloeCatalogExtension (Base Class)
+### Reference Implementation
 
-Located in `extensions/plugins/floedb/src/main/java/`, provides shared logic:
+The bundled `extensions/example/` module (`ExampleCatalogExtension`) is the canonical reference.
+It loads `.pbtxt` files from either a configured filesystem directory or from classpath resources
+under `builtins/<engine-kind>/`, reading fragment order from `_index.txt`.
 
-- **PBtxt Loading** – Parses human-friendly proto text format
-- **Extension Rewriting** – Extracts Floe-specific fields from `UnknownFieldSet` and converts to binary payloads
-- **Inner Classes** – Two concrete implementations:
-  - `FloeCatalogExtension.FloeDb` – "floedb" engine
-  - `FloeCatalogExtension.FloeDemo` – "floe-demo" engine (test/demo)
+Each fragment independently defines the repeated field(s) it needs; the loader appends them in
+order to a single `SystemObjectsRegistry.Builder`.
 
-These extensions now load from `builtins/{engineKind}/` directories. Each directory exposes
-an `_index.txt` that lists the pbtxt fragments to merge; fragments are merged in the order listed in `_index.txt`
-and typically focus on one repeated field (types, functions, operators, etc.).
-
-### Resource Files
-
-Located in `extensions/plugins/floedb/src/main/resources/builtins/`:
-
-- **`floedb/`** – Production directory (`_index.txt` plus `00_registry.pbtxt`, `10_types.pbtxt`, …)
-- **`floe-demo/`** – Fragmented demo catalog (same layout as above, but with a smaller subset)
+Resource layout:
 
 ```
 resources/
   builtins/
-    floedb/
+    <engine-kind>/
       _index.txt             # lists fragments in merge order
       00_registry.pbtxt
       10_types.pbtxt
@@ -261,45 +270,12 @@ resources/
       60_aggregates.pbtxt
 ```
 
-Each fragment independently defines just the repeated field it needs; the loader appends them to a
-single `SystemObjectsRegistry.Builder` before running `rewriteFloeExtensions()`.
-
-Format is human-readable protobuf text with embedded Floe-specific fields:
-
-```protobuf
-functions {
-  name { name: "int4_add" path: "pg_catalog" }
-  argument_types { name: "int4" path: "pg_catalog" }
-  argument_types { name: "int4" path: "pg_catalog" }
-  return_type { name: "int4" path: "pg_catalog" }
-}
-
-functions {
-  name { name: "int4_abs" path: "pg_catalog" }
-  argument_types { name: "int4" path: "pg_catalog" }
-  return_type { name: "int4" path: "pg_catalog" }
-  engine_specific {
-    min_version: "9.5"
-    floe_function {
-      oid: 1250
-      proname: "int4_abs"
-      prolang: 12
-      proisstrict: true
-      prosrc: "int4_abs"
-    }
-  }
-}
-```
-
-Floe-specific fields (like `floe_function`) are captured as unknown fields during parsing and later extracted and rewritten to binary payloads.
-
 ### ServiceLoader Registration
 
-Each plugin registers itself in `META-INF/services/ai.floedb.floecat.extensions.spi.EngineBuiltinExtension`:
+Each plugin registers itself in `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
 
 ```
-ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDb
-ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDemo
+com.example.MyEngineCatalogExtension
 ```
 
 ## Data Flow
@@ -307,9 +283,9 @@ ai.floedb.floecat.extensions.floedb.FloeCatalogExtension$FloeDemo
 ### Request Flow (Planner → Floecat)
 
 1. **Planner** sends `GetSystemObjectsRequest` with headers:
-   - `x-engine-kind: "floe-demo"`
-   - `x-engine-version: "16.0"`
-2. **SystemObjectsServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("floe-demo", "16.0")`.
+   - `x-engine-kind: "example"`
+   - `x-engine-version: "1.0"`
+2. **SystemObjectsServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("example", "1.0")`.
 3. **SystemNodeRegistry** normalizes the kind, looks up `(engineKind, engineVersion)` in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the raw `SystemEngineCatalog`.
 4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load a raw catalog snapshot for the normalized engine kind.
 5. **SystemNodeRegistry** takes that snapshot, seeds it with `floecat_internal` + `InformationSchema` definitions, overlays the plugin catalog and any `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries, re-fingerprints the merged catalog, and caches the result per `(engineKind, engineVersion)`. Plugin/provider overlays only occur when engine headers are present (engine-plugin overlays).
@@ -354,11 +330,11 @@ PostgreSQL has a massive builtin catalog:
 - **Aggregates**: ~100+
 - **Total**: ~8,000-10,000 objects per major PG version
 
-FloeDB (which mirrors PG) inherits this scale. The system is **designed to handle this**:
+A PG-scale engine catalog inherits this scale. The system is **designed to handle this**:
 
 ### Layer 1 (Engine-Kind Cache) – PG-Scale Performance
 
-| Metric | Small Catalog (Floe-demo) | PG-Scale (Postgres) |
+| Metric | Small Catalog (example extension) | PG-Scale (Postgres) |
 |--------|---------------------------|-------------------|
 | **Raw catalog size** | ~100 objects | ~8,000-10,000 objects |
 | **Parsed JAR size** | ~20-50KB | ~2-5MB |
@@ -394,7 +370,7 @@ When planner requests a version, Layer 2 filters Layer 1's full catalog:
 
 ```
 3 engines × (1 raw catalog + 5 versions average):
-  Floe-demo:     2MB (raw) + 2MB×5 (versions)      = 12MB
+  Example:       2MB (raw) + 2MB×5 (versions)      = 12MB
   Postgres:     40MB (raw) + 25MB×5 (versions)    = 165MB
   Trino:        30MB (raw) + 20MB×5 (versions)    = 130MB
   ──────────────────────────────────────────────────────
@@ -424,21 +400,21 @@ Both Layer 1 and Layer 2 use `ConcurrentHashMap` with atomic `computeIfAbsent()`
 - **Many engines** (> 10 engines): ~500MB+ memory; consider partitioning
 - **Very large .pbtxt files** (> 10MB): Parsing could timeout; consider compression or lazy loading
 
-**Recommendation**: For PG-scale (FloeDB inherits this), pre-warm cache by loading all expected versions at service startup rather than lazy-loading on first planner request.
+**Recommendation**: For PG-scale engines, pre-warm cache by loading all expected versions at service startup rather than lazy-loading on first planner request.
 
 ## Proto Extensions (Advanced)
 
 Plugins can define proto extensions on `EngineSpecific` to support rich PBtxt syntax. The Floe plugin defines:
 
 ```proto
-// In extensions/plugins/floedb/src/main/proto/floecat/engine_floe.proto
+// my_engine.proto — define in your own plugin proto
 extend ai.floedb.floecat.query.EngineSpecific {
-  FloeFunctionSpecific floe_function = 1001;
-  FloeOperatorSpecific floe_operator = 1002;
-  FloeCastSpecific floe_cast = 1003;
-  FloeTypeSpecific floe_type = 1004;
-  FloeAggregateSpecific floe_aggregate = 1005;
-  FloeCollationSpecific floe_collation = 1006;
+  MyFunctionSpecific  my_function  = 1001;
+  MyOperatorSpecific  my_operator  = 1002;
+  MyCastSpecific      my_cast      = 1003;
+  MyTypeSpecific      my_type      = 1004;
+  MyAggregateSpecific my_aggregate = 1005;
+  MyCollationSpecific my_collation = 1006;
 }
 ```
 
@@ -516,36 +492,36 @@ Add the plugin JAR as a runtime dependency of the service module so it's availab
 
 Each plugin should validate its `.pbtxt` files using the `SystemCatalogValidator`:
 
-**Example: FloeBuiltinExtensionTest**
+**Example: CatalogExtensionTest**
 
 ```java
-class FloeBuiltinExtensionTest {
+class CatalogExtensionTest {
   @Test
-  void floeDbLoadsAndValidates() {
-    var extension = new FloeCatalogExtension.FloeDb();
-    
-    // Load the floedb catalog directory (`_index.txt` + fragments)
+  void extensionLoadsAndValidates() {
+    var extension = new ExampleCatalogExtension();
+
+    // Load the catalog (`_index.txt` + fragments)
     SystemCatalogData catalog = extension.loadSystemCatalog();
-    
+
     // Validate structural integrity
     var errors = SystemCatalogValidator.validate(catalog);
-    assert errors.isEmpty() : "floedb catalog must pass validation, got: " + errors;
+    assert errors.isEmpty() : "catalog must pass validation, got: " + errors;
   }
 
   @Test
   void catalogDataPreservesEngineSpecificRules() {
-    var extension = new FloeCatalogExtension.FloeDb();
+    var extension = new ExampleCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
-    // Ensure Floe-specific fields were rewritten to payload bytes
+    // Ensure engine-specific rules have non-blank payloadType
     var functionsWithRules = catalog.functions().stream()
         .filter(f -> !f.engineSpecific().isEmpty())
         .toList();
 
     for (var func : functionsWithRules) {
       for (var rule : func.engineSpecific()) {
-        assert rule.hasExtensionPayload() : 
-            "Rewritten rules must have payload bytes";
+        assert !rule.payloadType().isBlank() :
+            "engine_specific rules must have a non-blank payload_type";
       }
     }
   }
@@ -553,7 +529,7 @@ class FloeBuiltinExtensionTest {
   @Test
   void missingResourceFileThrows() {
     var extension = new TestExtensionWithMissingResource();
-    
+
     try {
       extension.loadSystemCatalog();
       assert false : "Expected IllegalStateException";
@@ -567,7 +543,7 @@ class FloeBuiltinExtensionTest {
 **What this validates:**
 - `.pbtxt` file parses without errors
 - All objects (functions, types, operators, etc.) pass structural validation
-- Engine-specific rules (e.g., `floe_function`, `floe_operator`) are correctly rewritten to binary payloads
+- Engine-specific rules have a non-blank `payload_type` (required by the validator)
 - Resource files are present and readable
 - Invalid/malformed `.pbtxt` syntax fails fast
 
