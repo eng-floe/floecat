@@ -34,6 +34,7 @@ public final class Keys {
   public static final String SEG_TABLE_STATS = "/table-stats/";
   public static final String SEG_COLUMN_STATS = "/column-stats/";
   public static final String SEG_FILE_STATS = "/file-stats/";
+  public static final String SEG_CONSTRAINTS = "/constraints/";
   public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
   public static final String SEG_TABLES_BY_NAME = "/tables/by-name/";
   public static final String SEG_VIEWS_BY_NAME = "/views/by-name/";
@@ -548,6 +549,47 @@ public final class Keys {
 
   public static String snapshotFileStatsPrefix(String accountId, String tableId, long snapshotId) {
     return snapshotFileStatsDirectoryPointer(accountId, tableId, snapshotId);
+  }
+
+  public static String snapshotConstraintsStatsPointer(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "constraints";
+  }
+
+  public static String snapshotConstraintsPointer(
+      String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return String.format(
+        "/accounts/%s/tables/%s/constraints/by-snapshot/%019d", encode(tid), encode(tbid), sid);
+  }
+
+  public static String snapshotConstraintsPointerPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format(
+        "/accounts/%s/tables/%s/constraints/by-snapshot/", encode(tid), encode(tbid));
+  }
+
+  public static String snapshotConstraintsBlobUri(
+      String accountId, String tableId, long snapshotId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/constraints/%019d/%s.pb",
+        encode(tid), encode(tbid), sid, encode(sha));
+  }
+
+  public static String snapshotConstraintsBlobPrefix(
+      String accountId, String tableId, long snapshotId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    return String.format(
+        "/accounts/%s/tables/%s/constraints/%019d/", encode(tid), encode(tbid), sid);
   }
 
   // ===== View =====

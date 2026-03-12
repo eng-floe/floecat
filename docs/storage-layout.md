@@ -19,6 +19,7 @@ Blobs follow deterministic prefixes:
 /accounts/{account_id}/tables/{table_id}/table-stats/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/column-stats/{column_id}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/file-stats/{file_path}/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id}/{sha}.pb
 /accounts/{account_id}/views/{view_id}/view/{sha}.pb
 /accounts/{account_id}/connectors/{connector_id}/connector/{sha}.pb
 /accounts/{account_id}/idempotency/{key}/idempotency.pb
@@ -44,12 +45,20 @@ Pointers capture hierarchy and name lookups:
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/table
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/columns/{column_id}
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/files/{file_path}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/constraints
+/accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id}
 /accounts/{account_id}/connectors/by-id/{connector_id}
 /accounts/{account_id}/connectors/by-name/{connector_name}
 /accounts/{account_id}/idempotency/{operation}/{key}
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
 ```
+
+Constraint storage semantics:
+
+- The persisted constraints unit is per table per snapshot (`.../constraints/by-snapshot/{snapshot_id}`).
+- The `SnapshotConstraints` payload can contain both table constraints and column-level constraints
+  represented in table scope (for example `NOT NULL`).
 
 Each pointer carries a monotonically increasing version; repositories use compare-and-set to enforce
 idempotency and optimistic concurrency. Two storage implementations ship with the repo:

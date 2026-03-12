@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.catalog.rpc.TableStats;
-import java.security.MessageDigest;
 import java.util.TreeMap;
 
 public final class TableStatsNormalizer {
@@ -40,20 +39,5 @@ public final class TableStatsNormalizer {
     }
 
     return b.build();
-  }
-
-  public static String sha256Hex(byte[] bytes) {
-    try {
-      MessageDigest md = MessageDigest.getInstance("SHA-256");
-      byte[] dig = md.digest(bytes);
-      StringBuilder sb = new StringBuilder(dig.length * 2);
-      for (byte x : dig) {
-        sb.append(String.format("%02x", x));
-      }
-
-      return sb.toString();
-    } catch (Exception e) {
-      throw new IllegalStateException("SHA-256 not available", e);
-    }
   }
 }

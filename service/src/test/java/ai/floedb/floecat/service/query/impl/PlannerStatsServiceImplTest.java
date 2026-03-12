@@ -24,13 +24,13 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
-import ai.floedb.floecat.query.rpc.StatsStatus;
 import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
@@ -157,7 +157,7 @@ class PlannerStatsServiceImplTest {
 
     List<ColumnStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
-    assertEquals(StatsStatus.STATS_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedColumns());
