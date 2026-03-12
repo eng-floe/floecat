@@ -24,7 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -37,7 +37,7 @@ import jakarta.ws.rs.core.Response;
 public class TableRenameService {
   @Inject GrpcWithHeaders grpc;
   @Inject RequestContextFactory requestContextFactory;
-  @Inject TableClient tableClient;
+  @Inject GrpcServiceFacade tableClient;
 
   public Response rename(String prefix, RenameRequest request) {
     CatalogRequestContext catalogContext = requestContextFactory.catalog(prefix);

@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
+
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
@@ -38,8 +40,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFac
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
@@ -99,8 +100,7 @@ public class TransactionCommitService {
   @Inject TableCommitJournalService commitJournalService;
   @Inject TableCommitOutboxService commitOutboxService;
   @Inject TableCommitMaterializationService materializationService;
-  @Inject SnapshotClient snapshotClient;
-  @Inject TransactionClient transactionClient;
+  @Inject GrpcServiceFacade grpcClient;
 
   public Response commitCreate(
       String prefix,
@@ -158,7 +158,7 @@ public class TransactionCommitService {
     ai.floedb.floecat.transaction.rpc.BeginTransactionResponse begin;
     try {
       begin =
-          transactionClient.beginTransaction(
+          grpcClient.beginTransaction(
               ai.floedb.floecat.transaction.rpc.BeginTransactionRequest.newBuilder()
                   .setIdempotency(
                       ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
@@ -181,8 +181,7 @@ public class TransactionCommitService {
     TransactionState currentState;
     try {
       currentTxn =
-          transactionClient.getTransaction(
-              GetTransactionRequest.newBuilder().setTxId(txId).build());
+          grpcClient.getTransaction(GetTransactionRequest.newBuilder().setTxId(txId).build());
       currentState =
           currentTxn != null && currentTxn.hasTransaction()
               ? currentTxn.getTransaction().getState()
@@ -459,7 +458,7 @@ public class TransactionCommitService {
     if (!applied) {
       if (currentState == TransactionState.TS_OPEN) {
         try {
-          transactionClient.prepareTransaction(
+          grpcClient.prepareTransaction(
               ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.newBuilder()
                   .setTxId(txId)
                   .addAllChanges(txChanges)
@@ -483,7 +482,7 @@ public class TransactionCommitService {
               ai.floedb.floecat.common.rpc.IdempotencyKey.newBuilder()
                   .setKey(idempotencyBase == null ? "" : idempotencyBase + ":commit"));
         }
-        var commitResponse = transactionClient.commitTransaction(commitRequest.build());
+        var commitResponse = grpcClient.commitTransaction(commitRequest.build());
         TransactionState commitState =
             commitResponse != null && commitResponse.hasTransaction()
                 ? commitResponse.getTransaction().getState()
@@ -735,8 +734,8 @@ public class TransactionCommitService {
             : tableId.toBuilder().setAccountId(resolvedAccountId).build();
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     for (Map<String, Object> update : updates) {
-      String action = TableMappingUtil.asString(update == null ? null : update.get("action"));
-      if (!"add-snapshot".equals(action)) {
+      String action = CommitUpdateInspector.actionOf(update);
+      if (!CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(action)) {
         continue;
       }
       Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
@@ -802,7 +801,7 @@ public class TransactionCommitService {
       Map<String, Object> snapshotMap) {
     try {
       var resp =
-          snapshotClient.getSnapshot(
+          grpcClient.getSnapshot(
               ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
                   .setTableId(tableId)
                   .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
@@ -983,20 +982,6 @@ public class TransactionCommitService {
       refs.put(entry.getKey(), ref.build());
     }
     return refs.isEmpty() ? Map.of() : Map.copyOf(refs);
-  }
-
-  private Map<String, String> asStringMap(Object value) {
-    if (!(value instanceof Map<?, ?> raw) || raw.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> out = new LinkedHashMap<>();
-    for (Map.Entry<?, ?> entry : raw.entrySet()) {
-      if (entry.getKey() == null || entry.getValue() == null) {
-        continue;
-      }
-      out.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
-    }
-    return out;
   }
 
   private ResourceId scopeTableIdWithAccount(ResourceId tableId, String accountId) {
@@ -1282,8 +1267,7 @@ public class TransactionCommitService {
     for (int attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         var current =
-            transactionClient.getTransaction(
-                GetTransactionRequest.newBuilder().setTxId(txId).build());
+            grpcClient.getTransaction(GetTransactionRequest.newBuilder().setTxId(txId).build());
         if (current != null && current.hasTransaction()) {
           TransactionState state = current.getTransaction().getState();
           if (state == TransactionState.TS_APPLIED) {
@@ -1383,7 +1367,7 @@ public class TransactionCommitService {
       return;
     }
     try {
-      transactionClient.abortTransaction(
+      grpcClient.abortTransaction(
           ai.floedb.floecat.transaction.rpc.AbortTransactionRequest.newBuilder()
               .setTxId(txId)
               .setReason(reason == null ? "" : reason)

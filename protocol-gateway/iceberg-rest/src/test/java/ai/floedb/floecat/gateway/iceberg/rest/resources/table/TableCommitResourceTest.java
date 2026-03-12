@@ -35,7 +35,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
@@ -56,29 +55,28 @@ import org.mockito.ArgumentCaptor;
 @TestProfile(RestResourceTestProfile.class)
 class TableCommitResourceTest extends AbstractRestResourceTest {
 
-  @InjectMock TransactionClient transactionClient;
   @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
   void setUpAtomicCommitDefaults() {
-    when(transactionClient.beginTransaction(any()))
+    when(transactionsStub.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(transactionsStub.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(transactionsStub.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(transactionsStub.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -141,7 +139,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
     ArgumentCaptor<PrepareTransactionRequest> requestCaptor =
         ArgumentCaptor.forClass(PrepareTransactionRequest.class);
-    verify(transactionClient).prepareTransaction(requestCaptor.capture());
+    verify(transactionsStub).prepareTransaction(requestCaptor.capture());
     String committedUri =
         requestCaptor.getValue().getChangesList().stream()
             .filter(change -> change.hasTable() && change.getTable().hasUpstream())
@@ -183,7 +181,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .then()
         .statusCode(200);
 
-    verify(transactionClient).commitTransaction(any());
+    verify(transactionsStub).commitTransaction(any());
   }
 
   @Test
@@ -211,7 +209,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .statusCode(409)
         .body("error.type", equalTo("CommitFailedException"));
 
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(transactionsStub, never()).commitTransaction(any());
   }
 
   @Test
@@ -241,7 +239,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .statusCode(409)
         .body("error.type", equalTo("CommitFailedException"));
 
-    verify(transactionClient, never()).commitTransaction(any());
-    verify(transactionClient).abortTransaction(any());
+    verify(transactionsStub, never()).commitTransaction(any());
+    verify(transactionsStub).abortTransaction(any());
   }
 }

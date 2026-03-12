@@ -92,6 +92,72 @@ public final class TableMappingUtil {
     return value == null ? null : String.valueOf(value);
   }
 
+  public static Map<String, String> asStringMap(Object value) {
+    if (!(value instanceof Map<?, ?> map) || map.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> out = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
+      if (entry.getKey() == null || entry.getValue() == null) {
+        continue;
+      }
+      out.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
+    }
+    return out;
+  }
+
+  public static List<String> asStringList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    return list.stream()
+        .filter(v -> v != null && !String.valueOf(v).isBlank())
+        .map(String::valueOf)
+        .toList();
+  }
+
+  public static List<Long> asLongList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Long> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Long val = asLong(item);
+      if (val != null) {
+        out.add(val);
+      }
+    }
+    return out;
+  }
+
+  public static List<Integer> asIntegerList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Integer> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Integer val = asInteger(item);
+      if (val != null) {
+        out.add(val);
+      }
+    }
+    return out;
+  }
+
+  public static List<Map<String, Object>> asObjectMapList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Map<String, Object> map = asObjectMap(item);
+      if (map != null && !map.isEmpty()) {
+        out.add(map);
+      }
+    }
+    return out;
+  }
+
   public static String firstNonBlank(String first, String second) {
     if (first != null && !first.isBlank()) {
       return first;

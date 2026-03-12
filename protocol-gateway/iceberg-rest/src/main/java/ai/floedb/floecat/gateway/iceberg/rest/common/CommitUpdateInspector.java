@@ -18,6 +18,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +27,100 @@ import java.util.Set;
 
 public final class CommitUpdateInspector {
   public static final String REQUIREMENT_ASSERT_CREATE = "assert-create";
+  public static final String ACTION_SET_PROPERTIES = "set-properties";
+  public static final String ACTION_REMOVE_PROPERTIES = "remove-properties";
+  public static final String ACTION_SET_LOCATION = "set-location";
+  public static final String ACTION_ADD_SNAPSHOT = "add-snapshot";
+  public static final String ACTION_REMOVE_SNAPSHOTS = "remove-snapshots";
+  public static final String ACTION_SET_SNAPSHOT_REF = "set-snapshot-ref";
+  public static final String ACTION_REMOVE_SNAPSHOT_REF = "remove-snapshot-ref";
+  public static final String ACTION_ASSIGN_UUID = "assign-uuid";
+  public static final String ACTION_UPGRADE_FORMAT_VERSION = "upgrade-format-version";
+  public static final String ACTION_ADD_SCHEMA = "add-schema";
+  public static final String ACTION_SET_CURRENT_SCHEMA = "set-current-schema";
+  public static final String ACTION_ADD_SPEC = "add-spec";
+  public static final String ACTION_SET_DEFAULT_SPEC = "set-default-spec";
+  public static final String ACTION_ADD_SORT_ORDER = "add-sort-order";
+  public static final String ACTION_SET_DEFAULT_SORT_ORDER = "set-default-sort-order";
+  public static final String ACTION_REMOVE_PARTITION_SPECS = "remove-partition-specs";
+  public static final String ACTION_REMOVE_SCHEMAS = "remove-schemas";
+  public static final String ACTION_SET_STATISTICS = "set-statistics";
+  public static final String ACTION_REMOVE_STATISTICS = "remove-statistics";
+  public static final String ACTION_SET_PARTITION_STATISTICS = "set-partition-statistics";
+  public static final String ACTION_REMOVE_PARTITION_STATISTICS = "remove-partition-statistics";
+  public static final String ACTION_ADD_ENCRYPTION_KEY = "add-encryption-key";
+  public static final String ACTION_REMOVE_ENCRYPTION_KEY = "remove-encryption-key";
+
+  public enum UpdateAction {
+    SET_PROPERTIES(ACTION_SET_PROPERTIES, true, false, false),
+    REMOVE_PROPERTIES(ACTION_REMOVE_PROPERTIES, true, false, false),
+    SET_LOCATION(ACTION_SET_LOCATION, false, false, false),
+    ADD_SNAPSHOT(ACTION_ADD_SNAPSHOT, false, false, false),
+    REMOVE_SNAPSHOTS(ACTION_REMOVE_SNAPSHOTS, false, false, false),
+    SET_SNAPSHOT_REF(ACTION_SET_SNAPSHOT_REF, false, false, false),
+    REMOVE_SNAPSHOT_REF(ACTION_REMOVE_SNAPSHOT_REF, false, false, false),
+    ASSIGN_UUID(ACTION_ASSIGN_UUID, false, false, false),
+    UPGRADE_FORMAT_VERSION(ACTION_UPGRADE_FORMAT_VERSION, false, true, false),
+    ADD_SCHEMA(ACTION_ADD_SCHEMA, false, true, true),
+    SET_CURRENT_SCHEMA(ACTION_SET_CURRENT_SCHEMA, false, true, true),
+    ADD_SPEC(ACTION_ADD_SPEC, false, true, true),
+    SET_DEFAULT_SPEC(ACTION_SET_DEFAULT_SPEC, false, true, true),
+    ADD_SORT_ORDER(ACTION_ADD_SORT_ORDER, false, true, true),
+    SET_DEFAULT_SORT_ORDER(ACTION_SET_DEFAULT_SORT_ORDER, false, true, true),
+    REMOVE_PARTITION_SPECS(ACTION_REMOVE_PARTITION_SPECS, false, false, false),
+    REMOVE_SCHEMAS(ACTION_REMOVE_SCHEMAS, false, false, false),
+    SET_STATISTICS(ACTION_SET_STATISTICS, false, false, false),
+    REMOVE_STATISTICS(ACTION_REMOVE_STATISTICS, false, false, false),
+    SET_PARTITION_STATISTICS(ACTION_SET_PARTITION_STATISTICS, false, false, false),
+    REMOVE_PARTITION_STATISTICS(ACTION_REMOVE_PARTITION_STATISTICS, false, false, false),
+    ADD_ENCRYPTION_KEY(ACTION_ADD_ENCRYPTION_KEY, false, false, false),
+    REMOVE_ENCRYPTION_KEY(ACTION_REMOVE_ENCRYPTION_KEY, false, false, false);
+
+    private static final Map<String, UpdateAction> BY_WIRE_NAME;
+
+    static {
+      Map<String, UpdateAction> byName = new HashMap<>();
+      for (UpdateAction action : values()) {
+        byName.put(action.wireName, action);
+      }
+      BY_WIRE_NAME = Collections.unmodifiableMap(byName);
+    }
+
+    private final String wireName;
+    private final boolean propertyAction;
+    private final boolean tableDefinitionAction;
+    private final boolean createInitializationAction;
+
+    UpdateAction(
+        String wireName,
+        boolean propertyAction,
+        boolean tableDefinitionAction,
+        boolean createInitializationAction) {
+      this.wireName = wireName;
+      this.propertyAction = propertyAction;
+      this.tableDefinitionAction = tableDefinitionAction;
+      this.createInitializationAction = createInitializationAction;
+    }
+
+    public static UpdateAction fromWireName(String wireName) {
+      if (wireName == null) {
+        return null;
+      }
+      return BY_WIRE_NAME.get(wireName);
+    }
+
+    public boolean isPropertyAction() {
+      return propertyAction;
+    }
+
+    public boolean isTableDefinitionAction() {
+      return tableDefinitionAction;
+    }
+
+    public boolean isCreateInitializationAction() {
+      return createInitializationAction;
+    }
+  }
 
   private static final List<Map<String, Object>> ASSERT_CREATE_REQUIREMENTS =
       List.of(Map.of("type", REQUIREMENT_ASSERT_CREATE));
@@ -40,41 +136,6 @@ public final class CommitUpdateInspector {
           "assert-default-sort-order-id",
           "assert-ref-snapshot-id");
 
-  private static final Set<String> SUPPORTED_UPDATE_ACTIONS =
-      Set.of(
-          "set-properties",
-          "remove-properties",
-          "set-location",
-          "add-snapshot",
-          "remove-snapshots",
-          "set-snapshot-ref",
-          "remove-snapshot-ref",
-          "assign-uuid",
-          "upgrade-format-version",
-          "add-schema",
-          "set-current-schema",
-          "add-spec",
-          "set-default-spec",
-          "add-sort-order",
-          "set-default-sort-order",
-          "remove-partition-specs",
-          "remove-schemas",
-          "set-statistics",
-          "remove-statistics",
-          "set-partition-statistics",
-          "remove-partition-statistics",
-          "add-encryption-key",
-          "remove-encryption-key");
-
-  private static final Set<String> CREATE_INITIALIZATION_ACTIONS =
-      Set.of(
-          "add-schema",
-          "set-current-schema",
-          "add-spec",
-          "set-default-spec",
-          "add-sort-order",
-          "set-default-sort-order");
-
   private CommitUpdateInspector() {}
 
   public static List<Map<String, Object>> assertCreateRequirements() {
@@ -86,11 +147,34 @@ public final class CommitUpdateInspector {
   }
 
   public static boolean isSupportedUpdateAction(String action) {
-    return action != null && SUPPORTED_UPDATE_ACTIONS.contains(action);
+    return actionTypeOf(action) != null;
   }
 
   public static boolean isCreateInitializationAction(String action) {
-    return action != null && CREATE_INITIALIZATION_ACTIONS.contains(action);
+    UpdateAction actionType = actionTypeOf(action);
+    return actionType != null && actionType.isCreateInitializationAction();
+  }
+
+  public static boolean isPropertyAction(String action) {
+    UpdateAction actionType = actionTypeOf(action);
+    return actionType != null && actionType.isPropertyAction();
+  }
+
+  public static boolean isTableDefinitionAction(String action) {
+    UpdateAction actionType = actionTypeOf(action);
+    return actionType != null && actionType.isTableDefinitionAction();
+  }
+
+  public static String actionOf(Map<String, Object> update) {
+    return TableMappingUtil.asString(update == null ? null : update.get("action"));
+  }
+
+  public static UpdateAction actionTypeOf(String action) {
+    return UpdateAction.fromWireName(action);
+  }
+
+  public static UpdateAction actionTypeOf(Map<String, Object> update) {
+    return actionTypeOf(actionOf(update));
   }
 
   public record SnapshotRefMutation(
@@ -140,12 +224,12 @@ public final class CommitUpdateInspector {
       if (update == null) {
         continue;
       }
-      String action = TableMappingUtil.asString(update.get("action"));
-      if (action == null || action.isBlank()) {
+      UpdateAction action = actionTypeOf(update);
+      if (action == null) {
         continue;
       }
       switch (action) {
-        case "add-snapshot" -> {
+        case ADD_SNAPSHOT -> {
           containsSnapshotUpdates = true;
           Map<String, Object> snapshot = TableMappingUtil.asObjectMap(update.get("snapshot"));
           if (snapshot == null || snapshot.isEmpty()) {
@@ -167,7 +251,7 @@ public final class CommitUpdateInspector {
                     : Math.max(maxSnapshotSequenceNumber, sequenceNumber);
           }
         }
-        case "remove-snapshots" -> {
+        case REMOVE_SNAPSHOTS -> {
           containsSnapshotUpdates = true;
           Object raw = update.get("snapshot-ids");
           if (!(raw instanceof List<?> ids)) {
@@ -181,7 +265,7 @@ public final class CommitUpdateInspector {
             }
           }
         }
-        case "set-snapshot-ref" -> {
+        case SET_SNAPSHOT_REF -> {
           containsSnapshotUpdates = true;
           String refName = TableMappingUtil.asString(update.get("ref-name"));
           Long snapshotId = TableMappingUtil.asLong(update.get("snapshot-id"));
@@ -215,7 +299,7 @@ public final class CommitUpdateInspector {
           }
           requestedMainRefSnapshotId = snapshotId;
         }
-        case "remove-snapshot-ref" -> {
+        case REMOVE_SNAPSHOT_REF -> {
           containsSnapshotUpdates = true;
           snapshotRefMutations.add(
               new SnapshotRefMutation(
@@ -227,7 +311,7 @@ public final class CommitUpdateInspector {
                   null,
                   null));
         }
-        case "set-properties" -> {
+        case SET_PROPERTIES -> {
           Map<String, Object> props = TableMappingUtil.asObjectMap(update.get("updates"));
           if (props == null || props.isEmpty()) {
             continue;

@@ -26,7 +26,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
@@ -49,7 +48,6 @@ import org.junit.jupiter.api.Test;
 @TestProfile(RestResourceTestProfile.class)
 class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
-  @InjectMock TransactionClient transactionClient;
   @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
@@ -71,24 +69,24 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void transactionCommitReturnsNoContentOnlyWhenApplied() {
-    when(transactionClient.beginTransaction(any()))
+    when(transactionsStub.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(transactionsStub.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(transactionsStub.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(transactionsStub.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -106,24 +104,24 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void transactionCommitReturnsStateUnknownWhenBackendApplyIsRetryable() {
-    when(transactionClient.beginTransaction(any()))
+    when(transactionsStub.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-2"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(transactionsStub.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-2").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(transactionsStub.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-2").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(transactionsStub.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -144,24 +142,24 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void transactionCommitReturnsConflictWhenBackendApplyConflicts() {
-    when(transactionClient.beginTransaction(any()))
+    when(transactionsStub.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-3"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(transactionsStub.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-3").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(transactionsStub.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-3").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(transactionsStub.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -208,12 +206,12 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
   @Test
   void transactionCommitAllowsAssertCreateForMissingTable() {
     when(directoryStub.resolveTable(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
-    when(transactionClient.beginTransaction(any()))
+    when(transactionsStub.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-assert-create"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(transactionsStub.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -221,7 +219,7 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
                         .setTxId("tx-assert-create")
                         .setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(transactionsStub.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
@@ -229,7 +227,7 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
                         .setTxId("tx-assert-create")
                         .setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(transactionsStub.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(

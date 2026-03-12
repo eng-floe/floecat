@@ -28,7 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestConte
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -48,7 +48,7 @@ public class TableLoadService {
   private static final Logger LOG = Logger.getLogger(TableLoadService.class);
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject SnapshotClient snapshotClient;
+  @Inject GrpcServiceFacade snapshotClient;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject DeltaIcebergMetadataService deltaMetadataService;
   @Inject TableMetadataImportService tableMetadataImportService;

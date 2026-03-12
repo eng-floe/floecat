@@ -21,14 +21,14 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 
 @ApplicationScoped
 public class NamespaceInfoService {
-  @Inject NamespaceClient namespaceClient;
+  @Inject GrpcServiceFacade namespaceClient;
 
   public Response get(NamespaceRequestContext namespaceContext) {
     Namespace namespace = load(namespaceContext.namespaceId());

@@ -25,7 +25,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import com.google.protobuf.FieldMask;
@@ -167,9 +166,16 @@ class TablePropertyServiceTest {
 
   @Test
   void hasPropertyUpdatesDetectsSetAndRemove() {
-    TableRequests.Commit commit =
-        new TableRequests.Commit(List.of(), List.of(Map.of("action", "set-properties")));
-    assertTrue(service.hasPropertyUpdates(commit));
+    Table table = Table.newBuilder().putProperties("existing", "value").build();
+
+    var result =
+        service.applyCommitPropertyUpdates(
+            () -> table,
+            null,
+            List.of(Map.of("action", "set-properties", "updates", Map.of("added", "yes"))));
+
+    assertNull(result.error());
+    assertEquals("yes", result.properties().get("added"));
   }
 
   @Test

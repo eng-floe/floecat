@@ -26,7 +26,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,7 +42,7 @@ import org.apache.iceberg.io.InputFile;
 
 @ApplicationScoped
 public class ViewRegisterService {
-  @Inject ViewClient viewClient;
+  @Inject GrpcServiceFacade viewClient;
   @Inject ViewMetadataService viewMetadataService;
   @Inject TableGatewaySupport tableGatewaySupport;
   @Inject ObjectMapper mapper;

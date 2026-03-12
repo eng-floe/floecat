@@ -37,9 +37,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
@@ -67,9 +65,7 @@ public class TableGatewaySupport {
   private final IcebergGatewayConfig config;
   private final ObjectMapper mapper;
   private final Config mpConfig;
-  private final TableClient tableClient;
-  private final SnapshotClient snapshotClient;
-  private final ConnectorClient connectorClient;
+  private final GrpcServiceFacade grpcClient;
 
   private volatile Map<String, String> tableConfigCache;
   private volatile List<StorageCredentialDto> storageCredentialCache;
@@ -79,16 +75,12 @@ public class TableGatewaySupport {
       IcebergGatewayConfig config,
       ObjectMapper mapper,
       Config mpConfig,
-      TableClient tableClient,
-      SnapshotClient snapshotClient,
-      ConnectorClient connectorClient) {
+      GrpcServiceFacade grpcClient) {
     this.grpc = grpc;
     this.config = config;
     this.mapper = mapper;
     this.mpConfig = mpConfig;
-    this.tableClient = tableClient;
-    this.snapshotClient = snapshotClient;
-    this.connectorClient = connectorClient;
+    this.grpcClient = grpcClient;
   }
 
   public TableSpec.Builder buildCreateSpec(
@@ -190,7 +182,7 @@ public class TableGatewaySupport {
       return;
     }
     try {
-      connectorClient.deleteConnector(
+      grpcClient.deleteConnector(
           DeleteConnectorRequest.newBuilder().setConnectorId(connectorId).build());
     } catch (StatusRuntimeException e) {
       LOG.warnf(e, "Failed to delete connector %s", connectorId.getId());
@@ -367,7 +359,7 @@ public class TableGatewaySupport {
       SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT);
       var requestBuilder =
           GetSnapshotRequest.newBuilder().setTableId(table.getResourceId()).setSnapshot(ref);
-      var response = snapshotClient.getSnapshot(requestBuilder.build());
+      var response = grpcClient.getSnapshot(requestBuilder.build());
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
@@ -402,7 +394,7 @@ public class TableGatewaySupport {
     }
     SnapshotRef.Builder ref = SnapshotRef.newBuilder().setSnapshotId(snapshotId);
     var response =
-        snapshotClient.getSnapshot(
+        grpcClient.getSnapshot(
             GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(ref).build());
     if (response == null || !response.hasSnapshot()) {
       return null;
@@ -431,7 +423,7 @@ public class TableGatewaySupport {
     }
     try {
       GetConnectorResponse response =
-          connectorClient.getConnector(
+          grpcClient.getConnector(
               GetConnectorRequest.newBuilder().setConnectorId(connectorId).build());
       if (response == null || !response.hasConnector()) {
         return Optional.empty();
@@ -483,7 +475,7 @@ public class TableGatewaySupport {
               .setScope(captureScope(connectorId, namespacePath, tableName, snapshotIds))
               .setMode(mode)
               .setFullRescan(fullRescan);
-      var response = connectorClient.captureNow(request.build());
+      var response = grpcClient.captureNow(request.build());
       LOG.infof(
           "Triggered sync statistics capture connector=%s namespace=%s table=%s scanned=%d changed=%d"
               + " errors=%d",

@@ -22,6 +22,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataViews;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
@@ -185,29 +186,7 @@ public class TableCommitMaterializationService {
     if (!hasText(resolvedLocation)) {
       return metadata;
     }
-    return new TableMetadataView(
-        metadata.formatVersion(),
-        metadata.tableUuid(),
-        resolvedLocation,
-        metadata.metadataLocation(),
-        metadata.lastUpdatedMs(),
-        metadata.properties(),
-        metadata.lastColumnId(),
-        metadata.currentSchemaId(),
-        metadata.defaultSpecId(),
-        metadata.lastPartitionId(),
-        metadata.defaultSortOrderId(),
-        metadata.currentSnapshotId(),
-        metadata.lastSequenceNumber(),
-        metadata.schemas(),
-        metadata.partitionSpecs(),
-        metadata.sortOrders(),
-        metadata.refs(),
-        metadata.snapshotLog(),
-        metadata.metadataLog(),
-        metadata.statistics(),
-        metadata.partitionStatistics(),
-        metadata.snapshots());
+    return TableMetadataViews.copy(metadata).location(resolvedLocation).build();
   }
 
   private String deriveDefaultTableLocation(String namespace, String tableName) {
@@ -290,29 +269,18 @@ public class TableCommitMaterializationService {
             lastPartitionId,
             defaultSortOrderId);
 
-    return new TableMetadataView(
-        formatVersion,
-        metadata.tableUuid(),
-        metadata.location(),
-        metadata.metadataLocation(),
-        metadata.lastUpdatedMs(),
-        normalizedProperties,
-        lastColumnId,
-        currentSchemaId,
-        defaultSpecId,
-        lastPartitionId,
-        defaultSortOrderId,
-        metadata.currentSnapshotId(),
-        metadata.lastSequenceNumber(),
-        schemas,
-        partitionSpecs,
-        sortOrders,
-        metadata.refs(),
-        metadata.snapshotLog(),
-        metadata.metadataLog(),
-        metadata.statistics(),
-        metadata.partitionStatistics(),
-        metadata.snapshots());
+    return TableMetadataViews.copy(metadata)
+        .formatVersion(formatVersion)
+        .properties(normalizedProperties)
+        .lastColumnId(lastColumnId)
+        .currentSchemaId(currentSchemaId)
+        .defaultSpecId(defaultSpecId)
+        .lastPartitionId(lastPartitionId)
+        .defaultSortOrderId(defaultSortOrderId)
+        .schemas(schemas)
+        .partitionSpecs(partitionSpecs)
+        .sortOrders(sortOrders)
+        .build();
   }
 
   private Map<String, String> normalizeRequiredIdProperties(
@@ -372,29 +340,17 @@ public class TableCommitMaterializationService {
               new LinkedHashMap<>(tableRecord.getPropertiesMap()),
               imported.icebergMetadata(),
               List.of());
-      return new TableMetadataView(
-          metadata.formatVersion(),
-          metadata.tableUuid(),
-          metadata.location(),
-          metadata.metadataLocation(),
-          metadata.lastUpdatedMs(),
-          metadata.properties(),
-          firstNonNull(metadata.lastColumnId(), existing.lastColumnId()),
-          firstNonNull(metadata.currentSchemaId(), existing.currentSchemaId()),
-          firstNonNull(metadata.defaultSpecId(), existing.defaultSpecId()),
-          firstNonNull(metadata.lastPartitionId(), existing.lastPartitionId()),
-          firstNonNull(metadata.defaultSortOrderId(), existing.defaultSortOrderId()),
-          metadata.currentSnapshotId(),
-          metadata.lastSequenceNumber(),
-          missingSchemas ? existing.schemas() : metadata.schemas(),
-          missingSpecs ? existing.partitionSpecs() : metadata.partitionSpecs(),
-          missingSortOrders ? existing.sortOrders() : metadata.sortOrders(),
-          metadata.refs(),
-          metadata.snapshotLog(),
-          metadata.metadataLog(),
-          metadata.statistics(),
-          metadata.partitionStatistics(),
-          metadata.snapshots());
+      return TableMetadataViews.copy(metadata)
+          .lastColumnId(firstNonNull(metadata.lastColumnId(), existing.lastColumnId()))
+          .currentSchemaId(firstNonNull(metadata.currentSchemaId(), existing.currentSchemaId()))
+          .defaultSpecId(firstNonNull(metadata.defaultSpecId(), existing.defaultSpecId()))
+          .lastPartitionId(firstNonNull(metadata.lastPartitionId(), existing.lastPartitionId()))
+          .defaultSortOrderId(
+              firstNonNull(metadata.defaultSortOrderId(), existing.defaultSortOrderId()))
+          .schemas(missingSchemas ? existing.schemas() : metadata.schemas())
+          .partitionSpecs(missingSpecs ? existing.partitionSpecs() : metadata.partitionSpecs())
+          .sortOrders(missingSortOrders ? existing.sortOrders() : metadata.sortOrders())
+          .build();
     } catch (RuntimeException e) {
       LOG.debugf(
           e,

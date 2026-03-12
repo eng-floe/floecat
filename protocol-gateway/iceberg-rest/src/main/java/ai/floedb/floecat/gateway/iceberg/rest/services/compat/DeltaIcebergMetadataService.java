@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -30,7 +30,7 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class DeltaIcebergMetadataService {
-  @Inject SnapshotClient snapshotClient;
+  @Inject GrpcServiceFacade snapshotClient;
   @Inject DeltaIcebergMetadataTranslator translator;
   @Inject DeltaManifestMaterializer manifestMaterializer;
 

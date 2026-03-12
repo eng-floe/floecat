@@ -96,17 +96,37 @@ public class TableCreateTransactionMapper {
 
     List<Map<String, Object>> updates = new ArrayList<>();
     if (tableLocation != null) {
-      updates.add(Map.of("action", "set-location", "location", tableLocation));
+      updates.add(
+          Map.of("action", CommitUpdateInspector.ACTION_SET_LOCATION, "location", tableLocation));
     }
-    updates.add(Map.of("action", "upgrade-format-version", "format-version", formatVersion));
-    updates.add(Map.of("action", "add-schema", "schema", schema, "last-column-id", lastColumnId));
-    updates.add(Map.of("action", "set-current-schema", "schema-id", schemaId));
-    updates.add(Map.of("action", "add-spec", "spec", partitionSpec));
-    updates.add(Map.of("action", "set-default-spec", "spec-id", specId));
-    updates.add(Map.of("action", "add-sort-order", "sort-order", sortOrder));
-    updates.add(Map.of("action", "set-default-sort-order", "sort-order-id", sortOrderId));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_UPGRADE_FORMAT_VERSION,
+            "format-version",
+            formatVersion));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_ADD_SCHEMA,
+            "schema",
+            schema,
+            "last-column-id",
+            lastColumnId));
+    updates.add(
+        Map.of("action", CommitUpdateInspector.ACTION_SET_CURRENT_SCHEMA, "schema-id", schemaId));
+    updates.add(Map.of("action", CommitUpdateInspector.ACTION_ADD_SPEC, "spec", partitionSpec));
+    updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_DEFAULT_SPEC, "spec-id", specId));
+    updates.add(
+        Map.of("action", CommitUpdateInspector.ACTION_ADD_SORT_ORDER, "sort-order", sortOrder));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_SET_DEFAULT_SORT_ORDER,
+            "sort-order-id",
+            sortOrderId));
     if (!props.isEmpty()) {
-      updates.add(Map.of("action", "set-properties", "updates", props));
+      updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_PROPERTIES, "updates", props));
     }
     return List.copyOf(updates);
   }

@@ -37,7 +37,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestConte
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
@@ -57,7 +57,7 @@ class TableLoadServiceTest {
   private final IcebergGatewayConfig.DeltaCompatConfig deltaCompat =
       mock(IcebergGatewayConfig.DeltaCompatConfig.class);
   private final TableLifecycleService tableLifecycleService = mock(TableLifecycleService.class);
-  private final SnapshotClient snapshotClient = mock(SnapshotClient.class);
+  private final GrpcServiceFacade snapshotClient = mock(GrpcServiceFacade.class);
   private final TableFormatSupport tableFormatSupport = new TableFormatSupport();
   private final DeltaIcebergMetadataService deltaMetadataService =
       mock(DeltaIcebergMetadataService.class);

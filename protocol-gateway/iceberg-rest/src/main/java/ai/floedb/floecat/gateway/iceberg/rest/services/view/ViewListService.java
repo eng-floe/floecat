@@ -23,7 +23,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ViewListResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.PageRequestHelper;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class ViewListService {
-  @Inject ViewClient viewClient;
+  @Inject GrpcServiceFacade viewClient;
 
   public Response list(
       NamespaceRequestContext namespaceContext, String pageToken, Integer pageSize) {

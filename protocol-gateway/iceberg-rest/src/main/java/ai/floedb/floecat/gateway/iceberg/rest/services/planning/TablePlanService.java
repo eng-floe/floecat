@@ -32,8 +32,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -56,8 +55,7 @@ import java.util.concurrent.ConcurrentMap;
 public class TablePlanService {
   private final ConcurrentMap<String, PlanContext> planContexts = new ConcurrentHashMap<>();
 
-  @Inject QueryClient queryClient;
-  @Inject QuerySchemaClient querySchemaClient;
+  @Inject GrpcServiceFacade grpcClient;
   @Inject ObjectMapper mapper;
 
   public PlanHandle startPlan(
@@ -76,7 +74,7 @@ public class TablePlanService {
     List<Predicate> predicates = buildPredicates(filter, caseSensitive);
 
     var begin =
-        queryClient.beginQuery(
+        grpcClient.beginQuery(
             BeginQueryRequest.newBuilder().setDefaultCatalogId(catalogId).build());
     String queryId = begin.getQuery().getQueryId();
 
@@ -101,7 +99,7 @@ public class TablePlanService {
     if (ctx == null) {
       throw new IllegalArgumentException("unknown plan id " + planId);
     }
-    var resp = queryClient.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
+    var resp = grpcClient.getQuery(GetQueryRequest.newBuilder().setQueryId(planId).build());
     QueryDescriptor query = resp.getQuery();
 
     ScanBundle bundle = fetchScanBundle(ctx, query.getQueryId());
@@ -122,7 +120,7 @@ public class TablePlanService {
   }
 
   public void cancelPlan(String planId) {
-    queryClient.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
+    grpcClient.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
     planContexts.remove(planId);
   }
 
@@ -135,7 +133,7 @@ public class TablePlanService {
     if (ctx.predicates() != null && !ctx.predicates().isEmpty()) {
       builder.addAllPredicates(ctx.predicates());
     }
-    return queryClient.fetchScanBundle(builder.build()).getBundle();
+    return grpcClient.fetchScanBundle(builder.build()).getBundle();
   }
 
   private TablePlanTasksResponseDto toScanTasksDto(ScanBundle bundle) {
@@ -181,7 +179,7 @@ public class TablePlanService {
   }
 
   private void registerPlanInput(String queryId, ResourceId tableId, Long snapshotId) {
-    querySchemaClient.describeInputs(
+    grpcClient.describeInputs(
         DescribeInputsRequest.newBuilder()
             .setQueryId(queryId)
             .addInputs(buildPlanInput(tableId, snapshotId))

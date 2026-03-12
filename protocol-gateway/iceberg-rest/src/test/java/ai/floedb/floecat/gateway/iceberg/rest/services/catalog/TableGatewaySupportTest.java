@@ -43,9 +43,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -64,9 +62,7 @@ class TableGatewaySupportTest {
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private final Config mpConfig = mock(Config.class);
-  private final TableClient tableClient = mock(TableClient.class);
-  private final SnapshotClient snapshotClient = mock(SnapshotClient.class);
-  private final ConnectorClient connectorClient = mock(ConnectorClient.class);
+  private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
   private final ObjectMapper mapper = new ObjectMapper();
 
   private TableGatewaySupport support;
@@ -82,9 +78,7 @@ class TableGatewaySupportTest {
     when(mpConfig.getPropertyNames()).thenReturn(List.of());
     when(mpConfig.getOptionalValue(anyString(), eq(String.class))).thenReturn(Optional.empty());
 
-    support =
-        new TableGatewaySupport(
-            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+    support = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
   }
 
   @Test
@@ -237,13 +231,13 @@ class TableGatewaySupportTest {
   @Test
   void deleteConnectorSkipsNullAndSwallowsFailures() {
     support.deleteConnector(null);
-    verify(connectorClient, never()).deleteConnector(any());
+    verify(grpcClient, never()).deleteConnector(any());
 
     ResourceId connectorId = ResourceId.newBuilder().setId("c-delete").build();
     support.deleteConnector(connectorId);
-    verify(connectorClient, times(1)).deleteConnector(any());
+    verify(grpcClient, times(1)).deleteConnector(any());
 
-    doThrow(Status.INTERNAL.asRuntimeException()).when(connectorClient).deleteConnector(any());
+    doThrow(Status.INTERNAL.asRuntimeException()).when(grpcClient).deleteConnector(any());
     support.deleteConnector(connectorId);
   }
 
@@ -266,7 +260,7 @@ class TableGatewaySupportTest {
   void runSyncStatisticsCaptureBuildsStatsOnlyRequest() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c3").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any()))
+    when(grpcClient.captureNow(any()))
         .thenReturn(
             CaptureNowResponse.newBuilder()
                 .setTablesScanned(1)
@@ -277,7 +271,7 @@ class TableGatewaySupportTest {
     support.runSyncStatisticsCapture(connectorId, List.of("db", "analytics"), "orders");
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient, times(1)).captureNow(captor.capture());
+    verify(grpcClient, times(1)).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(connectorId, request.getScope().getConnectorId());
     assertEquals("orders", request.getScope().getDestinationTableDisplayName());
@@ -290,13 +284,13 @@ class TableGatewaySupportTest {
   void runSyncStatisticsCaptureIncludesExplicitSnapshotScope() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c4").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
 
     support.runSyncStatisticsCapture(
         connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L));
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient).captureNow(captor.capture());
+    verify(grpcClient).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
@@ -307,13 +301,13 @@ class TableGatewaySupportTest {
   void runSyncStatisticsCaptureCanRequestFullRescanForExplicitSnapshotScope() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c5").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
 
     support.runSyncStatisticsCapture(
         connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L), true);
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient).captureNow(captor.capture());
+    verify(grpcClient).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
@@ -329,7 +323,7 @@ class TableGatewaySupportTest {
             .putProperties("current-snapshot-id", "44")
             .build();
     IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("t-44").build();
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenReturn(
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
@@ -343,7 +337,7 @@ class TableGatewaySupportTest {
 
     assertNotNull(loaded);
     assertEquals("t-44", loaded.getTableUuid());
-    verify(snapshotClient, times(1)).getSnapshot(any());
+    verify(grpcClient, times(1)).getSnapshot(any());
   }
 
   @Test
@@ -356,7 +350,7 @@ class TableGatewaySupportTest {
             .build();
     IcebergMetadata firstMetadata = IcebergMetadata.newBuilder().setTableUuid("t-11").build();
     IcebergMetadata secondMetadata = IcebergMetadata.newBuilder().setTableUuid("t-99").build();
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenReturn(
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
@@ -378,11 +372,11 @@ class TableGatewaySupportTest {
 
     assertEquals("t-99", loaded.getTableUuid());
     ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
-    verify(snapshotClient, times(2)).getSnapshot(captor.capture());
+    verify(grpcClient, times(2)).getSnapshot(captor.capture());
     assertEquals(tableId, captor.getAllValues().get(1).getTableId());
     assertEquals(99L, captor.getAllValues().get(1).getSnapshot().getSnapshotId());
 
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenThrow(Status.UNAVAILABLE.asRuntimeException())
         .thenReturn(
             GetSnapshotResponse.newBuilder()
@@ -400,16 +394,16 @@ class TableGatewaySupportTest {
   void loadCurrentMetadataReturnsNullWhenUnavailable() {
     assertNull(support.loadCurrentMetadata(null));
     assertNull(support.loadCurrentMetadata(Table.newBuilder().build()));
-    verify(snapshotClient, never()).getSnapshot(any());
+    verify(grpcClient, never()).getSnapshot(any());
 
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
             .build();
-    when(snapshotClient.getSnapshot(any())).thenReturn(GetSnapshotResponse.newBuilder().build());
+    when(grpcClient.getSnapshot(any())).thenReturn(GetSnapshotResponse.newBuilder().build());
     assertNull(support.loadCurrentMetadata(table));
 
-    when(snapshotClient.getSnapshot(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
+    when(grpcClient.getSnapshot(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
     assertNull(support.loadCurrentMetadata(table));
   }
 

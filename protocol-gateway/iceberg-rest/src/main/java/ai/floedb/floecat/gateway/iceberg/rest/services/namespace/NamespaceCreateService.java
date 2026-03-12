@@ -25,7 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -34,7 +34,7 @@ import java.util.List;
 
 @ApplicationScoped
 public class NamespaceCreateService {
-  @Inject NamespaceClient namespaceClient;
+  @Inject GrpcServiceFacade namespaceClient;
 
   public Response create(
       CatalogRequestContext catalogContext,

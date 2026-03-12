@@ -19,16 +19,17 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringList;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -45,15 +46,6 @@ import org.jboss.logging.Logger;
 public class TablePropertyService {
   private static final Logger LOG = Logger.getLogger(TablePropertyService.class);
   private static final Set<String> RESERVED_REMOVE_PROPERTIES = Set.of("format-version");
-  private static final Set<String> TABLE_DEFINITION_ACTIONS =
-      Set.of(
-          "upgrade-format-version",
-          "add-schema",
-          "set-current-schema",
-          "add-spec",
-          "set-default-spec",
-          "add-sort-order",
-          "set-default-sort-order");
   private static final Set<String> TABLE_DEFINITION_PROPERTY_KEYS =
       Set.of(
           "format-version",
@@ -72,19 +64,6 @@ public class TablePropertyService {
     // no-op: metadata-location updates are carried through standard set-properties updates
   }
 
-  public boolean hasPropertyUpdates(TableRequests.Commit req) {
-    if (req == null || req.updates() == null || req.updates().isEmpty()) {
-      return false;
-    }
-    for (Map<String, Object> update : req.updates()) {
-      String action = asString(update == null ? null : update.get("action"));
-      if ("set-properties".equals(action) || "remove-properties".equals(action)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public Response applyPropertyUpdates(
       Map<String, String> properties, List<Map<String, Object>> updates) {
     if (updates == null) {
@@ -94,25 +73,27 @@ public class TablePropertyService {
       if (update == null) {
         return validationError("commit update entry cannot be null");
       }
-      String action = asString(update.get("action"));
+      CommitUpdateInspector.UpdateAction action = CommitUpdateInspector.actionTypeOf(update);
       if (action == null) {
         return validationError("commit update missing action");
       }
       switch (action) {
-        case "set-properties" -> {
+        case SET_PROPERTIES -> {
           Map<String, String> toSet = new LinkedHashMap<>(asStringMap(update.get("updates")));
           if (toSet.isEmpty()) {
-            return validationError("set-properties requires updates");
+            return validationError(
+                CommitUpdateInspector.ACTION_SET_PROPERTIES + " requires updates");
           }
           stripMetadataLocation(toSet);
           if (!toSet.isEmpty()) {
             properties.putAll(toSet);
           }
         }
-        case "remove-properties" -> {
+        case REMOVE_PROPERTIES -> {
           List<String> removals = asStringList(update.get("removals"));
           if (removals.isEmpty()) {
-            return validationError("remove-properties requires removals");
+            return validationError(
+                CommitUpdateInspector.ACTION_REMOVE_PROPERTIES + " requires removals");
           }
           for (String removal : removals) {
             if (RESERVED_REMOVE_PROPERTIES.contains(removal)) {
@@ -182,16 +163,17 @@ public class TablePropertyService {
     }
     String location = null;
     for (Map<String, Object> update : updates) {
-      String action = asString(update == null ? null : update.get("action"));
-      if (!"set-location".equals(action)) {
+      String action = CommitUpdateInspector.actionOf(update);
+      if (!CommitUpdateInspector.ACTION_SET_LOCATION.equals(action)) {
         continue;
       }
       if (location != null) {
-        return validationError("set-location may only be specified once");
+        return validationError(
+            CommitUpdateInspector.ACTION_SET_LOCATION + " may only be specified once");
       }
       String value = asString(update.get("location"));
       if (value == null || value.isBlank()) {
-        return validationError("set-location requires location");
+        return validationError(CommitUpdateInspector.ACTION_SET_LOCATION + " requires location");
       }
       location = value;
     }
@@ -211,33 +193,7 @@ public class TablePropertyService {
   }
 
   private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
-  }
-
-  private static Map<String, String> asStringMap(Object value) {
-    if (!(value instanceof Map<?, ?> map)) {
-      return Map.of();
-    }
-    Map<String, String> result = new LinkedHashMap<>();
-    for (Map.Entry<?, ?> entry : map.entrySet()) {
-      if (entry.getKey() == null || entry.getValue() == null) {
-        continue;
-      }
-      result.put(entry.getKey().toString(), entry.getValue().toString());
-    }
-    return result;
-  }
-
-  private static List<String> asStringList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    return list.stream()
-        .filter(v -> v != null && !v.toString().isBlank())
-        .map(Object::toString)
-        .toList();
+    return IcebergErrorResponses.validation(message);
   }
 
   private boolean hasPropertyUpdates(List<Map<String, Object>> updates) {
@@ -245,8 +201,8 @@ public class TablePropertyService {
       return false;
     }
     for (Map<String, Object> update : updates) {
-      String action = asString(update == null ? null : update.get("action"));
-      if ("set-properties".equals(action) || "remove-properties".equals(action)) {
+      CommitUpdateInspector.UpdateAction action = CommitUpdateInspector.actionTypeOf(update);
+      if (action != null && action.isPropertyAction()) {
         return true;
       }
     }
@@ -352,8 +308,8 @@ public class TablePropertyService {
       if (update == null) {
         continue;
       }
-      String action = asString(update.get("action"));
-      if (TABLE_DEFINITION_ACTIONS.contains(action)) {
+      CommitUpdateInspector.UpdateAction action = CommitUpdateInspector.actionTypeOf(update);
+      if (action != null && action.isTableDefinitionAction()) {
         definitionUpdates.add(update);
       }
     }

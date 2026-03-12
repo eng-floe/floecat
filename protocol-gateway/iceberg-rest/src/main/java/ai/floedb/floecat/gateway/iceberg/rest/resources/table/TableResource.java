@@ -30,9 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFac
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.planning.TablePlanOrchestrationService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCreateService;
@@ -78,17 +76,13 @@ public class TableResource {
   @Inject RequestContextFactory requestContextFactory;
   @Inject TableCreateService tableCreateService;
   @Inject CommitTrafficLogger commitTrafficLogger;
-  @Inject TableClient tableClient;
-  @Inject SnapshotClient snapshotClient;
-  @Inject ConnectorClient connectorClient;
+  @Inject GrpcServiceFacade grpcClient;
 
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport =
-        new TableGatewaySupport(
-            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
   }
 
   @GET

@@ -35,8 +35,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
@@ -61,11 +60,10 @@ public class TableCreateService {
 
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TransactionCommitService transactionCommitService;
-  @Inject NamespaceClient namespaceClient;
+  @Inject GrpcServiceFacade grpcClient;
   @Inject IcebergGatewayConfig config;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
-  @Inject SnapshotClient snapshotClient;
   @Inject ObjectMapper mapper;
 
   public Response create(
@@ -143,7 +141,7 @@ public class TableCreateService {
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
       List<Snapshot> snapshots =
           SnapshotLister.fetchSnapshots(
-              snapshotClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
+              grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
       response =
           TableResponseMapper.toLoadResponse(
               tableName, created, metadata, snapshots, tableConfig, credentials);
@@ -315,7 +313,7 @@ public class TableCreateService {
     }
     try {
       Namespace namespace =
-          namespaceClient
+          grpcClient
               .getNamespace(
                   GetNamespaceRequest.newBuilder()
                       .setNamespaceId(namespaceContext.namespaceId())

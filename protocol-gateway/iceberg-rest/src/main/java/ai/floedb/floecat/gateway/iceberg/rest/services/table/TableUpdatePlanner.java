@@ -17,15 +17,13 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
-import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
@@ -90,8 +88,8 @@ public class TableUpdatePlanner {
             command.tableSupport(),
             req.requirements(),
             requirementTableSupplier,
-            this::validationError,
-            this::conflictError);
+            IcebergErrorResponses::validation,
+            this::commitConflictError);
     if (requirementError != null) {
       return UpdatePlan.failure(spec, mask, requirementError);
     }
@@ -147,15 +145,12 @@ public class TableUpdatePlanner {
   }
 
   private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
+    return IcebergErrorResponses.validation(message);
   }
 
-  private Response conflictError(String message) {
-    return Response.status(Response.Status.CONFLICT)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "CommitFailedException", 409)))
-        .build();
+  private Response commitConflictError(String message) {
+    return IcebergErrorResponses.failure(
+        message, "CommitFailedException", Response.Status.CONFLICT);
   }
 
   private String unsupportedUpdateAction(TableRequests.Commit req) {
@@ -166,7 +161,7 @@ public class TableUpdatePlanner {
       if (update == null) {
         return "<missing>";
       }
-      String action = asString(update == null ? null : update.get("action"));
+      String action = CommitUpdateInspector.actionOf(update);
       if (action == null || action.isBlank()) {
         return "<missing>";
       }
@@ -186,8 +181,8 @@ public class TableUpdatePlanner {
       if (update == null) {
         continue;
       }
-      String action = asString(update.get("action"));
-      if (!"add-schema".equals(action)) {
+      String action = CommitUpdateInspector.actionOf(update);
+      if (!CommitUpdateInspector.ACTION_ADD_SCHEMA.equals(action)) {
         continue;
       }
       Map<String, Object> schema = asObjectMap(update.get("schema"));

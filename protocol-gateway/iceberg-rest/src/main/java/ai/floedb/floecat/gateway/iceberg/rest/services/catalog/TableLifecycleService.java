@@ -27,7 +27,7 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NamespacePaths;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
 @ApplicationScoped
 public class TableLifecycleService {
   @Inject GrpcWithHeaders grpc;
-  @Inject TableClient tableClient;
+  @Inject GrpcServiceFacade tableClient;
 
   public record ListTablesResult(List<TableIdentifierDto> identifiers, String nextPageToken) {}
 

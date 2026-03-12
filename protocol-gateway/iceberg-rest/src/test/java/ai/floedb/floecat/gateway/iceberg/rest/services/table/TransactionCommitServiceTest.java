@@ -51,8 +51,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFac
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TransactionClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -104,8 +103,7 @@ class TransactionCommitServiceTest {
   private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
   private final TableCommitMetadataMutator metadataMutator =
       Mockito.mock(TableCommitMetadataMutator.class);
-  private final SnapshotClient snapshotClient = Mockito.mock(SnapshotClient.class);
-  private final TransactionClient transactionClient = Mockito.mock(TransactionClient.class);
+  private final GrpcServiceFacade grpcClient = Mockito.mock(GrpcServiceFacade.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
 
   @BeforeEach
@@ -120,8 +118,7 @@ class TransactionCommitServiceTest {
     service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
     service.metadataMutator = metadataMutator;
-    service.snapshotClient = snapshotClient;
-    service.transactionClient = transactionClient;
+    service.grpcClient = grpcClient;
     service.tablePropertyService = tablePropertyService;
     service.connectorProvisioningService = connectorProvisioningService;
 
@@ -218,24 +215,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitCreateBuildsMappedCreateRequestAndUsesTxPath() throws Exception {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -304,31 +301,31 @@ class TransactionCommitServiceTest {
             any(ResourceId.class),
             eq(createRequest),
             eq(tableSupport));
-    verify(transactionClient).prepareTransaction(any());
-    verify(transactionClient).commitTransaction(any());
+    verify(grpcClient).prepareTransaction(any());
+    verify(grpcClient).commitTransaction(any());
   }
 
   @Test
   void commitCreateWithAssertCreateSkipsPreMaterializationWhenMetadataLocationMissing()
       throws Exception {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -393,12 +390,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitReturnsNoContentWhenAlreadyAppliedAndReplaysSideEffects() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -408,8 +405,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   private com.fasterxml.jackson.databind.ObjectMapper mapper() {
@@ -418,12 +415,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitReturnsConflictWhenExistingTransactionHashDiffers() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -438,9 +435,9 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitFailedException", error.error().type());
-    verify(transactionClient).abortTransaction(any());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient).abortTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -451,31 +448,31 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(transactionClient, never()).beginTransaction(any());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).beginTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void commitReturnsNoContentWhenCommitReturnsApplied() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -485,7 +482,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -521,24 +518,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -548,7 +545,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -616,24 +613,24 @@ class TransactionCommitServiceTest {
                     .setState(ConnectorState.CS_ACTIVE)
                     .putProperties("iceberg.source", "filesystem")
                     .build()));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -643,7 +640,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -686,24 +683,24 @@ class TransactionCommitServiceTest {
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
     when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -713,7 +710,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -753,24 +750,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -780,7 +777,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare -> {
@@ -823,24 +820,24 @@ class TransactionCommitServiceTest {
         .thenReturn(IcebergMetadata.getDefaultInstance());
     when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -850,7 +847,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -889,24 +886,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -917,7 +914,7 @@ class TransactionCommitServiceTest {
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -949,24 +946,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1002,24 +999,24 @@ class TransactionCommitServiceTest {
         .thenThrow(new RuntimeException("missing pointer"));
     when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1030,7 +1027,7 @@ class TransactionCommitServiceTest {
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -1059,24 +1056,24 @@ class TransactionCommitServiceTest {
         .thenThrow(new RuntimeException("missing pointer"));
     when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
         .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00001.metadata.json"));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1112,24 +1109,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1139,7 +1136,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -1178,24 +1175,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1233,24 +1230,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(tableWithoutConnector, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1260,7 +1257,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -1299,24 +1296,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitReturnsStateUnknownWhenCommitLandsInRetryableState() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1334,24 +1331,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitReturnsConflictWhenCommitLandsInConflictState() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1369,12 +1366,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitReturnsNoContentWhenRetryableStateLaterBecomesApplied() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1385,13 +1382,13 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1407,24 +1404,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsDeterministicGrpcFailureToConflict() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.ABORTED.withDescription("conflict")));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
@@ -1436,24 +1433,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsRetryableAbortedFailureToStateUnknownWithoutRollback() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any())).thenThrow(retryableAbortedException());
+    when(grpcClient.commitTransaction(any())).thenThrow(retryableAbortedException());
 
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
@@ -1464,12 +1461,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsRetryableAbortedFailureToNoContentWhenAppliedAfterPoll() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1480,13 +1477,13 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any())).thenThrow(retryableAbortedException());
+    when(grpcClient.commitTransaction(any())).thenThrow(retryableAbortedException());
 
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
@@ -1495,24 +1492,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsUnknownGrpcFailureToStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE.withDescription("transient")));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
@@ -1524,24 +1521,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsUnknownStatusToBadGatewayStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNKNOWN.withDescription("bad upstream")));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
@@ -1553,24 +1550,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsRuntimeFailureToInternalServerErrorStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any())).thenThrow(new RuntimeException("boom"));
+    when(grpcClient.commitTransaction(any())).thenThrow(new RuntimeException("boom"));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
@@ -1581,24 +1578,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsDeadlineExceededToGatewayTimeoutStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.DEADLINE_EXCEEDED.withDescription("timeout")));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
@@ -1610,24 +1607,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsInvalidArgumentGrpcFailureToValidation() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(
             new StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("bad input")));
 
@@ -1640,7 +1637,7 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsBeginUnavailableToStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenThrow(
             new StatusRuntimeException(
                 Status.UNAVAILABLE.withDescription("downstream unavailable")));
@@ -1650,24 +1647,24 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitStateUnknownException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void commitMapsPrepareUnavailableToStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenThrow(
             new StatusRuntimeException(
                 Status.UNAVAILABLE.withDescription("downstream unavailable")));
@@ -1677,30 +1674,30 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitStateUnknownException", error.error().type());
-    verify(transactionClient, never()).commitTransaction(any());
-    verify(transactionClient).abortTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient).abortTransaction(any());
   }
 
   @Test
   void commitUnknownFailureDoesNotRollbackSnapshots() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE.withDescription("transient")));
 
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
@@ -1710,12 +1707,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void retryableStateSkipsPrepareAndCommitWithoutIdempotency() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1723,7 +1720,7 @@ class TransactionCommitServiceTest {
                         .setTxId("tx-1")
                         .setState(TransactionState.TS_APPLY_FAILED_RETRYABLE))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1733,19 +1730,19 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient)
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient)
         .commitTransaction(argThat(commit -> commit != null && !commit.hasIdempotency()));
   }
 
   @Test
   void preparedStateFailsWhenPlanningCannotResolveTable() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1753,7 +1750,7 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenThrow(Status.NOT_FOUND.asRuntimeException());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1762,19 +1759,19 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
     assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
-    verify(transactionClient, never()).abortTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).abortTransaction(any());
   }
 
   @Test
   void alreadyAppliedReplaysPostCommitUpdates() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1784,19 +1781,19 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithPostCommitUpdate(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
     verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
   void alreadyAppliedReplaysPreCommitSnapshotUpdatesWhenPresent() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1806,8 +1803,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
     verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
@@ -1820,12 +1817,12 @@ class TransactionCommitServiceTest {
             .setId("conn-1")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1853,12 +1850,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void alreadyAppliedSkipsSideEffectsWhenJournalHashMismatches() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1885,12 +1882,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void alreadyAppliedSkipsSideEffectsWhenJournalUnreadable() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1908,12 +1905,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void assertCreateConflictsWhenTableAlreadyExists() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1925,18 +1922,18 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitFailedException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void assertCreateMissingTablePlansAtomicCreate() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-create"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1944,7 +1941,7 @@ class TransactionCommitServiceTest {
                         .setTxId("tx-create")
                         .setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1952,7 +1949,7 @@ class TransactionCommitServiceTest {
                         .setTxId("tx-create")
                         .setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -1973,7 +1970,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -1993,17 +1990,17 @@ class TransactionCommitServiceTest {
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))));
-    verify(transactionClient).commitTransaction(any());
+    verify(grpcClient).commitTransaction(any());
   }
 
   @Test
   void conflictStateSkipsSnapshotAndCommitWork() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2015,30 +2012,30 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void assertRefSnapshotIdNullConflictsWhenRefExists() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2056,18 +2053,18 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void assertRefSnapshotIdNullConflictsWhenRefSnapshotIdIsZero() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2084,30 +2081,30 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
 
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void assertRefSnapshotIdNullDoesNotConflictWhenMetadataHasDefaultCurrentSnapshotZero() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2120,8 +2117,8 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient).prepareTransaction(any());
-    verify(transactionClient).commitTransaction(any());
+    verify(grpcClient).prepareTransaction(any());
+    verify(grpcClient).commitTransaction(any());
   }
 
   @Test
@@ -2137,24 +2134,24 @@ class TransactionCommitServiceTest {
                 .setTable(tableWithRefProperty)
                 .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
                 .build());
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2167,18 +2164,18 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithAssertRefSnapshotIdNull("main"), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient).prepareTransaction(any());
-    verify(transactionClient).commitTransaction(any());
+    verify(grpcClient).prepareTransaction(any());
+    verify(grpcClient).commitTransaction(any());
   }
 
   @Test
   void beginCarriesRequestHashProperty() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2188,7 +2185,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .beginTransaction(
             argThat(
                 req ->
@@ -2201,12 +2198,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void beginUsesRequestHashAsIdempotencyFallback() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2216,7 +2213,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", null, requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .beginTransaction(
             argThat(
                 req ->
@@ -2245,24 +2242,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void preCommitSnapshotUsesTxIdFallbackForIdempotency() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2276,24 +2273,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void addSnapshotAddsAtomicSnapshotPointerChanges() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2303,7 +2300,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -2328,24 +2325,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void addSnapshotPreservesSchemaIdZeroInAtomicPayload() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2356,7 +2353,7 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithAddSnapshotAndSchemaId(123L, 0), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -2397,24 +2394,24 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2424,7 +2421,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(0L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -2449,24 +2446,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void removeSnapshotsAcceptsSnapshotIdZeroForPostCommitPrune() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2490,12 +2487,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void postCommitSnapshotFailureStillReturnsNoContentAfterApplied() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2505,13 +2502,13 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithPostCommitUpdate(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void commitMapsPreCommitUnauthenticatedToUnauthorized() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAUTHENTICATED.withDescription("no token")));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
@@ -2523,24 +2520,24 @@ class TransactionCommitServiceTest {
 
   @Test
   void commitMapsCommitPermissionDeniedToForbidden() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenThrow(
             new StatusRuntimeException(Status.PERMISSION_DENIED.withDescription("forbidden")));
 
@@ -2553,12 +2550,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void alreadyAppliedStillRejectsUnknownUpdateAction() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2574,42 +2571,42 @@ class TransactionCommitServiceTest {
 
   @Test
   void preCommitSnapshotFailureReturnsCommitStateUnknown() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.abortTransaction(any())).thenThrow(new RuntimeException("abort failed"));
+    when(grpcClient.abortTransaction(any())).thenThrow(new RuntimeException("abort failed"));
 
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = response.readEntity(IcebergErrorResponse.class);
     assertEquals("CommitStateUnknownException", error.error().type());
-    verify(transactionClient, never()).abortTransaction(any());
-    verify(transactionClient).commitTransaction(any());
+    verify(grpcClient, never()).abortTransaction(any());
+    verify(grpcClient).commitTransaction(any());
   }
 
   @Test
   void preparedStateRejectsMissingRequirements() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2621,18 +2618,18 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void preparedStateRejectsMissingUpdates() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2644,18 +2641,18 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void preparedStateReturnsBadRequestWhenPlannerRejectsRequirement() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2678,18 +2675,18 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void preparedStateReturnsBadRequestWhenPlannerRejectsUpdateAction() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2712,30 +2709,30 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("ValidationException", error.error().type());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
   void openStateWithMultiTableChangesPreparesAllChanges() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(transactionClient.prepareTransaction(any()))
+    when(grpcClient.prepareTransaction(any()))
         .thenReturn(
             PrepareTransactionResponse.newBuilder()
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
-    when(transactionClient.commitTransaction(any()))
+    when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2745,7 +2742,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", multiTableRequest(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(transactionClient)
+    verify(grpcClient)
         .prepareTransaction(
             argThat(
                 prepare ->
@@ -2767,12 +2764,12 @@ class TransactionCommitServiceTest {
 
   @Test
   void openStateReturnsNotFoundWhenAnyPlannedTableIsMissing() {
-    when(transactionClient.beginTransaction(any()))
+    when(grpcClient.beginTransaction(any()))
         .thenReturn(
             BeginTransactionResponse.newBuilder()
                 .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
                 .build());
-    when(transactionClient.getTransaction(any()))
+    when(grpcClient.getTransaction(any()))
         .thenReturn(
             GetTransactionResponse.newBuilder()
                 .setTransaction(
@@ -2785,8 +2782,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", multiTableRequest(), tableSupport);
 
     assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
-    verify(transactionClient, never()).prepareTransaction(any());
-    verify(transactionClient, never()).commitTransaction(any());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   private TransactionCommitRequest request() {

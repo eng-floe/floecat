@@ -27,7 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -41,10 +41,10 @@ import org.jboss.logging.Logger;
 public class CommitResponseBuilder {
   private static final Logger LOG = Logger.getLogger(CommitResponseBuilder.class);
 
-  @Inject SnapshotClient snapshotClient;
+  @Inject GrpcServiceFacade snapshotClient;
   @Inject TableCommitMetadataMutator metadataMutator;
 
-  void setSnapshotClient(SnapshotClient snapshotClient) {
+  void setSnapshotClient(GrpcServiceFacade snapshotClient) {
     this.snapshotClient = snapshotClient;
   }
 

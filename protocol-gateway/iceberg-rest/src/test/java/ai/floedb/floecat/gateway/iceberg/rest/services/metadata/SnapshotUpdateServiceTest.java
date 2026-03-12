@@ -26,7 +26,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -41,12 +41,12 @@ import org.mockito.Mockito;
 
 class SnapshotUpdateServiceTest {
   private SnapshotUpdateService service;
-  private SnapshotClient snapshotClient;
+  private GrpcServiceFacade snapshotClient;
 
   @BeforeEach
   void setUp() {
     service = new SnapshotUpdateService();
-    snapshotClient = Mockito.mock(SnapshotClient.class);
+    snapshotClient = Mockito.mock(GrpcServiceFacade.class);
     service.mapper = new ObjectMapper();
     service.snapshotClient = snapshotClient;
   }

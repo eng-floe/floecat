@@ -63,6 +63,13 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc.QueryServiceBlockingStub;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.Transaction;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
+import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -110,6 +117,7 @@ public abstract class AbstractRestResourceTest {
   protected QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchemaStub;
   protected ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
   protected ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlStub;
+  protected TransactionsGrpc.TransactionsBlockingStub transactionsStub;
   protected RequestSpecification defaultSpec;
 
   @BeforeEach
@@ -124,6 +132,7 @@ public abstract class AbstractRestResourceTest {
     querySchemaStub = Mockito.mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
     connectorsStub = Mockito.mock(ConnectorsGrpc.ConnectorsBlockingStub.class);
     reconcileControlStub = Mockito.mock(ReconcileControlGrpc.ReconcileControlBlockingStub.class);
+    transactionsStub = Mockito.mock(TransactionsGrpc.TransactionsBlockingStub.class);
 
     Mockito.when(clients.table()).thenReturn(tableStub);
     Mockito.when(clients.directory()).thenReturn(directoryStub);
@@ -135,6 +144,7 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(clients.querySchema()).thenReturn(querySchemaStub);
     Mockito.when(clients.connectors()).thenReturn(connectorsStub);
     Mockito.when(clients.reconcileControl()).thenReturn(reconcileControlStub);
+    Mockito.when(clients.transactions()).thenReturn(transactionsStub);
     Mockito.when(grpc.raw()).thenReturn(clients);
     Mockito.when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
     Mockito.when(grpc.withHeaders(directoryStub)).thenReturn(directoryStub);
@@ -146,6 +156,7 @@ public abstract class AbstractRestResourceTest {
     Mockito.when(grpc.withHeaders(querySchemaStub)).thenReturn(querySchemaStub);
     Mockito.when(grpc.withHeaders(connectorsStub)).thenReturn(connectorsStub);
     Mockito.when(grpc.withHeaders(reconcileControlStub)).thenReturn(reconcileControlStub);
+    Mockito.when(grpc.withHeaders(transactionsStub)).thenReturn(transactionsStub);
     Mockito.when(querySchemaStub.describeInputs(Mockito.any()))
         .thenReturn(DescribeInputsResponse.getDefaultInstance());
     Mockito.when(snapshotStub.createSnapshot(Mockito.any()))
@@ -178,6 +189,29 @@ public abstract class AbstractRestResourceTest {
             });
     Mockito.when(connectorsStub.deleteConnector(Mockito.any()))
         .thenReturn(DeleteConnectorResponse.newBuilder().build());
+    Mockito.when(transactionsStub.beginTransaction(Mockito.any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    Mockito.when(transactionsStub.getTransaction(Mockito.any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    Mockito.when(transactionsStub.prepareTransaction(Mockito.any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    Mockito.when(transactionsStub.commitTransaction(Mockito.any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
     Mockito.when(metadataImportService.importMetadata(Mockito.any(), Mockito.any()))
         .thenAnswer(
             inv -> {

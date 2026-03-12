@@ -25,6 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataListUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataViews;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -71,80 +72,95 @@ public class TableCommitMetadataMutator {
       if (update == null) {
         continue;
       }
-      String action = asString(update.get("action"));
-      if ("upgrade-format-version".equals(action)) {
-        Integer requested = asInteger(update.get("format-version"));
-        if (requested != null) {
-          formatVersion = requested;
-        }
-      } else if ("set-location".equals(action)) {
-        String requestedLocation = asString(update.get("location"));
-        if (requestedLocation != null && !requestedLocation.isBlank()) {
-          tableLocation = requestedLocation;
-        }
-      } else if ("add-schema".equals(action)) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> schema =
-            update.get("schema") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-        if (schema != null && !schema.isEmpty()) {
-          MetadataListUtil.upsertById(schemas, new LinkedHashMap<>(schema), "schema-id");
-          Integer schemaId = asInteger(schema.get("schema-id"));
-          if (schemaId != null && schemaId >= 0) {
-            lastAddedSchemaId = schemaId;
+      CommitUpdateInspector.UpdateAction action = CommitUpdateInspector.actionTypeOf(update);
+      if (action == null) {
+        continue;
+      }
+      switch (action) {
+        case UPGRADE_FORMAT_VERSION -> {
+          Integer requested = asInteger(update.get("format-version"));
+          if (requested != null) {
+            formatVersion = requested;
           }
         }
-        Integer reqLastColumn = asInteger(update.get("last-column-id"));
-        if (reqLastColumn == null) {
-          reqLastColumn = maxFieldId(schema, "fields", "id");
-        }
-        if (reqLastColumn != null) {
-          lastColumnId = reqLastColumn;
-        }
-      } else if ("set-current-schema".equals(action)) {
-        Integer schemaId =
-            resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
-        if (schemaId != null) {
-          currentSchemaId = schemaId;
-        }
-      } else if ("add-spec".equals(action)) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> spec =
-            update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-        if (spec != null && !spec.isEmpty()) {
-          MetadataListUtil.upsertById(partitionSpecs, new LinkedHashMap<>(spec), "spec-id");
-          Integer specId = asInteger(spec.get("spec-id"));
-          if (specId != null && specId >= 0) {
-            lastAddedSpecId = specId;
-          }
-          Integer partitionFieldMax = maxPartitionFieldId(spec);
-          if (partitionFieldMax != null && partitionFieldMax >= 0) {
-            lastPartitionId = partitionFieldMax;
+        case SET_LOCATION -> {
+          String requestedLocation = asString(update.get("location"));
+          if (requestedLocation != null && !requestedLocation.isBlank()) {
+            tableLocation = requestedLocation;
           }
         }
-      } else if ("set-default-spec".equals(action)) {
-        Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
-        if (specId != null) {
-          defaultSpecId = specId;
-        }
-      } else if ("add-sort-order".equals(action)) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> sortOrder =
-            update.get("sort-order") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-        if (sortOrder != null && !sortOrder.isEmpty()) {
-          MetadataListUtil.upsertById(sortOrders, new LinkedHashMap<>(sortOrder), "order-id");
-          Integer sortOrderId = asInteger(sortOrder.get("order-id"));
-          if (sortOrderId == null) {
-            sortOrderId = asInteger(sortOrder.get("sort-order-id"));
+        case ADD_SCHEMA -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> schema =
+              update.get("schema") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          if (schema != null && !schema.isEmpty()) {
+            MetadataListUtil.upsertById(schemas, new LinkedHashMap<>(schema), "schema-id");
+            Integer schemaId = asInteger(schema.get("schema-id"));
+            if (schemaId != null && schemaId >= 0) {
+              lastAddedSchemaId = schemaId;
+            }
           }
-          if (sortOrderId != null && sortOrderId >= 0) {
-            lastAddedSortOrderId = sortOrderId;
+          Integer reqLastColumn = asInteger(update.get("last-column-id"));
+          if (reqLastColumn == null) {
+            reqLastColumn = maxFieldId(schema, "fields", "id");
+          }
+          if (reqLastColumn != null) {
+            lastColumnId = reqLastColumn;
           }
         }
-      } else if ("set-default-sort-order".equals(action)) {
-        Integer sortOrderId =
-            resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
-        if (sortOrderId != null) {
-          defaultSortOrderId = sortOrderId;
+        case SET_CURRENT_SCHEMA -> {
+          Integer schemaId =
+              resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
+          if (schemaId != null) {
+            currentSchemaId = schemaId;
+          }
+        }
+        case ADD_SPEC -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> spec =
+              update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          if (spec != null && !spec.isEmpty()) {
+            MetadataListUtil.upsertById(partitionSpecs, new LinkedHashMap<>(spec), "spec-id");
+            Integer specId = asInteger(spec.get("spec-id"));
+            if (specId != null && specId >= 0) {
+              lastAddedSpecId = specId;
+            }
+            Integer partitionFieldMax = maxPartitionFieldId(spec);
+            if (partitionFieldMax != null && partitionFieldMax >= 0) {
+              lastPartitionId = partitionFieldMax;
+            }
+          }
+        }
+        case SET_DEFAULT_SPEC -> {
+          Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
+          if (specId != null) {
+            defaultSpecId = specId;
+          }
+        }
+        case ADD_SORT_ORDER -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> sortOrder =
+              update.get("sort-order") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          if (sortOrder != null && !sortOrder.isEmpty()) {
+            MetadataListUtil.upsertById(sortOrders, new LinkedHashMap<>(sortOrder), "order-id");
+            Integer sortOrderId = asInteger(sortOrder.get("order-id"));
+            if (sortOrderId == null) {
+              sortOrderId = asInteger(sortOrder.get("sort-order-id"));
+            }
+            if (sortOrderId != null && sortOrderId >= 0) {
+              lastAddedSortOrderId = sortOrderId;
+            }
+          }
+        }
+        case SET_DEFAULT_SORT_ORDER -> {
+          Integer sortOrderId =
+              resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
+          if (sortOrderId != null) {
+            defaultSortOrderId = sortOrderId;
+          }
+        }
+        default -> {
+          // Ignore non table-definition actions.
         }
       }
     }
@@ -337,29 +353,23 @@ public class TableCommitMetadataMutator {
       List<Map<String, Object>> partitionSpecs,
       List<Map<String, Object>> sortOrders,
       List<Map<String, Object>> snapshots) {
-    return new TableMetadataView(
-        formatVersion,
-        base.tableUuid(),
-        location,
-        metadataLocation,
-        base.lastUpdatedMs(),
-        properties,
-        lastColumnId,
-        currentSchemaId,
-        defaultSpecId,
-        lastPartitionId,
-        defaultSortOrderId,
-        currentSnapshotId,
-        lastSequenceNumber,
-        schemas,
-        partitionSpecs,
-        sortOrders,
-        base.refs(),
-        base.snapshotLog(),
-        base.metadataLog(),
-        base.statistics(),
-        base.partitionStatistics(),
-        snapshots);
+    return TableMetadataViews.copy(base)
+        .formatVersion(formatVersion)
+        .location(location)
+        .metadataLocation(metadataLocation)
+        .properties(properties)
+        .lastColumnId(lastColumnId)
+        .currentSchemaId(currentSchemaId)
+        .defaultSpecId(defaultSpecId)
+        .lastPartitionId(lastPartitionId)
+        .defaultSortOrderId(defaultSortOrderId)
+        .currentSnapshotId(currentSnapshotId)
+        .lastSequenceNumber(lastSequenceNumber)
+        .schemas(schemas)
+        .partitionSpecs(partitionSpecs)
+        .sortOrders(sortOrders)
+        .snapshots(snapshots)
+        .build();
   }
 
   private List<Map<String, Object>> normalizeSchemas(List<Map<String, Object>> schemas) {

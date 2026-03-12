@@ -17,18 +17,22 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asInteger;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asIntegerList;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLong;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asLongList;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMap;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asObjectMapList;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonNull;
 
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.PartitionField;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
-import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergEncryptedKey;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergPartitionStatisticsFile;
@@ -44,9 +48,7 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,7 +56,7 @@ import java.util.Map;
 public class SnapshotUpdateService {
 
   @Inject ObjectMapper mapper;
-  @Inject SnapshotClient snapshotClient;
+  @Inject GrpcServiceFacade snapshotClient;
 
   public Response validateSnapshotUpdates(List<Map<String, Object>> updates) {
     if (updates == null || updates.isEmpty()) {
@@ -64,11 +66,11 @@ public class SnapshotUpdateService {
       if (update == null) {
         return validationError("commit update entry cannot be null");
       }
-      String action = asString(update.get("action"));
+      String action = CommitUpdateInspector.actionOf(update);
       if (action == null || action.isBlank()) {
         return validationError("commit update missing action");
       }
-      if ("add-snapshot".equals(action)) {
+      if (CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(action)) {
         @SuppressWarnings("unchecked")
         Map<String, Object> snapshot =
             update.get("snapshot") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
@@ -79,12 +81,12 @@ public class SnapshotUpdateService {
         if (snapshotId == null) {
           return validationError("add-snapshot requires snapshot-id");
         }
-      } else if ("remove-snapshots".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_SNAPSHOTS.equals(action)) {
         List<Long> ids = asLongList(update.get("snapshot-ids"));
         if (ids.isEmpty()) {
           return validationError("remove-snapshots requires snapshot-ids");
         }
-      } else if ("set-snapshot-ref".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_SNAPSHOT_REF.equals(action)) {
         String refName = asString(update.get("ref-name"));
         if (refName == null || refName.isBlank()) {
           return validationError("set-snapshot-ref requires ref-name");
@@ -97,22 +99,22 @@ public class SnapshotUpdateService {
         if (pointedSnapshot == null) {
           return validationError("set-snapshot-ref requires snapshot-id");
         }
-      } else if ("remove-snapshot-ref".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_SNAPSHOT_REF.equals(action)) {
         String ref = asString(update.get("ref-name"));
         if (ref == null || ref.isBlank()) {
           return validationError("remove-snapshot-ref requires ref-name");
         }
-      } else if ("assign-uuid".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_ASSIGN_UUID.equals(action)) {
         String uuid = asString(update.get("uuid"));
         if (uuid == null || uuid.isBlank()) {
           return validationError("assign-uuid requires uuid");
         }
-      } else if ("upgrade-format-version".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_UPGRADE_FORMAT_VERSION.equals(action)) {
         Integer version = asInteger(update.get("format-version"));
         if (version == null) {
           return validationError("upgrade-format-version requires format-version");
         }
-      } else if ("add-schema".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_ADD_SCHEMA.equals(action)) {
         Map<String, Object> schemaMap = asObjectMap(update.get("schema"));
         if (schemaMap == null || schemaMap.isEmpty()) {
           return validationError("add-schema requires schema");
@@ -122,12 +124,12 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException | JsonProcessingException e) {
           return validationError(e.getMessage());
         }
-      } else if ("set-current-schema".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_CURRENT_SCHEMA.equals(action)) {
         Integer schemaId = asInteger(update.get("schema-id"));
         if (schemaId == null) {
           return validationError("set-current-schema requires schema-id");
         }
-      } else if ("add-spec".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_ADD_SPEC.equals(action)) {
         Map<String, Object> specMap = asObjectMap(update.get("spec"));
         if (specMap == null || specMap.isEmpty()) {
           return validationError("add-spec requires spec");
@@ -137,17 +139,17 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException e) {
           return validationError(e.getMessage());
         }
-      } else if ("set-default-spec".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_DEFAULT_SPEC.equals(action)) {
         Integer specId = asInteger(update.get("spec-id"));
         if (specId == null) {
           return validationError("set-default-spec requires spec-id");
         }
-      } else if ("remove-partition-specs".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_PARTITION_SPECS.equals(action)) {
         List<Integer> specIds = asIntegerList(update.get("spec-ids"));
         if (specIds.isEmpty()) {
           return validationError("remove-partition-specs requires spec-ids");
         }
-      } else if ("add-sort-order".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_ADD_SORT_ORDER.equals(action)) {
         Map<String, Object> orderMap = asObjectMap(update.get("sort-order"));
         if (orderMap == null || orderMap.isEmpty()) {
           return validationError("add-sort-order requires sort-order");
@@ -157,31 +159,31 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException e) {
           return validationError(e.getMessage());
         }
-      } else if ("set-default-sort-order".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_DEFAULT_SORT_ORDER.equals(action)) {
         Integer orderId = asInteger(update.get("sort-order-id"));
         if (orderId == null) {
           return validationError("set-default-sort-order requires sort-order-id");
         }
-      } else if ("set-location".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_LOCATION.equals(action)) {
         String location = asString(update.get("location"));
         if (location == null || location.isBlank()) {
           return validationError("set-location requires location");
         }
-      } else if ("set-properties".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_PROPERTIES.equals(action)) {
         @SuppressWarnings("unchecked")
         Map<String, Object> props =
             update.get("updates") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
         if (props == null || props.isEmpty()) {
           return validationError("set-properties requires updates");
         }
-      } else if ("remove-properties".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_PROPERTIES.equals(action)) {
         @SuppressWarnings("unchecked")
         List<Object> removals =
             update.get("removals") instanceof List<?> l ? (List<Object>) l : null;
         if (removals == null || removals.isEmpty()) {
           return validationError("remove-properties requires removals");
         }
-      } else if ("set-statistics".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_STATISTICS.equals(action)) {
         Map<String, Object> statsMap = asObjectMap(update.get("statistics"));
         if (statsMap == null || statsMap.isEmpty()) {
           return validationError("set-statistics requires statistics");
@@ -191,12 +193,12 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException e) {
           return validationError(e.getMessage());
         }
-      } else if ("remove-statistics".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_STATISTICS.equals(action)) {
         Long snapId = asLong(update.get("snapshot-id"));
         if (snapId == null) {
           return validationError("remove-statistics requires snapshot-id");
         }
-      } else if ("set-partition-statistics".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_SET_PARTITION_STATISTICS.equals(action)) {
         Map<String, Object> statsMap = asObjectMap(update.get("partition-statistics"));
         if (statsMap == null || statsMap.isEmpty()) {
           return validationError("set-partition-statistics requires partition-statistics");
@@ -206,12 +208,12 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException e) {
           return validationError(e.getMessage());
         }
-      } else if ("remove-partition-statistics".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_PARTITION_STATISTICS.equals(action)) {
         Long snapId = asLong(update.get("snapshot-id"));
         if (snapId == null) {
           return validationError("remove-partition-statistics requires snapshot-id");
         }
-      } else if ("add-encryption-key".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_ADD_ENCRYPTION_KEY.equals(action)) {
         Map<String, Object> keyMap = asObjectMap(update.get("encryption-key"));
         if (keyMap == null || keyMap.isEmpty()) {
           return validationError("add-encryption-key requires encryption-key");
@@ -221,12 +223,12 @@ public class SnapshotUpdateService {
         } catch (IllegalArgumentException e) {
           return validationError(e.getMessage());
         }
-      } else if ("remove-encryption-key".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_ENCRYPTION_KEY.equals(action)) {
         String keyId = asString(update.get("key-id"));
         if (keyId == null || keyId.isBlank()) {
           return validationError("remove-encryption-key requires key-id");
         }
-      } else if ("remove-schemas".equals(action)) {
+      } else if (CommitUpdateInspector.ACTION_REMOVE_SCHEMAS.equals(action)) {
         List<Integer> schemaIds = asIntegerList(update.get("schema-ids"));
         if (schemaIds.isEmpty()) {
           return validationError("remove-schemas requires schema-ids");
@@ -284,7 +286,7 @@ public class SnapshotUpdateService {
     PartitionSpecInfo.Builder builder = PartitionSpecInfo.newBuilder().setSpecId(specId);
     String specName = asString(specMap.get("name"));
     builder.setSpecName(specName == null || specName.isBlank() ? "spec-" + specId : specName);
-    List<Map<String, Object>> fields = asMapList(specMap.get("fields"));
+    List<Map<String, Object>> fields = asObjectMapList(specMap.get("fields"));
     for (Map<String, Object> field : fields) {
       String name = asString(field.get("name"));
       Integer fieldId = asInteger(firstNonNull(field.get("field-id"), field.get("source-id")));
@@ -310,7 +312,7 @@ public class SnapshotUpdateService {
       throw new IllegalArgumentException("add-sort-order requires sort-order.sort-order-id");
     }
     IcebergSortOrder.Builder builder = IcebergSortOrder.newBuilder().setSortOrderId(orderId);
-    List<Map<String, Object>> fields = asMapList(orderMap.get("fields"));
+    List<Map<String, Object>> fields = asObjectMapList(orderMap.get("fields"));
     for (Map<String, Object> field : fields) {
       Integer sourceId = asInteger(field.get("source-id"));
       if (sourceId == null) {
@@ -344,7 +346,7 @@ public class SnapshotUpdateService {
     String path = asString(statsMap.get("statistics-path"));
     Long size = asLong(statsMap.get("file-size-in-bytes"));
     Long footerSize = asLong(statsMap.get("file-footer-size-in-bytes"));
-    List<Map<String, Object>> blobMaps = asMapList(statsMap.get("blob-metadata"));
+    List<Map<String, Object>> blobMaps = asObjectMapList(statsMap.get("blob-metadata"));
     if (snapshotId == null || path == null || path.isBlank() || size == null) {
       throw new IllegalArgumentException(
           "set-statistics requires snapshot-id, statistics-path, and file-size-in-bytes");
@@ -432,64 +434,6 @@ public class SnapshotUpdateService {
   }
 
   private Response validationError(String message) {
-    return Response.status(Response.Status.BAD_REQUEST)
-        .entity(new IcebergErrorResponse(new IcebergError(message, "ValidationException", 400)))
-        .build();
-  }
-
-  private static Map<String, String> asStringMap(Object value) {
-    if (!(value instanceof Map<?, ?> map)) {
-      return Map.of();
-    }
-    Map<String, String> result = new LinkedHashMap<>();
-    for (Map.Entry<?, ?> entry : map.entrySet()) {
-      if (entry.getKey() == null || entry.getValue() == null) {
-        continue;
-      }
-      result.put(entry.getKey().toString(), entry.getValue().toString());
-    }
-    return result;
-  }
-
-  private static List<Long> asLongList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Long> out = new ArrayList<>();
-    for (Object item : list) {
-      Long val = asLong(item);
-      if (val != null) {
-        out.add(val);
-      }
-    }
-    return out;
-  }
-
-  private static List<Integer> asIntegerList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Integer> out = new ArrayList<>();
-    for (Object item : list) {
-      Integer val = asInteger(item);
-      if (val != null) {
-        out.add(val);
-      }
-    }
-    return out;
-  }
-
-  private static List<Map<String, Object>> asMapList(Object value) {
-    if (!(value instanceof List<?> list)) {
-      return List.of();
-    }
-    List<Map<String, Object>> out = new ArrayList<>();
-    for (Object item : list) {
-      Map<String, Object> map = asObjectMap(item);
-      if (map != null && !map.isEmpty()) {
-        out.add(map);
-      }
-    }
-    return out;
+    return IcebergErrorResponses.validation(message);
   }
 }

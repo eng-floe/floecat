@@ -30,7 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestC
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
@@ -53,7 +53,7 @@ public class TableRegisterService {
 
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableMetadataImportService tableMetadataImportService;
-  @Inject SnapshotClient snapshotClient;
+  @Inject GrpcServiceFacade snapshotClient;
   @Inject TransactionCommitService transactionCommitService;
 
   public Response register(
@@ -237,17 +237,19 @@ public class TableRegisterService {
     List<Map<String, Object>> updates = new ArrayList<>();
     Map<String, String> props = mergedProps == null ? Map.of() : new LinkedHashMap<>(mergedProps);
     if (!props.isEmpty()) {
-      updates.add(Map.of("action", "set-properties", "updates", props));
+      updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_PROPERTIES, "updates", props));
     }
     String location = props.get("location");
     if (location != null && !location.isBlank()) {
-      updates.add(Map.of("action", "set-location", "location", location));
+      updates.add(
+          Map.of("action", CommitUpdateInspector.ACTION_SET_LOCATION, "location", location));
     }
     List<Long> importedSnapshotIds = new ArrayList<>();
     for (ImportedSnapshot snapshot : snapshotsToImport(importedMetadata)) {
       Map<String, Object> snapshotMap = toSnapshotUpdate(snapshot, importedMetadata);
       if (!snapshotMap.isEmpty()) {
-        updates.add(Map.of("action", "add-snapshot", "snapshot", snapshotMap));
+        updates.add(
+            Map.of("action", CommitUpdateInspector.ACTION_ADD_SNAPSHOT, "snapshot", snapshotMap));
       }
       if (snapshot != null && snapshot.snapshotId() != null) {
         importedSnapshotIds.add(snapshot.snapshotId());
@@ -259,7 +261,9 @@ public class TableRegisterService {
       List<Long> removals =
           existingSnapshotIds.stream().filter(id -> !importedSnapshotIds.contains(id)).toList();
       if (!removals.isEmpty()) {
-        updates.add(Map.of("action", "remove-snapshots", "snapshot-ids", removals));
+        updates.add(
+            Map.of(
+                "action", CommitUpdateInspector.ACTION_REMOVE_SNAPSHOTS, "snapshot-ids", removals));
       }
     }
     return new TransactionCommitRequest(
