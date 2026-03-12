@@ -699,15 +699,12 @@ class SystemNodeRegistryTest {
 
   @Test
   void registryEngineSpecific_hintsLayeredAndOverridden() {
-    var internalRule =
+    var globalRule =
         new EngineSpecificRule(
             "", "", "", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
-    var pluginRule =
+    var engineRule =
         new EngineSpecificRule(
             FLOE_KIND, "", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
-    var overlayRule =
-        new EngineSpecificRule(
-            FLOE_KIND, "", "", "dict.shared", new byte[] {3}, Map.of("dict_name", "shared"));
 
     var catalog =
         new SystemCatalogData(
@@ -720,20 +717,16 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(pluginRule));
+            List.of(globalRule, engineRule));
 
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var overlayProvider =
-        new SystemCatalogTestProviders.RegistryHintProvider(FLOE_KIND, List.of(overlayRule));
-    var nodeRegistry =
-        new SystemNodeRegistry(
-            registry, new TestInternalProvider(List.of(internalRule)), List.of(overlayProvider));
+    var nodeRegistry = registryWith(registry);
 
     var merged = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
 
     assertThat(merged).hasSize(1);
-    assertThat(merged.get(0)).isEqualTo(overlayRule);
+    assertThat(merged.get(0)).isEqualTo(engineRule);
   }
 
   @Test
@@ -745,10 +738,21 @@ class SystemNodeRegistryTest {
         new EngineSpecificRule(
             FLOE_KIND, "16.0", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
 
-    var registry = registryWithCatalogs();
-    var provider =
-        new SystemCatalogTestProviders.RegistryHintProvider(FLOE_KIND, List.of(baseRule, nextRule));
-    var nodeRegistry = registryWith(registry, provider);
+    var catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(baseRule, nextRule));
+    var registry =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodeRegistry = registryWith(registry);
 
     var merged15 = nodeRegistry.nodesFor(FLOE_KIND, "15.0").catalogData().registryEngineSpecific();
     assertThat(merged15).hasSize(1);
@@ -894,48 +898,6 @@ class SystemNodeRegistryTest {
   private static SystemNodeRegistry registryWith(
       SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
     return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
-  }
-
-  private static final class TestInternalProvider implements SystemObjectScannerProvider {
-
-    private final FloecatInternalProvider delegate = new FloecatInternalProvider();
-    private final List<EngineSpecificRule> hints;
-
-    private TestInternalProvider(List<EngineSpecificRule> hints) {
-      this.hints = List.copyOf(hints);
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions() {
-      return delegate.definitions();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return delegate.supportsEngine(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return delegate.supports(name, engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
-      return delegate.provide(scannerId, engineKind, engineVersion);
-    }
-
-    @Override
-    public List<EngineSpecificRule> registryEngineSpecific(
-        String engineKind, String engineVersion) {
-      return hints;
-    }
   }
 
   @Test

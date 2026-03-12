@@ -428,7 +428,6 @@ public class SystemNodeRegistry {
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
     Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
     Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
-    List<EngineSpecificRule> providerRegistryHints = new ArrayList<>();
 
     for (SystemObjectDef def :
         internalProvider.definitions(
@@ -457,22 +456,15 @@ public class SystemNodeRegistry {
           }
           mergeDefinition(def, namespaceByName, tableByName, viewByName);
         }
-        providerRegistryHints.addAll(
-            provider.registryEngineSpecific(normalizedKind, normalizedVersion));
       }
     }
 
-    List<EngineSpecificRule> registryCandidates = new ArrayList<>();
-    registryCandidates.addAll(
-        internalProvider.registryEngineSpecific(normalizedKind, normalizedVersion));
-    registryCandidates.addAll(baseCatalog.registryEngineSpecific());
-    if (includeProviders) {
-      registryCandidates.addAll(providerRegistryHints);
-    }
     List<EngineSpecificRule> registryRules =
         dedupeMatchingRules(
             matchingRules(
-                dedupeRegistryRules(registryCandidates), normalizedKind, normalizedVersion),
+                dedupeRegistryRules(baseCatalog.registryEngineSpecific()),
+                normalizedKind,
+                normalizedVersion),
             normalizedKind);
 
     return new SystemCatalogData(

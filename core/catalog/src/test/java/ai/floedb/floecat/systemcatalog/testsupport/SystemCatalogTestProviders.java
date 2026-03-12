@@ -23,7 +23,6 @@ import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -148,44 +147,6 @@ public final class SystemCatalogTestProviders {
           "",
           List.of(),
           null);
-    }
-  }
-
-  public static final class RegistryHintProvider implements SystemObjectScannerProvider {
-
-    private final String engineKind;
-    private final List<EngineSpecificRule> hints;
-
-    public RegistryHintProvider(String engineKind, List<EngineSpecificRule> hints) {
-      this.engineKind = engineKind;
-      this.hints = List.copyOf(hints);
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions() {
-      return List.of();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return this.engineKind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return supportsEngine(engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
-      return Optional.empty();
-    }
-
-    @Override
-    public List<EngineSpecificRule> registryEngineSpecific(
-        String engineKind, String engineVersion) {
-      return hints;
     }
   }
 }

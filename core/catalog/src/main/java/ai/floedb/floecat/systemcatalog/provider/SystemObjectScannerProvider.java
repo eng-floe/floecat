@@ -19,7 +19,6 @@ package ai.floedb.floecat.systemcatalog.provider;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.List;
 import java.util.Optional;
 
@@ -67,13 +66,4 @@ public interface SystemObjectScannerProvider {
 
   /** Resolves scanner by scannerId (for SystemObjectNode lookups). */
   Optional<SystemObjectScanner> provide(String scannerId, String engineKind, String engineVersion);
-
-  /**
-   * Registry-level engine hints provided per engine/version.
-   *
-   * <p>Defaults to empty for providers that don't publish any registry payloads.
-   */
-  default List<EngineSpecificRule> registryEngineSpecific(String engineKind, String engineVersion) {
-    return List.of();
-  }
 }
