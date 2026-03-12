@@ -79,6 +79,7 @@ class PlannerStatsBundleServiceTest {
     repository.putColumnStats(TABLE, 100L, sampleStats(TABLE, 100L, 1L));
 
     FetchColumnStatsRequest request = requestFor("query-1", TABLE, List.of(1L));
+    assertFalse(request.getIncludeConstraints());
     List<ColumnStatsBundleChunk> chunks =
         service.stream("corr", ctx, request).collect().asList().await().indefinitely();
 

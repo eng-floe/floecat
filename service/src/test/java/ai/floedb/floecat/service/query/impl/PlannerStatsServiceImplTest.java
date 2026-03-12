@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
@@ -148,6 +149,7 @@ class PlannerStatsServiceImplTest {
     repository.putColumnStats(TABLE, 202L, sampleStats(TABLE, 202L, 1L));
 
     FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    assertFalse(request.getIncludeConstraints());
     List<ColumnStatsBundleChunk> chunks =
         withPrincipal(
             principal("corr-ok", true),
