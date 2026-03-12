@@ -19,6 +19,7 @@ package ai.floedb.floecat.systemcatalog.util;
 import ai.floedb.floecat.common.rpc.NameRef;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public final class NameRefUtil {
   private NameRefUtil() {}
@@ -64,6 +65,31 @@ public final class NameRefUtil {
   public static String namespaceFromCanonical(String canonical) {
     int idx = canonical.lastIndexOf('.');
     return idx < 0 ? "" : canonical.substring(0, idx);
+  }
+
+  /** Returns the namespace NameRef (parent path) of a qualified object name. */
+  public static Optional<NameRef> namespaceRef(NameRef ref) {
+    if (ref == null) {
+      return Optional.empty();
+    }
+    if (ref.getPathCount() == 0) {
+      String name = ref.getName() == null ? "" : ref.getName().trim();
+      int idx = name.lastIndexOf('.');
+      if (idx < 0) {
+        return Optional.empty();
+      }
+      String namespaceCanonical = name.substring(0, idx);
+      if (namespaceCanonical.isBlank()) {
+        return Optional.empty();
+      }
+      return Optional.of(fromCanonical(namespaceCanonical));
+    }
+    NameRef.Builder b = NameRef.newBuilder();
+    if (ref.getPathCount() > 1) {
+      b.addAllPath(ref.getPathList().subList(0, ref.getPathCount() - 1));
+    }
+    b.setName(ref.getPath(ref.getPathCount() - 1));
+    return Optional.of(b.build());
   }
 
   /**

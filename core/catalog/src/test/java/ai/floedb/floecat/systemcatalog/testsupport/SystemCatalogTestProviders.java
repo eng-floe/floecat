@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
+import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
@@ -51,7 +52,7 @@ public final class SystemCatalogTestProviders {
     @Override
     public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
       definitionsCalled.incrementAndGet();
-      return List.of(tableFor(engineKind, engineVersion));
+      return List.of(namespaceFor(engineKind), tableFor(engineKind, engineVersion));
     }
 
     @Override
@@ -91,6 +92,10 @@ public final class SystemCatalogTestProviders {
           "",
           List.of(),
           null);
+    }
+
+    private SystemNamespaceDef namespaceFor(String engineKind) {
+      return new SystemNamespaceDef(NameRefUtil.name(engineKind), engineKind, List.of());
     }
   }
 

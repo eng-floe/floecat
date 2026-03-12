@@ -23,6 +23,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
+import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
@@ -31,7 +32,6 @@ import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -74,12 +74,11 @@ public final class BuiltinTestSupport {
     ResourceId retId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, retRef);
 
     NameRef fn = nr(fullname);
-    String namespaceCanonical = NameRefUtil.namespaceFromCanonical(NameRefUtil.canonical(fn));
-    ResourceId namespaceId =
-        namespaceCanonical.isEmpty()
-            ? null
-            : SystemNodeRegistry.resourceId(
-                engine, ResourceKind.RK_NAMESPACE, NameRefUtil.fromCanonical(namespaceCanonical));
+    ResourceId namespaceId = namespaceIdForQualifiedName(engine, fullname);
+    if (!ResourceIdUtils.hasIdentity(namespaceId)) {
+      throw new IllegalArgumentException(
+          "Function fullname must be namespace-qualified: " + fullname);
+    }
 
     SystemFunctionDef fnDef = new SystemFunctionDef(fn, argRefs, retRef, false, false, List.of());
     String signature = SignatureUtil.functionSignature(fnDef);
@@ -177,6 +176,20 @@ public final class BuiltinTestSupport {
     }
     int idx = qualifiedName.lastIndexOf('.');
     return idx < 0 ? qualifiedName : qualifiedName.substring(idx + 1);
+  }
+
+  public static Optional<SystemNamespaceDef> namespaceDefForQualifiedName(String qualifiedName) {
+    NameRef ref = nr(qualifiedName);
+    if (ref.getPathCount() == 0) {
+      return Optional.empty();
+    }
+    NameRef.Builder b = NameRef.newBuilder();
+    if (ref.getPathCount() > 1) {
+      b.addAllPath(ref.getPathList().subList(0, ref.getPathCount() - 1));
+    }
+    b.setName(ref.getPath(ref.getPathCount() - 1));
+    NameRef namespace = b.build();
+    return Optional.of(new SystemNamespaceDef(namespace, namespace.getName(), List.of()));
   }
 
   // --- Build collation nodes ----------------------------------------------

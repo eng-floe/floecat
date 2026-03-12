@@ -36,7 +36,8 @@ public record TypeNode(
 
   public TypeNode {
     if (!ResourceIdUtils.hasIdentity(namespaceId)) {
-      throw new IllegalArgumentException("TypeNode requires a namespaceId with a non-blank identity");
+      throw new IllegalArgumentException(
+          "TypeNode requires a namespaceId with a non-blank identity");
     }
     displayName = displayName == null ? "" : displayName;
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);

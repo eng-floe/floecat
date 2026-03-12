@@ -21,9 +21,15 @@ These translator helpers keep ID/name wrangling centralized, which makes it obvi
 
 ### Naming requirements for builtin relations
 
-Every builtin object (namespaces, tables, views, functions, operators, etc.) **must be namespace-qualified**; definitions without a namespace (no dot in the canonical name) are ignored while building the `_system` graph. This keeps the namespace buckets deterministic and avoids accidentally seeding the graph with tables that should live in the root namespace. When designing engine-specific catalog fragments, always include the namespace path (e.g., `pg_catalog.pg_class`, not just `pg_class`).
+Every builtin object (namespaces, tables, views, functions, operators, etc.) **must be namespace-qualified**. Definitions without a namespace (no dot in the canonical name) are rejected by catalog validation in normal provider flows, and the graph build still keeps a defensive skip fallback for malformed data that bypasses validation (for example, ad-hoc test catalogs). This keeps namespace buckets deterministic and avoids accidentally seeding the graph with tables that should live in the root namespace. When designing engine-specific catalog fragments, always include the namespace path (e.g., `pg_catalog.pg_class`, not just `pg_class`).
 
 `SystemNodeRegistry` uses that canonical qualified name for identity (`ResourceId`) and namespace resolution, but display labels are intentionally independent. By default the registry materializes the **leaf name** (`name.name`) for function/operator/type/collation/aggregate node `displayName`s, while namespace/table/view display labels still come from the catalog definition. Providers may still override display labels explicitly when they need qualified names for their own UX.
+
+Namespace-scoping validation defaults are defined in `SystemCatalogValidator.NamespaceScopePolicy.defaultPolicy()` and are intentionally explicit for OSS plugin authors:
+- scoped by default (must be namespace-qualified and reference a known namespace): `function`, `type`, `table`, `view`
+- not scoped by default (no namespace requirement unless a stricter policy is selected): `operator`, `cast`, `collation`, `aggregate`
+
+Both `ServiceLoaderSystemCatalogProvider` and `FloecatInternalProvider` now fail fast on `Severity.ERROR` validation issues during catalog load, so extension authors should treat these defaults as part of the public contract.
 
 ### Architecture overview
 

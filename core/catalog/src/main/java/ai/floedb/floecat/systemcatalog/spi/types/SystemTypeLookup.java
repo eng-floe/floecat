@@ -91,7 +91,11 @@ public final class SystemTypeLookup implements TypeLookup {
       if (localName.isEmpty()) {
         continue;
       }
-      index.putIfAbsent(new TypeKey(namespaceId, localName), type);
+      TypeKey key = new TypeKey(namespaceId, localName);
+      TypeNode previous = index.putIfAbsent(key, type);
+      if (previous != null && !Objects.equals(previous.id(), type.id())) {
+        throw new IllegalStateException("Duplicate type in lookup scope: " + key);
+      }
     }
     return Map.copyOf(index);
   }

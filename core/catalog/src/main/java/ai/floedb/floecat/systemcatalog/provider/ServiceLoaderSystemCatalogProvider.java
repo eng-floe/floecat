@@ -30,6 +30,8 @@ import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
+import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
 import java.util.Comparator;
@@ -174,6 +176,15 @@ public final class ServiceLoaderSystemCatalogProvider
       if (!extErrors.isEmpty()) {
         logValidationIssues(ext, extErrors);
       }
+      ValidationFailures.throwOnErrorIssues(
+          "Engine extension validation failed for engine_kind=" + effectiveKind, extErrors);
+
+      List<ValidationIssue> validatorIssues = SystemCatalogValidator.validate(catalog);
+      if (!validatorIssues.isEmpty()) {
+        logValidationIssues(ext, validatorIssues);
+      }
+      ValidationFailures.throwOnErrorIssues(
+          "System catalog validation failed for engine_kind=" + effectiveKind, validatorIssues);
     }
 
     catalog = mergeWithInternalCatalog(catalog);

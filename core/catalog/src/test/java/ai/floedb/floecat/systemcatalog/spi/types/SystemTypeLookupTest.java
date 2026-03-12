@@ -155,7 +155,8 @@ final class SystemTypeLookupTest {
   }
 
   private static ResourceId typeId(String qualifiedTypeName) {
-    return SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_TYPE, asNameRef(qualifiedTypeName));
+    return SystemNodeRegistry.resourceId(
+        "floedb", ResourceKind.RK_TYPE, asNameRef(qualifiedTypeName));
   }
 
   private static NameRef asNameRef(String qualified) {

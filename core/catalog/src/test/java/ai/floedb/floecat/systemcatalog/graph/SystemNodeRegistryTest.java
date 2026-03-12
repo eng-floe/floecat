@@ -325,7 +325,7 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(new SystemNamespaceDef(NameRefUtil.name("pg"), "pg", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -376,7 +376,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -402,7 +403,7 @@ class SystemNodeRegistryTest {
   void overloadedOperatorsProduceDistinctIds() {
     SystemOperatorDef opInt =
         new SystemOperatorDef(
-            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog", "add"),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
@@ -411,7 +412,7 @@ class SystemNodeRegistryTest {
             List.of());
     SystemOperatorDef opText =
         new SystemOperatorDef(
-            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog", "add"),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.text"),
@@ -430,7 +431,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -451,21 +453,21 @@ class SystemNodeRegistryTest {
   void aggregatesWithDifferentSignaturesProduceDistinctIds() {
     SystemAggregateDef aggSum =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.int4")),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             List.of());
     SystemAggregateDef aggCount =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.text")),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             List.of());
     SystemAggregateDef aggStateDifferent =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.int4")),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.int4"),
@@ -482,7 +484,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(aggSum, aggCount, aggStateDifferent),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -504,9 +507,9 @@ class SystemNodeRegistryTest {
   @Test
   void collationsWithDifferentLocalesKeepDistinctIdentities() {
     SystemCollationDef enColl =
-        new SystemCollationDef(NameRefUtil.name("locale"), "en_US", List.of());
+        new SystemCollationDef(NameRefUtil.name("pg_catalog", "locale"), "en_US", List.of());
     SystemCollationDef frColl =
-        new SystemCollationDef(NameRefUtil.name("locale"), "fr_FR", List.of());
+        new SystemCollationDef(NameRefUtil.name("pg_catalog", "locale"), "fr_FR", List.of());
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -516,7 +519,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(enColl, frColl),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -571,6 +575,47 @@ class SystemNodeRegistryTest {
     nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
     assertThat(provider.invocationCount()).isEqualTo(1);
+  }
+
+  @Test
+  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
+    SystemObjectScannerProvider invalidProvider =
+        new SystemObjectScannerProvider() {
+          @Override
+          public List<SystemObjectDef> definitions() {
+            return List.of(
+                new SystemTableDef(
+                    NameRefUtil.name("missing_ns", "bad_table"),
+                    "bad_table",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public boolean supportsEngine(String engineKind) {
+            return FLOE_KIND.equals(engineKind);
+          }
+
+          @Override
+          public boolean supports(NameRef name, String engineKind) {
+            return supportsEngine(engineKind);
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(
+              String scannerId, String engineKind, String engineVersion) {
+            return Optional.empty();
+          }
+        };
+
+    var nodeRegistry = registryWith(registryWithCatalogs(), invalidProvider);
+    var nodes = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    assertThat(nodes.tableNames()).doesNotContainKey("missing_ns.bad_table");
   }
 
   @Test
@@ -634,7 +679,8 @@ class SystemNodeRegistryTest {
             List.of(cast),
             List.of(collation),
             List.of(aggregate),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -757,7 +803,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());

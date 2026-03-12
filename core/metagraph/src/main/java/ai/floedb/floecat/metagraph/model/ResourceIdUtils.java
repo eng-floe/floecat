@@ -24,8 +24,8 @@ public final class ResourceIdUtils {
   private ResourceIdUtils() {}
 
   /**
-   * Returns {@code true} if the given {@link ResourceId} carries a non-blank string identity.
-   * A default-instance or null id is considered to have no identity.
+   * Returns {@code true} if the given {@link ResourceId} carries a non-blank string identity. A
+   * default-instance or null id is considered to have no identity.
    */
   public static boolean hasIdentity(ResourceId id) {
     return id != null && id.getId() != null && !id.getId().isBlank();

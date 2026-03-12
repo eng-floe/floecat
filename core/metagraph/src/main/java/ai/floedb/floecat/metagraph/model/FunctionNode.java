@@ -37,6 +37,10 @@ public record FunctionNode(
     implements GraphNode {
 
   public FunctionNode {
+    if (!ResourceIdUtils.hasIdentity(namespaceId)) {
+      throw new IllegalArgumentException(
+          "FunctionNode requires a namespaceId with a non-blank identity");
+    }
     displayName = displayName == null ? "" : displayName;
     argumentTypes = List.copyOf(argumentTypes == null ? List.of() : argumentTypes);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);

@@ -32,7 +32,9 @@ import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Performs structural validation of builtin catalogs before they are exposed to planners. Uses
@@ -46,9 +48,10 @@ public final class SystemCatalogValidator {
     String CATALOG_NULL = "catalog.null";
 
     interface Type {
-      String TYPES_EMPTY = "types.empty";
       String NAME_REQUIRED = "type.name.required";
       String DUPLICATE = "type.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "type.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "type.namespace.unknown";
       String CATEGORY_REQUIRED = "type.category.required";
       String CATEGORY_INVALID = "type.category.invalid";
       String ELEMENT_REQUIRED = "type.element.required";
@@ -57,9 +60,10 @@ public final class SystemCatalogValidator {
     }
 
     interface Function {
-      String EMPTY = "functions.empty";
       String NAME_REQUIRED = "function.name.required";
       String DUPLICATE = "function.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "function.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "function.namespace.unknown";
       String RETURN_TYPE_REQUIRED = "function.return.type.required";
       String RETURN_TYPE_UNKNOWN = "function.return.type.unknown";
       String ARG_TYPE_REQUIRED = "function.arg.type.required";
@@ -69,6 +73,8 @@ public final class SystemCatalogValidator {
     interface Operator {
       String NAME_REQUIRED = "operator.name.required";
       String DUPLICATE = "operator.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "operator.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "operator.namespace.unknown";
       String LEFT_TYPE_UNKNOWN = "operator.left.type.unknown";
       String RIGHT_TYPE_REQUIRED = "operator.right.type.required";
       String RIGHT_TYPE_UNKNOWN = "operator.right.type.unknown";
@@ -80,6 +86,8 @@ public final class SystemCatalogValidator {
       String NAME_REQUIRED = "cast.name.required";
       String NAME_DUPLICATE = "cast.name.duplicate";
       String DUPLICATE = "cast.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "cast.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "cast.namespace.unknown";
       String SOURCE_TYPE_REQUIRED = "cast.source.type.required";
       String SOURCE_TYPE_UNKNOWN = "cast.source.type.unknown";
       String TARGET_TYPE_REQUIRED = "cast.target.type.required";
@@ -90,11 +98,15 @@ public final class SystemCatalogValidator {
       String NAME_REQUIRED = "collation.name.required";
       String LOCALE_REQUIRED = "collation.locale.required";
       String DUPLICATE = "collation.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "collation.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "collation.namespace.unknown";
     }
 
     interface Aggregate {
       String NAME_REQUIRED = "agg.name.required";
       String DUPLICATE = "agg.duplicate";
+      String NAME_QUALIFIED_REQUIRED = "agg.name.qualified.required";
+      String NAMESPACE_UNKNOWN = "agg.namespace.unknown";
       String STATE_TYPE_REQUIRED = "agg.state.type.required";
       String STATE_TYPE_UNKNOWN = "agg.state.type.unknown";
       String RETURN_TYPE_REQUIRED = "agg.return.type.required";
@@ -131,8 +143,60 @@ public final class SystemCatalogValidator {
     }
   }
 
+  /** Controls which object kinds are required to carry a known namespace-qualified name. */
+  public record NamespaceScopePolicy(
+      boolean functionScoped,
+      boolean operatorScoped,
+      boolean typeScoped,
+      boolean castScoped,
+      boolean collationScoped,
+      boolean aggregateScoped,
+      boolean tableScoped,
+      boolean viewScoped) {
+    public static NamespaceScopePolicy defaultPolicy() {
+      return new NamespaceScopePolicy(
+          true, // function
+          false, // operator
+          true, // type
+          false, // cast
+          false, // collation
+          false, // aggregate
+          true, // table
+          true // view
+          );
+    }
+
+    public static NamespaceScopePolicy strictAll() {
+      return new NamespaceScopePolicy(true, true, true, true, true, true, true, true);
+    }
+  }
+
   /** Runs validation and returns structured issues. */
   public static List<ValidationIssue> validate(SystemCatalogData catalog) {
+    return validate(catalog, NamespaceScopePolicy.defaultPolicy());
+  }
+
+  /** Runs validation with a caller-provided namespace-scoping policy. */
+  public static List<ValidationIssue> validate(
+      SystemCatalogData catalog, NamespaceScopePolicy namespaceScopePolicy) {
+    NamespaceScopePolicy policy =
+        Objects.requireNonNullElse(namespaceScopePolicy, NamespaceScopePolicy.defaultPolicy());
+    return validateInternal(catalog, policy);
+  }
+
+  /** Runs validation for partial catalog fragments (e.g. namespace/table/view-only overlays). */
+  public static List<ValidationIssue> validateFragment(SystemCatalogData catalog) {
+    return validateFragment(catalog, NamespaceScopePolicy.defaultPolicy());
+  }
+
+  /** Runs fragment validation with a caller-provided namespace-scoping policy. */
+  public static List<ValidationIssue> validateFragment(
+      SystemCatalogData catalog, NamespaceScopePolicy namespaceScopePolicy) {
+    return validate(catalog, namespaceScopePolicy);
+  }
+
+  private static List<ValidationIssue> validateInternal(
+      SystemCatalogData catalog, NamespaceScopePolicy policy) {
     List<ValidationIssue> issues = new ArrayList<>();
     if (catalog == null) {
       err(issues, Codes.CATALOG_NULL, "catalog", null);
@@ -148,7 +212,7 @@ public final class SystemCatalogValidator {
     validateCollations(catalog.collations(), issues);
     validateAggregates(catalog.aggregates(), typeNames, issues);
 
-    validateNamespacesTablesAndViews(catalog, issues);
+    validateNamespacesTablesAndViews(catalog, issues, policy);
 
     validateEngineSpecificPayloadTypes(catalog, issues);
 
@@ -162,7 +226,6 @@ public final class SystemCatalogValidator {
   private static Set<NameRef> validateTypes(
       List<SystemTypeDef> types, List<ValidationIssue> issues) {
     if (types == null || types.isEmpty()) {
-      err(issues, Codes.Type.TYPES_EMPTY, "types", null);
       return Set.of();
     }
 
@@ -238,7 +301,6 @@ public final class SystemCatalogValidator {
       List<SystemFunctionDef> functions, Set<NameRef> typeNames, List<ValidationIssue> issues) {
 
     if (functions == null || functions.isEmpty()) {
-      err(issues, Codes.Function.EMPTY, "functions", null);
       return;
     }
 
@@ -556,10 +618,98 @@ public final class SystemCatalogValidator {
   // ------------------------------------------------------------
 
   private static void validateNamespacesTablesAndViews(
-      SystemCatalogData catalog, List<ValidationIssue> issues) {
+      SystemCatalogData catalog, List<ValidationIssue> issues, NamespaceScopePolicy policy) {
     Set<NameRef> namespaceNames = validateNamespaces(catalog.namespaces(), issues);
-    validateTables(catalog.tables(), namespaceNames, issues);
-    validateViews(catalog.views(), namespaceNames, issues);
+    if (policy.functionScoped()) {
+      validateNamespaceScopedObjectNames(
+          "function",
+          catalog.functions(),
+          SystemFunctionDef::name,
+          namespaceNames,
+          issues,
+          Codes.Function.NAME_QUALIFIED_REQUIRED,
+          Codes.Function.NAMESPACE_UNKNOWN);
+    }
+    if (policy.operatorScoped()) {
+      validateNamespaceScopedObjectNames(
+          "operator",
+          catalog.operators(),
+          SystemOperatorDef::name,
+          namespaceNames,
+          issues,
+          Codes.Operator.NAME_QUALIFIED_REQUIRED,
+          Codes.Operator.NAMESPACE_UNKNOWN);
+    }
+    if (policy.typeScoped()) {
+      validateNamespaceScopedObjectNames(
+          "type",
+          catalog.types(),
+          SystemTypeDef::name,
+          namespaceNames,
+          issues,
+          Codes.Type.NAME_QUALIFIED_REQUIRED,
+          Codes.Type.NAMESPACE_UNKNOWN);
+    }
+    if (policy.castScoped()) {
+      validateNamespaceScopedObjectNames(
+          "cast",
+          catalog.casts(),
+          SystemCastDef::name,
+          namespaceNames,
+          issues,
+          Codes.Cast.NAME_QUALIFIED_REQUIRED,
+          Codes.Cast.NAMESPACE_UNKNOWN);
+    }
+    if (policy.collationScoped()) {
+      validateNamespaceScopedObjectNames(
+          "collation",
+          catalog.collations(),
+          SystemCollationDef::name,
+          namespaceNames,
+          issues,
+          Codes.Collation.NAME_QUALIFIED_REQUIRED,
+          Codes.Collation.NAMESPACE_UNKNOWN);
+    }
+    if (policy.aggregateScoped()) {
+      validateNamespaceScopedObjectNames(
+          "aggregate",
+          catalog.aggregates(),
+          SystemAggregateDef::name,
+          namespaceNames,
+          issues,
+          Codes.Aggregate.NAME_QUALIFIED_REQUIRED,
+          Codes.Aggregate.NAMESPACE_UNKNOWN);
+    }
+    if (policy.tableScoped()) {
+      validateTables(catalog.tables(), namespaceNames, issues);
+    }
+    if (policy.viewScoped()) {
+      validateViews(catalog.views(), namespaceNames, issues);
+    }
+  }
+
+  private static <T> void validateNamespaceScopedObjectNames(
+      String kind,
+      List<T> defs,
+      Function<T, NameRef> nameFn,
+      Set<NameRef> namespaceNames,
+      List<ValidationIssue> issues,
+      String unqualifiedCode,
+      String namespaceUnknownCode) {
+    if (defs == null) {
+      return;
+    }
+    for (T def : defs) {
+      if (def == null) {
+        continue;
+      }
+      NameRef name = nameFn.apply(def);
+      if (name == null || isBlank(name.getName())) {
+        continue;
+      }
+      requireQualifiedObjectName(kind, name, issues, unqualifiedCode);
+      requireNamespaceExists(kind, name, namespaceNames, issues, namespaceUnknownCode);
+    }
   }
 
   private static Set<NameRef> validateNamespaces(
@@ -800,7 +950,7 @@ public final class SystemCatalogValidator {
       return;
     }
     if (known == null || known.isEmpty()) {
-      // If we have no known types, avoid spamming "unknown" errors -- types.empty already reported.
+      // If we have no known types in this fragment, avoid spamming unknown-type errors.
       return;
     }
     if (!known.contains(ref)) {
