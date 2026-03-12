@@ -49,7 +49,10 @@ class TypeHintProviderTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                BuiltinTestSupport.namespaceDefForQualifiedName("pg.int4")
+                    .orElseThrow(
+                        () -> new IllegalStateException("expected namespace for pg.int4"))),
             List.of(),
             List.of(),
             List.of());

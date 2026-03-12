@@ -36,6 +36,14 @@ final class SystemCatalogValidatorTest {
     return NameRef.newBuilder().setName(n).build();
   }
 
+  private static NameRef name(String namespace, String n) {
+    return NameRef.newBuilder().addPath(namespace).setName(n).build();
+  }
+
+  private static SystemNamespaceDef namespace(String n) {
+    return new SystemNamespaceDef(name(n), n, List.of());
+  }
+
   private static SystemTypeDef type(String name) {
     return new SystemTypeDef(name(name), "S", false, null, List.of());
   }
@@ -62,7 +70,7 @@ final class SystemCatalogValidatorTest {
   }
 
   @Test
-  void validate_emptyTypes() {
+  void validate_emptyFragmentsAreAllowed() {
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(), // functions
@@ -78,7 +86,7 @@ final class SystemCatalogValidatorTest {
             );
 
     List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
-    assertThat(codes(issues)).contains("types.empty");
+    assertThat(codes(issues)).doesNotContain("types.empty", "functions.empty");
   }
 
   // ---------------------------------------------------------------------------
@@ -169,20 +177,32 @@ final class SystemCatalogValidatorTest {
   void validate_functionOverloadsAllowed() {
     SystemFunctionDef intFn =
         new SystemFunctionDef(
-            name("f"), List.of(name("int")), name("int"), false, false, List.of());
+            name("pg_catalog", "f"),
+            List.of(name("pg_catalog", "int")),
+            name("pg_catalog", "int"),
+            false,
+            false,
+            List.of());
     SystemFunctionDef textFn =
         new SystemFunctionDef(
-            name("f"), List.of(name("text")), name("text"), false, false, List.of());
+            name("pg_catalog", "f"),
+            List.of(name("pg_catalog", "text")),
+            name("pg_catalog", "text"),
+            false,
+            false,
+            List.of());
 
     SystemCatalogData catalog =
         new SystemCatalogData(
             List.of(intFn, textFn),
             List.of(),
-            List.of(type("int"), type("text")),
+            List.of(
+                new SystemTypeDef(name("pg_catalog", "int"), "S", false, null, List.of()),
+                new SystemTypeDef(name("pg_catalog", "text"), "S", false, null, List.of())),
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(namespace("pg_catalog")),
             List.of(),
             List.of(),
             List.of());
@@ -395,6 +415,148 @@ final class SystemCatalogValidatorTest {
   }
 
   @Test
+  void validate_namespaceScopedObjectsMustBeQualified() {
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(
+                new SystemFunctionDef(
+                    name("f"), List.of(name("int")), name("int"), false, false, List.of())),
+            List.of(
+                new SystemOperatorDef(
+                    name("op"), name("int"), name("int"), name("int"), true, true, List.of())),
+            List.of(type("int")),
+            List.of(
+                new SystemCastDef(
+                    name("c"), name("int"), name("int"), SystemCastMethod.EXPLICIT, List.of())),
+            List.of(new SystemCollationDef(name("coll"), "en_US", List.of())),
+            List.of(
+                new SystemAggregateDef(
+                    name("agg"), List.of(name("int")), name("int"), name("int"), List.of())),
+            List.of(namespace("pg_catalog")),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues))
+        .contains("function.name.qualified.required", "type.name.qualified.required")
+        .doesNotContain(
+            "operator.name.qualified.required",
+            "cast.name.qualified.required",
+            "collation.name.qualified.required",
+            "agg.name.qualified.required");
+  }
+
+  @Test
+  void validate_namespaceScopedObjectsMustReferenceKnownNamespace() {
+    NameRef unknownInt = name("unknown_ns", "int");
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(
+                new SystemFunctionDef(
+                    name("unknown_ns", "f"),
+                    List.of(unknownInt),
+                    unknownInt,
+                    false,
+                    false,
+                    List.of())),
+            List.of(
+                new SystemOperatorDef(
+                    name("unknown_ns", "op"),
+                    unknownInt,
+                    unknownInt,
+                    unknownInt,
+                    true,
+                    true,
+                    List.of())),
+            List.of(new SystemTypeDef(unknownInt, "S", false, null, List.of())),
+            List.of(
+                new SystemCastDef(
+                    name("unknown_ns", "c"),
+                    unknownInt,
+                    unknownInt,
+                    SystemCastMethod.EXPLICIT,
+                    List.of())),
+            List.of(new SystemCollationDef(name("unknown_ns", "coll"), "en_US", List.of())),
+            List.of(
+                new SystemAggregateDef(
+                    name("unknown_ns", "agg"),
+                    List.of(unknownInt),
+                    unknownInt,
+                    unknownInt,
+                    List.of())),
+            List.of(namespace("pg_catalog")),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues))
+        .contains("function.namespace.unknown", "type.namespace.unknown")
+        .doesNotContain(
+            "operator.namespace.unknown",
+            "cast.namespace.unknown",
+            "collation.namespace.unknown",
+            "agg.namespace.unknown");
+  }
+
+  @Test
+  void validate_namespaceScopedObjectsCanBeStrictlyEnforcedByPolicy() {
+    NameRef unknownInt = name("unknown_ns", "int");
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(
+                new SystemFunctionDef(
+                    name("unknown_ns", "f"),
+                    List.of(unknownInt),
+                    unknownInt,
+                    false,
+                    false,
+                    List.of())),
+            List.of(
+                new SystemOperatorDef(
+                    name("unknown_ns", "op"),
+                    unknownInt,
+                    unknownInt,
+                    unknownInt,
+                    true,
+                    true,
+                    List.of())),
+            List.of(new SystemTypeDef(unknownInt, "S", false, null, List.of())),
+            List.of(
+                new SystemCastDef(
+                    name("unknown_ns", "c"),
+                    unknownInt,
+                    unknownInt,
+                    SystemCastMethod.EXPLICIT,
+                    List.of())),
+            List.of(new SystemCollationDef(name("unknown_ns", "coll"), "en_US", List.of())),
+            List.of(
+                new SystemAggregateDef(
+                    name("unknown_ns", "agg"),
+                    List.of(unknownInt),
+                    unknownInt,
+                    unknownInt,
+                    List.of())),
+            List.of(namespace("pg_catalog")),
+            List.of(),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues =
+        SystemCatalogValidator.validate(
+            catalog, SystemCatalogValidator.NamespaceScopePolicy.strictAll());
+    assertThat(codes(issues))
+        .contains(
+            "function.namespace.unknown",
+            "operator.namespace.unknown",
+            "type.namespace.unknown",
+            "cast.namespace.unknown",
+            "collation.namespace.unknown",
+            "agg.namespace.unknown");
+  }
+
+  @Test
   void validate_engineSpecificRulesRequirePayloadType() {
     EngineSpecificRule rule = new EngineSpecificRule("pg", "", "", "", new byte[0], Map.of());
 
@@ -431,13 +593,18 @@ final class SystemCatalogValidatorTest {
         new SystemCatalogData(
             List.of(
                 new SystemFunctionDef(
-                    name("f"), List.of(name("int")), name("int"), false, false, List.of())),
+                    name("pg_catalog", "f"),
+                    List.of(name("pg_catalog", "int")),
+                    name("pg_catalog", "int"),
+                    false,
+                    false,
+                    List.of())),
             List.of(),
-            List.of(type("int")),
+            List.of(new SystemTypeDef(name("pg_catalog", "int"), "S", false, null, List.of())),
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(namespace("pg_catalog")),
             List.of(),
             List.of(),
             List.of());

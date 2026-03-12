@@ -25,6 +25,8 @@ import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvid
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
+import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
+import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
 import java.io.InputStream;
@@ -87,7 +89,12 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
       SystemObjectsRegistryMerger.append(accumulator, tmp);
     }
     SystemObjectsRegistry merged = accumulator.build();
-    return SystemCatalogProtoMapper.fromProto(merged, EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    SystemCatalogData catalog =
+        SystemCatalogProtoMapper.fromProto(merged, EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    ValidationFailures.throwOnErrorIssues(
+        "Invalid floecat_internal builtin catalog",
+        SystemCatalogValidator.validateFragment(catalog));
+    return catalog;
   }
 
   private static List<String> loadIndex() {

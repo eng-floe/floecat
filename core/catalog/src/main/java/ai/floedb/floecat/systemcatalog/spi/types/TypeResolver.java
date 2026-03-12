@@ -34,7 +34,7 @@ public final class TypeResolver {
   public TypeResolver(MetadataResolutionContext ctx, EngineTypeMapper mapper) {
     this.mapper = Objects.requireNonNull(mapper, "mapper");
     Objects.requireNonNull(ctx, "ctx");
-    this.lookup = new SystemTypeLookup(ctx.overlay().listTypes(ctx.catalogId()));
+    this.lookup = new SystemTypeLookup(ctx);
   }
 
   /** Resolves a logical type to an existing TypeNode, if the mapper is aware of it. */

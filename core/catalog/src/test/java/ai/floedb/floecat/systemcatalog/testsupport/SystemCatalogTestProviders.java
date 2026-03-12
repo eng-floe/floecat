@@ -20,9 +20,9 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
+import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -51,7 +51,7 @@ public final class SystemCatalogTestProviders {
     @Override
     public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
       definitionsCalled.incrementAndGet();
-      return List.of(tableFor(engineKind, engineVersion));
+      return List.of(namespaceFor(engineKind), tableFor(engineKind, engineVersion));
     }
 
     @Override
@@ -91,6 +91,10 @@ public final class SystemCatalogTestProviders {
           "",
           List.of(),
           null);
+    }
+
+    private SystemNamespaceDef namespaceFor(String engineKind) {
+      return new SystemNamespaceDef(NameRefUtil.name(engineKind), engineKind, List.of());
     }
   }
 
@@ -143,44 +147,6 @@ public final class SystemCatalogTestProviders {
           "",
           List.of(),
           null);
-    }
-  }
-
-  public static final class RegistryHintProvider implements SystemObjectScannerProvider {
-
-    private final String engineKind;
-    private final List<EngineSpecificRule> hints;
-
-    public RegistryHintProvider(String engineKind, List<EngineSpecificRule> hints) {
-      this.engineKind = engineKind;
-      this.hints = List.copyOf(hints);
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions() {
-      return List.of();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return this.engineKind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return supportsEngine(engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
-      return Optional.empty();
-    }
-
-    @Override
-    public List<EngineSpecificRule> registryEngineSpecific(
-        String engineKind, String engineVersion) {
-      return hints;
     }
   }
 }

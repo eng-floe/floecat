@@ -174,22 +174,12 @@ public class SystemNodeRegistry {
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withFunctionRules(def, normalizedKind, normalizedVersion))
             .toList();
-    List<FunctionNode> functionNodes =
-        functionDefs.stream()
-            .map(
-                def ->
-                    toFunctionNode(normalizedKind, normalizedVersion, version, def, namespaceIds))
-            .toList();
 
     // --- Operators ---
     List<SystemOperatorDef> operatorDefs =
         catalog.operators().stream()
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withOperatorRules(def, normalizedKind, normalizedVersion))
-            .toList();
-    List<OperatorNode> operatorNodes =
-        operatorDefs.stream()
-            .map(def -> toOperatorNode(normalizedKind, normalizedVersion, version, def))
             .toList();
 
     // --- Types ---
@@ -198,20 +188,12 @@ public class SystemNodeRegistry {
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withTypeRules(def, normalizedKind, normalizedVersion))
             .toList();
-    List<TypeNode> typeNodes =
-        typeDefs.stream()
-            .map(def -> toTypeNode(normalizedKind, normalizedVersion, version, def))
-            .toList();
 
     // --- Casts ---
     List<SystemCastDef> castDefs =
         catalog.casts().stream()
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withCastRules(def, normalizedKind, normalizedVersion))
-            .toList();
-    List<CastNode> castNodes =
-        castDefs.stream()
-            .map(def -> toCastNode(normalizedKind, normalizedVersion, version, def))
             .toList();
 
     // --- Collations ---
@@ -220,20 +202,12 @@ public class SystemNodeRegistry {
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withCollationRules(def, normalizedKind, normalizedVersion))
             .toList();
-    List<CollationNode> collationNodes =
-        collationDefs.stream()
-            .map(def -> toCollationNode(normalizedKind, normalizedVersion, version, def))
-            .toList();
 
     // --- Aggregates ---
     List<SystemAggregateDef> aggregateDefs =
         catalog.aggregates().stream()
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withAggregateRules(def, normalizedKind, normalizedVersion))
-            .toList();
-    List<AggregateNode> aggregateNodes =
-        aggregateDefs.stream()
-            .map(def -> toAggregateNode(normalizedKind, normalizedVersion, version, def))
             .toList();
 
     // --- Tables ---
@@ -248,6 +222,31 @@ public class SystemNodeRegistry {
         catalog.views().stream()
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
             .map(def -> withViewRules(def, normalizedKind, normalizedVersion))
+            .toList();
+
+    List<FunctionNode> functionNodes =
+        functionDefs.stream()
+            .map(def -> toFunctionNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
+    List<OperatorNode> operatorNodes =
+        operatorDefs.stream()
+            .map(def -> toOperatorNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
+    List<TypeNode> typeNodes =
+        typeDefs.stream()
+            .map(def -> toTypeNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
+    List<CastNode> castNodes =
+        castDefs.stream()
+            .map(def -> toCastNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
+    List<CollationNode> collationNodes =
+        collationDefs.stream()
+            .map(def -> toCollationNode(normalizedKind, normalizedVersion, version, def))
+            .toList();
+    List<AggregateNode> aggregateNodes =
+        aggregateDefs.stream()
+            .map(def -> toAggregateNode(normalizedKind, normalizedVersion, version, def))
             .toList();
 
     Map<ResourceId, List<TableNode>> tablesByNamespace = new LinkedHashMap<>();
@@ -460,23 +459,12 @@ public class SystemNodeRegistry {
       }
     }
 
-    List<EngineSpecificRule> registryCandidates = new ArrayList<>();
-    registryCandidates.addAll(
-        internalProvider.registryEngineSpecific(normalizedKind, normalizedVersion));
-    registryCandidates.addAll(baseCatalog.registryEngineSpecific());
-    if (includeProviders) {
-      for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(normalizedKind)) {
-          continue;
-        }
-        registryCandidates.addAll(
-            provider.registryEngineSpecific(normalizedKind, normalizedVersion));
-      }
-    }
     List<EngineSpecificRule> registryRules =
         dedupeMatchingRules(
             matchingRules(
-                dedupeRegistryRules(registryCandidates), normalizedKind, normalizedVersion),
+                dedupeRegistryRules(baseCatalog.registryEngineSpecific()),
+                normalizedKind,
+                normalizedVersion),
             normalizedKind);
 
     return new SystemCatalogData(
@@ -627,13 +615,8 @@ public class SystemNodeRegistry {
   // =======================================================================
 
   private FunctionNode toFunctionNode(
-      String engineKind,
-      String engineVersion,
-      long version,
-      SystemFunctionDef def,
-      Map<String, ResourceId> namespaceIds) {
-
-    ResourceId nsId = findNamespaceId(def.name(), namespaceIds).orElse(null);
+      String engineKind, String engineVersion, long version, SystemFunctionDef def) {
+    ResourceId nsId = requireNamespaceId(engineKind, "function", def.name());
 
     Map<EngineHintKey, EngineHint> hints =
         EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
@@ -643,7 +626,7 @@ public class SystemNodeRegistry {
         Instant.EPOCH,
         engineKind,
         nsId,
-        safeName(def.name()),
+        localName(def.name()),
         def.argumentTypes().stream()
             .map(arg -> resourceId(engineKind, ResourceKind.RK_TYPE, arg))
             .toList(),
@@ -663,7 +646,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.leftType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.rightType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.returnType()),
@@ -676,12 +659,14 @@ public class SystemNodeRegistry {
       String engineKind, String engineVersion, long version, SystemTypeDef def) {
     Map<EngineHintKey, EngineHint> hints =
         EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+    ResourceId namespaceId = requireNamespaceId(engineKind, "type", def.name());
     return new TypeNode(
         resourceId(engineKind, def),
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        namespaceId,
+        localName(def.name()),
         def.category(),
         def.array(),
         def.elementType() == null
@@ -715,7 +700,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         def.locale(),
         hints);
   }
@@ -730,7 +715,7 @@ public class SystemNodeRegistry {
         version,
         Instant.EPOCH,
         engineKind,
-        safeName(def.name()),
+        localName(def.name()),
         def.argumentTypes().stream()
             .map(arg -> resourceId(engineKind, ResourceKind.RK_TYPE, arg))
             .toList(),
@@ -787,17 +772,12 @@ public class SystemNodeRegistry {
     return resourceId(engineKind, ResourceKind.RK_CATALOG, "");
   }
 
-  /**
-   * Builds a display-friendly (case-preserving) identifier for graph nodes and ResourceIds.
-   *
-   * <p>This deliberately keeps the original casing so `_system:pg.pg_catalog.pg_fn` matches what
-   * planners expect. For maps/overrides we use {@link
-   * ai.floedb.floecat.systemcatalog.util.NameRefUtil#canonical}.
-   */
-  public static String safeName(NameRef ref) {
-    if (ref == null) return "";
-    String path = String.join(".", ref.getPathList());
-    return path.isEmpty() ? ref.getName() : path + "." + ref.getName();
+  /** Returns the leaf/object name portion of a qualified NameRef. */
+  private static String localName(NameRef ref) {
+    if (ref == null || ref.getName() == null) {
+      return "";
+    }
+    return ref.getName();
   }
 
   private static List<EngineSpecificRule> matchingRules(
@@ -932,19 +912,22 @@ public class SystemNodeRegistry {
 
   private static Optional<ResourceId> findNamespaceId(
       NameRef name, Map<String, ResourceId> namespaceIds) {
-    if (name == null) {
-      return Optional.empty();
-    }
-    String canonical = NameRefUtil.canonical(name);
-    int idx = canonical.lastIndexOf('.');
-    if (idx < 0) {
-      return Optional.empty();
-    }
-    String namespaceKey = canonical.substring(0, idx);
-    if (namespaceKey.isBlank()) {
-      return Optional.empty();
-    }
-    return Optional.ofNullable(namespaceIds.get(namespaceKey));
+    return NameRefUtil.namespaceRef(name)
+        .map(NameRefUtil::canonical)
+        .flatMap(namespaceKey -> Optional.ofNullable(namespaceIds.get(namespaceKey)));
+  }
+
+  private static ResourceId requireNamespaceId(String engineKind, String objectType, NameRef name) {
+    NameRef namespaceRef =
+        NameRefUtil.namespaceRef(name)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "No namespace value for "
+                            + objectType
+                            + " definition: "
+                            + (name == null ? "<null>" : NameRefUtil.canonical(name))));
+    return resourceId(engineKind, ResourceKind.RK_NAMESPACE, namespaceRef);
   }
 
   private static void logMissingNamespace(String objectType, NameRef name) {

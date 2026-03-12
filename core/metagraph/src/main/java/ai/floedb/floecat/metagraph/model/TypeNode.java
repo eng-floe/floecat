@@ -26,6 +26,7 @@ public record TypeNode(
     long version,
     Instant metadataUpdatedAt,
     String engineVersion,
+    ResourceId namespaceId,
     String displayName,
     String category,
     boolean array,
@@ -34,6 +35,11 @@ public record TypeNode(
     implements GraphNode {
 
   public TypeNode {
+    if (!ResourceIdUtils.hasIdentity(namespaceId)) {
+      throw new IllegalArgumentException(
+          "TypeNode requires a namespaceId with a non-blank identity");
+    }
+    displayName = displayName == null ? "" : displayName;
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
   }
 

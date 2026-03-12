@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -96,6 +97,16 @@ class ServiceLoaderSystemCatalogProviderTest {
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
+  }
+
+  @Test
+  void load_invalidExtensionCatalog_throwsValidationError() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    assertThatThrownBy(
+            () -> provider.load(EngineContext.of(InvalidCatalogExtension.ENGINE_KIND, "")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("System catalog validation failed");
   }
 
   private static void assertInfoSchemaTablesPresent(SystemEngineCatalog catalog) {

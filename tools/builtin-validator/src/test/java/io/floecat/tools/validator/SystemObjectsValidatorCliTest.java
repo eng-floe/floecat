@@ -26,6 +26,7 @@ import ai.floedb.floecat.query.rpc.SqlCollation;
 import ai.floedb.floecat.query.rpc.SqlFunction;
 import ai.floedb.floecat.query.rpc.SqlOperator;
 import ai.floedb.floecat.query.rpc.SqlType;
+import ai.floedb.floecat.query.rpc.SystemNamespace;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import com.google.protobuf.TextFormat;
 import java.io.ByteArrayOutputStream;
@@ -189,6 +190,11 @@ class SystemObjectsValidatorCliTest {
             .build();
 
     return SystemObjectsRegistry.newBuilder()
+        .addSystemNamespaces(
+            SystemNamespace.newBuilder()
+                .setName(NameRef.newBuilder().setName("pg_catalog"))
+                .setDisplayName("pg_catalog")
+                .build())
         .addTypes(
             SqlType.newBuilder()
                 .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
@@ -361,9 +367,14 @@ class SystemObjectsValidatorCliTest {
 
   private static SystemObjectsRegistry typesFragment() {
     return SystemObjectsRegistry.newBuilder()
+        .addSystemNamespaces(
+            SystemNamespace.newBuilder()
+                .setName(NameRef.newBuilder().setName("pg_catalog"))
+                .setDisplayName("pg_catalog")
+                .build())
         .addTypes(
             SqlType.newBuilder()
-                .setName(NameRef.newBuilder().setName("int4"))
+                .setName(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .setCategory("N")
                 .setIsArray(false)
                 .build())
@@ -375,8 +386,8 @@ class SystemObjectsValidatorCliTest {
         .addFunctions(
             SqlFunction.newBuilder()
                 .setName(NameRef.newBuilder().addPath("pg_catalog").setName("fragment_func"))
-                .addArgumentTypes(NameRef.newBuilder().setName("int4"))
-                .setReturnType(NameRef.newBuilder().setName("int4"))
+                .addArgumentTypes(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
+                .setReturnType(NameRef.newBuilder().addPath("pg_catalog").setName("int4"))
                 .build())
         .build();
   }

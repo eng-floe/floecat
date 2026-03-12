@@ -21,15 +21,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,6 +52,7 @@ final class TypeResolverTest {
   void resolve_returnsMappedTypeNode() {
     TypeNode type = type("pg_catalog.int4");
     TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
+    overlay.addNode(namespace("pg_catalog"));
     overlay.addNode(type);
 
     AtomicInteger invocations = new AtomicInteger();
@@ -73,6 +78,7 @@ final class TypeResolverTest {
   @Test
   void resolve_returnsEmptyWhenMapperUnknown() {
     TestCatalogOverlay overlay = (TestCatalogOverlay) ctx.graph();
+    overlay.addNode(namespace("pg_catalog"));
     overlay.addNode(type("pg_catalog.text"));
 
     EngineTypeMapper mapper = (logicalType, lookup) -> Optional.empty();
@@ -96,10 +102,24 @@ final class TypeResolverTest {
         1,
         Instant.EPOCH,
         "1.0",
-        displayName,
+        BuiltinTestSupport.namespaceIdForQualifiedName("floedb", displayName),
+        BuiltinTestSupport.leafName(displayName),
         "U",
         false,
         ResourceId.getDefaultInstance(),
+        Map.of());
+  }
+
+  private static NamespaceNode namespace(String name) {
+    return new NamespaceNode(
+        SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_NAMESPACE, asNameRef(name)),
+        1,
+        Instant.EPOCH,
+        catalogId(),
+        List.of(),
+        name,
+        GraphNodeOrigin.SYSTEM,
+        Map.of(),
         Map.of());
   }
 

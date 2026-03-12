@@ -92,38 +92,30 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
-    assertThat(floe16.functions())
-        .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.pg_only");
+    assertThat(floe16.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
     assertThat(floe16.functions())
         .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.shared_fn")
-        .doesNotContain("pg_catalog.pg_fn", "pg_catalog.pg_legacy");
+        .contains("shared_fn")
+        .doesNotContain("pg_fn", "pg_legacy");
 
     // ---------------------------------
     // example / version 17.0
     // ---------------------------------
     var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
 
-    assertThat(floe17.functions())
-        .extracting(fn -> fn.displayName())
-        .contains("pg_catalog.pg_only");
+    assertThat(floe17.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
-    assertThat(floe17.functions())
-        .extracting(fn -> fn.displayName())
-        .doesNotContain("pg_catalog.pg_legacy");
+    assertThat(floe17.functions()).extracting(fn -> fn.displayName()).doesNotContain("pg_legacy");
 
     // ---------------------------------
     // pg / version 16.0   (alternate engine)
     // ---------------------------------
     var pg16 = nodeRegistry.nodesFor(PG_KIND, "16.0");
 
-    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_catalog.pg_fn");
+    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_fn");
 
-    assertThat(pg16.functions())
-        .extracting(fn -> fn.displayName())
-        .doesNotContain("pg_catalog.pg_only");
+    assertThat(pg16.functions()).extracting(fn -> fn.displayName()).doesNotContain("pg_only");
 
     // ---------------------------------
     // Extract persisted rules in catalog
@@ -165,8 +157,7 @@ class SystemNodeRegistryTest {
     assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
         .extracting(fn -> fn.displayName())
         .contains(
-            "pg_catalog.shared_fn",
-            "pg_catalog.pg_legacy" // maxVersion applies only when version is known
+            "shared_fn", "pg_legacy" // maxVersion applies only when version is known
             );
   }
 
@@ -334,7 +325,7 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(new SystemNamespaceDef(NameRefUtil.name("pg"), "pg", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -346,7 +337,7 @@ class SystemNodeRegistryTest {
 
     var built = nodes.functions().get(0);
 
-    assertThat(built.displayName()).isEqualTo("pg.abs");
+    assertThat(built.displayName()).isEqualTo("abs");
     String expectedTypeId =
         SystemNodeRegistry.resourceId(FLOE_KIND, ResourceKind.RK_TYPE, nr("pg.int4")).getId();
     assertThat(built.argumentTypes().get(0).getId()).isEqualTo(expectedTypeId);
@@ -385,7 +376,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -403,17 +395,15 @@ class SystemNodeRegistryTest {
             SystemNodeRegistry.resourceId(FLOE_KIND, fText).getId());
     assertThat(ids).containsExactlyInAnyOrderElementsOf(expected);
 
-    // sanity: both are for the same display name (safeName) but distinct IDs
-    assertThat(nodes.functions())
-        .extracting(fn -> fn.displayName())
-        .containsOnly("pg_catalog.overloaded");
+    // sanity: both are for the same leaf display name but distinct IDs
+    assertThat(nodes.functions()).extracting(fn -> fn.displayName()).containsOnly("overloaded");
   }
 
   @Test
   void overloadedOperatorsProduceDistinctIds() {
     SystemOperatorDef opInt =
         new SystemOperatorDef(
-            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog", "add"),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
@@ -422,7 +412,7 @@ class SystemNodeRegistryTest {
             List.of());
     SystemOperatorDef opText =
         new SystemOperatorDef(
-            NameRefUtil.name("add"),
+            NameRefUtil.name("pg_catalog", "add"),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.text"),
@@ -441,7 +431,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -462,21 +453,21 @@ class SystemNodeRegistryTest {
   void aggregatesWithDifferentSignaturesProduceDistinctIds() {
     SystemAggregateDef aggSum =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.int4")),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             List.of());
     SystemAggregateDef aggCount =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.text")),
             NameRefUtil.name("pg_catalog.int4"),
             NameRefUtil.name("pg_catalog.int4"),
             List.of());
     SystemAggregateDef aggStateDifferent =
         new SystemAggregateDef(
-            NameRefUtil.name("sum"),
+            NameRefUtil.name("pg_catalog", "sum"),
             List.of(NameRefUtil.name("pg_catalog.int4")),
             NameRefUtil.name("pg_catalog.text"),
             NameRefUtil.name("pg_catalog.int4"),
@@ -493,7 +484,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(aggSum, aggCount, aggStateDifferent),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -515,9 +507,9 @@ class SystemNodeRegistryTest {
   @Test
   void collationsWithDifferentLocalesKeepDistinctIdentities() {
     SystemCollationDef enColl =
-        new SystemCollationDef(NameRefUtil.name("locale"), "en_US", List.of());
+        new SystemCollationDef(NameRefUtil.name("pg_catalog", "locale"), "en_US", List.of());
     SystemCollationDef frColl =
-        new SystemCollationDef(NameRefUtil.name("locale"), "fr_FR", List.of());
+        new SystemCollationDef(NameRefUtil.name("pg_catalog", "locale"), "fr_FR", List.of());
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -527,7 +519,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(enColl, frColl),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -582,6 +575,47 @@ class SystemNodeRegistryTest {
     nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
     assertThat(provider.invocationCount()).isEqualTo(1);
+  }
+
+  @Test
+  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
+    SystemObjectScannerProvider invalidProvider =
+        new SystemObjectScannerProvider() {
+          @Override
+          public List<SystemObjectDef> definitions() {
+            return List.of(
+                new SystemTableDef(
+                    NameRefUtil.name("missing_ns", "bad_table"),
+                    "bad_table",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public boolean supportsEngine(String engineKind) {
+            return FLOE_KIND.equals(engineKind);
+          }
+
+          @Override
+          public boolean supports(NameRef name, String engineKind) {
+            return supportsEngine(engineKind);
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(
+              String scannerId, String engineKind, String engineVersion) {
+            return Optional.empty();
+          }
+        };
+
+    var nodeRegistry = registryWith(registryWithCatalogs(), invalidProvider);
+    var nodes = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    assertThat(nodes.tableNames()).doesNotContainKey("missing_ns.bad_table");
   }
 
   @Test
@@ -645,7 +679,8 @@ class SystemNodeRegistryTest {
             List.of(cast),
             List.of(collation),
             List.of(aggregate),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -664,15 +699,12 @@ class SystemNodeRegistryTest {
 
   @Test
   void registryEngineSpecific_hintsLayeredAndOverridden() {
-    var internalRule =
+    var globalRule =
         new EngineSpecificRule(
             "", "", "", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
-    var pluginRule =
+    var engineRule =
         new EngineSpecificRule(
             FLOE_KIND, "", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
-    var overlayRule =
-        new EngineSpecificRule(
-            FLOE_KIND, "", "", "dict.shared", new byte[] {3}, Map.of("dict_name", "shared"));
 
     var catalog =
         new SystemCatalogData(
@@ -685,20 +717,16 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(pluginRule));
+            List.of(globalRule, engineRule));
 
     var registry =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var overlayProvider =
-        new SystemCatalogTestProviders.RegistryHintProvider(FLOE_KIND, List.of(overlayRule));
-    var nodeRegistry =
-        new SystemNodeRegistry(
-            registry, new TestInternalProvider(List.of(internalRule)), List.of(overlayProvider));
+    var nodeRegistry = registryWith(registry);
 
     var merged = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
 
     assertThat(merged).hasSize(1);
-    assertThat(merged.get(0)).isEqualTo(overlayRule);
+    assertThat(merged.get(0)).isEqualTo(engineRule);
   }
 
   @Test
@@ -710,10 +738,21 @@ class SystemNodeRegistryTest {
         new EngineSpecificRule(
             FLOE_KIND, "16.0", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
 
-    var registry = registryWithCatalogs();
-    var provider =
-        new SystemCatalogTestProviders.RegistryHintProvider(FLOE_KIND, List.of(baseRule, nextRule));
-    var nodeRegistry = registryWith(registry, provider);
+    var catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(baseRule, nextRule));
+    var registry =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodeRegistry = registryWith(registry);
 
     var merged15 = nodeRegistry.nodesFor(FLOE_KIND, "15.0").catalogData().registryEngineSpecific();
     assertThat(merged15).hasSize(1);
@@ -768,7 +807,8 @@ class SystemNodeRegistryTest {
             List.of(),
             List.of(),
             List.of(),
-            List.of(),
+            List.of(
+                new SystemNamespaceDef(NameRefUtil.name("pg_catalog"), "pg_catalog", List.of())),
             List.of(),
             List.of(),
             List.of());
@@ -858,48 +898,6 @@ class SystemNodeRegistryTest {
   private static SystemNodeRegistry registryWith(
       SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
     return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
-  }
-
-  private static final class TestInternalProvider implements SystemObjectScannerProvider {
-
-    private final FloecatInternalProvider delegate = new FloecatInternalProvider();
-    private final List<EngineSpecificRule> hints;
-
-    private TestInternalProvider(List<EngineSpecificRule> hints) {
-      this.hints = List.copyOf(hints);
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions() {
-      return delegate.definitions();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return delegate.supportsEngine(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return delegate.supports(name, engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
-      return delegate.provide(scannerId, engineKind, engineVersion);
-    }
-
-    @Override
-    public List<EngineSpecificRule> registryEngineSpecific(
-        String engineKind, String engineVersion) {
-      return hints;
-    }
   }
 
   @Test
