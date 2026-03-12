@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.NdvSketch;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -74,7 +73,10 @@ public final class ColumnStatsNormalizer {
                     NdvSketch::getCompression, Comparator.nullsFirst(Comparator.naturalOrder()))
                 .thenComparingInt(s -> s.getData().isEmpty() ? -1 : s.getData().size())
                 .thenComparing(
-                    s -> s.getData().isEmpty() ? null : sha256Hex(s.getData().toByteArray()),
+                    s ->
+                        s.getData().isEmpty()
+                            ? null
+                            : ResourceHash.sha256Hex(s.getData().toByteArray()),
                     Comparator.nullsFirst(Comparator.naturalOrder()));
         sketches.sort(sketchCmp);
         ndv.clearSketches();
@@ -91,20 +93,5 @@ public final class ColumnStatsNormalizer {
     }
 
     return b.build();
-  }
-
-  public static String sha256Hex(byte[] bytes) {
-    try {
-      var md = MessageDigest.getInstance("SHA-256");
-      var dig = md.digest(bytes);
-      var sb = new StringBuilder(dig.length * 2);
-      for (byte x : dig) {
-        sb.append(String.format("%02x", x));
-      }
-
-      return sb.toString();
-    } catch (Exception e) {
-      throw new IllegalStateException("SHA-256 not available", e);
-    }
   }
 }

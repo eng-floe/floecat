@@ -42,4 +42,14 @@ class KeysTest {
         "/accounts/acct%20id/tx-outbox/pending/0000000000000000123/table%20id/tx%20id",
         Keys.tableCommitOutboxPendingPointer(123L, "acct id", "table id", "tx id"));
   }
+
+  @Test
+  void snapshotConstraintsKeysUsePathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/constraints/by-snapshot/0000000000000000007",
+        Keys.snapshotConstraintsPointer("acct id", "table id", 7L));
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/snapshots/0000000000000000007/stats/constraints",
+        Keys.snapshotConstraintsStatsPointer("acct id", "table id", 7L));
+  }
 }

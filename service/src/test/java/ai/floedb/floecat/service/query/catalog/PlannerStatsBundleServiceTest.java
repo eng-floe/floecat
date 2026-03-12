@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.ColumnStatsBatch;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
@@ -34,7 +35,6 @@ import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
-import ai.floedb.floecat.query.rpc.StatsStatus;
 import ai.floedb.floecat.query.rpc.StatsWarning;
 import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -147,7 +147,8 @@ class PlannerStatsBundleServiceTest {
     List<ColumnStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
     assertEquals(
-        results.get(0).getStatus(), ai.floedb.floecat.query.rpc.StatsStatus.STATS_STATUS_ERROR);
+        results.get(0).getStatus(),
+        ai.floedb.floecat.query.rpc.BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR);
     assertEquals("planner_stats.pin.missing", results.get(0).getFailure().getCode());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
@@ -180,12 +181,15 @@ class PlannerStatsBundleServiceTest {
             .filter(
                 r ->
                     r.getStatus()
-                        .equals(ai.floedb.floecat.query.rpc.StatsStatus.STATS_STATUS_FOUND))
+                        .equals(
+                            ai.floedb.floecat.query.rpc.BundleResultStatus
+                                .BUNDLE_RESULT_STATUS_FOUND))
             .count());
     ColumnStatsResult missing =
         results.stream().filter(r -> r.getColumnId() == 2).findFirst().orElseThrow();
     assertEquals(
-        ai.floedb.floecat.query.rpc.StatsStatus.STATS_STATUS_NOT_FOUND, missing.getStatus());
+        ai.floedb.floecat.query.rpc.BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND,
+        missing.getStatus());
     assertEquals("planner_stats.column_stats.missing", missing.getFailure().getCode());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
@@ -244,7 +248,9 @@ class PlannerStatsBundleServiceTest {
     assertEquals(3, results.size());
     assertEquals(
         3,
-        results.stream().filter(r -> r.getStatus().equals(StatsStatus.STATS_STATUS_FOUND)).count());
+        results.stream()
+            .filter(r -> r.getStatus().equals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND))
+            .count());
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(3L, end.getRequestedColumns());
     assertEquals(3L, end.getReturnedColumns());
@@ -276,7 +282,9 @@ class PlannerStatsBundleServiceTest {
     assertEquals(4, results.size());
     assertEquals(
         4,
-        results.stream().filter(r -> r.getStatus().equals(StatsStatus.STATS_STATUS_FOUND)).count());
+        results.stream()
+            .filter(r -> r.getStatus().equals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND))
+            .count());
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(4L, end.getRequestedColumns());
     assertEquals(4L, end.getReturnedColumns());
@@ -336,7 +344,7 @@ class PlannerStatsBundleServiceTest {
     List<ColumnStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
     ColumnStatsResult result = results.get(0);
-    assertEquals(StatsStatus.STATS_STATUS_ERROR, result.getStatus());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, result.getStatus());
     assertEquals("planner_stats.column_stats.error", result.getFailure().getCode());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
