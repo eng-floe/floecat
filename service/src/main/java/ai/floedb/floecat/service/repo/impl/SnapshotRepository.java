@@ -118,20 +118,8 @@ public class SnapshotRepository {
       List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
       for (Snapshot snapshot : batch) {
         long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (!haveBest) {
-          if (createdMs > asOfMs) {
-            continue;
-          }
-          haveBest = true;
-          bestCreatedMs = createdMs;
-          best = snapshot;
-          continue;
-        }
-        if (createdMs != bestCreatedMs) {
-          return Optional.of(best);
-        }
-        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
-          best = snapshot;
+        if (createdMs <= asOfMs) {
+          return Optional.of(snapshot);
         }
       }
       token = next.toString();

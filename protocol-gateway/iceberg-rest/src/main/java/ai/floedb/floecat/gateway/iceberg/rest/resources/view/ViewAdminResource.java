@@ -24,7 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -45,7 +45,7 @@ import jakarta.ws.rs.core.Response;
 public class ViewAdminResource {
   @Inject GrpcWithHeaders grpc;
   @Inject IcebergGatewayConfig config;
-  @Inject ViewClient viewClient;
+  @Inject GrpcServiceFacade viewClient;
 
   @Path("/rename")
   @POST

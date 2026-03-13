@@ -260,29 +260,6 @@ public class ViewMetadataService {
     return new MetadataContext(metadata, Map.copyOf(userProps), sql);
   }
 
-  public MetadataContext withSql(MetadataContext context, String sql) {
-    if (sql == null || sql.isBlank()) {
-      throw new IllegalArgumentException("sql must be non-empty");
-    }
-    ViewMetadataView updated = updateCurrentVersionSql(context.metadata(), sql);
-    return new MetadataContext(updated, context.userProperties(), sql);
-  }
-
-  public MetadataContext withUserProperties(MetadataContext context, Map<String, String> props) {
-    Map<String, String> sanitized = sanitizeProperties(props);
-    ViewMetadataView updated =
-        new ViewMetadataView(
-            context.metadata().viewUuid(),
-            context.metadata().formatVersion(),
-            context.metadata().location(),
-            context.metadata().currentVersionId(),
-            context.metadata().versions(),
-            context.metadata().versionLog(),
-            context.metadata().schemas(),
-            sanitized);
-    return new MetadataContext(updated, sanitized, context.sql());
-  }
-
   public Map<String, String> buildPropertyMap(MetadataContext context) {
     Map<String, String> props = new LinkedHashMap<>(context.userProperties());
     props.put(METADATA_LOCATION_PROPERTY_KEY, context.metadata().location());
@@ -584,61 +561,6 @@ public class ViewMetadataService {
         List.of(history),
         List.of(schema),
         userProps);
-  }
-
-  private ViewMetadataView updateCurrentVersionSql(ViewMetadataView metadata, String sql) {
-    List<ViewMetadataView.ViewVersion> versions =
-        new ArrayList<>(metadata.versions() == null ? List.of() : metadata.versions());
-    if (versions.isEmpty()) {
-      versions.add(
-          new ViewMetadataView.ViewVersion(
-              metadata.currentVersionId(),
-              Instant.now().toEpochMilli(),
-              0,
-              Map.of("operation", "update"),
-              List.of(new ViewMetadataView.ViewRepresentation("sql", sql, "ansi")),
-              List.of(),
-              null));
-    } else {
-      int idx = versions.size() - 1;
-      for (int i = 0; i < versions.size(); i++) {
-        if (versions.get(i).versionId() == metadata.currentVersionId()) {
-          idx = i;
-          break;
-        }
-      }
-      ViewMetadataView.ViewVersion target = versions.get(idx);
-      List<ViewMetadataView.ViewRepresentation> reps =
-          new ArrayList<>(target.representations() == null ? List.of() : target.representations());
-      if (reps.isEmpty()) {
-        reps.add(new ViewMetadataView.ViewRepresentation("sql", sql, "ansi"));
-      } else {
-        ViewMetadataView.ViewRepresentation original = reps.get(0);
-        reps.set(
-            0,
-            new ViewMetadataView.ViewRepresentation(
-                nonBlank(original.type(), "sql"), sql, nonBlank(original.dialect(), "ansi")));
-      }
-      versions.set(
-          idx,
-          new ViewMetadataView.ViewVersion(
-              target.versionId(),
-              target.timestampMs(),
-              target.schemaId(),
-              target.summary(),
-              List.copyOf(reps),
-              target.defaultNamespace(),
-              target.defaultCatalog()));
-    }
-    return new ViewMetadataView(
-        metadata.viewUuid(),
-        metadata.formatVersion(),
-        metadata.location(),
-        metadata.currentVersionId(),
-        List.copyOf(versions),
-        metadata.versionLog(),
-        metadata.schemas(),
-        metadata.properties());
   }
 
   private List<ViewMetadataView.ViewHistoryEntry> dedupeHistory(

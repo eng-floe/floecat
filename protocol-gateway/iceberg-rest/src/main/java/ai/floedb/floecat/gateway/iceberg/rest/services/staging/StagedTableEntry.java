@@ -60,18 +60,4 @@ public record StagedTableEntry(
         now,
         idempotencyKey);
   }
-
-  public StagedTableEntry withState(StageState newState) {
-    return new StagedTableEntry(
-        key,
-        catalogId,
-        namespaceId,
-        request,
-        spec,
-        requirements,
-        newState,
-        createdAt,
-        Instant.now(),
-        idempotencyKey);
-  }
 }

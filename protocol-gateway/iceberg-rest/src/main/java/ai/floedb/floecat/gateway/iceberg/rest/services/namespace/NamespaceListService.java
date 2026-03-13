@@ -23,7 +23,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.PageRequestHelper;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class NamespaceListService {
-  @Inject NamespaceClient namespaceClient;
+  @Inject GrpcServiceFacade namespaceClient;
 
   public Response list(ListCommand command) {
     ListNamespacesRequest.Builder req = ListNamespacesRequest.newBuilder();

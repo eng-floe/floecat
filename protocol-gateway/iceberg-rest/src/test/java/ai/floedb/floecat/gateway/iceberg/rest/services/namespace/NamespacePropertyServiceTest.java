@@ -33,7 +33,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.NamespacePropertiesRespons
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,7 +44,7 @@ import org.mockito.ArgumentCaptor;
 
 class NamespacePropertyServiceTest {
   private final NamespacePropertyService service = new NamespacePropertyService();
-  private final NamespaceClient namespaceClient = mock(NamespaceClient.class);
+  private final GrpcServiceFacade namespaceClient = mock(GrpcServiceFacade.class);
   private final ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
 
   @BeforeEach

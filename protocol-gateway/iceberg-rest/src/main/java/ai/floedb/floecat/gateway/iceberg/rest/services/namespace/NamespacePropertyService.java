@@ -25,7 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesReq
 import ai.floedb.floecat.gateway.iceberg.rest.common.ReservedPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.NamespaceClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -39,7 +39,7 @@ import java.util.Set;
 
 @ApplicationScoped
 public class NamespacePropertyService {
-  @Inject NamespaceClient namespaceClient;
+  @Inject GrpcServiceFacade namespaceClient;
 
   public Response update(
       NamespaceRequestContext namespaceContext,

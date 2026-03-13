@@ -48,15 +48,6 @@ public final class MetadataLocationUtil {
     setter.accept(PRIMARY_KEY, metadataLocation);
   }
 
-  public static boolean updateMetadataLocation(Map<String, String> props, String metadataLocation) {
-    if (props == null || metadataLocation == null || metadataLocation.isBlank()) {
-      return false;
-    }
-    boolean mutated = !metadataLocation.equals(props.get(PRIMARY_KEY));
-    props.put(PRIMARY_KEY, metadataLocation);
-    return mutated;
-  }
-
   public static String metadataDirectory(String metadataLocation) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
       return null;

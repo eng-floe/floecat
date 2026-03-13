@@ -73,4 +73,11 @@ public class KeysTest {
         "/accounts/acct%20id/tx-outbox/pending/0000000000000000123/table%20id/tx%20id",
         Keys.tableCommitOutboxPendingPointer(123L, "acct id", "table id", "tx id"));
   }
+
+  @Test
+  void tableCommitOutboxDeadLetterPointerUsesGlobalAccountPartition() {
+    assertEquals(
+        "/accounts/acct%20id/tx-outbox/dead-letter/0000000000000000123/table%20id/tx%20id",
+        Keys.tableCommitOutboxDeadLetterPointer(123L, "acct id", "table id", "tx id"));
+  }
 }

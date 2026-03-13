@@ -23,7 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.DirectoryClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import io.grpc.Status;
 import java.util.List;
 
@@ -31,10 +31,10 @@ public final class NameResolution {
   private NameResolution() {}
 
   public static ResourceId resolveCatalog(GrpcWithHeaders grpc, String catalogName) {
-    return resolveCatalog(new DirectoryClient(grpc), catalogName);
+    return resolveCatalog(new GrpcServiceFacade(grpc), catalogName);
   }
 
-  public static ResourceId resolveCatalog(DirectoryClient client, String catalogName) {
+  public static ResourceId resolveCatalog(GrpcServiceFacade client, String catalogName) {
     NameRef ref = NameRef.newBuilder().setCatalog(catalogName).build();
     var response = client.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
     return requireId(response == null ? null : response.getResourceId(), "catalog", catalogName);
@@ -42,11 +42,11 @@ public final class NameResolution {
 
   public static ResourceId resolveNamespace(
       GrpcWithHeaders grpc, String catalogName, List<String> path) {
-    return resolveNamespace(new DirectoryClient(grpc), catalogName, path);
+    return resolveNamespace(new GrpcServiceFacade(grpc), catalogName, path);
   }
 
   public static ResourceId resolveNamespace(
-      DirectoryClient client, String catalogName, List<String> path) {
+      GrpcServiceFacade client, String catalogName, List<String> path) {
     NameRef ref = NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).build();
     var response =
         client.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build());
@@ -56,11 +56,11 @@ public final class NameResolution {
 
   public static ResourceId resolveTable(
       GrpcWithHeaders grpc, String catalogName, List<String> path, String tableName) {
-    return resolveTable(new DirectoryClient(grpc), catalogName, path, tableName);
+    return resolveTable(new GrpcServiceFacade(grpc), catalogName, path, tableName);
   }
 
   public static ResourceId resolveTable(
-      DirectoryClient client, String catalogName, List<String> path, String tableName) {
+      GrpcServiceFacade client, String catalogName, List<String> path, String tableName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
     var response = client.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
@@ -70,11 +70,11 @@ public final class NameResolution {
 
   public static ResourceId resolveView(
       GrpcWithHeaders grpc, String catalogName, List<String> path, String viewName) {
-    return resolveView(new DirectoryClient(grpc), catalogName, path, viewName);
+    return resolveView(new GrpcServiceFacade(grpc), catalogName, path, viewName);
   }
 
   public static ResourceId resolveView(
-      DirectoryClient client, String catalogName, List<String> path, String viewName) {
+      GrpcServiceFacade client, String catalogName, List<String> path, String viewName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(viewName).build();
     var response = client.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build());

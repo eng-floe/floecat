@@ -16,14 +16,12 @@
 
 package ai.floedb.floecat.gateway.iceberg.grpc;
 
-import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -47,13 +45,11 @@ public class GrpcClients implements AutoCloseable {
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
   private final SchemaServiceGrpc.SchemaServiceBlockingStub schema;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
-  private final TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
   private final QueryServiceGrpc.QueryServiceBlockingStub query;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
   private final ConnectorsGrpc.ConnectorsBlockingStub connectors;
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
-  private final AccountServiceGrpc.AccountServiceBlockingStub account;
   private final TransactionsGrpc.TransactionsBlockingStub transactions;
 
   public GrpcClients(IcebergGatewayConfig config) {
@@ -69,13 +65,11 @@ public class GrpcClients implements AutoCloseable {
     this.snapshot = SnapshotServiceGrpc.newBlockingStub(channel);
     this.schema = SchemaServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
-    this.stats = TableStatisticsServiceGrpc.newBlockingStub(channel);
     this.query = QueryServiceGrpc.newBlockingStub(channel);
     this.queryScan = QueryScanServiceGrpc.newBlockingStub(channel);
     this.querySchema = QuerySchemaServiceGrpc.newBlockingStub(channel);
     this.connectors = ConnectorsGrpc.newBlockingStub(channel);
     this.reconcileControl = ReconcileControlGrpc.newBlockingStub(channel);
-    this.account = AccountServiceGrpc.newBlockingStub(channel);
     this.transactions = TransactionsGrpc.newBlockingStub(channel);
   }
 
@@ -107,10 +101,6 @@ public class GrpcClients implements AutoCloseable {
     return directory;
   }
 
-  public TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats() {
-    return stats;
-  }
-
   public QueryServiceGrpc.QueryServiceBlockingStub query() {
     return query;
   }
@@ -129,10 +119,6 @@ public class GrpcClients implements AutoCloseable {
 
   public ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl() {
     return reconcileControl;
-  }
-
-  public AccountServiceGrpc.AccountServiceBlockingStub account() {
-    return account;
   }
 
   public TransactionsGrpc.TransactionsBlockingStub transactions() {

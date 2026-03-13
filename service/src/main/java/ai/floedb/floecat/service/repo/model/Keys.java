@@ -394,9 +394,10 @@ public final class Keys {
     long sid = reqNonNegative("snapshot_id", snapshotId);
     long ts = reqNonNegative("upstream_created_at_ms", upstreamCreatedAtMs);
     long inverted = Long.MAX_VALUE - ts;
+    long invertedSnapshotId = Long.MAX_VALUE - sid;
     return String.format(
         "/accounts/%s/tables/%s/snapshots/by-time/%019d-%019d",
-        encode(tid), encode(tbid), inverted, sid);
+        encode(tid), encode(tbid), inverted, invertedSnapshotId);
   }
 
   public static String snapshotPointerByTimePrefix(String accountId, String tableId) {

@@ -25,7 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,7 @@ class DeltaIcebergMetadataServiceTest {
   @Test
   void refsModeReturnsNoSnapshotsWhenNoRefs() {
     DeltaIcebergMetadataService service = new DeltaIcebergMetadataService();
-    service.snapshotClient = mock(SnapshotClient.class);
+    service.snapshotClient = mock(GrpcServiceFacade.class);
     service.translator = mock(DeltaIcebergMetadataTranslator.class);
     service.manifestMaterializer = mock(DeltaManifestMaterializer.class);
 

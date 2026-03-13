@@ -245,7 +245,7 @@ public class CommitRequirementService {
     if (metadataValue == null || metadataValue < 0) {
       return propertyValue;
     }
-    if (metadataValue == 0 && propertyValue != null && propertyValue != 0) {
+    if (propertyValue != null && metadataValue < propertyValue) {
       return propertyValue;
     }
     return metadataValue;

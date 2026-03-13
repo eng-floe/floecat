@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import io.grpc.StatusRuntimeException;
@@ -40,7 +40,7 @@ public final class SnapshotLister {
   }
 
   public static List<Snapshot> fetchSnapshots(
-      SnapshotClient snapshotClient, ResourceId tableId, Mode mode, IcebergMetadata metadata) {
+      GrpcServiceFacade snapshotClient, ResourceId tableId, Mode mode, IcebergMetadata metadata) {
     try {
       List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
       if (mode == Mode.REFS) {
@@ -62,7 +62,7 @@ public final class SnapshotLister {
   }
 
   private static List<Snapshot> fetchAllSnapshots(
-      SnapshotClient snapshotClient, ResourceId tableId) {
+      GrpcServiceFacade snapshotClient, ResourceId tableId) {
     List<Snapshot> out = new ArrayList<>();
     String token = "";
     while (true) {

@@ -19,7 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -28,7 +28,7 @@ import java.util.List;
 
 @ApplicationScoped
 public class ViewLoadService {
-  @Inject ViewClient viewClient;
+  @Inject GrpcServiceFacade viewClient;
   @Inject ViewMetadataService viewMetadataService;
 
   public Response get(

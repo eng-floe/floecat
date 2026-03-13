@@ -26,12 +26,11 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -59,18 +58,14 @@ public class StageCommitProcessor {
   @Inject ObjectMapper mapper;
   @Inject Config mpConfig;
   @Inject StagedTableService stagedTableService;
-  @Inject TableClient tableClient;
-  @Inject SnapshotClient snapshotClient;
-  @Inject ConnectorClient connectorClient;
+  @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
 
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport =
-        new TableGatewaySupport(
-            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
   }
 
   public StageCommitResult commitStage(
@@ -111,7 +106,7 @@ public class StageCommitProcessor {
     try {
       ResourceId existingId =
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
-      var resp = tableClient.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
+      var resp = grpcClient.getTable(GetTableRequest.newBuilder().setTableId(existingId).build());
       existing = resp.getTable();
       tableExists = true;
     } catch (StatusRuntimeException e) {
@@ -140,7 +135,7 @@ public class StageCommitProcessor {
       ResourceId createdId =
           NameResolution.resolveTable(grpc, catalogName, namespacePath, tableName);
       tableRecord =
-          tableClient
+          grpcClient
               .getTable(GetTableRequest.newBuilder().setTableId(createdId).build())
               .getTable();
     }
@@ -172,7 +167,7 @@ public class StageCommitProcessor {
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {
     try {
-      return snapshotClient
+      return grpcClient
           .listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build())
           .getSnapshotsList();
     } catch (StatusRuntimeException e) {
@@ -216,7 +211,7 @@ public class StageCommitProcessor {
       if (type == null || type.isBlank()) {
         throw StageCommitException.validation("stage requirement missing type");
       }
-      if ("assert-create".equals(type)) {
+      if (CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE.equals(type)) {
         if (tableExists) {
           throw StageCommitException.conflict("assert-create failed");
         }

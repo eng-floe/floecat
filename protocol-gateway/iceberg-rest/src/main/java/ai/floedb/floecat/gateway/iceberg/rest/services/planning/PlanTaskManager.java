@@ -113,15 +113,6 @@ public class PlanTaskManager {
     return entry.toDescriptor();
   }
 
-  public PlanDescriptor registerFailedPlan(String planId, String namespace, String table) {
-    expire();
-    Objects.requireNonNull(planId, "planId is required");
-    PlanEntry entry =
-        new PlanEntry(planId, namespace, table, List.of(), List.of(), List.of(), PlanStatus.FAILED);
-    plans.put(planId, entry);
-    return entry.toDescriptor();
-  }
-
   public Optional<PlanDescriptor> findPlan(String planId) {
     expire();
     PlanEntry entry = plans.get(planId);

@@ -24,7 +24,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ViewClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -34,7 +34,7 @@ import java.util.List;
 
 @ApplicationScoped
 public class ViewCommitService {
-  @Inject ViewClient viewClient;
+  @Inject GrpcServiceFacade viewClient;
   @Inject ViewMetadataService viewMetadataService;
 
   public Response commit(

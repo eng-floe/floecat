@@ -22,9 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,11 +34,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -49,68 +48,31 @@ class TableUpdatePlannerTest {
 
   private final TableUpdatePlanner planner = new TableUpdatePlanner();
   private final CommitRequirementService requirements = mock(CommitRequirementService.class);
-  private final TablePropertyService propertyService = mock(TablePropertyService.class);
-  private final SnapshotMetadataService snapshotMetadataService =
-      mock(SnapshotMetadataService.class);
+  private final TablePropertyService propertyService = spy(new TablePropertyService());
+  private final SnapshotUpdateService snapshotUpdateService = mock(SnapshotUpdateService.class);
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
   @BeforeEach
   void setUp() {
     planner.commitRequirementService = requirements;
     planner.tablePropertyService = propertyService;
-    planner.snapshotMetadataService = snapshotMetadataService;
+    planner.snapshotUpdateService = snapshotUpdateService;
     planner.mapper = new ObjectMapper();
+    propertyService.metadataMutator = new TableCommitMetadataMutator();
   }
 
   @Test
   void planUpdatesMergesNamespaceAndProperties() {
     when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
-    when(propertyService.hasPropertyUpdates(any())).thenReturn(true);
-    doAnswer(
-            inv -> {
-              @SuppressWarnings("unchecked")
-              Map<String, String> props = inv.getArgument(0, Map.class);
-              props.remove("metadata-location");
-              return null;
-            })
-        .when(propertyService)
-        .stripMetadataLocation(any());
-    doAnswer(
-            inv -> {
-              @SuppressWarnings("unchecked")
-              Map<String, String> props = inv.getArgument(0, Map.class);
-              @SuppressWarnings("unchecked")
-              List<Map<String, Object>> updates = inv.getArgument(1, List.class);
-              if (updates != null) {
-                for (Map<String, Object> update : updates) {
-                  if (update == null) {
-                    continue;
-                  }
-                  Object action = update.get("action");
-                  if (!"set-properties".equals(action)) {
-                    continue;
-                  }
-                  Object rawUpdates = update.get("updates");
-                  if (rawUpdates instanceof Map<?, ?> map) {
-                    for (Map.Entry<?, ?> entry : map.entrySet()) {
-                      if (entry.getKey() != null && entry.getValue() != null) {
-                        props.put(entry.getKey().toString(), entry.getValue().toString());
-                      }
-                    }
-                  }
-                }
-              }
-              props.put("owner", "alice");
-              return null;
-            })
-        .when(propertyService)
-        .applyPropertyUpdates(any(), any());
-    when(propertyService.ensurePropertyMap(any(), any())).thenAnswer(inv -> new LinkedHashMap<>());
-    when(propertyService.applyLocationUpdate(any(), any(), any(), any())).thenReturn(null);
     TableRequests.Commit request =
         new TableRequests.Commit(
             List.of(),
-            List.of(Map.of("action", "set-properties", "updates", Map.of("retention", "7d"))));
+            List.of(
+                Map.of(
+                    "action",
+                    "set-properties",
+                    "updates",
+                    Map.of("retention", "7d", "owner", "alice"))));
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(
@@ -130,7 +92,6 @@ class TableUpdatePlannerTest {
   @Test
   void planUpdatesReturnsValidationErrorForUnsupportedAction() {
     when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
-    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
     TableRequests.Commit request =
         new TableRequests.Commit(List.of(), List.of(Map.of("action", "drop")));
 
@@ -160,13 +121,12 @@ class TableUpdatePlannerTest {
 
     assertTrue(plan.hasError());
     assertSame(failure, plan.error());
-    verify(propertyService, never()).applyPropertyUpdates(any(), any());
+    verify(propertyService, never()).applyCommitPropertyUpdates(any(), any(), any());
   }
 
   @Test
   void planUpdatesPersistsTableDefinitionProperties() {
     when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
-    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
 
     TableRequests.Commit request =
         new TableRequests.Commit(
@@ -178,12 +138,7 @@ class TableUpdatePlannerTest {
                 Map.of("action", "set-current-schema", "schema-id", 0),
                 Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
                 Map.of("action", "set-default-spec", "spec-id", 0),
-                Map.of("action", "set-default-sort-order", "sort-order-id", 0),
-                Map.of(
-                    "action",
-                    "set-location",
-                    "location",
-                    "s3://floecat/iceberg/duckdb_mutation_smoke")));
+                Map.of("action", "set-default-sort-order", "sort-order-id", 0)));
 
     TableUpdatePlanner.UpdatePlan plan =
         planner.planUpdates(
@@ -199,7 +154,6 @@ class TableUpdatePlannerTest {
     assertEquals("0", props.get("last-partition-id"));
     assertEquals("0", props.get("default-spec-id"));
     assertEquals("0", props.get("default-sort-order-id"));
-    assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", props.get("location"));
     assertTrue(plan.mask().build().getPathsList().contains("schema_json"));
     assertTrue(plan.spec().build().getSchemaJson().contains("\"schema-id\":0"));
   }
@@ -207,7 +161,6 @@ class TableUpdatePlannerTest {
   @Test
   void planUpdatesResolvesSetLastSentinelsForTableDefinitionIds() {
     when(requirements.validateRequirements(any(), any(), any(), any(), any())).thenReturn(null);
-    when(propertyService.hasPropertyUpdates(any())).thenReturn(false);
 
     TableRequests.Commit request =
         new TableRequests.Commit(

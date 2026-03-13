@@ -60,9 +60,9 @@ class AccountHeaderFilterTest {
     when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
 
-    filter.setConfigInstance(configInstance);
+    filter.config = configInstance;
     AccountContext accountContext = mock(AccountContext.class);
-    filter.setAccountContext(accountContext);
+    filter.accountContext = accountContext;
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -92,8 +92,8 @@ class AccountHeaderFilterTest {
     AccountHeaderFilter filter = new AccountHeaderFilter();
     Instance<IcebergGatewayConfig> configInstance = mock(Instance.class);
     when(configInstance.isUnsatisfied()).thenReturn(true);
-    filter.setConfigInstance(configInstance);
-    filter.setAccountContext(mock(AccountContext.class));
+    filter.config = configInstance;
+    filter.accountContext = mock(AccountContext.class);
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -126,8 +126,8 @@ class AccountHeaderFilterTest {
     when(config.defaultAccountId()).thenReturn(java.util.Optional.of("account-default"));
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("undefined"));
-    filter.setConfigInstance(configInstance);
-    filter.setAccountContext(mock(AccountContext.class));
+    filter.config = configInstance;
+    filter.accountContext = mock(AccountContext.class);
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -161,9 +161,9 @@ class AccountHeaderFilterTest {
     when(config.authHeader()).thenReturn("authorization");
     when(config.defaultAuthorization()).thenReturn(java.util.Optional.of("Bearer default"));
     when(config.defaultPrefix()).thenReturn(Optional.of("sales"));
-    filter.setConfigInstance(configInstance);
+    filter.config = configInstance;
     AccountContext accountContext = mock(AccountContext.class);
-    filter.setAccountContext(accountContext);
+    filter.accountContext = accountContext;
 
     ContainerRequestContext ctx = mock(ContainerRequestContext.class);
     UriInfo uriInfo = mock(UriInfo.class);
@@ -226,9 +226,9 @@ class AccountHeaderFilterTest {
       when(config.authMode()).thenReturn("oidc");
       when(config.authHeader()).thenReturn("x-floe-session");
       when(config.accountClaim()).thenReturn("account_id");
-      filter.setConfigInstance(configInstance);
+      filter.config = configInstance;
       AccountContext accountContext = mock(AccountContext.class);
-      filter.setAccountContext(accountContext);
+      filter.accountContext = accountContext;
 
       TenantIdentityProvider identityProvider = mock(TenantIdentityProvider.class);
       @SuppressWarnings("unchecked")

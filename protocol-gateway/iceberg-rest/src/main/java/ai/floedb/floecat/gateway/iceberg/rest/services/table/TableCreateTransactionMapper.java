@@ -16,11 +16,14 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maxFieldId;
+
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -35,9 +38,6 @@ import java.util.Map;
 @ApplicationScoped
 public class TableCreateTransactionMapper {
   private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-  private static final List<Map<String, Object>> ASSERT_CREATE_REQUIREMENTS =
-      List.of(Map.of("type", "assert-create"));
-
   @Inject ObjectMapper mapper;
 
   public TransactionCommitRequest buildCreateRequest(
@@ -61,7 +61,7 @@ public class TableCreateTransactionMapper {
         List.of(
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(namespacePath, tableName),
-                ASSERT_CREATE_REQUIREMENTS,
+                CommitUpdateInspector.assertCreateRequirements(),
                 updates)));
   }
 
@@ -70,7 +70,9 @@ public class TableCreateTransactionMapper {
     Map<String, Object> schema = requireObject(request.schema(), "schema");
     Integer schemaId = requireNonNegativeInt(schema, "schema-id", "schema");
     Integer lastColumnId =
-        firstNonNegativeInt(asInt(schema.get("last-column-id")), maxSchemaFieldId(schema));
+        firstNonNegativeInt(
+            asInt(schema.get("last-column-id")),
+            maxFieldId(schema, "fields", "id", "field-id", "source-id"));
     if (lastColumnId == null) {
       throw new IllegalArgumentException("schema requires last-column-id");
     }
@@ -89,26 +91,42 @@ public class TableCreateTransactionMapper {
 
     Map<String, String> props = new LinkedHashMap<>(spec.getPropertiesMap());
     String tableLocation = blankToNull(props.remove("location"));
-    String metadataLocation = blankToNull(props.remove("metadata-location"));
     Integer formatVersion = firstNonNegativeInt(asInt(props.remove("format-version")), 2);
     props.putIfAbsent("last-sequence-number", "0");
 
     List<Map<String, Object>> updates = new ArrayList<>();
     if (tableLocation != null) {
-      updates.add(Map.of("action", "set-location", "location", tableLocation));
+      updates.add(
+          Map.of("action", CommitUpdateInspector.ACTION_SET_LOCATION, "location", tableLocation));
     }
-    updates.add(Map.of("action", "upgrade-format-version", "format-version", formatVersion));
-    updates.add(Map.of("action", "add-schema", "schema", schema, "last-column-id", lastColumnId));
-    updates.add(Map.of("action", "set-current-schema", "schema-id", schemaId));
-    updates.add(Map.of("action", "add-spec", "spec", partitionSpec));
-    updates.add(Map.of("action", "set-default-spec", "spec-id", specId));
-    updates.add(Map.of("action", "add-sort-order", "sort-order", sortOrder));
-    updates.add(Map.of("action", "set-default-sort-order", "sort-order-id", sortOrderId));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_UPGRADE_FORMAT_VERSION,
+            "format-version",
+            formatVersion));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_ADD_SCHEMA,
+            "schema",
+            schema,
+            "last-column-id",
+            lastColumnId));
+    updates.add(
+        Map.of("action", CommitUpdateInspector.ACTION_SET_CURRENT_SCHEMA, "schema-id", schemaId));
+    updates.add(Map.of("action", CommitUpdateInspector.ACTION_ADD_SPEC, "spec", partitionSpec));
+    updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_DEFAULT_SPEC, "spec-id", specId));
+    updates.add(
+        Map.of("action", CommitUpdateInspector.ACTION_ADD_SORT_ORDER, "sort-order", sortOrder));
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_SET_DEFAULT_SORT_ORDER,
+            "sort-order-id",
+            sortOrderId));
     if (!props.isEmpty()) {
-      updates.add(Map.of("action", "set-properties", "updates", props));
-    }
-    if (metadataLocation != null) {
-      updates.add(Map.of("action", "set-metadata-location", "metadata-location", metadataLocation));
+      updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_PROPERTIES, "updates", props));
     }
     return List.copyOf(updates);
   }
@@ -129,26 +147,6 @@ public class TableCreateTransactionMapper {
       throw new IllegalArgumentException(fieldName + " requires " + key);
     }
     return value;
-  }
-
-  private Integer maxSchemaFieldId(Map<String, Object> schema) {
-    Object rawFields = schema.get("fields");
-    if (!(rawFields instanceof List<?> fields)) {
-      return null;
-    }
-    int max = 0;
-    for (Object fieldObj : fields) {
-      if (!(fieldObj instanceof Map<?, ?> field)) {
-        continue;
-      }
-      Integer fieldId =
-          firstNonNegativeInt(
-              asInt(field.get("id")), asInt(field.get("field-id")), asInt(field.get("source-id")));
-      if (fieldId != null) {
-        max = Math.max(max, fieldId);
-      }
-    }
-    return max == 0 ? null : max;
   }
 
   @SafeVarargs

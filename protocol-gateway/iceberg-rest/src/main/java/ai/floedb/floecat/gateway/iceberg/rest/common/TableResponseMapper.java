@@ -24,6 +24,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import jakarta.ws.rs.core.HttpHeaders;
+import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +59,17 @@ public final class TableResponseMapper {
         metadataView.metadataLocation(), metadataView, effectiveConfig, storageCredentials);
   }
 
+  public static Response toLoadResponse(
+      String tableName,
+      Table table,
+      IcebergMetadata metadata,
+      List<Snapshot> snapshots,
+      Map<String, String> configOverrides,
+      List<StorageCredentialDto> storageCredentials) {
+    return withMetadataEtag(
+        toLoadResult(tableName, table, metadata, snapshots, configOverrides, storageCredentials));
+  }
+
   public static CommitTableResponseDto toCommitResponse(
       String tableName, Table table, IcebergMetadata metadata, List<Snapshot> snapshots) {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
@@ -84,6 +97,16 @@ public final class TableResponseMapper {
         metadataView.metadataLocation(), metadataView, effectiveConfig, storageCredentials);
   }
 
+  public static Response toLoadResponseFromCreate(
+      String tableName,
+      Table table,
+      TableRequests.Create request,
+      Map<String, String> configOverrides,
+      List<StorageCredentialDto> storageCredentials) {
+    return withMetadataEtag(
+        toLoadResultFromCreate(tableName, table, request, configOverrides, storageCredentials));
+  }
+
   private static Map<String, String> augmentConfigWithMetadataPath(
       Map<String, String> originalConfig, TableMetadataView metadataView) {
     String metadataLocation = metadataView.metadataLocation();
@@ -98,5 +121,14 @@ public final class TableResponseMapper {
         originalConfig.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(originalConfig);
     updated.put("write.metadata.path", directory);
     return Map.copyOf(updated);
+  }
+
+  private static Response withMetadataEtag(LoadTableResultDto loadResult) {
+    Response.ResponseBuilder builder = Response.ok(loadResult);
+    String metadataLocation = loadResult == null ? null : loadResult.metadataLocation();
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      builder.header(HttpHeaders.ETAG, IcebergHttpUtil.etagForMetadataLocation(metadataLocation));
+    }
+    return builder.build();
   }
 }

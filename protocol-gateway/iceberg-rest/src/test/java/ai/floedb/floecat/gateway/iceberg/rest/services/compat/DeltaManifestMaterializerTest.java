@@ -33,8 +33,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
@@ -73,22 +72,19 @@ import org.junit.jupiter.api.Test;
 
 class DeltaManifestMaterializerTest {
 
-  private final QueryClient queryClient = mock(QueryClient.class);
-  private final QuerySchemaClient querySchemaClient = mock(QuerySchemaClient.class);
+  private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
   private final TestDeltaManifestMaterializer materializer = new TestDeltaManifestMaterializer();
 
   @BeforeEach
   void setUp() {
-    materializer.queryClient = queryClient;
-    materializer.querySchemaClient = querySchemaClient;
+    materializer.grpcClient = grpcClient;
 
-    when(queryClient.beginQuery(any()))
+    when(grpcClient.beginQuery(any()))
         .thenReturn(
             BeginQueryResponse.newBuilder()
                 .setQuery(QueryDescriptor.newBuilder().setQueryId("q-1").build())
                 .build());
-    when(querySchemaClient.describeInputs(any()))
-        .thenReturn(DescribeInputsResponse.newBuilder().build());
+    when(grpcClient.describeInputs(any())).thenReturn(DescribeInputsResponse.newBuilder().build());
 
     ScanFile scanFile =
         ScanFile.newBuilder()
@@ -97,7 +93,7 @@ class DeltaManifestMaterializerTest {
             .setFileSizeInBytes(256)
             .setRecordCount(42)
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(ScanBundle.newBuilder().addDataFiles(scanFile).build())
@@ -118,7 +114,7 @@ class DeltaManifestMaterializerTest {
     String secondManifestList = second.get(0).getManifestList();
     assertEquals(firstManifestList, secondManifestList);
 
-    verify(queryClient, times(1)).fetchScanBundle(any());
+    verify(grpcClient, times(1)).fetchScanBundle(any());
   }
 
   @Test
@@ -137,7 +133,7 @@ class DeltaManifestMaterializerTest {
     assertNotEquals(oldManifestList, newManifestList);
     assertTrue(materializer.fileIo().newInputFile(newManifestList).exists());
 
-    verify(queryClient, times(2)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanBundle(any());
   }
 
   @Test
@@ -158,15 +154,14 @@ class DeltaManifestMaterializerTest {
     assertEquals(firstManifestList, second.get(0).getManifestList());
     assertEquals(secondManifestList, second.get(1).getManifestList());
 
-    verify(queryClient, times(2)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanBundle(any());
   }
 
   @Test
   void materializeWritesDeleteManifestWhenDeleteFilesPresent() throws Exception {
     TestDeltaManifestMaterializerWithDeletes withDeletes =
         new TestDeltaManifestMaterializerWithDeletes();
-    withDeletes.queryClient = queryClient;
-    withDeletes.querySchemaClient = querySchemaClient;
+    withDeletes.grpcClient = grpcClient;
 
     Table table = deltaTable("with-deletes");
     Snapshot snapshot = snapshot(9L, 9L);
@@ -208,7 +203,7 @@ class DeltaManifestMaterializerTest {
                     .setMax("omega")
                     .build())
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(ScanBundle.newBuilder().addDataFiles(scanFileWithStats).build())
@@ -275,7 +270,7 @@ class DeltaManifestMaterializerTest {
             .setPartitionDataJson(
                 "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-east-1\"}]}")
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(ScanBundle.newBuilder().addDataFiles(partitionedFile).build())
@@ -339,7 +334,7 @@ class DeltaManifestMaterializerTest {
             .setPartitionDataJson(
                 "{\"partitionValues\":[{\"id\":\"region\",\"value\":\"us-west-2\"},{\"id\":\"2\",\"value\":5}]}")
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(ScanBundle.newBuilder().addDataFiles(dataFileWithMixedIds).build())
@@ -383,7 +378,7 @@ class DeltaManifestMaterializerTest {
             .setFileSizeInBytes(20)
             .setRecordCount(3)
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(
@@ -448,7 +443,7 @@ class DeltaManifestMaterializerTest {
             .setRecordCount(2)
             .setSequenceNumber(202)
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(
@@ -537,7 +532,7 @@ class DeltaManifestMaterializerTest {
             .setPartitionSpecId(9)
             .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id\",\"value\":3}]}")
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(
@@ -570,8 +565,7 @@ class DeltaManifestMaterializerTest {
   void materializeUsesUnpartitionedDeleteManifestSpecForFallbackDvDeletes() throws Exception {
     TestDeltaManifestMaterializerWithDeletes withDeletes =
         new TestDeltaManifestMaterializerWithDeletes();
-    withDeletes.queryClient = queryClient;
-    withDeletes.querySchemaClient = querySchemaClient;
+    withDeletes.grpcClient = grpcClient;
     String schemaJson =
         "{\"schema-id\":1,\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"region\",\"type\":\"string\",\"required\":false}],\"last-column-id\":1}";
     Table table =
@@ -656,7 +650,7 @@ class DeltaManifestMaterializerTest {
             .setPartitionSpecId(99)
             .setPartitionDataJson("{\"partitionValues\":[{\"id\":\"id_bucket\",\"value\":3}]}")
             .build();
-    when(queryClient.fetchScanBundle(any()))
+    when(grpcClient.fetchScanBundle(any()))
         .thenReturn(
             FetchScanBundleResponse.newBuilder()
                 .setBundle(
@@ -689,8 +683,7 @@ class DeltaManifestMaterializerTest {
   void materializeSkipsDeltaEngineWhenDeltaLogMissing() {
     TestDeltaManifestMaterializerWithoutDeltaLog noDeltaLog =
         new TestDeltaManifestMaterializerWithoutDeltaLog();
-    noDeltaLog.queryClient = queryClient;
-    noDeltaLog.querySchemaClient = querySchemaClient;
+    noDeltaLog.grpcClient = grpcClient;
 
     Table table = deltaTable("no-delta-log");
     Snapshot snapshot = snapshot(10L, 10L);
@@ -703,8 +696,7 @@ class DeltaManifestMaterializerTest {
   void loadDeltaPositionDeleteFilesIgnoresUnreferencedFixtureDeletionVectorFile() throws Exception {
     TestDeltaManifestMaterializerWithFixture fixtureMaterializer =
         new TestDeltaManifestMaterializerWithFixture();
-    fixtureMaterializer.queryClient = queryClient;
-    fixtureMaterializer.querySchemaClient = querySchemaClient;
+    fixtureMaterializer.grpcClient = grpcClient;
 
     String tableRoot = fixtureMaterializer.stageFixture("delta-fixtures/dv_demo_delta");
 

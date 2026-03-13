@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -35,9 +34,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanTasksResponseDto;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -69,8 +66,7 @@ class TablePlanServiceTest {
   @BeforeEach
   void setUp() {
     service.mapper = new ObjectMapper();
-    service.queryClient = new QueryClient(grpc);
-    service.querySchemaClient = new QuerySchemaClient(grpc);
+    service.grpcClient = new GrpcServiceFacade(grpc);
     when(grpc.raw()).thenReturn(clients);
     when(clients.query()).thenReturn(queryStub);
     when(clients.queryScan()).thenReturn(scanStub);
@@ -275,35 +271,6 @@ class TablePlanServiceTest {
     verify(scanStub).fetchScanBundle(fetch.capture());
     assertEquals(1, fetch.getValue().getPredicatesCount());
     assertEquals("OrderId", fetch.getValue().getPredicates(0).getColumn());
-  }
-
-  @Test
-  void fetchTasksReturnsBundleAndClearsContext() {
-    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-3").build();
-    when(queryStub.beginQuery(any()))
-        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    service.startPlan(
-        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
-        tableId,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        true,
-        false,
-        null);
-
-    ScanBundle bundle = ScanBundle.newBuilder().build();
-    when(scanStub.fetchScanBundle(any()))
-        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
-
-    TablePlanTasksResponseDto tasks = service.fetchTasks("plan-3");
-    assertTrue(tasks.fileScanTasks().isEmpty());
-
-    assertThrows(IllegalArgumentException.class, () -> service.fetchTasks("plan-3"));
   }
 
   @Test

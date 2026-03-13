@@ -22,12 +22,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.RenameRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TransactionCommitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.smallrye.common.annotation.Blocking;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
@@ -51,16 +50,12 @@ public class TableAdminResource {
   @Inject TableRenameService tableRenameService;
   @Inject TransactionCommitService transactionCommitService;
   @Inject CommitTrafficLogger commitTrafficLogger;
-  @Inject TableClient tableClient;
-  @Inject SnapshotClient snapshotClient;
-  @Inject ConnectorClient connectorClient;
+  @Inject GrpcServiceFacade grpcClient;
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport =
-        new TableGatewaySupport(
-            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
   }
 
   @Path("/tables/rename")
@@ -74,6 +69,7 @@ public class TableAdminResource {
 
   @Path("/transactions/commit")
   @POST
+  @Blocking
   public Response commitTransaction(
       @PathParam("prefix") String prefix,
       @HeaderParam("Idempotency-Key") String idempotencyKey,

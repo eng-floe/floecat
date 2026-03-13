@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class TableMappingUtil {
@@ -83,23 +84,78 @@ public final class TableMappingUtil {
     }
   }
 
-  public static Long maybeLong(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    try {
-      return Long.parseLong(value);
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
-  }
-
   public static Object firstNonNull(Object first, Object second) {
     return first != null ? first : second;
   }
 
   public static String asString(Object value) {
     return value == null ? null : String.valueOf(value);
+  }
+
+  public static Map<String, String> asStringMap(Object value) {
+    if (!(value instanceof Map<?, ?> map) || map.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> out = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : map.entrySet()) {
+      if (entry.getKey() == null || entry.getValue() == null) {
+        continue;
+      }
+      out.put(String.valueOf(entry.getKey()), String.valueOf(entry.getValue()));
+    }
+    return out;
+  }
+
+  public static List<String> asStringList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    return list.stream()
+        .filter(v -> v != null && !String.valueOf(v).isBlank())
+        .map(String::valueOf)
+        .toList();
+  }
+
+  public static List<Long> asLongList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Long> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Long val = asLong(item);
+      if (val != null) {
+        out.add(val);
+      }
+    }
+    return out;
+  }
+
+  public static List<Integer> asIntegerList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Integer> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Integer val = asInteger(item);
+      if (val != null) {
+        out.add(val);
+      }
+    }
+    return out;
+  }
+
+  public static List<Map<String, Object>> asObjectMapList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new java.util.ArrayList<>(list.size());
+    for (Object item : list) {
+      Map<String, Object> map = asObjectMap(item);
+      if (map != null && !map.isEmpty()) {
+        out.add(map);
+      }
+    }
+    return out;
   }
 
   public static String firstNonBlank(String first, String second) {
@@ -127,5 +183,45 @@ public final class TableMappingUtil {
       return 2;
     }
     return resolved;
+  }
+
+  public static Integer maxFieldId(
+      Map<String, Object> container, String fieldsKey, String... candidateIdKeys) {
+    if (container == null || container.isEmpty()) {
+      return null;
+    }
+    Object rawFields = container.get(fieldsKey);
+    if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+      return null;
+    }
+    Integer max = null;
+    for (Object fieldObj : fields) {
+      Map<String, Object> field = asObjectMap(fieldObj);
+      if (field == null || field.isEmpty()) {
+        continue;
+      }
+      Integer fieldId = firstNonNegativeInt(field, candidateIdKeys);
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max;
+  }
+
+  private static Integer firstNonNegativeInt(Map<String, Object> source, String... candidateKeys) {
+    if (source == null || source.isEmpty() || candidateKeys == null) {
+      return null;
+    }
+    for (String key : candidateKeys) {
+      if (key == null || key.isBlank()) {
+        continue;
+      }
+      Integer value = asInteger(source.get(key));
+      if (value != null && value >= 0) {
+        return value;
+      }
+    }
+    return null;
   }
 }

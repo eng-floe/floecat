@@ -69,9 +69,10 @@ public final class Keys {
     long sid = reqNonNegative("snapshot_id", snapshotId);
     long createdAtMs = reqNonNegative("upstream_created_at_ms", upstreamCreatedAtMs);
     long inverted = Long.MAX_VALUE - createdAtMs;
+    long invertedSnapshotId = Long.MAX_VALUE - sid;
     return String.format(
         "/accounts/%s/tables/%s/snapshots/by-time/%019d-%019d",
-        encodeSegment(aid), encodeSegment(tid), inverted, sid);
+        encodeSegment(aid), encodeSegment(tid), inverted, invertedSnapshotId);
   }
 
   public static String tableCommitJournalPointer(String accountId, String tableId, String txId) {
@@ -101,5 +102,44 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tx-outbox/pending/%019d/%s/%s",
         encodeSegment(aid), created, encodeSegment(tid), encodeSegment(xid));
+  }
+
+  public static String tableCommitOutboxDeadLetterPrefix(String accountId) {
+    String aid = req("account_id", accountId);
+    return String.format("/accounts/%s/tx-outbox/dead-letter/", encodeSegment(aid));
+  }
+
+  public static String tableCommitOutboxDeadLetterPointer(
+      long createdAtMs, String accountId, String tableId, String txId) {
+    long created = reqNonNegative("created_at_ms", createdAtMs);
+    String aid = req("account_id", accountId);
+    String tid = req("table_id", tableId);
+    String xid = req("tx_id", txId);
+    return String.format(
+        "/accounts/%s/tx-outbox/dead-letter/%019d/%s/%s",
+        encodeSegment(aid), created, encodeSegment(tid), encodeSegment(xid));
+  }
+
+  public static String connectorPointerById(String accountId, String connectorId) {
+    String aid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    return String.format(
+        "/accounts/%s/connectors/by-id/%s", encodeSegment(aid), encodeSegment(cid));
+  }
+
+  public static String connectorPointerByName(String accountId, String displayName) {
+    String aid = req("account_id", accountId);
+    String name = req("display_name", displayName);
+    return String.format(
+        "/accounts/%s/connectors/by-name/%s", encodeSegment(aid), encodeSegment(name));
+  }
+
+  public static String connectorBlobUri(String accountId, String connectorId, String sha256) {
+    String aid = req("account_id", accountId);
+    String cid = req("connector_id", connectorId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/connectors/%s/connector/%s.pb",
+        encodeSegment(aid), encodeSegment(cid), encodeSegment(sha));
   }
 }

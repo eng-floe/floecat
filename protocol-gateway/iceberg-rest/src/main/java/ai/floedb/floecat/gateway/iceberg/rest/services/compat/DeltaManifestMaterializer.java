@@ -28,8 +28,7 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QueryClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.QuerySchemaClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
@@ -103,8 +102,7 @@ public class DeltaManifestMaterializer {
   private static final PartitionSpec UNPARTITIONED = PartitionSpec.unpartitioned();
   private static final String METADATA_DIR = "metadata";
 
-  @Inject QueryClient queryClient;
-  @Inject QuerySchemaClient querySchemaClient;
+  @Inject GrpcServiceFacade grpcClient;
   @Inject TableGatewaySupport tableGatewaySupport;
   @Inject IcebergGatewayConfig config;
 
@@ -475,7 +473,7 @@ public class DeltaManifestMaterializer {
       if (table.hasCatalogId()) {
         begin.setDefaultCatalogId(table.getCatalogId());
       }
-      QueryDescriptor query = queryClient.beginQuery(begin.build()).getQuery();
+      QueryDescriptor query = grpcClient.beginQuery(begin.build()).getQuery();
       queryId = query == null ? null : query.getQueryId();
       if (queryId == null || queryId.isBlank()) {
         throw new IllegalStateException("BeginQuery returned empty query id");
@@ -491,10 +489,10 @@ public class DeltaManifestMaterializer {
                   .setTableId(table.getResourceId())
                   .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
                   .build();
-      querySchemaClient.describeInputs(
+      grpcClient.describeInputs(
           DescribeInputsRequest.newBuilder().setQueryId(queryId).addInputs(input).build());
 
-      return queryClient
+      return grpcClient
           .fetchScanBundle(
               FetchScanBundleRequest.newBuilder()
                   .setQueryId(queryId)
@@ -504,7 +502,7 @@ public class DeltaManifestMaterializer {
     } finally {
       if (queryId != null && !queryId.isBlank()) {
         try {
-          queryClient.endQuery(
+          grpcClient.endQuery(
               EndQueryRequest.newBuilder().setQueryId(queryId).setCommit(false).build());
         } catch (Exception e) {
           LOG.debugf(e, "Failed to end compat query %s", queryId);

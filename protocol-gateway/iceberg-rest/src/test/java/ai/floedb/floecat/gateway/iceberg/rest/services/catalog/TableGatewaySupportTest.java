@@ -37,19 +37,13 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.ConnectorClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.SnapshotClient;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.TableClient;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -68,9 +62,7 @@ class TableGatewaySupportTest {
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
   private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private final Config mpConfig = mock(Config.class);
-  private final TableClient tableClient = mock(TableClient.class);
-  private final SnapshotClient snapshotClient = mock(SnapshotClient.class);
-  private final ConnectorClient connectorClient = mock(ConnectorClient.class);
+  private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
   private final ObjectMapper mapper = new ObjectMapper();
 
   private TableGatewaySupport support;
@@ -86,9 +78,7 @@ class TableGatewaySupportTest {
     when(mpConfig.getPropertyNames()).thenReturn(List.of());
     when(mpConfig.getOptionalValue(anyString(), eq(String.class))).thenReturn(Optional.empty());
 
-    support =
-        new TableGatewaySupport(
-            grpc, config, mapper, mpConfig, tableClient, snapshotClient, connectorClient);
+    support = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
   }
 
   @Test
@@ -239,57 +229,15 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void createExternalConnectorBuildsExpectedRequest() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
-    ResourceId catalogId = ResourceId.newBuilder().setId("cat").build();
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.createConnector(any()))
-        .thenReturn(
-            CreateConnectorResponse.newBuilder()
-                .setConnector(Connector.newBuilder().setResourceId(connectorId).build())
-                .build());
-
-    ResourceId created =
-        support.createExternalConnector(
-            "cat",
-            List.of("db", "analytics"),
-            namespaceId,
-            catalogId,
-            "orders",
-            tableId,
-            "s3://bucket/orders/metadata/v1.metadata.json",
-            null,
-            Map.of("s3.endpoint", " http://localhost:4566 ", "non-io", "x"),
-            "idem-123");
-
-    assertEquals(connectorId, created);
-    ArgumentCaptor<CreateConnectorRequest> captor =
-        ArgumentCaptor.forClass(CreateConnectorRequest.class);
-    verify(connectorClient).createConnector(captor.capture());
-    CreateConnectorRequest request = captor.getValue();
-    assertEquals("idem-123:connector", request.getIdempotency().getKey());
-    assertEquals("register:cat:db.analytics.orders", request.getSpec().getDisplayName());
-    assertEquals("s3://bucket/orders/metadata/v1.metadata.json", request.getSpec().getUri());
-    assertEquals(
-        "s3://bucket/orders/metadata/v1.metadata.json",
-        request.getSpec().getPropertiesOrThrow("external.metadata-location"));
-    assertEquals("filesystem", request.getSpec().getPropertiesOrThrow("iceberg.source"));
-    assertEquals("http://localhost:4566", request.getSpec().getPropertiesOrThrow("s3.endpoint"));
-    assertFalse(request.getSpec().getPropertiesMap().containsKey("non-io"));
-  }
-
-  @Test
   void deleteConnectorSkipsNullAndSwallowsFailures() {
     support.deleteConnector(null);
-    verify(connectorClient, never()).deleteConnector(any());
+    verify(grpcClient, never()).deleteConnector(any());
 
     ResourceId connectorId = ResourceId.newBuilder().setId("c-delete").build();
     support.deleteConnector(connectorId);
-    verify(connectorClient, times(1)).deleteConnector(any());
+    verify(grpcClient, times(1)).deleteConnector(any());
 
-    doThrow(Status.INTERNAL.asRuntimeException()).when(connectorClient).deleteConnector(any());
+    doThrow(Status.INTERNAL.asRuntimeException()).when(grpcClient).deleteConnector(any());
     support.deleteConnector(connectorId);
   }
 
@@ -309,126 +257,10 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void createTemplateConnectorBuildsRequestAndSupportsIdempotency() {
-    IcebergGatewayConfig.RegisterConnectorTemplate template =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    IcebergGatewayConfig.AuthTemplate authTemplate = mock(IcebergGatewayConfig.AuthTemplate.class);
-    when(template.uri()).thenReturn("s3://template/location");
-    when(template.displayName()).thenReturn(Optional.empty());
-    when(template.description()).thenReturn(Optional.of("desc"));
-    when(template.properties()).thenReturn(Map.of("k1", "v1"));
-    when(template.captureStatistics()).thenReturn(false);
-    when(template.auth()).thenReturn(Optional.of(authTemplate));
-    when(authTemplate.scheme()).thenReturn("bearer");
-    when(authTemplate.properties()).thenReturn(Map.of("authp", "authv"));
-    when(authTemplate.headerHints()).thenReturn(Map.of("Authorization", "Bearer ..."));
-    ResourceId connectorId = ResourceId.newBuilder().setId("template-connector").build();
-    when(connectorClient.createConnector(any()))
-        .thenReturn(
-            CreateConnectorResponse.newBuilder()
-                .setConnector(Connector.newBuilder().setResourceId(connectorId).build())
-                .build());
-
-    ResourceId created =
-        support.createTemplateConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            template,
-            "idem-key");
-
-    assertEquals(connectorId, created);
-    ArgumentCaptor<CreateConnectorRequest> captor =
-        ArgumentCaptor.forClass(CreateConnectorRequest.class);
-    verify(connectorClient).createConnector(captor.capture());
-    CreateConnectorRequest request = captor.getValue();
-    assertEquals("idem-key:connector", request.getIdempotency().getKey());
-    assertEquals("register:cat:db.orders", request.getSpec().getDisplayName());
-    assertEquals("desc", request.getSpec().getDescription());
-    assertEquals(
-        "false", request.getSpec().getPropertiesOrThrow("floecat.connector.capture-statistics"));
-    assertEquals("v1", request.getSpec().getPropertiesOrThrow("k1"));
-    assertEquals("bearer", request.getSpec().getAuth().getScheme());
-    assertEquals("authv", request.getSpec().getAuth().getPropertiesOrThrow("authp"));
-  }
-
-  @Test
-  void createTemplateConnectorReturnsNullForEmptyResponse() {
-    IcebergGatewayConfig.RegisterConnectorTemplate template =
-        mock(IcebergGatewayConfig.RegisterConnectorTemplate.class);
-    when(template.uri()).thenReturn("s3://template/location");
-    when(template.displayName()).thenReturn(Optional.of("display"));
-    when(template.description()).thenReturn(Optional.empty());
-    when(template.properties()).thenReturn(Map.of());
-    when(template.captureStatistics()).thenReturn(true);
-    when(template.auth()).thenReturn(Optional.empty());
-    when(connectorClient.createConnector(any()))
-        .thenReturn(CreateConnectorResponse.newBuilder().build());
-
-    ResourceId created =
-        support.createTemplateConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            template,
-            null);
-
-    assertNull(created);
-  }
-
-  @Test
-  void updateTableUpstreamIncludesConnectorNamespaceAndUri() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("connector-9").setKind(ResourceKind.RK_CONNECTOR).build();
-
-    support.updateTableUpstream(
-        tableId, List.of("db", "analytics"), "orders", connectorId, "s3://target/orders");
-
-    ArgumentCaptor<UpdateTableRequest> captor = ArgumentCaptor.forClass(UpdateTableRequest.class);
-    verify(tableClient).updateTable(captor.capture());
-    UpdateTableRequest request = captor.getValue();
-    assertEquals(tableId, request.getTableId());
-    assertEquals(List.of("upstream"), request.getUpdateMask().getPathsList());
-    assertEquals(connectorId, request.getSpec().getUpstream().getConnectorId());
-    assertEquals(
-        List.of("db", "analytics"), request.getSpec().getUpstream().getNamespacePathList());
-    assertEquals("orders", request.getSpec().getUpstream().getTableDisplayName());
-    assertEquals("s3://target/orders", request.getSpec().getUpstream().getUri());
-  }
-
-  @Test
-  void createExternalConnectorReturnsNullForEmptyResponse() {
-    when(connectorClient.createConnector(any()))
-        .thenReturn(CreateConnectorResponse.newBuilder().build());
-
-    ResourceId created =
-        support.createExternalConnector(
-            "cat",
-            List.of("db"),
-            ResourceId.newBuilder().setId("cat:db").build(),
-            ResourceId.newBuilder().setId("cat").build(),
-            "orders",
-            ResourceId.newBuilder().setId("cat:db:orders").build(),
-            "s3://bucket/orders/metadata/v1.metadata.json",
-            "s3://bucket/orders",
-            Map.of(),
-            null);
-
-    assertNull(created);
-  }
-
-  @Test
   void runSyncStatisticsCaptureBuildsStatsOnlyRequest() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c3").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any()))
+    when(grpcClient.captureNow(any()))
         .thenReturn(
             CaptureNowResponse.newBuilder()
                 .setTablesScanned(1)
@@ -439,7 +271,7 @@ class TableGatewaySupportTest {
     support.runSyncStatisticsCapture(connectorId, List.of("db", "analytics"), "orders");
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient, times(1)).captureNow(captor.capture());
+    verify(grpcClient, times(1)).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(connectorId, request.getScope().getConnectorId());
     assertEquals("orders", request.getScope().getDestinationTableDisplayName());
@@ -452,13 +284,13 @@ class TableGatewaySupportTest {
   void runSyncStatisticsCaptureIncludesExplicitSnapshotScope() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c4").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
 
     support.runSyncStatisticsCapture(
         connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L));
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient).captureNow(captor.capture());
+    verify(grpcClient).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
@@ -469,13 +301,13 @@ class TableGatewaySupportTest {
   void runSyncStatisticsCaptureCanRequestFullRescanForExplicitSnapshotScope() {
     ResourceId connectorId =
         ResourceId.newBuilder().setId("c5").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(connectorClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
+    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
 
     support.runSyncStatisticsCapture(
         connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L), true);
 
     ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(connectorClient).captureNow(captor.capture());
+    verify(grpcClient).captureNow(captor.capture());
     CaptureNowRequest request = captor.getValue();
     assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
     assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
@@ -491,7 +323,7 @@ class TableGatewaySupportTest {
             .putProperties("current-snapshot-id", "44")
             .build();
     IcebergMetadata metadata = IcebergMetadata.newBuilder().setTableUuid("t-44").build();
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenReturn(
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
@@ -505,7 +337,7 @@ class TableGatewaySupportTest {
 
     assertNotNull(loaded);
     assertEquals("t-44", loaded.getTableUuid());
-    verify(snapshotClient, times(1)).getSnapshot(any());
+    verify(grpcClient, times(1)).getSnapshot(any());
   }
 
   @Test
@@ -518,7 +350,7 @@ class TableGatewaySupportTest {
             .build();
     IcebergMetadata firstMetadata = IcebergMetadata.newBuilder().setTableUuid("t-11").build();
     IcebergMetadata secondMetadata = IcebergMetadata.newBuilder().setTableUuid("t-99").build();
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenReturn(
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
@@ -540,11 +372,11 @@ class TableGatewaySupportTest {
 
     assertEquals("t-99", loaded.getTableUuid());
     ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
-    verify(snapshotClient, times(2)).getSnapshot(captor.capture());
+    verify(grpcClient, times(2)).getSnapshot(captor.capture());
     assertEquals(tableId, captor.getAllValues().get(1).getTableId());
     assertEquals(99L, captor.getAllValues().get(1).getSnapshot().getSnapshotId());
 
-    when(snapshotClient.getSnapshot(any()))
+    when(grpcClient.getSnapshot(any()))
         .thenThrow(Status.UNAVAILABLE.asRuntimeException())
         .thenReturn(
             GetSnapshotResponse.newBuilder()
@@ -562,16 +394,16 @@ class TableGatewaySupportTest {
   void loadCurrentMetadataReturnsNullWhenUnavailable() {
     assertNull(support.loadCurrentMetadata(null));
     assertNull(support.loadCurrentMetadata(Table.newBuilder().build()));
-    verify(snapshotClient, never()).getSnapshot(any());
+    verify(grpcClient, never()).getSnapshot(any());
 
     Table table =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setId("cat:db:orders").build())
             .build();
-    when(snapshotClient.getSnapshot(any())).thenReturn(GetSnapshotResponse.newBuilder().build());
+    when(grpcClient.getSnapshot(any())).thenReturn(GetSnapshotResponse.newBuilder().build());
     assertNull(support.loadCurrentMetadata(table));
 
-    when(snapshotClient.getSnapshot(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
+    when(grpcClient.getSnapshot(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
     assertNull(support.loadCurrentMetadata(table));
   }
 

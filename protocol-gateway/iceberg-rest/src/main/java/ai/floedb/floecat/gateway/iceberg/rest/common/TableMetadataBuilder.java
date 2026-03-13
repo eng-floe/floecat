@@ -56,7 +56,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 
 public final class TableMetadataBuilder {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -72,7 +71,10 @@ public final class TableMetadataBuilder {
       Map<String, String> props,
       IcebergMetadata metadata,
       List<Snapshot> snapshots) {
-    String metadataLocation = resolveMetadataLocation(metadata);
+    String metadataLocation =
+        metadata == null || metadata.getMetadataLocation().isBlank()
+            ? null
+            : metadata.getMetadataLocation();
     return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
   }
 
@@ -97,7 +99,7 @@ public final class TableMetadataBuilder {
       metadataLocation = propertyMetadataLocation;
     }
     String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
-    location = resolveTableLocation(location, metadataLocation);
+    location = hasText(location) ? location : null;
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)
             ? Long.valueOf(metadata.getLastUpdatedMs())
@@ -138,7 +140,7 @@ public final class TableMetadataBuilder {
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
             : null;
-    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(props.get("format-version")));
+    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(formatVersionProperty(props)));
     if (tableUuid == null) {
       String candidate = props.get("table-uuid");
       if (candidate != null && !candidate.isBlank()) {
@@ -309,7 +311,8 @@ public final class TableMetadataBuilder {
                 }
               });
     }
-    String metadataLoc = metadataLocationFromRequest(request);
+    String metadataLoc =
+        MetadataLocationUtil.metadataLocation(request == null ? null : request.properties());
     String metadataLocation = null;
     if (metadataLoc != null && !metadataLoc.isBlank()) {
       syncWriteMetadataPath(props, metadataLoc);
@@ -353,7 +356,7 @@ public final class TableMetadataBuilder {
     if (defaultSortOrderId == null) {
       throw new IllegalArgumentException("write-order requires sort-order-id");
     }
-    Integer formatVersion = normalizeFormatVersion(maybeInt(props.get("format-version")), null);
+    Integer formatVersion = normalizeFormatVersion(maybeInt(formatVersionProperty(props)), null);
     props.putIfAbsent("format-version", formatVersion.toString());
     props.putIfAbsent("current-schema-id", schemaId.toString());
     props.putIfAbsent("last-column-id", lastColumnId.toString());
@@ -366,7 +369,7 @@ public final class TableMetadataBuilder {
     return new TableMetadataView(
         formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
-        resolveTableLocation(location, metadataLocation),
+        hasText(location) ? location : null,
         metadataLocation,
         lastUpdatedMs,
         props,
@@ -516,32 +519,6 @@ public final class TableMetadataBuilder {
     return out;
   }
 
-  private static String resolveMetadataLocation(IcebergMetadata metadata) {
-    return metadataLocationFromField(metadata);
-  }
-
-  private static String metadataLocationFromField(IcebergMetadata metadata) {
-    if (metadata == null) {
-      return null;
-    }
-    String directLocation = metadata.getMetadataLocation();
-    if (directLocation != null && !directLocation.isBlank()) {
-      return directLocation;
-    }
-    return null;
-  }
-
-  private static String resolveTableLocation(String location, String metadataLocation) {
-    if (location == null || location.isBlank()) {
-      return null;
-    }
-    return location;
-  }
-
-  private static String metadataLocationFromRequest(TableRequests.Create request) {
-    return MetadataLocationUtil.metadataLocation(request == null ? null : request.properties());
-  }
-
   private static Map<String, Object> mergePropertyRefs(
       Map<String, String> props, Map<String, Object> refs) {
     if (props == null || props.isEmpty()) {
@@ -594,6 +571,10 @@ public final class TableMetadataBuilder {
       return;
     }
     props.remove(MetadataLocationUtil.PRIMARY_KEY);
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
   }
 
   private static Long maxSnapshotSequence(List<Snapshot> snapshots) {
@@ -676,7 +657,11 @@ public final class TableMetadataBuilder {
     return asLong(map.get("snapshot-id"));
   }
 
-  private static String nextMetadataFileName() {
-    return String.format("%05d-%s.metadata.json", 0, UUID.randomUUID());
+  private static String formatVersionProperty(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String value = props.get("format-version");
+    return (value == null || value.isBlank()) ? null : value;
   }
 }

@@ -19,14 +19,13 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import com.google.protobuf.FieldMask;
 import jakarta.ws.rs.core.Response;
@@ -40,14 +39,14 @@ class TablePropertyServiceTest {
   private final TablePropertyService service = new TablePropertyService();
 
   @Test
-  void stripMetadataLocationRemovesCanonicalKey() {
+  void stripMetadataLocationIsNoOp() {
     Map<String, String> props = new LinkedHashMap<>();
     props.put("metadata-location", "a");
     props.put("other", "value");
 
     service.stripMetadataLocation(props);
 
-    assertEquals(Map.of("other", "value"), props);
+    assertEquals(Map.of("metadata-location", "a", "other", "value"), props);
   }
 
   @Test
@@ -78,7 +77,28 @@ class TablePropertyServiceTest {
                 Map.of("action", "remove-properties", "removals", List.of("existing"))));
 
     assertNull(response);
-    assertEquals(Map.of("foo", "bar"), props);
+    assertEquals(Map.of("foo", "bar", "metadata-location", "ignored"), props);
+  }
+
+  @Test
+  void applyPropertyUpdatesDoesNotRemoveReservedFormatVersion() {
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("format-version", "1");
+    props.put("other", "value");
+
+    Response response =
+        service.applyPropertyUpdates(
+            props,
+            List.of(
+                Map.of(
+                    "action",
+                    "remove-properties",
+                    "removals",
+                    List.of("format-version", "other"))));
+
+    assertNull(response);
+    assertEquals("1", props.get("format-version"));
+    assertFalse(props.containsKey("other"));
   }
 
   @Test
@@ -146,9 +166,16 @@ class TablePropertyServiceTest {
 
   @Test
   void hasPropertyUpdatesDetectsSetAndRemove() {
-    TableRequests.Commit commit =
-        new TableRequests.Commit(List.of(), List.of(Map.of("action", "set-properties")));
-    assertTrue(service.hasPropertyUpdates(commit));
+    Table table = Table.newBuilder().putProperties("existing", "value").build();
+
+    var result =
+        service.applyCommitPropertyUpdates(
+            () -> table,
+            null,
+            List.of(Map.of("action", "set-properties", "updates", Map.of("added", "yes"))));
+
+    assertNull(result.error());
+    assertEquals("yes", result.properties().get("added"));
   }
 
   @Test
@@ -167,14 +194,38 @@ class TablePropertyServiceTest {
   }
 
   @Test
-  void tableWithPropertyOverridesReplacesProperties() {
-    Table table = Table.newBuilder().putProperties("old", "value").build();
-    Map<String, String> overrides = Map.of("new", "value");
+  void applyCommitPropertyUpdatesAppliesSnapshotRefMutationsInOrder() {
+    Map<String, Map<String, Object>> initialRefs = new LinkedHashMap<>();
+    initialRefs.put("main", new LinkedHashMap<>(Map.of("snapshot-id", 10L, "type", "branch")));
+    Table table =
+        Table.newBuilder()
+            .putProperties(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(initialRefs))
+            .putProperties("current-snapshot-id", "10")
+            .build();
 
-    Table updated = service.tableWithPropertyOverrides(() -> table, overrides);
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of("action", "set-snapshot-ref", "ref-name", "main", "snapshot-id", 22L),
+            Map.of("action", "remove-snapshot-ref", "ref-name", "main"),
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "snapshot-id",
+                33L,
+                "min_snapshots_to_keep",
+                7));
 
-    assertSame("value", updated.getPropertiesOrThrow("new"));
-    assertFalse(updated.getPropertiesMap().containsKey("old"));
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+
+    assertNull(result.error());
+    assertEquals("33", result.properties().get("current-snapshot-id"));
+    Map<String, Map<String, Object>> refs =
+        RefPropertyUtil.decode(result.properties().get(RefPropertyUtil.PROPERTY_KEY));
+    assertEquals(1, refs.size());
+    assertEquals(33L, ((Number) refs.get("main").get("snapshot-id")).longValue());
+    assertEquals(7, ((Number) refs.get("main").get("min-snapshots-to-keep")).intValue());
   }
 
   private Supplier<Table> tableSupplier() {
