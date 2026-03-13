@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -39,8 +38,6 @@ public final class StatsProviderFactory {
   private final StatsRepository repository;
   private final QueryContextStore queryStore;
 
-  private record TableKey(String accountId, String relationId, int kindValue, long snapshotId) {}
-
   @Inject
   public StatsProviderFactory(StatsRepository repository, QueryContextStore queryStore) {
     this.repository = repository;
@@ -54,12 +51,9 @@ public final class StatsProviderFactory {
   private static final class CachedStatsProvider implements StatsProvider {
 
     private final StatsRepository repository;
-    private final QueryContextStore queryStore;
-    private final QueryContext initialCtx;
-    private final String queryId;
-    private final String correlationId;
-    private final ConcurrentMap<TableKey, Optional<StatsProvider.TableStatsView>> tableCache =
-        new ConcurrentHashMap<>();
+    private final SnapshotPinResolver pinResolver;
+    private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
+        tableCache = new ConcurrentHashMap<>();
 
     private CachedStatsProvider(
         StatsRepository repository,
@@ -67,44 +61,28 @@ public final class StatsProviderFactory {
         QueryContext ctx,
         String correlationId) {
       this.repository = repository;
-      this.queryStore = queryStore;
-      this.initialCtx = ctx;
-      this.queryId = ctx.getQueryId();
-      this.correlationId = correlationId;
+      this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
     }
 
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
-      return liveContext()
-          .findSnapshotPin(tableId, correlationId)
-          .flatMap(
-              pin -> {
-                long snapshotId = pin.getSnapshotId();
-                TableKey key =
-                    new TableKey(
-                        tableId.getAccountId(),
-                        tableId.getId(),
-                        tableId.getKindValue(),
-                        snapshotId);
-                return tableCache.computeIfAbsent(key, k -> safeTableStats(tableId, snapshotId));
-              });
+      return pinResolver.withPinnedSnapshot(
+          tableId,
+          snapshotId ->
+              tableCache.computeIfAbsent(
+                  SnapshotScopedRelationKey.of(tableId, snapshotId),
+                  key -> safeTableStats(tableId, snapshotId)));
     }
 
     @Override
     public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
-      return liveContext()
-          .findSnapshotPin(tableId, correlationId)
-          .flatMap(pin -> safeColumnStats(tableId, pin.getSnapshotId(), columnId));
+      return pinResolver.withPinnedSnapshot(
+          tableId, snapshotId -> safeColumnStats(tableId, snapshotId, columnId));
     }
 
     @Override
     public OptionalLong pinnedSnapshotId(ResourceId tableId) {
-      Optional<SnapshotPin> pin = liveContext().findSnapshotPin(tableId, correlationId);
-      return pin.isPresent() ? OptionalLong.of(pin.get().getSnapshotId()) : OptionalLong.empty();
-    }
-
-    private QueryContext liveContext() {
-      return queryStore.get(queryId).orElse(initialCtx);
+      return pinResolver.pinnedSnapshotId(tableId);
     }
 
     private Optional<StatsProvider.TableStatsView> safeTableStats(

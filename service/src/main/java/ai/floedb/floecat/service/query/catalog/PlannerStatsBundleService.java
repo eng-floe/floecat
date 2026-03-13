@@ -20,6 +20,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.BundleFailure;
+import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.ColumnStatsBatch;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
@@ -27,8 +29,6 @@ import ai.floedb.floecat.query.rpc.ColumnStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.ColumnStatsInfo;
 import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
-import ai.floedb.floecat.query.rpc.StatsFailure;
-import ai.floedb.floecat.query.rpc.StatsStatus;
 import ai.floedb.floecat.query.rpc.StatsWarning;
 import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
@@ -398,15 +398,15 @@ public class PlannerStatsBundleService {
               .setTableId(tableId)
               .setColumnId(columnId)
               .setColumnName(view.columnName())
-              .setStatus(StatsStatus.STATS_STATUS_FOUND)
+              .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
               .setStats(info.build());
       return builder.build();
     }
 
     private ColumnStatsResult buildErrorResult(
         ResourceId tableId, long columnId, long snapshotId, RuntimeException e) {
-      StatsFailure failure =
-          StatsFailure.newBuilder()
+      BundleFailure failure =
+          BundleFailure.newBuilder()
               .setCode(COLUMN_ERROR_CODE)
               .setMessage("column stats lookup failed")
               .putDetails("table_id", tableId.getId())
@@ -419,15 +419,15 @@ public class PlannerStatsBundleService {
       return ColumnStatsResult.newBuilder()
           .setTableId(tableId)
           .setColumnId(columnId)
-          .setStatus(StatsStatus.STATS_STATUS_ERROR)
+          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
           .setFailure(failure)
           .build();
     }
 
     private ColumnStatsResult notFoundResult(
         ResourceId tableId, long columnId, String code, String message, OptionalLong snapshotId) {
-      StatsFailure failure =
-          StatsFailure.newBuilder()
+      BundleFailure failure =
+          BundleFailure.newBuilder()
               .setCode(code)
               .setMessage(message)
               .putDetails("table_id", tableId.getId())
@@ -443,14 +443,14 @@ public class PlannerStatsBundleService {
       return ColumnStatsResult.newBuilder()
           .setTableId(tableId)
           .setColumnId(columnId)
-          .setStatus(StatsStatus.STATS_STATUS_NOT_FOUND)
+          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
           .setFailure(failure)
           .build();
     }
 
     private ColumnStatsResult pinMissingResult(ResourceId tableId, long columnId) {
-      StatsFailure failure =
-          StatsFailure.newBuilder()
+      BundleFailure failure =
+          BundleFailure.newBuilder()
               .setCode(PIN_MISSING_CODE)
               .setMessage("snapshot pin missing")
               .putDetails("table_id", tableId.getId())
@@ -460,7 +460,7 @@ public class PlannerStatsBundleService {
       return ColumnStatsResult.newBuilder()
           .setTableId(tableId)
           .setColumnId(columnId)
-          .setStatus(StatsStatus.STATS_STATUS_ERROR)
+          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
           .setFailure(failure)
           .build();
     }
