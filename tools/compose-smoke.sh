@@ -20,6 +20,7 @@ COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
+COMPOSE_SMOKE_GATEWAY_VARIANT=${COMPOSE_SMOKE_GATEWAY_VARIANT:-default}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS:-sales}
@@ -71,6 +72,10 @@ should_run_client() {
   local client="$1"
   local normalized=",${COMPOSE_SMOKE_CLIENTS//[[:space:]]/},"
   [[ "$normalized" == *",$client,"* ]]
+}
+
+is_minimal_gateway() {
+  [ "${COMPOSE_SMOKE_GATEWAY_VARIANT}" = "minimal" ]
 }
 
 run_cli_script() {
@@ -433,23 +438,25 @@ run_mode() {
   assert_contains "$label cli resolve iceberg account" "$out_iceberg" "account set:"
   assert_contains "$label cli resolve iceberg table" "$out_iceberg" "table id:"
 
-  local out_delta
-  out_delta=$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$compose_cmd run --rm -T cli")
-  echo "$out_delta"
-  assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
-  assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
+  if ! is_minimal_gateway; then
+    local out_delta
+    out_delta=$(printf "account t-0001\nresolve table examples.delta.call_center\nquit\n" | eval "$compose_cmd run --rm -T cli")
+    echo "$out_delta"
+    assert_contains "$label cli resolve call_center account" "$out_delta" "account set:"
+    assert_contains "$label cli resolve call_center table" "$out_delta" "table id:"
 
-  local out_delta_local
-  out_delta_local=$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$compose_cmd run --rm -T cli")
-  echo "$out_delta_local"
-  assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
-  assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
+    local out_delta_local
+    out_delta_local=$(printf "account t-0001\nresolve table examples.delta.my_local_delta_table\nquit\n" | eval "$compose_cmd run --rm -T cli")
+    echo "$out_delta_local"
+    assert_contains "$label cli resolve my_local_delta_table account" "$out_delta_local" "account set:"
+    assert_contains "$label cli resolve my_local_delta_table table" "$out_delta_local" "table id:"
 
-  local out_delta_dv
-  out_delta_dv=$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$compose_cmd run --rm -T cli")
-  echo "$out_delta_dv"
-  assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
-  assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
+    local out_delta_dv
+    out_delta_dv=$(printf "account t-0001\nresolve table examples.delta.dv_demo_delta\nquit\n" | eval "$compose_cmd run --rm -T cli")
+    echo "$out_delta_dv"
+    assert_contains "$label cli resolve dv_demo_delta account" "$out_delta_dv" "account set:"
+    assert_contains "$label cli resolve dv_demo_delta table" "$out_delta_dv" "table id:"
+  fi
 
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
     echo "==> [SMOKE] upstream iceberg rest import check"
@@ -671,15 +678,22 @@ quit")
   fi
 
   if [ "$profile" = "localstack" ] && should_run_client duckdb; then
-    local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
-    echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta)"
-    $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,400p' || true
-    echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta/call_center)"
-    $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive | sed -n '1,200p' || true
+    if ! is_minimal_gateway; then
+      local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+      echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta)"
+      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,400p' || true
+      echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta/call_center)"
+      $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive | sed -n '1,200p' || true
+    fi
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
     local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
-    local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
+    local duckdb_query
+    if is_minimal_gateway; then
+      duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'trino_types=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.iceberg.trino_types j ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.iceberg.trino_types LIMIT 4; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
+    else
+      duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
+    fi
 
     local duckdb_out
     if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
@@ -691,12 +705,20 @@ quit")
 
     echo "$duckdb_out"
     assert_contains "$label duckdb smoke marker" "$duckdb_out" "duckdb_smoke_ok"
-    assert_contains "$label duckdb call_center count" "$duckdb_out" "call_center=42"
-    assert_contains "$label duckdb my_local_delta_table count" "$duckdb_out" "my_local_delta_table=4"
-    assert_contains "$label duckdb my_local_delta_table nonnull" "$duckdb_out" "my_local_nonnull_name=4"
-    assert_contains "$label duckdb dv_demo_delta count" "$duckdb_out" "dv_demo_delta=2"
-    assert_contains "$label duckdb dv_demo_delta content" "$duckdb_out" "dv_content=1,3,a,c"
-    assert_contains "$label duckdb ctas count" "$duckdb_out" "ctas_count=5"
+    if is_minimal_gateway; then
+      assert_contains "$label duckdb trino_types count" "$duckdb_out" "trino_types=1"
+    else
+      assert_contains "$label duckdb call_center count" "$duckdb_out" "call_center=42"
+      assert_contains "$label duckdb my_local_delta_table count" "$duckdb_out" "my_local_delta_table=4"
+      assert_contains "$label duckdb my_local_delta_table nonnull" "$duckdb_out" "my_local_nonnull_name=4"
+      assert_contains "$label duckdb dv_demo_delta count" "$duckdb_out" "dv_demo_delta=2"
+      assert_contains "$label duckdb dv_demo_delta content" "$duckdb_out" "dv_content=1,3,a,c"
+    fi
+    if is_minimal_gateway; then
+      assert_contains "$label duckdb ctas count" "$duckdb_out" "ctas_count=1"
+    else
+      assert_contains "$label duckdb ctas count" "$duckdb_out" "ctas_count=5"
+    fi
     assert_contains "$label duckdb mutation create" "$duckdb_out" "mut_after_create=0"
     assert_contains "$label duckdb mutation insert" "$duckdb_out" "mut_after_insert=3,6,a,c"
     assert_contains "$label duckdb mutation delete" "$duckdb_out" "mut_after_delete=2,4,a,c"
@@ -763,16 +785,21 @@ quit")
       "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
       "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
 
-    local alter_out
-    if alter_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
-      duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
-      echo "$alter_out"
-      assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
-    else
-      echo "$alter_out"
-      assert_contains "$label duckdb mutation alter unsupported" "$alter_out" "Not implemented Error: Alter Schema Entry"
+    if is_minimal_gateway; then
       docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true
+    else
+      local alter_out
+      if alter_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+        duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
+        echo "$alter_out"
+        assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
+      else
+        echo "$alter_out"
+        assert_contains "$label duckdb mutation alter unsupported" "$alter_out" "Not implemented Error: Alter Schema Entry"
+        docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+          duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true
+      fi
     fi
 
     local drop_check_out
@@ -786,7 +813,7 @@ quit")
       echo "[PASS] $label duckdb drop table verification (expected missing-table error after DROP TABLE)"
     fi
 
-    if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
+    if ! is_minimal_gateway && is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] duckdb iceberg format-version matrix (v1,v2)"
       local duckdb_fmt_out
       if ! duckdb_fmt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
@@ -816,8 +843,9 @@ quit")
   if [ "$profile" = "localstack" ] && should_run_client trino; then
     echo "==> [SMOKE] trino federation check (localstack)"
     local trino_out
-    if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
+    if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -e FLOECAT_MINIMAL_GATEWAY="$(is_minimal_gateway && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
+import os
 import sys
 import urllib.request
 
@@ -862,34 +890,47 @@ def scalar(sql: str) -> str:
 
 
 print("trino_smoke_ok")
-print(scalar("SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) FROM delta.call_center"))
-print(
-    scalar(
-        "SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) "
-        "FROM delta.my_local_delta_table"
+minimal_gateway = os.getenv("FLOECAT_MINIMAL_GATEWAY", "").strip().lower() in {"1", "true", "yes", "on"}
+if minimal_gateway:
+    print(scalar("SELECT 'trino_types=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.trino_types"))
+    print(
+        scalar(
+            "SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) "
+            "FROM iceberg.trino_types i JOIN iceberg.trino_types j ON 1=0"
+        )
     )
-)
-print(
-    scalar(
-        "SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) "
-        "FROM delta.my_local_delta_table"
+else:
+    print(scalar("SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) FROM delta.call_center"))
+    print(
+        scalar(
+            "SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) "
+            "FROM delta.my_local_delta_table"
+        )
     )
-)
-print(scalar("SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) FROM delta.dv_demo_delta"))
-print(
-    scalar(
-        "SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) "
-        "|| ',' || MIN(v) || ',' || MAX(v) FROM delta.dv_demo_delta"
+    print(
+        scalar(
+            "SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) "
+            "FROM delta.my_local_delta_table"
+        )
     )
-)
-print(
-    scalar(
-        "SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) "
-        "FROM iceberg.trino_types i JOIN delta.call_center d ON 1=0"
+    print(scalar("SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) FROM delta.dv_demo_delta"))
+    print(
+        scalar(
+            "SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) "
+            "|| ',' || MIN(v) || ',' || MAX(v) FROM delta.dv_demo_delta"
+        )
     )
-)
+    print(
+        scalar(
+            "SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) "
+            "FROM iceberg.trino_types i JOIN delta.call_center d ON 1=0"
+        )
+    )
 run_sql("DROP TABLE IF EXISTS iceberg.trino_ctas_smoke")
-run_sql("CREATE TABLE iceberg.trino_ctas_smoke AS SELECT * FROM delta.call_center LIMIT 5")
+if minimal_gateway:
+    run_sql("CREATE TABLE iceberg.trino_ctas_smoke AS SELECT * FROM iceberg.trino_types LIMIT 4")
+else:
+    run_sql("CREATE TABLE iceberg.trino_ctas_smoke AS SELECT * FROM delta.call_center LIMIT 5")
 print(scalar("SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.trino_ctas_smoke"))
 run_sql("DROP TABLE iceberg.trino_ctas_smoke")
 drop_ok = False
@@ -915,37 +956,38 @@ print(
     )
 )
 run_sql("DROP TABLE iceberg.trino_rename_dst_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_meta_smoke")
-run_sql("CREATE TABLE iceberg.trino_meta_smoke (id INTEGER, v VARCHAR)")
-run_sql("ALTER TABLE iceberg.trino_meta_smoke ADD COLUMN note VARCHAR")
-run_sql("ALTER TABLE iceberg.trino_meta_smoke RENAME COLUMN v TO v2")
-print(
-    scalar(
-        "SELECT 'meta_columns=' || CAST(COUNT(*) AS VARCHAR) "
-        "FROM information_schema.columns "
-        "WHERE table_catalog = 'floecat' AND table_schema = 'iceberg' "
-        "AND table_name = 'trino_meta_smoke' AND column_name IN ('id', 'v2', 'note')"
+if not minimal_gateway:
+    run_sql("DROP TABLE IF EXISTS iceberg.trino_meta_smoke")
+    run_sql("CREATE TABLE iceberg.trino_meta_smoke (id INTEGER, v VARCHAR)")
+    run_sql("ALTER TABLE iceberg.trino_meta_smoke ADD COLUMN note VARCHAR")
+    run_sql("ALTER TABLE iceberg.trino_meta_smoke RENAME COLUMN v TO v2")
+    print(
+        scalar(
+            "SELECT 'meta_columns=' || CAST(COUNT(*) AS VARCHAR) "
+            "FROM information_schema.columns "
+            "WHERE table_catalog = 'floecat' AND table_schema = 'iceberg' "
+            "AND table_name = 'trino_meta_smoke' AND column_name IN ('id', 'v2', 'note')"
+        )
     )
-)
-run_sql("DROP TABLE iceberg.trino_meta_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_merge_smoke")
-run_sql("CREATE TABLE iceberg.trino_merge_smoke (id INTEGER, v VARCHAR)")
-run_sql("INSERT INTO iceberg.trino_merge_smoke VALUES (1, 'a'), (2, 'b')")
-run_sql(
-    "MERGE INTO iceberg.trino_merge_smoke t "
-    "USING (VALUES (2, 'b2'), (3, 'c')) s(id, v) "
-    "ON t.id = s.id "
-    "WHEN MATCHED THEN UPDATE SET v = s.v "
-    "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)"
-)
-print(
-    scalar(
-        "SELECT 'merge_after=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
-        "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        "FROM iceberg.trino_merge_smoke"
+    run_sql("DROP TABLE iceberg.trino_meta_smoke")
+    run_sql("DROP TABLE IF EXISTS iceberg.trino_merge_smoke")
+    run_sql("CREATE TABLE iceberg.trino_merge_smoke (id INTEGER, v VARCHAR)")
+    run_sql("INSERT INTO iceberg.trino_merge_smoke VALUES (1, 'a'), (2, 'b')")
+    run_sql(
+        "MERGE INTO iceberg.trino_merge_smoke t "
+        "USING (VALUES (2, 'b2'), (3, 'c')) s(id, v) "
+        "ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET v = s.v "
+        "WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)"
     )
-)
-run_sql("DROP TABLE iceberg.trino_merge_smoke")
+    print(
+        scalar(
+            "SELECT 'merge_after=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+            "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
+            "FROM iceberg.trino_merge_smoke"
+        )
+    )
+    run_sql("DROP TABLE iceberg.trino_merge_smoke")
 run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
 run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
 print(
@@ -1021,18 +1063,25 @@ PY
 
     echo "$trino_out"
     assert_contains "$label trino smoke marker" "$trino_out" "trino_smoke_ok"
-    assert_contains "$label trino call_center count" "$trino_out" "call_center=42"
-    assert_contains "$label trino my_local_delta_table count" "$trino_out" "my_local_delta_table=4"
-    assert_contains "$label trino my_local_delta_table nonnull" "$trino_out" "my_local_nonnull_name=4"
-    assert_contains "$label trino dv_demo_delta count" "$trino_out" "dv_demo_delta=2"
-    assert_contains "$label trino dv_demo_delta content" "$trino_out" "dv_content=1,3,a,c"
-    assert_contains "$label trino ctas count" "$trino_out" "ctas_count=5"
+    if is_minimal_gateway; then
+      assert_contains "$label trino trino_types count" "$trino_out" "trino_types=1"
+      assert_contains "$label trino ctas count" "$trino_out" "ctas_count=1"
+    else
+      assert_contains "$label trino call_center count" "$trino_out" "call_center=42"
+      assert_contains "$label trino my_local_delta_table count" "$trino_out" "my_local_delta_table=4"
+      assert_contains "$label trino my_local_delta_table nonnull" "$trino_out" "my_local_nonnull_name=4"
+      assert_contains "$label trino dv_demo_delta count" "$trino_out" "dv_demo_delta=2"
+      assert_contains "$label trino dv_demo_delta content" "$trino_out" "dv_content=1,3,a,c"
+      assert_contains "$label trino ctas count" "$trino_out" "ctas_count=5"
+    fi
     assert_contains "$label trino drop table verification" "$trino_out" "drop_table_ok=1"
     assert_contains "$label trino namespace create" "$trino_out" "ns_create_ok=1"
     assert_contains "$label trino namespace drop" "$trino_out" "ns_drop_ok=1"
     assert_contains "$label trino rename row count" "$trino_out" "rename_row_count=1"
-    assert_contains "$label trino metadata column update" "$trino_out" "meta_columns=3"
-    assert_contains "$label trino merge mutation" "$trino_out" "merge_after=3,6,a,c"
+    if ! is_minimal_gateway; then
+      assert_contains "$label trino metadata column update" "$trino_out" "meta_columns=3"
+      assert_contains "$label trino merge mutation" "$trino_out" "merge_after=3,6,a,c"
+    fi
     assert_contains "$label trino mutation create" "$trino_out" "mut_after_create=0"
     assert_contains "$label trino mutation insert" "$trino_out" "mut_after_insert=3,6,a,c"
     assert_contains "$label trino mutation delete" "$trino_out" "mut_after_delete=2,4,a,c"
@@ -1041,7 +1090,7 @@ PY
     assert_contains "$label trino time travel delete snapshot" "$trino_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label trino time travel update snapshot" "$trino_out" "mut_tt_after_update=2,4,a,c2"
 
-    if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
+    if ! is_minimal_gateway && is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] trino iceberg format-version matrix (v1,v2)"
       local trino_fmt_out
       if ! trino_fmt_out=$(docker run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$(should_run_client duckdb && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1

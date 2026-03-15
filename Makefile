@@ -735,7 +735,7 @@ cli-test: $(PROTO_JAR)
 # ===================================================
 # Docker (Quarkus container-image)
 # ===================================================
-.PHONY: docker docker-service docker-iceberg-rest docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke quickstart-up quickstart-down
+.PHONY: docker docker-service docker-iceberg-rest docker-iceberg-rest-minimal docker-cli docker-clean-cache docker-publish docker-publish-service docker-publish-iceberg-rest docker-publish-cli guard-container-owner compose-up compose-down compose-shell compose-smoke compose-smoke-minimal quickstart-up quickstart-down
 
 docker-clean-cache:
 	@APP_CACHE="$${TMPDIR%/}/jib-core-application-layers-cache"; \
@@ -774,6 +774,16 @@ docker-iceberg-rest:
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
 	  -Dquarkus.container-image.image=floecat-iceberg-rest:local \
+	  package
+
+docker-iceberg-rest-minimal:
+	@echo "==> [DOCKER] iceberg-rest-minimal (jib -> docker daemon)"
+	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest-minimal -am -DskipTests \
+	  -DskipUTs=true -DskipITs=true \
+	  -Dquarkus.container-image.build=true \
+	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
+	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
+	  -Dquarkus.container-image.image=floecat-iceberg-rest-minimal:local \
 	  package
 
 docker-cli:
@@ -846,6 +856,17 @@ compose-smoke: docker
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
+	  ./tools/compose-smoke.sh
+
+compose-smoke-minimal: docker-service docker-iceberg-rest-minimal docker-cli
+	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
+	  FLOECAT_ICEBERG_REST_IMAGE=$${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest-minimal:local} \
+	  COMPOSE_SMOKE_GATEWAY_VARIANT=minimal \
+	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack} \
+	  COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=$${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-false} \
+	  COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=$${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-false} \
+	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs-minimal}" \
+	  COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=$${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-false} \
 	  ./tools/compose-smoke.sh
 
 quickstart-up:

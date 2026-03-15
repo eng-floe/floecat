@@ -33,5 +33,6 @@
   <modules>
     <module>common-test</module>
     <module>iceberg-rest</module>
+    <module>iceberg-rest-minimal</module>
   </modules>
 </project>
