@@ -29,9 +29,12 @@ import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
+import ai.floedb.floecat.query.rpc.TableConstraintsResult;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -87,6 +90,65 @@ class PlannerStatsServiceImplTest {
   }
 
   @Test
+  void constraintsQueryNotFoundIsReported() {
+    StatsRepository repository = createRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    PlannerStatsBundleService bundles = createBundleService(repository, store);
+    PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId("missing-query")
+            .addTableIds(TABLE)
+            .build();
+    PrincipalContext principal = principal("corr-missing-constraints", true);
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                withPrincipal(
+                    principal,
+                    () ->
+                        service
+                            .getTableConstraints(request)
+                            .collect()
+                            .asList()
+                            .await()
+                            .indefinitely()));
+    assertEquals(Status.NOT_FOUND.getCode(), failure.getStatus().getCode());
+  }
+
+  @Test
+  void getTableConstraintsRejectsBlankQueryId() {
+    StatsRepository repository = createRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    PlannerStatsBundleService bundles = createBundleService(repository, store);
+    PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder().setQueryId("   ").addTableIds(TABLE).build();
+    PrincipalContext principal = principal("corr-blank-query-id-constraints", true);
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                withPrincipal(
+                    principal,
+                    () ->
+                        service
+                            .getTableConstraints(request)
+                            .collect()
+                            .asList()
+                            .await()
+                            .indefinitely()));
+    assertEquals(Status.INVALID_ARGUMENT.getCode(), failure.getStatus().getCode());
+  }
+
+  @Test
   void inactiveQueryIsRejected() {
     StatsRepository repository = createRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
@@ -108,6 +170,41 @@ class PlannerStatsServiceImplTest {
                     principal,
                     () ->
                         service.getColumnStats(request).collect().asList().await().indefinitely()));
+    assertEquals(Status.FAILED_PRECONDITION.getCode(), failure.getStatus().getCode());
+  }
+
+  @Test
+  void constraintsInactiveQueryIsRejected() {
+    StatsRepository repository = createRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    PlannerStatsBundleService bundles = createBundleService(repository, store);
+    PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
+
+    QueryContext ctx =
+        queryContextWithPin("query-inactive-constraints", 200L, QueryContext.State.ENDED_ABORT);
+    store.seed(ctx);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+    PrincipalContext principal = principal("corr-inactive-constraints", true);
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                withPrincipal(
+                    principal,
+                    () ->
+                        service
+                            .getTableConstraints(request)
+                            .collect()
+                            .asList()
+                            .await()
+                            .indefinitely()));
     assertEquals(Status.FAILED_PRECONDITION.getCode(), failure.getStatus().getCode());
   }
 
@@ -137,6 +234,41 @@ class PlannerStatsServiceImplTest {
   }
 
   @Test
+  void constraintsMissingPermissionIsDenied() {
+    StatsRepository repository = createRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    PlannerStatsBundleService bundles = createBundleService(repository, store);
+    PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
+
+    QueryContext ctx =
+        queryContextWithPin("query-auth-constraints", 201L, QueryContext.State.ACTIVE);
+    store.seed(ctx);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+    PrincipalContext principal = principal("corr-auth-constraints", false);
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                withPrincipal(
+                    principal,
+                    () ->
+                        service
+                            .getTableConstraints(request)
+                            .collect()
+                            .asList()
+                            .await()
+                            .indefinitely()));
+    assertEquals(Status.PERMISSION_DENIED.getCode(), failure.getStatus().getCode());
+  }
+
+  @Test
   void happyPathStreamsStats() {
     StatsRepository repository = createRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
@@ -162,6 +294,32 @@ class PlannerStatsServiceImplTest {
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedColumns());
     assertEquals(0L, end.getNotFoundColumns());
+  }
+
+  @Test
+  void happyPathStreamsConstraints() {
+    StatsRepository repository = createRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    PlannerStatsBundleService bundles = createBundleService(repository, store);
+    PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
+
+    QueryContext ctx = queryContextWithPin("query-constraints-ok", 203L, QueryContext.State.ACTIVE);
+    store.seed(ctx);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+    List<TableConstraintsBundleChunk> chunks =
+        withPrincipal(
+            principal("corr-constraints-ok", true),
+            () -> service.getTableConstraints(request).collect().asList().await().indefinitely());
+
+    List<TableConstraintsResult> results = flattenConstraints(chunks);
+    assertEquals(1, results.size());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, results.get(0).getStatus());
   }
 
   private static PlannerStatsServiceImpl createServiceImpl(
@@ -260,6 +418,17 @@ class PlannerStatsServiceImplTest {
     for (ColumnStatsBundleChunk chunk : chunks) {
       if (chunk.hasBatch()) {
         results.addAll(chunk.getBatch().getColumnsList());
+      }
+    }
+    return results;
+  }
+
+  private static List<TableConstraintsResult> flattenConstraints(
+      List<TableConstraintsBundleChunk> chunks) {
+    List<TableConstraintsResult> results = new ArrayList<>();
+    for (TableConstraintsBundleChunk chunk : chunks) {
+      if (chunk.hasBatch()) {
+        results.addAll(chunk.getBatch().getConstraintsList());
       }
     }
     return results;

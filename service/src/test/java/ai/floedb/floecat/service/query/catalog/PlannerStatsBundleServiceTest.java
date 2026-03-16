@@ -23,9 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.ColumnStatsBatch;
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
@@ -33,37 +30,17 @@ import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.ColumnStatsInfo;
 import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.StatsWarning;
-import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-class PlannerStatsBundleServiceTest {
-
-  private static final ResourceId CATALOG =
-      ResourceId.newBuilder()
-          .setAccountId("acct")
-          .setId("catalog")
-          .setKind(ResourceKind.RK_CATALOG)
-          .build();
-
-  private static final ResourceId TABLE =
-      ResourceId.newBuilder()
-          .setAccountId("acct")
-          .setId("users")
-          .setKind(ResourceKind.RK_TABLE)
-          .build();
+class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport {
 
   @Test
   void emitsHeaderThenEnd() {
@@ -146,9 +123,7 @@ class PlannerStatsBundleServiceTest {
 
     List<ColumnStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
-    assertEquals(
-        results.get(0).getStatus(),
-        ai.floedb.floecat.query.rpc.BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR);
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, results.get(0).getStatus());
     assertEquals("planner_stats.pin.missing", results.get(0).getFailure().getCode());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
@@ -178,18 +153,11 @@ class PlannerStatsBundleServiceTest {
     assertEquals(
         1,
         results.stream()
-            .filter(
-                r ->
-                    r.getStatus()
-                        .equals(
-                            ai.floedb.floecat.query.rpc.BundleResultStatus
-                                .BUNDLE_RESULT_STATUS_FOUND))
+            .filter(r -> r.getStatus().equals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND))
             .count());
     ColumnStatsResult missing =
         results.stream().filter(r -> r.getColumnId() == 2).findFirst().orElseThrow();
-    assertEquals(
-        ai.floedb.floecat.query.rpc.BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND,
-        missing.getStatus());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, missing.getStatus());
     assertEquals("planner_stats.column_stats.missing", missing.getFailure().getCode());
 
     ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
@@ -361,11 +329,10 @@ class PlannerStatsBundleServiceTest {
     PlannerStatsBundleService service =
         createService(
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxColumns= */ 10);
-    ResourceId table = TABLE;
     long snapshotId = 400L;
     ColumnStats stats =
         ColumnStats.newBuilder()
-            .setTableId(table)
+            .setTableId(TABLE)
             .setSnapshotId(snapshotId)
             .setColumnId(42L)
             .setColumnName("optionable")
@@ -376,10 +343,10 @@ class PlannerStatsBundleServiceTest {
             .setMax("bar")
             .setNdv(Ndv.newBuilder().setExact(13L).build())
             .build();
-    repository.putColumnStats(table, snapshotId, stats);
+    repository.putColumnStats(TABLE, snapshotId, stats);
     QueryContext ctx = queryContextWithPin("query-optionals", snapshotId);
     store.seed(ctx);
-    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), table, List.of(42L));
+    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(42L));
     List<ColumnStatsBundleChunk> chunks =
         service.stream("corr", ctx, request).collect().asList().await().indefinitely();
     ColumnStatsInfo info = flatten(chunks).get(0).getStats();
@@ -404,20 +371,19 @@ class PlannerStatsBundleServiceTest {
     PlannerStatsBundleService service =
         createService(
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxColumns= */ 10);
-    ResourceId table = TABLE;
     long snapshotId = 410L;
     ColumnStats stats =
         ColumnStats.newBuilder()
-            .setTableId(table)
+            .setTableId(TABLE)
             .setSnapshotId(snapshotId)
             .setColumnId(43L)
             .setColumnName("bare")
             .setValueCount(12L)
             .build();
-    repository.putColumnStats(table, snapshotId, stats);
+    repository.putColumnStats(TABLE, snapshotId, stats);
     QueryContext ctx = queryContextWithPin("query-absent", snapshotId);
     store.seed(ctx);
-    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), table, List.of(43L));
+    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(43L));
     List<ColumnStatsBundleChunk> chunks =
         service.stream("corr", ctx, request).collect().asList().await().indefinitely();
     ColumnStatsInfo info = flatten(chunks).get(0).getStats();
@@ -459,153 +425,5 @@ class PlannerStatsBundleServiceTest {
         io.grpc.StatusRuntimeException.class,
         () ->
             service.stream("corr", ctx, tooManyColumns).collect().asList().await().indefinitely());
-  }
-
-  private static PlannerStatsBundleService createService(
-      StatsRepository repository,
-      UserObjectBundleTestSupport.TestQueryContextStore store,
-      int chunkSize,
-      int maxTables,
-      int maxColumns) {
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
-    return PlannerStatsBundleService.forTesting(
-        factory, repository, maxTables, maxColumns, chunkSize);
-  }
-
-  private static StatsRepository createRepository() {
-    return new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-  }
-
-  private static ColumnStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
-    return ColumnStats.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setColumnId(columnId)
-        .setColumnName("col" + columnId)
-        .setValueCount(columnId * 10)
-        .setNullCount(columnId)
-        .build();
-  }
-
-  private static FetchColumnStatsRequest requestFor(
-      String queryId, ResourceId tableId, List<Long> columnIds) {
-    return FetchColumnStatsRequest.newBuilder()
-        .setQueryId(queryId)
-        .addTables(tableRequest(tableId, columnIds))
-        .build();
-  }
-
-  private static TableColumnStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
-    return TableColumnStatsRequest.newBuilder()
-        .setTableId(tableId)
-        .addAllColumnIds(columnIds)
-        .build();
-  }
-
-  private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
-    SnapshotPin pin = SnapshotPin.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).build();
-    SnapshotSet set = SnapshotSet.newBuilder().addPins(pin).build();
-    PrincipalContext principal =
-        PrincipalContext.newBuilder()
-            .setAccountId(TABLE.getAccountId())
-            .setSubject("tester")
-            .build();
-    return QueryContext.builder()
-        .queryId(queryId)
-        .principal(principal)
-        .snapshotSet(set.toByteArray())
-        .createdAtMs(1)
-        .expiresAtMs(1_000)
-        .state(QueryContext.State.ACTIVE)
-        .version(1)
-        .queryDefaultCatalogId(CATALOG)
-        .build();
-  }
-
-  private static QueryContext queryContextWithoutPin(String queryId) {
-    PrincipalContext principal =
-        PrincipalContext.newBuilder()
-            .setAccountId(TABLE.getAccountId())
-            .setSubject("tester")
-            .build();
-    return QueryContext.builder()
-        .queryId(queryId)
-        .principal(principal)
-        .createdAtMs(1)
-        .expiresAtMs(1_000)
-        .state(QueryContext.State.ACTIVE)
-        .version(1)
-        .queryDefaultCatalogId(CATALOG)
-        .build();
-  }
-
-  private static List<ColumnStatsResult> flatten(List<ColumnStatsBundleChunk> chunks) {
-    List<ColumnStatsResult> results = new ArrayList<>();
-    for (ColumnStatsBundleChunk chunk : chunks) {
-      if (chunk.hasBatch()) {
-        results.addAll(chunk.getBatch().getColumnsList());
-      }
-    }
-    return results;
-  }
-
-  private static final class SmartScanOnlyStatsRepository extends StatsRepository {
-    private SmartScanOnlyStatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-      super(
-          pointerStore,
-          blobStore,
-          /* smartThreshold= */ 2,
-          /* scanColumnsPerPage= */ 5,
-          /* maxScanPages= */ 5);
-    }
-
-    @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      throw new AssertionError("smart scan path should not require per-column batches");
-    }
-  }
-
-  private static final class CappingStatsRepository extends StatsRepository {
-    private final AtomicInteger batchCalls = new AtomicInteger();
-
-    private CappingStatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-      super(
-          pointerStore,
-          blobStore,
-          /* smartThreshold= */ 2,
-          /* scanColumnsPerPage= */ 1,
-          /* maxScanPages= */ 1);
-    }
-
-    @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      batchCalls.incrementAndGet();
-      return super.getColumnStatsBatch(tableId, snapshotId, columnIds);
-    }
-
-    int batchCallCount() {
-      return batchCalls.get();
-    }
-  }
-
-  private static final class ThrowingStatsRepository extends StatsRepository {
-    private ThrowingStatsRepository(
-        InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore) {
-      super(pointerStore, blobStore);
-    }
-
-    @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      throw new RuntimeException("boom");
-    }
-
-    @Override
-    public ColumnStatsBatchResult getColumnStatsBatchSmart(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      throw new RuntimeException("boom");
-    }
   }
 }

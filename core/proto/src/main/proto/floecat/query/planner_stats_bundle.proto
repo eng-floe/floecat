@@ -42,6 +42,21 @@ service PlannerStatsService {
    *   planner_stats.column_stats.error – an unexpected repository failure occurred while reading stats.
    */
   rpc GetColumnStats(FetchColumnStatsRequest) returns (stream ColumnStatsBundleChunk);
+
+  /**
+   * GetTableConstraints returns table-scoped constraints for planner-selected relations.
+   *
+   * GetTableConstraints provides a dedicated constraints stream for planner clients that fetch
+   * constraints separately. GetColumnStats(include_constraints=true) remains available for clients
+   * that prefer combined retrieval in one roundtrip.
+   *
+   * Visibility semantics are request-scoped at relation level: results may be pruned/redacted
+   * by requested tables (for example, foreign keys to non-requested tables are hidden).
+   *
+   * Unlike GetColumnStats(include_constraints=true), this request does not carry column
+   * projection context, so column-level pruning/masking cannot be made projection-aware here.
+   */
+  rpc GetTableConstraints(FetchTableConstraintsRequest) returns (stream TableConstraintsBundleChunk);
 }
 
 /** Request stats for a set of columns across one or more relations. */
@@ -60,6 +75,19 @@ message FetchColumnStatsRequest {
    * Defaults to false to preserve existing stats-only behavior for older clients.
    */
   bool include_constraints = 3;
+}
+
+/** Request table-scoped constraints for one or more relations. */
+message FetchTableConstraintsRequest {
+  /** Query ID obtained from BeginQuery (and used for snapshot pins). */
+  string query_id = 1;
+
+  /**
+   * Table IDs the planner needs constraints for. Duplicates are deduped server-side.
+   *
+   * This request is relation-scoped and does not include requested column IDs.
+   */
+  repeated ai.floedb.floecat.common.ResourceId table_ids = 2;
 }
 
 /** Columns requested for one table. */
@@ -85,7 +113,20 @@ message ColumnStatsBundleChunk {
   }
 }
 
+/** Streamed chunk for table constraints bundles. */
+message TableConstraintsBundleChunk {
+  string query_id = 1;
+  uint64 seq = 2;
+
+  oneof payload {
+    TableConstraintsBundleHeader header = 10;
+    TableConstraintsBatch batch = 20;
+    TableConstraintsBundleEnd end = 90;
+  }
+}
+
 message ColumnStatsBundleHeader {}
+message TableConstraintsBundleHeader {}
 
 message ColumnStatsBundleEnd {
   uint64 requested_tables = 1;
@@ -93,6 +134,13 @@ message ColumnStatsBundleEnd {
   uint64 returned_columns = 3;
   uint64 not_found_columns = 4;
   uint64 error_columns = 5;
+}
+
+message TableConstraintsBundleEnd {
+  uint64 requested_tables = 1;
+  uint64 returned_tables = 2;
+  uint64 not_found_tables = 3;
+  uint64 error_tables = 4;
 }
 
 message StatsWarning {
@@ -114,6 +162,13 @@ message ColumnStatsBatch {
    * Emitted only when requested via FetchColumnStatsRequest.include_constraints.
    */
   repeated TableConstraintsResult constraints = 3;
+}
+
+/** Batch of table constraints results. */
+message TableConstraintsBatch {
+  repeated TableConstraintsResult constraints = 1;
+  // Reserved for future constraint warning signals (none are currently emitted).
+  repeated StatsWarning warnings = 2;
 }
 
 enum BundleResultStatus {

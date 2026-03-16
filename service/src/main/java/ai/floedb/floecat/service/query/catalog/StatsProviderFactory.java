@@ -48,6 +48,10 @@ public final class StatsProviderFactory {
     return new CachedStatsProvider(repository, queryStore, ctx, correlationId);
   }
 
+  SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
+    return new SnapshotPinResolver(queryStore, ctx, correlationId);
+  }
+
   private static final class CachedStatsProvider implements StatsProvider {
 
     private final StatsRepository repository;

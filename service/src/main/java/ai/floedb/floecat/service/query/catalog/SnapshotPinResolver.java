@@ -24,7 +24,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.LongFunction;
 
-final class SnapshotPinResolver {
+final class SnapshotPinResolver implements SnapshotPinLookup {
 
   private final QueryContextStore queryStore;
   private final QueryContext initialCtx;
@@ -38,7 +38,8 @@ final class SnapshotPinResolver {
     this.correlationId = correlationId;
   }
 
-  OptionalLong pinnedSnapshotId(ResourceId tableId) {
+  @Override
+  public OptionalLong pinnedSnapshotId(ResourceId tableId) {
     Optional<SnapshotPin> pin = liveContext().findSnapshotPin(tableId, correlationId);
     return pin.isPresent() ? OptionalLong.of(pin.get().getSnapshotId()) : OptionalLong.empty();
   }
