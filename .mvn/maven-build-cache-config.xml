@@ -21,6 +21,9 @@
   <input>
     <global>
       <glob>{*.java,*.xml,*.properties,*.proto,*.pbtxt,*.txt,*.json,*.avro,*.parquet,*.bin,*.stats}</glob>
+      <includes>
+        <include glob="*">src/main/resources/META-INF/services</include>
+      </includes>
       <excludes>
         <exclude glob="**/target/**" entryType="FILE" matcherType="PATH"/>
       </excludes>
