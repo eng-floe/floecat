@@ -20,9 +20,12 @@ import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +34,11 @@ import java.util.Set;
 import org.apache.iceberg.TableMetadata;
 
 public final class TableMetadataMapper {
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final String DATA_SOURCE_FORMAT = "data_source_format";
+  private static final String DELTA_SOURCE = "DELTA";
+  private static final String NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
+
   private TableMetadataMapper() {}
 
   public static Map<String, Object> loadMetadata(
@@ -41,7 +49,8 @@ public final class TableMetadataMapper {
       return loadMetadataFromIceberg(table, metadata, snapshot, mapper);
     }
     Map<String, Object> view = new LinkedHashMap<>();
-    view.put("format-version", 2);
+    Integer formatVersion = propertyInt(table, "format-version");
+    view.put("format-version", formatVersion == null ? 2 : formatVersion);
     putIfNonNull(view, "table-uuid", propertyString(table, "table-uuid"));
     putIfNonNull(view, "location", propertyString(table, "location", "storage_location"));
     putIfNonNull(view, "last-updated-ms", propertyLong(table, "last-updated-ms"));
@@ -56,9 +65,13 @@ public final class TableMetadataMapper {
     view.put("partition-specs", List.of(defaultPartitionSpec()));
     view.put("sort-orders", List.of(defaultSortOrder()));
     view.put("refs", Map.of());
+    view.put("snapshot-log", List.of());
+    view.put("metadata-log", List.of());
     view.put("snapshots", snapshot == null ? List.of() : List.of(snapshot(snapshot)));
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
     properties.remove("metadata-location");
+    ensureDeltaNameMappingProperty(
+        properties, castSchemaList(view.get("schemas")), propertyInt(table, "current-schema-id"));
     view.put("properties", properties);
     return Map.copyOf(view);
   }
@@ -159,7 +172,7 @@ public final class TableMetadataMapper {
             .filter(
                 entry ->
                     entry.getValue() != null
-                        && entry.getValue().snapshotId() > 0L
+                        && snapshotIdIsDefined(entry.getValue().snapshotId())
                         && resolvableSnapshotIds.contains(entry.getValue().snapshotId()))
             .collect(
                 LinkedHashMap::new,
@@ -180,22 +193,33 @@ public final class TableMetadataMapper {
                   map.put(entry.getKey(), Map.copyOf(values));
                 },
                 LinkedHashMap::putAll));
+    view.put("snapshot-log", snapshotLog(metadata));
+    view.put("metadata-log", metadataLog(metadata));
     view.put("snapshots", snapshotValues);
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
     properties.remove("metadata-location");
     properties.put("metadata-location", metadataLocation);
+    ensureDeltaNameMappingProperty(
+        properties, castSchemaList(view.get("schemas")), metadata.currentSchemaId());
     view.put("properties", properties);
     return Map.copyOf(view);
   }
 
   public static String metadataLocation(Table table, Snapshot snapshot) {
+    String property = table.getPropertiesOrDefault("metadata-location", "");
+    if (!property.isBlank()) {
+      return property;
+    }
+    return snapshotMetadataLocation(snapshot);
+  }
+
+  public static String snapshotMetadataLocation(Snapshot snapshot) {
     IcebergMetadata metadata =
         decode(snapshot == null ? null : snapshot.getFormatMetadataMap().get("iceberg"));
     if (metadata != null && !metadata.getMetadataLocation().isBlank()) {
       return metadata.getMetadataLocation();
     }
-    String property = table.getPropertiesOrDefault("metadata-location", "");
-    return property.isBlank() ? null : property;
+    return null;
   }
 
   private static IcebergMetadata decode(ByteString bytes) {
@@ -207,6 +231,24 @@ public final class TableMetadataMapper {
     } catch (Exception ignored) {
       return null;
     }
+  }
+
+  private static boolean hasDefinedCurrentSnapshotId(IcebergMetadata metadata, Snapshot snapshot) {
+    if (metadata == null) {
+      return false;
+    }
+    if (metadata.getCurrentSnapshotId() != 0L) {
+      return metadata.getCurrentSnapshotId() > 0L;
+    }
+    if (snapshot != null && snapshot.getSnapshotId() == 0L) {
+      return true;
+    }
+    return metadata.getRefsMap().values().stream()
+        .anyMatch(ref -> ref != null && ref.getSnapshotId() == 0L);
+  }
+
+  private static boolean snapshotIdIsDefined(long snapshotId) {
+    return snapshotId >= 0L;
   }
 
   private static Map<String, Object> loadMetadataFromIceberg(
@@ -224,7 +266,7 @@ public final class TableMetadataMapper {
       view.put("default-spec-id", metadata.getDefaultSpecId());
       view.put("last-partition-id", metadata.getLastPartitionId());
       view.put("default-sort-order-id", metadata.getDefaultSortOrderId());
-      if (metadata.getCurrentSnapshotId() > 0L) {
+      if (hasDefinedCurrentSnapshotId(metadata, snapshot)) {
         view.put("current-snapshot-id", metadata.getCurrentSnapshotId());
       }
       view.put("last-sequence-number", metadata.getLastSequenceNumber());
@@ -244,17 +286,157 @@ public final class TableMetadataMapper {
       view.put(
           "refs",
           metadata.getRefsMap().entrySet().stream()
-              .filter(entry -> entry.getValue() != null && entry.getValue().getSnapshotId() > 0L)
+              .filter(
+                  entry ->
+                      entry.getValue() != null
+                          && snapshotIdIsDefined(entry.getValue().getSnapshotId()))
               .collect(
                   LinkedHashMap::new,
                   (map, entry) -> map.put(entry.getKey(), ref(entry.getValue())),
                   LinkedHashMap::putAll));
+      view.put("snapshot-log", snapshotLog(metadata));
+      view.put("metadata-log", metadataLog(metadata));
       view.put("snapshots", snapshot == null ? List.of() : List.of(snapshot(snapshot)));
     }
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
     properties.remove("metadata-location");
+    ensureDeltaNameMappingProperty(
+        properties,
+        castSchemaList(view.get("schemas")),
+        metadata == null ? null : metadata.getCurrentSchemaId());
     view.put("properties", properties);
     return Map.copyOf(view);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<Map<String, Object>> castSchemaList(Object value) {
+    return value instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+  }
+
+  private static void ensureDeltaNameMappingProperty(
+      Map<String, String> properties,
+      List<Map<String, Object>> schemaList,
+      Integer currentSchemaId) {
+    if (properties == null || properties.isEmpty()) {
+      return;
+    }
+    String source = properties.get(DATA_SOURCE_FORMAT);
+    if (source == null || !DELTA_SOURCE.equalsIgnoreCase(source)) {
+      return;
+    }
+    String existing = properties.get(NAME_MAPPING_PROPERTY);
+    if (existing != null && !existing.isBlank()) {
+      return;
+    }
+    String mappingJson = buildNameMappingJson(schemaList, currentSchemaId);
+    if (mappingJson != null && !mappingJson.isBlank()) {
+      properties.put(NAME_MAPPING_PROPERTY, mappingJson);
+    }
+  }
+
+  private static String buildNameMappingJson(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    Map<String, Object> schema = findSchema(schemaList, currentSchemaId);
+    if (schema == null) {
+      return null;
+    }
+    List<Map<String, Object>> fields = asFieldMapList(schema.get("fields"));
+    if (fields.isEmpty()) {
+      return null;
+    }
+    List<Map<String, Object>> mapping = buildNameMappingFields(fields);
+    if (mapping.isEmpty()) {
+      return null;
+    }
+    try {
+      return JSON.writeValueAsString(mapping);
+    } catch (Exception ignored) {
+      return null;
+    }
+  }
+
+  private static Map<String, Object> findSchema(
+      List<Map<String, Object>> schemaList, Integer currentSchemaId) {
+    if (schemaList == null || schemaList.isEmpty()) {
+      return null;
+    }
+    if (currentSchemaId != null) {
+      for (Map<String, Object> schema : schemaList) {
+        Object schemaId = schema == null ? null : schema.get("schema-id");
+        if (schemaId instanceof Number number && number.intValue() == currentSchemaId) {
+          return schema;
+        }
+      }
+    }
+    return schemaList.getFirst();
+  }
+
+  private static List<Map<String, Object>> asFieldMapList(Object value) {
+    if (!(value instanceof List<?> list) || list.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new java.util.ArrayList<>(list.size());
+    for (Object entry : list) {
+      if (!(entry instanceof Map<?, ?> map) || map.isEmpty()) {
+        continue;
+      }
+      LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+      map.forEach(
+          (k, v) -> {
+            if (k != null) {
+              values.put(String.valueOf(k), v);
+            }
+          });
+      if (!values.isEmpty()) {
+        out.add(Map.copyOf(values));
+      }
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<Map<String, Object>> buildNameMappingFields(
+      List<Map<String, Object>> fields) {
+    if (fields == null || fields.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new java.util.ArrayList<>(fields.size());
+    for (Map<String, Object> field : fields) {
+      Map<String, Object> mapped = buildNameMappingField(field);
+      if (mapped != null) {
+        out.add(mapped);
+      }
+    }
+    return List.copyOf(out);
+  }
+
+  private static Map<String, Object> buildNameMappingField(Map<String, Object> field) {
+    if (field == null || field.isEmpty()) {
+      return null;
+    }
+    Object fieldId = field.get("id");
+    Object name = field.get("name");
+    if (!(fieldId instanceof Number number)
+        || number.intValue() <= 0
+        || !(name instanceof String fieldName)
+        || fieldName.isBlank()) {
+      return null;
+    }
+
+    Map<String, Object> mapped = new LinkedHashMap<>();
+    mapped.put("field-id", number.intValue());
+    mapped.put("names", List.of(fieldName));
+
+    if (field.get("type") instanceof Map<?, ?> typeMap) {
+      Object typeName = typeMap.get("type");
+      if (typeName instanceof String type && "struct".equalsIgnoreCase(type)) {
+        List<Map<String, Object>> nested =
+            buildNameMappingFields(asFieldMapList(typeMap.get("fields")));
+        if (!nested.isEmpty()) {
+          mapped.put("fields", nested);
+        }
+      }
+    }
+    return Map.copyOf(mapped);
   }
 
   public static boolean requiresHydration(Map<String, Object> metadata) {
@@ -312,6 +494,7 @@ public final class TableMetadataMapper {
     }
     Map<String, Object> view = new LinkedHashMap<>(metadata);
     view.put("snapshots", snapshotValues);
+    view.put("snapshot-log", filteredSnapshotLog(view.get("snapshot-log"), snapshotValues));
 
     Object currentSnapshotId = view.get("current-snapshot-id");
     if (currentSnapshotId instanceof Number number && !snapshotIds.contains(number.longValue())) {
@@ -334,6 +517,100 @@ public final class TableMetadataMapper {
       view.put("refs", Map.copyOf(filteredRefs));
     }
     return Map.copyOf(view);
+  }
+
+  private static List<Map<String, Object>> snapshotLog(IcebergMetadata metadata) {
+    if (metadata == null || metadata.getSnapshotLogCount() == 0) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(metadata.getSnapshotLogCount());
+    for (IcebergSnapshotLogEntry entry : metadata.getSnapshotLogList()) {
+      Map<String, Object> log = new LinkedHashMap<>();
+      log.put("timestamp-ms", entry.getTimestampMs());
+      log.put("snapshot-id", entry.getSnapshotId());
+      out.add(Map.copyOf(log));
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<Map<String, Object>> metadataLog(IcebergMetadata metadata) {
+    if (metadata == null || metadata.getMetadataLogCount() == 0) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(metadata.getMetadataLogCount());
+    for (IcebergMetadataLogEntry entry : metadata.getMetadataLogList()) {
+      Map<String, Object> log = new LinkedHashMap<>();
+      log.put("timestamp-ms", entry.getTimestampMs());
+      log.put("metadata-file", entry.getFile());
+      out.add(Map.copyOf(log));
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<Map<String, Object>> snapshotLog(TableMetadata metadata) {
+    if (metadata == null || metadata.snapshotLog() == null || metadata.snapshotLog().isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(metadata.snapshotLog().size());
+    for (org.apache.iceberg.HistoryEntry entry : metadata.snapshotLog()) {
+      Map<String, Object> log = new LinkedHashMap<>();
+      log.put("timestamp-ms", entry.timestampMillis());
+      log.put("snapshot-id", entry.snapshotId());
+      out.add(Map.copyOf(log));
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<Map<String, Object>> metadataLog(TableMetadata metadata) {
+    if (metadata == null
+        || metadata.previousFiles() == null
+        || metadata.previousFiles().isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(metadata.previousFiles().size());
+    for (org.apache.iceberg.TableMetadata.MetadataLogEntry entry : metadata.previousFiles()) {
+      Map<String, Object> log = new LinkedHashMap<>();
+      log.put("timestamp-ms", entry.timestampMillis());
+      log.put("metadata-file", entry.file());
+      out.add(Map.copyOf(log));
+    }
+    return List.copyOf(out);
+  }
+
+  private static List<Map<String, Object>> filteredSnapshotLog(
+      Object rawSnapshotLog, List<Map<String, Object>> snapshotValues) {
+    if (!(rawSnapshotLog instanceof List<?> logs) || logs.isEmpty()) {
+      return List.of();
+    }
+    Set<Long> snapshotIds = new HashSet<>();
+    for (Map<String, Object> snapshotValue : snapshotValues) {
+      Object snapshotId = snapshotValue == null ? null : snapshotValue.get("snapshot-id");
+      if (snapshotId instanceof Number number) {
+        snapshotIds.add(number.longValue());
+      }
+    }
+    if (snapshotIds.isEmpty()) {
+      return List.of();
+    }
+    List<Map<String, Object>> out = new ArrayList<>(logs.size());
+    for (Object rawEntry : logs) {
+      if (!(rawEntry instanceof Map<?, ?> entry)) {
+        continue;
+      }
+      Long snapshotId =
+          entry.get("snapshot-id") instanceof Number number ? number.longValue() : null;
+      if (snapshotId == null || !snapshotIds.contains(snapshotId)) {
+        continue;
+      }
+      Object timestamp = entry.get("timestamp-ms");
+      Map<String, Object> log = new LinkedHashMap<>();
+      log.put("snapshot-id", snapshotId);
+      if (timestamp instanceof Number) {
+        log.put("timestamp-ms", ((Number) timestamp).longValue());
+      }
+      out.add(Map.copyOf(log));
+    }
+    return List.copyOf(out);
   }
 
   private static Object parseJson(ObjectMapper mapper, String json) {
@@ -419,22 +696,28 @@ public final class TableMetadataMapper {
   private static Map<String, Object> snapshot(Snapshot snapshot) {
     Map<String, Object> values = new LinkedHashMap<>();
     values.put("snapshot-id", snapshot.getSnapshotId());
-    if (snapshot.getParentSnapshotId() != 0L) {
+    if (snapshot.hasParentSnapshotId()) {
       values.put("parent-snapshot-id", snapshot.getParentSnapshotId());
     }
-    if (snapshot.getSequenceNumber() != 0L) {
+    if (snapshot.getSequenceNumber() > 0L) {
       values.put("sequence-number", snapshot.getSequenceNumber());
     }
-    if (!snapshot.getManifestList().isBlank()) {
-      values.put("manifest-list", snapshot.getManifestList());
-    }
-    if (snapshot.getSchemaId() != 0) {
+    values.put(
+        "timestamp-ms",
+        snapshot.hasUpstreamCreatedAt()
+            ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
+            : 0L);
+    values.put(
+        "manifest-list", snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
+    if (snapshot.getSchemaId() >= 0) {
       values.put("schema-id", snapshot.getSchemaId());
     }
-    values.put("summary", snapshot.getSummaryCount() == 0 ? Map.of() : snapshot.getSummaryMap());
-    if (snapshot.hasUpstreamCreatedAt()) {
-      values.put("timestamp-ms", snapshot.getUpstreamCreatedAt().getSeconds() * 1000L);
+    Map<String, String> summary = new LinkedHashMap<>();
+    if (snapshot.getSummaryCount() > 0) {
+      summary.putAll(snapshot.getSummaryMap());
     }
+    summary.putIfAbsent("operation", "append");
+    values.put("summary", Map.copyOf(summary));
     return Map.copyOf(values);
   }
 

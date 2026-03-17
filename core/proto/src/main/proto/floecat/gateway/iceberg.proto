@@ -124,6 +124,13 @@ message IcebergCommitJournalEntry {
   int64 created_at_ms = 12;
 }
 
+message IcebergCommitReplayIndex {
+  uint32 version = 1;
+  string tx_id = 2;
+  string request_hash = 3;
+  repeated IcebergCommitJournalEntry entries = 4;
+}
+
 message IcebergCommitOutboxEntry {
   uint32 version = 1;
   string tx_id = 2;

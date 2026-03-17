@@ -255,7 +255,7 @@ public final class DummyConnector implements FloecatConnector {
     return List.of(
         new SnapshotBundle(
             snapshotId,
-            0L,
+            null,
             createdAt,
             tStats,
             cstats,

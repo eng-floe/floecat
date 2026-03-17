@@ -36,6 +36,7 @@ public final class IcebergConnectorProvider implements ConnectorProvider {
     return IcebergConnectorFactory.create(
         cfg.uri(),
         options,
+        cfg.resolvedMetadataLocation(),
         auth.scheme(),
         new HashMap<>(auth.props()),
         new HashMap<>(auth.headerHints()));

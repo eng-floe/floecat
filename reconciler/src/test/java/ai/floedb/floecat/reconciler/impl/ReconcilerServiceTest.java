@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -45,6 +46,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
+import io.grpc.Status;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -83,6 +85,58 @@ class ReconcilerServiceTest {
     assertThat(result.errors).isEqualTo(1);
     assertThat(result.error).isInstanceOf(IllegalArgumentException.class);
     assertThat(result.error.getMessage()).contains("getConnector failed:");
+  }
+
+  @Test
+  void reconcileTreatsMissingConnectorAsNoOp() {
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId connectorId) {
+            throw Status.NOT_FOUND
+                .withDescription("Connector not found: " + connectorId.getId())
+                .asRuntimeException();
+          }
+        };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.errors).isZero();
+    assertThat(result.error).isNull();
+  }
+
+  @Test
+  void repeatedStatsOnlyReconcileTreatsMissingConnectorAsNoOp() {
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId connectorId) {
+            throw Status.NOT_FOUND
+                .withDescription("Connector not found: " + connectorId.getId())
+                .asRuntimeException();
+          }
+        };
+
+    for (int i = 0; i < 25; i++) {
+      var result =
+          service.reconcile(
+              principal,
+              connectorId,
+              false,
+              ReconcileScope.empty(),
+              ReconcilerService.CaptureMode.STATS_ONLY);
+
+      assertThat(result.ok()).isTrue();
+      assertThat(result.errors).isZero();
+      assertThat(result.error).isNull();
+    }
   }
 
   @Test
@@ -144,6 +198,11 @@ class ReconcilerServiceTest {
     @Override
     public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
       throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<Table> fetchTable(ReconcileContext ctx, ResourceId tableId) {
+      return Optional.empty();
     }
 
     @Override
@@ -254,7 +313,7 @@ class ReconcilerServiceTest {
     FloecatConnector.SnapshotBundle bundle =
         new FloecatConnector.SnapshotBundle(
             existing.getSnapshotId(),
-            existing.getParentSnapshotId(),
+            null,
             Instant.now().toEpochMilli(),
             null,
             List.of(),
@@ -281,6 +340,33 @@ class ReconcilerServiceTest {
         .containsEntry("meta-key", ByteString.copyFromUtf8("new"));
     assertThat(result.getFormatMetadataMap())
         .containsEntry("extra", ByteString.copyFromUtf8("value"));
+  }
+
+  @Test
+  void buildSnapshotPreservesExplicitZeroParentSnapshotId() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    FloecatConnector.SnapshotBundle bundle =
+        new FloecatConnector.SnapshotBundle(
+            123L,
+            0L,
+            Instant.now().toEpochMilli(),
+            null,
+            List.of(),
+            List.of(),
+            null,
+            null,
+            0,
+            null,
+            Map.of(),
+            0,
+            Map.of());
+
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
+    Snapshot result = service.buildSnapshot(ctx, tableId, bundle, null).orElseThrow();
+
+    assertThat(result.hasParentSnapshotId()).isTrue();
+    assertThat(result.getParentSnapshotId()).isZero();
   }
 
   @Test
@@ -387,6 +473,627 @@ class ReconcilerServiceTest {
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
         .containsExactly(10L, 11L);
+  }
+
+  @Test
+  void statsOnlyReconcileDoesNotUpdateConnectorDestination() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .build())
+            .build();
+
+    class DestinationTrackingBackend extends DefaultBackend {
+      int updates;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId ignoredConnectorId, DestinationTarget destination) {
+        updates++;
+      }
+    }
+
+    service.backend = new DestinationTrackingBackend();
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public ConnectorFormat format() {
+                return ConnectorFormat.CF_ICEBERG;
+              }
+
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                return List.of("src_tbl");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    "dest_ns",
+                    "dest_tbl",
+                    "s3://bucket/dest_tbl",
+                    "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                    Map.of());
+              }
+            };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.error).isNull();
+    assertThat(((DestinationTrackingBackend) service.backend).updates).isZero();
+  }
+
+  @Test
+  void repeatedStatsOnlyReconcileDoesNotUpdateConnectorDestination() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .build())
+            .build();
+
+    class DestinationTrackingBackend extends DefaultBackend {
+      int updates;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId ignoredConnectorId, DestinationTarget destination) {
+        updates++;
+      }
+    }
+
+    service.backend = new DestinationTrackingBackend();
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public ConnectorFormat format() {
+                return ConnectorFormat.CF_ICEBERG;
+              }
+
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                return List.of("src_tbl");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    "dest_ns",
+                    "dest_tbl",
+                    "s3://bucket/dest_tbl",
+                    "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                    Map.of());
+              }
+            };
+
+    for (int i = 0; i < 25; i++) {
+      var result =
+          service.reconcile(
+              principal,
+              connectorId,
+              false,
+              ReconcileScope.empty(),
+              ReconcilerService.CaptureMode.STATS_ONLY);
+      assertThat(result.error).isNull();
+    }
+
+    assertThat(((DestinationTrackingBackend) service.backend).updates).isZero();
+  }
+
+  @Test
+  void statsOnlyReconcilePreservesExplicitFilesystemMetadataLocationWhenTableExists() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .setTableId(tableId)
+                    .build())
+            .putProperties("iceberg.source", "filesystem")
+            .putProperties("external.metadata-location", "s3://bucket/stale/00001.metadata.json")
+            .build();
+
+    class TableAwareBackend extends DefaultBackend {
+      private int fetches;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public Optional<Table> fetchTable(ReconcileContext ctx, ResourceId ignoredTableId) {
+        fetches++;
+        if (fetches == 1) {
+          return Optional.of(Table.newBuilder().setResourceId(tableId).build());
+        }
+        return Optional.of(
+            Table.newBuilder()
+                .setResourceId(tableId)
+                .putProperties("metadata-location", "s3://bucket/current/00002.metadata.json")
+                .build());
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+    }
+
+    service.backend = new TableAwareBackend();
+    List<String> openedMetadataLocations = new ArrayList<>();
+    service.connectorOpener =
+        cfg -> {
+          openedMetadataLocations.add(cfg.resolvedMetadataLocation());
+          assertThat(cfg.options()).doesNotContainKey("metadata-location");
+          return new FakeConnector(List.of()) {
+            @Override
+            public ConnectorFormat format() {
+              return ConnectorFormat.CF_ICEBERG;
+            }
+
+            @Override
+            public List<String> listTables(String namespaceFq) {
+              return List.of("src_tbl");
+            }
+
+            @Override
+            public TableDescriptor describe(String namespaceFq, String tableName) {
+              return new TableDescriptor(
+                  "dest_ns",
+                  "dest_tbl",
+                  "s3://bucket/dest_tbl",
+                  "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                  List.of(),
+                  ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                  Map.of());
+            }
+          };
+        };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.error).isNull();
+    assertThat(openedMetadataLocations).containsExactly("s3://bucket/stale/00001.metadata.json");
+  }
+
+  @Test
+  void statsOnlyReconcileDoesNotInjectMetadataLocationForNonFilesystemIceberg() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .setTableId(tableId)
+                    .build())
+            .putProperties("iceberg.source", "rest")
+            .build();
+
+    class RestBackend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public Optional<Table> fetchTable(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Optional.of(
+            Table.newBuilder()
+                .setResourceId(tableId)
+                .putProperties("metadata-location", "s3://bucket/current/00002.metadata.json")
+                .build());
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+    }
+
+    service.backend = new RestBackend();
+    List<String> openedMetadataLocations = new ArrayList<>();
+    List<String> openedSources = new ArrayList<>();
+    service.connectorOpener =
+        cfg -> {
+          openedMetadataLocations.add(cfg.resolvedMetadataLocation());
+          assertThat(cfg.options()).doesNotContainKey("metadata-location");
+          openedSources.add(cfg.options().get("iceberg.source"));
+          return new FakeConnector(List.of()) {
+            @Override
+            public ConnectorFormat format() {
+              return ConnectorFormat.CF_ICEBERG;
+            }
+
+            @Override
+            public List<String> listTables(String namespaceFq) {
+              return List.of("src_tbl");
+            }
+
+            @Override
+            public TableDescriptor describe(String namespaceFq, String tableName) {
+              return new TableDescriptor(
+                  "dest_ns",
+                  "dest_tbl",
+                  "s3://bucket/dest_tbl",
+                  "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                  List.of(),
+                  ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                  Map.of());
+            }
+          };
+        };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.error).isNull();
+    assertThat(openedSources).containsExactly("rest");
+    assertThat(openedMetadataLocations).containsExactly((String) null);
+  }
+
+  @Test
+  void statsOnlyReconcileUsesConnectorMetadataLocationAsBootstrapWhenTableMissing() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .setTableId(tableId)
+                    .build())
+            .putProperties("iceberg.source", "filesystem")
+            .putProperties(
+                "external.metadata-location", "s3://bucket/bootstrap/00001.metadata.json")
+            .build();
+
+    class BootstrapBackend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+    }
+
+    service.backend = new BootstrapBackend();
+    List<String> openedMetadataLocations = new ArrayList<>();
+    service.connectorOpener =
+        cfg -> {
+          openedMetadataLocations.add(cfg.resolvedMetadataLocation());
+          assertThat(cfg.options()).doesNotContainKey("metadata-location");
+          return new FakeConnector(List.of()) {
+            @Override
+            public ConnectorFormat format() {
+              return ConnectorFormat.CF_ICEBERG;
+            }
+
+            @Override
+            public List<String> listTables(String namespaceFq) {
+              return List.of("src_tbl");
+            }
+
+            @Override
+            public TableDescriptor describe(String namespaceFq, String tableName) {
+              return new TableDescriptor(
+                  "dest_ns",
+                  "dest_tbl",
+                  "s3://bucket/dest_tbl",
+                  "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                  List.of(),
+                  ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                  Map.of());
+            }
+          };
+        };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.error).isNull();
+    assertThat(openedMetadataLocations)
+        .containsExactly("s3://bucket/bootstrap/00001.metadata.json");
+  }
+
+  @Test
+  void statsOnlyNamespaceScopedFilesystemIcebergUsesDestinationTableMetadataBeforeFirstOpen() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("src_ns").build())
+                    .setTable("src_tbl")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .build())
+            .putProperties("iceberg.source", "filesystem")
+            .build();
+
+    class NamespaceScopedBackend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return connector;
+      }
+
+      @Override
+      public Optional<Table> fetchTable(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Optional.of(
+            Table.newBuilder()
+                .setResourceId(tableId)
+                .putProperties("metadata-location", "s3://bucket/current/00002.metadata.json")
+                .build());
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId ignoredCatalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId ignoredNamespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.of(tableId);
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return true;
+      }
+    }
+
+    service.backend = new NamespaceScopedBackend();
+    List<String> openedMetadataLocations = new ArrayList<>();
+    service.connectorOpener =
+        cfg -> {
+          openedMetadataLocations.add(cfg.resolvedMetadataLocation());
+          assertThat(cfg.options()).doesNotContainKey("metadata-location");
+          return new FakeConnector(List.of()) {
+            @Override
+            public ConnectorFormat format() {
+              return ConnectorFormat.CF_ICEBERG;
+            }
+
+            @Override
+            public List<String> listTables(String namespaceFq) {
+              return List.of("src_tbl");
+            }
+
+            @Override
+            public TableDescriptor describe(String namespaceFq, String tableName) {
+              return new TableDescriptor(
+                  "dest_ns",
+                  "src_tbl",
+                  "s3://bucket/src_tbl",
+                  "{\"type\":\"struct\",\"fields\":[],\"schema-id\":0}",
+                  List.of(),
+                  ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+                  Map.of());
+            }
+          };
+        };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            ReconcileScope.empty(),
+            ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.error).isNull();
+    assertThat(openedMetadataLocations).containsExactly("s3://bucket/current/00002.metadata.json");
   }
 
   @Test

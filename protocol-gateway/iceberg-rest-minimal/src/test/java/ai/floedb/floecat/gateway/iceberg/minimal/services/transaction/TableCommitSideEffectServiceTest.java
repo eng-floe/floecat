@@ -18,14 +18,19 @@ package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import io.grpc.Status;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -36,6 +41,8 @@ class TableCommitSideEffectServiceTest {
   private final GrpcClients clients = Mockito.mock(GrpcClients.class);
   private final ReconcileControlGrpc.ReconcileControlBlockingStub reconcile =
       Mockito.mock(ReconcileControlGrpc.ReconcileControlBlockingStub.class);
+  private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot =
+      Mockito.mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
 
   private final TableCommitSideEffectService service = new TableCommitSideEffectService(grpc);
 
@@ -73,5 +80,39 @@ class TableCommitSideEffectServiceTest {
         List.of());
 
     Mockito.verifyNoInteractions(grpc, clients, reconcile);
+  }
+
+  @Test
+  void prunesSnapshotsWithoutPreconditions() {
+    when(grpc.raw()).thenReturn(clients);
+    when(clients.snapshot()).thenReturn(snapshot);
+    when(grpc.withHeaders(snapshot)).thenReturn(snapshot);
+    when(snapshot.deleteSnapshot(any())).thenReturn(DeleteSnapshotResponse.newBuilder().build());
+
+    assertEquals(
+        true,
+        service.pruneRemovedSnapshots(
+            ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(), List.of(101L)));
+
+    ArgumentCaptor<DeleteSnapshotRequest> captor =
+        ArgumentCaptor.forClass(DeleteSnapshotRequest.class);
+    verify(snapshot).deleteSnapshot(captor.capture());
+    DeleteSnapshotRequest request = captor.getValue();
+    assertEquals("tbl-1", request.getTableId().getId());
+    assertEquals(101L, request.getSnapshotId());
+    assertEquals(false, request.hasPrecondition());
+  }
+
+  @Test
+  void ignoresMissingSnapshotsDuringPrune() {
+    when(grpc.raw()).thenReturn(clients);
+    when(clients.snapshot()).thenReturn(snapshot);
+    when(grpc.withHeaders(snapshot)).thenReturn(snapshot);
+    when(snapshot.deleteSnapshot(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
+
+    assertEquals(
+        true,
+        service.pruneRemovedSnapshots(
+            ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(), List.of(101L)));
   }
 }

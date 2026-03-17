@@ -19,12 +19,15 @@ package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -44,8 +47,10 @@ import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.TransactionsGrpc;
 import ai.floedb.floecat.transaction.rpc.TxChange;
+import com.google.protobuf.util.Durations;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.List;
 
 @ApplicationScoped
@@ -107,8 +112,44 @@ public class GrpcTransactionBackend implements TransactionBackend {
   }
 
   @Override
-  public BeginTransactionResponse beginTransaction(String idempotencyKey, String requestHash) {
+  public ListSnapshotsResponse listSnapshots(ResourceId tableId) {
+    ListSnapshotsResponse.Builder merged = ListSnapshotsResponse.newBuilder();
+    String token = "";
+    while (true) {
+      ListSnapshotsResponse response =
+          snapshotStub()
+              .listSnapshots(
+                  ListSnapshotsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setPage(
+                          ai.floedb.floecat.common.rpc.PageRequest.newBuilder()
+                              .setPageSize(1000)
+                              .setPageToken(token)
+                              .build())
+                      .build());
+      if (response == null) {
+        break;
+      }
+      merged.addAllSnapshots(response.getSnapshotsList());
+      if (!response.hasPage()) {
+        break;
+      }
+      String nextToken = response.getPage().getNextPageToken();
+      if (nextToken == null || nextToken.isBlank() || nextToken.equals(token)) {
+        break;
+      }
+      token = nextToken;
+    }
+    return merged.build();
+  }
+
+  @Override
+  public BeginTransactionResponse beginTransaction(
+      String idempotencyKey, String requestHash, Duration ttl) {
     BeginTransactionRequest.Builder request = BeginTransactionRequest.newBuilder();
+    if (ttl != null && !ttl.isNegative() && !ttl.isZero()) {
+      request.setTtl(Durations.fromMillis(ttl.toMillis()));
+    }
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
@@ -157,6 +198,10 @@ public class GrpcTransactionBackend implements TransactionBackend {
 
   private TableServiceGrpc.TableServiceBlockingStub tableStub() {
     return grpc.withHeaders(grpc.raw().table());
+  }
+
+  private SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub() {
+    return grpc.withHeaders(grpc.raw().snapshot());
   }
 
   private TransactionsGrpc.TransactionsBlockingStub transactionStub() {

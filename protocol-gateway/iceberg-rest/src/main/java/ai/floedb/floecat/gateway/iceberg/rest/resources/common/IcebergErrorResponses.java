@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.common;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergError;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import io.grpc.StatusRuntimeException;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 
 public final class IcebergErrorResponses {
@@ -106,6 +107,30 @@ public final class IcebergErrorResponses {
     String message =
         status.getDescription() == null ? status.getCode().name() : status.getDescription();
     return error(message, type, httpStatus.getStatusCode());
+  }
+
+  public static Response grpcStatusOnly(StatusRuntimeException exception) {
+    var status = exception.getStatus();
+    return switch (status.getCode()) {
+      case NOT_FOUND -> statusOnly(Response.Status.NOT_FOUND);
+      case INVALID_ARGUMENT -> statusOnly(Response.Status.BAD_REQUEST);
+      case PERMISSION_DENIED -> statusOnly(Response.Status.FORBIDDEN);
+      case UNAUTHENTICATED -> statusOnly(Response.Status.UNAUTHORIZED);
+      case UNIMPLEMENTED -> statusOnly(Response.Status.NOT_ACCEPTABLE);
+      case UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED ->
+          statusOnly(Response.Status.SERVICE_UNAVAILABLE);
+      default -> statusOnly(Response.Status.INTERNAL_SERVER_ERROR);
+    };
+  }
+
+  public static Response statusOnly(Response.Status status) {
+    return Response.status(status).header("Content-Length", "0").build();
+  }
+
+  public static Response webApplicationStatusOnly(WebApplicationException exception) {
+    return Response.status(exception.getResponse().getStatus())
+        .header("Content-Length", "0")
+        .build();
   }
 
   private static Response error(String message, String type, int statusCode) {

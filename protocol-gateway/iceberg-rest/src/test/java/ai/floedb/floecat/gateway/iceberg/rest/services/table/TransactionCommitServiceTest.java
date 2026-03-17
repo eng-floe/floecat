@@ -654,11 +654,9 @@ class TransactionCommitServiceTest {
                             change -> {
                               try {
                                 Connector connector = Connector.parseFrom(change.getPayload());
-                                return "s3://floecat/iceberg/orders/metadata/00002.metadata.json"
-                                    .equals(
-                                        connector
-                                            .getPropertiesMap()
-                                            .get("external.metadata-location"));
+                                return !connector
+                                    .getPropertiesMap()
+                                    .containsKey("metadata-location");
                               } catch (InvalidProtocolBufferException e) {
                                 return false;
                               }

@@ -31,7 +31,11 @@ import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,6 +52,8 @@ import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.SortOrderParser;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.encryption.BaseEncryptedKey;
+import org.apache.iceberg.encryption.EncryptedKey;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.SupportsPrefixOperations;
@@ -68,6 +74,12 @@ public class IcebergMetadataCommitService {
 
   public record PlannedCommit(
       Table table, List<ai.floedb.floecat.transaction.rpc.TxChange> extraChanges) {}
+
+  public record PlannedImportedCommit(
+      Table table,
+      List<ai.floedb.floecat.transaction.rpc.TxChange> extraChanges,
+      List<Long> effectiveSnapshotIds,
+      List<Long> removedSnapshotIds) {}
 
   public PlannedCommit plan(
       Table currentTable,
@@ -109,18 +121,21 @@ public class IcebergMetadataCommitService {
 
   public PlannedCommit planCreate(
       Table createStub, ResourceId tableId, List<Map<String, Object>> updates) {
-    Map<String, String> ioProps = mergedIoProperties(createStub, updates);
     TableMetadata bootstrap = bootstrapCreateMetadata(updates);
-    String nextMetadataLocation = nextMetadataLocation(ioProps, bootstrap, bootstrap);
+    if (!containsCreateSnapshotUpdates(updates)) {
+      Table updatedTable = applyCanonicalProperties(createStub, bootstrap, null);
+      return new PlannedCommit(updatedTable, List.of());
+    }
+
+    Map<String, String> ioProps = mergedIoProperties(createStub, updates);
+    String metadataLocation = nextMetadataLocation(ioProps, null, bootstrap);
     FileIO fileIO = null;
     try {
       fileIO = FileIoFactory.createFileIo(ioProps, config);
-      TableMetadata finalMetadata = bootstrap;
-      TableMetadataParser.write(finalMetadata, fileIO.newOutputFile(nextMetadataLocation));
-      Table updatedTable =
-          applyCanonicalProperties(createStub, finalMetadata, nextMetadataLocation);
+      TableMetadataParser.write(bootstrap, fileIO.newOutputFile(metadataLocation));
+      Table updatedTable = applyCanonicalProperties(createStub, bootstrap, metadataLocation);
       return new PlannedCommit(
-          updatedTable, snapshotTxChanges(tableId, finalMetadata, updates, nextMetadataLocation));
+          updatedTable, snapshotTxChanges(tableId, bootstrap, updates, metadataLocation));
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
@@ -136,6 +151,41 @@ public class IcebergMetadataCommitService {
         }
       }
     }
+  }
+
+  public PlannedImportedCommit planImported(
+      Table currentTable,
+      ResourceId tableId,
+      TableMetadataImportService.ImportedMetadata imported,
+      Map<String, String> mergedProperties,
+      List<Long> existingSnapshotIds) {
+    if (imported == null || imported.icebergMetadata() == null) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("imported metadata is required")
+          .asRuntimeException();
+    }
+    String metadataLocation = importedMetadataLocation(imported, mergedProperties);
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("imported metadata-location is required")
+          .asRuntimeException();
+    }
+    Table updated =
+        applyImportedProperties(currentTable, imported, mergedProperties, metadataLocation);
+    List<Long> importedSnapshotIds = importedSnapshotIds(imported);
+    List<Long> removedSnapshotIds = new ArrayList<>();
+    if (existingSnapshotIds != null && !existingSnapshotIds.isEmpty()) {
+      for (Long snapshotId : existingSnapshotIds) {
+        if (snapshotId != null && !importedSnapshotIds.contains(snapshotId)) {
+          removedSnapshotIds.add(snapshotId);
+        }
+      }
+    }
+    return new PlannedImportedCommit(
+        updated,
+        importedSnapshotTxChanges(tableId, imported, metadataLocation),
+        effectiveImportedSnapshotIds(imported),
+        List.copyOf(removedSnapshotIds));
   }
 
   private void validateRequirements(
@@ -252,6 +302,8 @@ public class IcebergMetadataCommitService {
             builder.addPartitionSpec(parsePartitionSpec(working.schema(), update.get("spec")));
         case "set-default-spec" ->
             builder.setDefaultPartitionSpec(resolveSpecId(working, update.get("spec-id")));
+        case "remove-partition-specs" ->
+            invokeBuilder(builder, "removeSpecs", intList(update.get("spec-ids")));
         case "add-sort-order" ->
             builder.addSortOrder(parseSortOrder(working.schema(), update.get("sort-order")));
         case "set-default-sort-order" ->
@@ -268,6 +320,11 @@ public class IcebergMetadataCommitService {
           // Statistics sidecars are optional for correctness. Minimal accepts these updates
           // for client compatibility but does not persist them separately.
         }
+        case "add-encryption-key" ->
+            builder.addEncryptionKey(buildEncryptionKey(update.get("encryption-key")));
+        case "remove-encryption-key" -> builder.removeEncryptionKey(requireKeyId(update));
+        case "remove-schemas" ->
+            invokeBuilder(builder, "removeSchemas", intList(update.get("schema-ids")));
         case "remove-snapshots" -> builder.removeSnapshots(longList(update.get("snapshot-ids")));
         case "set-snapshot-ref" -> {
           String refName = stringValue(update.get("ref-name"));
@@ -468,6 +525,22 @@ public class IcebergMetadataCommitService {
     return List.copyOf(out);
   }
 
+  private boolean containsCreateSnapshotUpdates(List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return false;
+    }
+    for (Map<String, Object> update : updates) {
+      String action = stringValue(update == null ? null : update.get("action"));
+      if ("add-snapshot".equals(action)
+          || "set-snapshot-ref".equals(action)
+          || "remove-snapshot-ref".equals(action)
+          || "remove-snapshots".equals(action)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private List<ai.floedb.floecat.transaction.rpc.TxChange> snapshotTxChanges(
       ResourceId tableId,
       TableMetadata metadata,
@@ -521,7 +594,7 @@ public class IcebergMetadataCommitService {
     if (icebergSnapshot.timestampMillis() > 0) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(icebergSnapshot.timestampMillis()));
     }
-    if (icebergSnapshot.parentId() != null && icebergSnapshot.parentId() > 0) {
+    if (icebergSnapshot.parentId() != null) {
       builder.setParentSnapshotId(icebergSnapshot.parentId());
     }
     if (icebergSnapshot.sequenceNumber() > 0) {
@@ -557,13 +630,39 @@ public class IcebergMetadataCommitService {
   private Table applyCanonicalProperties(
       Table currentTable, TableMetadata metadata, String metadataLocation) {
     Map<String, String> properties =
-        new LinkedHashMap<>(importService.canonicalProperties(metadata, metadataLocation));
+        metadataLocation == null || metadataLocation.isBlank()
+            ? new LinkedHashMap<>(metadata.properties())
+            : new LinkedHashMap<>(importService.canonicalProperties(metadata, metadataLocation));
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      properties.putIfAbsent("table-uuid", metadata.uuid());
+      if (metadata.location() != null && !metadata.location().isBlank()) {
+        properties.put("location", metadata.location());
+        properties.put("storage_location", metadata.location());
+      }
+      properties.put("format-version", Integer.toString(metadata.formatVersion()));
+      putInt(properties, "current-schema-id", metadata.currentSchemaId());
+      putInt(properties, "last-column-id", metadata.lastColumnId());
+      putInt(properties, "default-spec-id", metadata.defaultSpecId());
+      putInt(properties, "last-partition-id", metadata.lastAssignedPartitionId());
+      putInt(properties, "default-sort-order-id", metadata.defaultSortOrderId());
+      putLong(properties, "last-sequence-number", metadata.lastSequenceNumber());
+      putLong(properties, "last-updated-ms", metadata.lastUpdatedMillis());
+      if (metadata.currentSnapshot() != null) {
+        putLong(properties, "current-snapshot-id", metadata.currentSnapshot().snapshotId());
+      } else {
+        properties.remove("current-snapshot-id");
+      }
+      properties.remove("metadata-location");
+    }
     if (!metadata.refs().isEmpty()) {
       properties.put("metadata.refs", encodeRefs(metadata.refs()));
     } else {
       properties.remove("metadata.refs");
     }
     Table.Builder updated = currentTable.toBuilder().clearProperties().putAllProperties(properties);
+    if (metadata.schema() != null) {
+      updated.setSchemaJson(SchemaParser.toJson(metadata.schema()));
+    }
     if (currentTable.hasUpstream()
         && metadata.location() != null
         && !metadata.location().isBlank()) {
@@ -573,9 +672,172 @@ public class IcebergMetadataCommitService {
     return updated.build();
   }
 
+  private static void putInt(Map<String, String> props, String key, int value) {
+    if (value >= 0) {
+      props.put(key, Integer.toString(value));
+    }
+  }
+
+  private static void putLong(Map<String, String> props, String key, long value) {
+    if (value >= 0) {
+      props.put(key, Long.toString(value));
+    }
+  }
+
+  private Table applyImportedProperties(
+      Table currentTable,
+      TableMetadataImportService.ImportedMetadata imported,
+      Map<String, String> mergedProperties,
+      String metadataLocation) {
+    Map<String, String> properties = new LinkedHashMap<>();
+    if (mergedProperties != null && !mergedProperties.isEmpty()) {
+      properties.putAll(mergedProperties);
+    }
+    properties.put("metadata-location", metadataLocation);
+    if (imported.tableLocation() != null && !imported.tableLocation().isBlank()) {
+      properties.putIfAbsent("location", imported.tableLocation());
+      properties.putIfAbsent("storage_location", imported.tableLocation());
+    }
+    Table.Builder updated = currentTable.toBuilder().clearProperties().putAllProperties(properties);
+    if (imported.schemaJson() != null && !imported.schemaJson().isBlank()) {
+      updated.setSchemaJson(imported.schemaJson());
+    }
+    if (updated.hasUpstream()) {
+      String upstreamUri = properties.getOrDefault("location", imported.tableLocation());
+      if (upstreamUri != null && !upstreamUri.isBlank()) {
+        updated.setUpstream(updated.getUpstream().toBuilder().setUri(upstreamUri).build());
+      }
+    }
+    return updated.build();
+  }
+
+  private List<ai.floedb.floecat.transaction.rpc.TxChange> importedSnapshotTxChanges(
+      ResourceId tableId,
+      TableMetadataImportService.ImportedMetadata imported,
+      String metadataLocation) {
+    List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
+    if (imported == null) {
+      return List.of();
+    }
+    List<TableMetadataImportService.ImportedSnapshot> snapshots =
+        imported.snapshots() != null && !imported.snapshots().isEmpty()
+            ? imported.snapshots()
+            : imported.currentSnapshot() == null ? List.of() : List.of(imported.currentSnapshot());
+    String accountId = tableId.getAccountId();
+    for (TableMetadataImportService.ImportedSnapshot importedSnapshot : snapshots) {
+      if (importedSnapshot == null || importedSnapshot.snapshotId() == null) {
+        continue;
+      }
+      Snapshot snapshot = toCatalogSnapshot(tableId, imported, metadataLocation, importedSnapshot);
+      long upstreamCreatedAtMs =
+          snapshot.hasUpstreamCreatedAt()
+              ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
+              : System.currentTimeMillis();
+      ByteString payload = ByteString.copyFrom(snapshot.toByteArray());
+      out.add(
+          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+              .setTargetPointerKey(
+                  snapshotPointerById(accountId, tableId.getId(), importedSnapshot.snapshotId()))
+              .setPayload(payload)
+              .build());
+      out.add(
+          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+              .setTargetPointerKey(
+                  snapshotPointerByTime(
+                      accountId,
+                      tableId.getId(),
+                      importedSnapshot.snapshotId(),
+                      upstreamCreatedAtMs))
+              .setPayload(payload)
+              .build());
+    }
+    return List.copyOf(out);
+  }
+
+  private Snapshot toCatalogSnapshot(
+      ResourceId tableId,
+      TableMetadataImportService.ImportedMetadata imported,
+      String metadataLocation,
+      TableMetadataImportService.ImportedSnapshot importedSnapshot) {
+    Snapshot.Builder builder =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(importedSnapshot.snapshotId());
+    if (importedSnapshot.timestampMs() != null && importedSnapshot.timestampMs() >= 0) {
+      builder.setUpstreamCreatedAt(Timestamps.fromMillis(importedSnapshot.timestampMs()));
+    }
+    if (importedSnapshot.parentSnapshotId() != null) {
+      builder.setParentSnapshotId(importedSnapshot.parentSnapshotId());
+    }
+    if (importedSnapshot.sequenceNumber() != null && importedSnapshot.sequenceNumber() >= 0) {
+      builder.setSequenceNumber(importedSnapshot.sequenceNumber());
+    }
+    if (importedSnapshot.manifestList() != null && !importedSnapshot.manifestList().isBlank()) {
+      builder.setManifestList(importedSnapshot.manifestList());
+    }
+    if (importedSnapshot.summary() != null && !importedSnapshot.summary().isEmpty()) {
+      builder.putAllSummary(importedSnapshot.summary());
+    }
+    if (importedSnapshot.schemaId() != null && importedSnapshot.schemaId() >= 0) {
+      builder.setSchemaId(importedSnapshot.schemaId());
+    }
+    if (imported.schemaJson() != null && !imported.schemaJson().isBlank()) {
+      builder.setSchemaJson(imported.schemaJson());
+    }
+    IcebergMetadata snapshotMetadata =
+        imported.icebergMetadata().toBuilder()
+            .setMetadataLocation(metadataLocation)
+            .setCurrentSnapshotId(importedSnapshot.snapshotId())
+            .build();
+    builder.putFormatMetadata("iceberg", snapshotMetadata.toByteString());
+    return builder.build();
+  }
+
+  private String importedMetadataLocation(
+      TableMetadataImportService.ImportedMetadata imported, Map<String, String> mergedProperties) {
+    if (mergedProperties != null) {
+      String explicit = mergedProperties.get("metadata-location");
+      if (explicit != null && !explicit.isBlank()) {
+        return explicit;
+      }
+    }
+    if (imported != null
+        && imported.icebergMetadata() != null
+        && !imported.icebergMetadata().getMetadataLocation().isBlank()) {
+      return imported.icebergMetadata().getMetadataLocation();
+    }
+    return null;
+  }
+
+  private List<Long> importedSnapshotIds(TableMetadataImportService.ImportedMetadata imported) {
+    List<Long> out = new ArrayList<>();
+    if (imported == null) {
+      return out;
+    }
+    List<TableMetadataImportService.ImportedSnapshot> snapshots =
+        imported.snapshots() != null && !imported.snapshots().isEmpty()
+            ? imported.snapshots()
+            : imported.currentSnapshot() == null ? List.of() : List.of(imported.currentSnapshot());
+    for (TableMetadataImportService.ImportedSnapshot snapshot : snapshots) {
+      if (snapshot != null && snapshot.snapshotId() != null) {
+        out.add(snapshot.snapshotId());
+      }
+    }
+    return List.copyOf(out);
+  }
+
+  private List<Long> effectiveImportedSnapshotIds(
+      TableMetadataImportService.ImportedMetadata imported) {
+    if (imported == null) {
+      return List.of();
+    }
+    if (imported.currentSnapshot() != null && imported.currentSnapshot().snapshotId() != null) {
+      return List.of(imported.currentSnapshot().snapshotId());
+    }
+    return importedSnapshotIds(imported);
+  }
+
   private String nextMetadataLocation(
       Map<String, String> ioProps, TableMetadata currentMetadata, TableMetadata nextMetadata) {
-    String current = currentMetadata.metadataFileLocation();
+    String current = currentMetadata == null ? null : currentMetadata.metadataFileLocation();
     String directory =
         current == null || current.isBlank()
             ? defaultMetadataDirectory(nextMetadata.location())
@@ -745,6 +1007,80 @@ public class IcebergMetadataCommitService {
       builder.minSnapshotsToKeep(minSnapshotsToKeep);
     }
     return builder.build();
+  }
+
+  private EncryptedKey buildEncryptionKey(Object value) {
+    Map<String, Object> key = objectMap(value);
+    if (key == null || key.isEmpty()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("add-encryption-key requires encryption-key")
+          .asRuntimeException();
+    }
+    String keyId = stringValue(key.get("key-id"));
+    String metadataB64 = stringValue(key.get("encrypted-key-metadata"));
+    if (keyId == null || keyId.isBlank() || metadataB64 == null || metadataB64.isBlank()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("add-encryption-key requires key-id and encrypted-key-metadata")
+          .asRuntimeException();
+    }
+    byte[] decoded;
+    try {
+      decoded = Base64.getDecoder().decode(metadataB64);
+    } catch (IllegalArgumentException e) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("encrypted-key-metadata must be valid base64")
+          .asRuntimeException();
+    }
+    String encryptedBy = stringValue(key.get("encrypted-by-id"));
+    return new BaseEncryptedKey(
+        keyId,
+        ByteBuffer.wrap(decoded),
+        encryptedBy == null || encryptedBy.isBlank() ? null : encryptedBy,
+        stringMap(key.get("properties")));
+  }
+
+  private String requireKeyId(Map<String, Object> update) {
+    String keyId = stringValue(update.get("key-id"));
+    if (keyId == null || keyId.isBlank()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("remove-encryption-key requires key-id")
+          .asRuntimeException();
+    }
+    return keyId;
+  }
+
+  private void invokeBuilder(
+      org.apache.iceberg.TableMetadata.Builder builder, String methodName, List<Integer> ids) {
+    if (ids.isEmpty()) {
+      String description =
+          "removeSpecs".equals(methodName)
+              ? "remove-partition-specs requires spec-ids"
+              : "remove-schemas requires schema-ids";
+      throw Status.INVALID_ARGUMENT.withDescription(description).asRuntimeException();
+    }
+    try {
+      Method method = builder.getClass().getDeclaredMethod(methodName, Iterable.class);
+      method.setAccessible(true);
+      method.invoke(builder, ids);
+    } catch (InvocationTargetException e) {
+      Throwable cause = e.getCause() == null ? e : e.getCause();
+      if (cause instanceof RuntimeException runtimeException) {
+        throw Status.INVALID_ARGUMENT
+            .withDescription(
+                cause.getMessage() == null ? "invalid metadata update" : cause.getMessage())
+            .withCause(runtimeException)
+            .asRuntimeException();
+      }
+      throw Status.INTERNAL
+          .withDescription("failed to apply metadata update")
+          .withCause(cause)
+          .asRuntimeException();
+    } catch (ReflectiveOperationException e) {
+      throw Status.INTERNAL
+          .withDescription("unsupported Iceberg metadata builder method: " + methodName)
+          .withCause(e)
+          .asRuntimeException();
+    }
   }
 
   private int resolveSchemaId(TableMetadata metadata, Object requested) {
@@ -985,5 +1321,18 @@ public class IcebergMetadataCommitService {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private List<Integer> intList(Object value) {
+    List<Integer> out = new ArrayList<>();
+    if (value instanceof List<?> list) {
+      for (Object item : list) {
+        Integer parsed = intValue(item);
+        if (parsed != null) {
+          out.add(parsed);
+        }
+      }
+    }
+    return out;
   }
 }

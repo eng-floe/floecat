@@ -115,14 +115,16 @@ public class NamespaceResource {
       backend.exists(prefix, NamespacePaths.split(namespace));
       return Response.noContent().build();
     } catch (StatusRuntimeException exception) {
-      return IcebergErrorResponses.grpc(exception);
+      return IcebergErrorResponses.grpcStatusOnly(exception);
     }
   }
 
   @DELETE
   @Path("/{namespace}")
   public Response delete(
-      @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
+      @PathParam("prefix") String prefix,
+      @PathParam("namespace") String namespace,
+      @HeaderParam("Idempotency-Key") String idempotencyKey) {
     try {
       backend.delete(prefix, NamespacePaths.split(namespace));
       return Response.noContent().build();

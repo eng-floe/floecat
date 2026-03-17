@@ -35,6 +35,18 @@ public final class IcebergErrorResponses {
     return error(message, "NoSuchTableException", Response.Status.NOT_FOUND);
   }
 
+  public static Response noSuchView(String message) {
+    return error(message, "NoSuchViewException", Response.Status.NOT_FOUND);
+  }
+
+  public static Response noSuchPlanId(String message) {
+    return error(message, "NoSuchPlanIdException", Response.Status.NOT_FOUND);
+  }
+
+  public static Response noSuchPlanTask(String message) {
+    return error(message, "NoSuchPlanTaskException", Response.Status.NOT_FOUND);
+  }
+
   public static Response conflict(String message) {
     return error(message, "CommitFailedException", Response.Status.CONFLICT);
   }
@@ -62,6 +74,17 @@ public final class IcebergErrorResponses {
     };
   }
 
+  public static Response grpcStatusOnly(StatusRuntimeException exception) {
+    return switch (exception.getStatus().getCode()) {
+      case NOT_FOUND -> statusOnly(Response.Status.NOT_FOUND);
+      case INVALID_ARGUMENT -> statusOnly(Response.Status.BAD_REQUEST);
+      case ALREADY_EXISTS, FAILED_PRECONDITION, ABORTED -> statusOnly(Response.Status.CONFLICT);
+      case PERMISSION_DENIED -> statusOnly(Response.Status.FORBIDDEN);
+      case UNAUTHENTICATED -> statusOnly(Response.Status.UNAUTHORIZED);
+      default -> statusOnly(Response.Status.INTERNAL_SERVER_ERROR);
+    };
+  }
+
   private static String descriptionOrCode(StatusRuntimeException exception) {
     return exception.getStatus().getDescription() == null
         ? exception.getStatus().getCode().name()
@@ -74,5 +97,9 @@ public final class IcebergErrorResponses {
             Map.of(
                 "error", Map.of("message", message, "type", type, "code", status.getStatusCode())))
         .build();
+  }
+
+  private static Response statusOnly(Response.Status status) {
+    return Response.status(status).header("Content-Length", "0").build();
   }
 }

@@ -479,7 +479,7 @@ public abstract class AbstractRestResourceTest {
     if (snapshot == null) {
       return null;
     }
-    Long parentId = snapshot.getParentSnapshotId() == 0 ? null : snapshot.getParentSnapshotId();
+    Long parentId = snapshot.hasParentSnapshotId() ? snapshot.getParentSnapshotId() : null;
     Long sequence = snapshot.getSequenceNumber() == 0 ? null : snapshot.getSequenceNumber();
     Long timestampMs =
         snapshot.hasUpstreamCreatedAt()

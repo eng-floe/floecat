@@ -506,11 +506,11 @@ public class SeedRunner {
 
   private void ensureIcebergFixtureProperties(Connector existing, long now) {
     var props = new LinkedHashMap<>(existing.getPropertiesMap());
+    boolean hasSource =
+        props.containsKey("iceberg.source") && !props.get("iceberg.source").isBlank();
     boolean hasExternal =
         props.containsKey("external.metadata-location")
             && !props.get("external.metadata-location").isBlank();
-    boolean hasSource =
-        props.containsKey("iceberg.source") && !props.get("iceberg.source").isBlank();
     if (!hasExternal || hasSource) {
       return;
     }

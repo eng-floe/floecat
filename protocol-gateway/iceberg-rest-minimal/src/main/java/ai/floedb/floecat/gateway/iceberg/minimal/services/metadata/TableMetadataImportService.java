@@ -28,7 +28,10 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortField;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSortOrder;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -36,6 +39,7 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SortField;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.SortOrderParser;
@@ -58,7 +62,18 @@ public class TableMetadataImportService {
       String schemaJson,
       Map<String, String> properties,
       String tableLocation,
-      IcebergMetadata icebergMetadata) {}
+      IcebergMetadata icebergMetadata,
+      ImportedSnapshot currentSnapshot,
+      List<ImportedSnapshot> snapshots) {}
+
+  public record ImportedSnapshot(
+      Long snapshotId,
+      Long parentSnapshotId,
+      Long sequenceNumber,
+      Long timestampMs,
+      String manifestList,
+      Map<String, String> summary,
+      Integer schemaId) {}
 
   public ImportedMetadata importMetadata(
       String metadataLocation, Map<String, String> ioProperties) {
@@ -237,11 +252,47 @@ public class TableMetadataImportService {
 
   private ImportedMetadata importedMetadata(TableMetadata metadata, String metadataLocation) {
     String schemaJson = SchemaParser.toJson(metadata.schema());
+    ImportedSnapshot currentSnapshot = null;
+    if (metadata.currentSnapshot() != null) {
+      currentSnapshot = toImportedSnapshot(metadata.currentSnapshot());
+    }
+    List<ImportedSnapshot> snapshots = new ArrayList<>();
+    for (Snapshot snapshot : metadata.snapshots()) {
+      snapshots.add(toImportedSnapshot(snapshot));
+    }
     return new ImportedMetadata(
         schemaJson,
         canonicalProperties(metadata, metadataLocation),
         metadata.location(),
-        toIcebergMetadata(metadata, metadataLocation));
+        toIcebergMetadata(metadata, metadataLocation),
+        currentSnapshot,
+        List.copyOf(snapshots));
+  }
+
+  private ImportedSnapshot toImportedSnapshot(Snapshot snapshot) {
+    if (snapshot == null) {
+      return null;
+    }
+    return new ImportedSnapshot(
+        snapshot.snapshotId(),
+        snapshot.parentId(),
+        snapshot.sequenceNumber(),
+        snapshot.timestampMillis(),
+        snapshot.manifestListLocation(),
+        copySummaryWithOperation(snapshot),
+        snapshot.schemaId());
+  }
+
+  private Map<String, String> copySummaryWithOperation(Snapshot snapshot) {
+    Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+    if (summary.isEmpty() && (snapshot.operation() == null || snapshot.operation().isBlank())) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> copy = new LinkedHashMap<>(summary);
+    if (snapshot.operation() != null && !snapshot.operation().isBlank()) {
+      copy.putIfAbsent("operation", snapshot.operation());
+    }
+    return Collections.unmodifiableMap(copy);
   }
 
   public IcebergMetadata toIcebergMetadata(TableMetadata metadata, String metadataLocation) {
@@ -364,20 +415,36 @@ public class TableMetadataImportService {
       String requestedUuid,
       String failureMessage) {
     try {
-      TableMetadata metadata =
-          TableMetadata.newTableMetadata(schema, spec, sortOrder, tableLocation, properties);
-      var builder = TableMetadata.buildFrom(metadata);
-      if (requestedFormatVersion != null
-          && requestedFormatVersion >= 1
-          && requestedFormatVersion != metadata.formatVersion()) {
+      Map<String, String> safeProperties = properties == null ? Map.of() : Map.copyOf(properties);
+      var builder =
+          requestedFormatVersion != null && requestedFormatVersion >= 1
+              ? TableMetadata.buildFromEmpty(requestedFormatVersion)
+              : TableMetadata.buildFrom(
+                  TableMetadata.newTableMetadata(
+                      schema, spec, sortOrder, tableLocation, safeProperties));
+      if (requestedFormatVersion != null && requestedFormatVersion >= 1) {
+        if (tableLocation != null && !tableLocation.isBlank()) {
+          builder.setLocation(tableLocation);
+        }
+        if (!safeProperties.isEmpty()) {
+          builder.setProperties(safeProperties);
+        }
+        builder.setCurrentSchema(schema, schema.highestFieldId());
+        builder.setDefaultPartitionSpec(spec);
+        builder.setDefaultSortOrder(sortOrder);
+      } else if (requestedFormatVersion != null) {
         builder.upgradeFormatVersion(requestedFormatVersion);
       }
       if (requestedUuid != null) {
         builder.assignUUID(requestedUuid);
-      } else if (metadata.uuid() == null || metadata.uuid().isBlank()) {
-        builder.assignUUID(UUID.randomUUID().toString());
       }
-      return builder.build();
+      TableMetadata metadata = builder.build();
+      if (requestedUuid == null && (metadata.uuid() == null || metadata.uuid().isBlank())) {
+        builder = TableMetadata.buildFrom(metadata);
+        builder.assignUUID(UUID.randomUUID().toString());
+        metadata = builder.build();
+      }
+      return metadata;
     } catch (IllegalArgumentException e) {
       throw e;
     } catch (Exception e) {

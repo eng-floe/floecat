@@ -92,8 +92,11 @@ public class ConnectorProvisioningService {
       Table enriched =
           enrichTableUpstream(
               table, namespacePath, tableName, existingConnectorId, refreshedConnector.getUri());
-      return new ProvisionResult(
-          enriched, existingConnectorId, connectorUpsertChanges(accountId, refreshedConnector));
+      List<TxChange> connectorChanges =
+          connectorMateriallyChanged(existingConnector, refreshedConnector)
+              ? connectorUpdateChanges(accountId, existingConnector, refreshedConnector)
+              : List.of();
+      return new ProvisionResult(enriched, existingConnectorId, connectorChanges);
     }
     if ((resolvedTableLocation == null || resolvedTableLocation.isBlank())
         && (metadataLocation == null || metadataLocation.isBlank())) {
@@ -149,12 +152,12 @@ public class ConnectorProvisioningService {
     Timestamp nowTs = Timestamps.fromMillis(System.currentTimeMillis());
 
     Map<String, String> props = new LinkedHashMap<>();
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      props.put("external.metadata-location", metadataLocation);
-    }
     props.put("iceberg.source", "filesystem");
     props.put("external.table-name", tableName);
     props.put("external.namespace", namespaceFq);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      props.put("external.metadata-location", metadataLocation);
+    }
     props.put("floecat.connector.capture-statistics", Boolean.toString(true));
     props.putAll(ioProperties);
 
@@ -192,10 +195,8 @@ public class ConnectorProvisioningService {
       ResourceId tableId,
       String metadataLocation,
       String resolvedTableLocation) {
-    Timestamp nowTs = Timestamps.fromMillis(System.currentTimeMillis());
     Connector.Builder updated =
         existingConnector.toBuilder()
-            .setUpdatedAt(nowTs)
             .setSource(
                 SourceSelector.newBuilder()
                     .setNamespace(NamespacePath.newBuilder().addAllSegments(namespacePath).build())
@@ -208,15 +209,29 @@ public class ConnectorProvisioningService {
                     .setTableId(tableId)
                     .setTableDisplayName(tableName)
                     .build());
-    Map<String, String> nextProperties = new LinkedHashMap<>(existingConnector.getPropertiesMap());
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      nextProperties.put("external.metadata-location", metadataLocation);
-    }
-    updated.clearProperties().putAllProperties(nextProperties);
     if (resolvedTableLocation != null && !resolvedTableLocation.isBlank()) {
       updated.setUri(resolvedTableLocation);
     }
-    return updated.build();
+    Connector refreshed = updated.build();
+    if (connectorMateriallyChanged(existingConnector, refreshed)) {
+      return refreshed.toBuilder()
+          .setUpdatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+          .build();
+    }
+    return existingConnector;
+  }
+
+  private boolean connectorMateriallyChanged(Connector existingConnector, Connector refreshed) {
+    if (existingConnector == null) {
+      return refreshed != null;
+    }
+    if (refreshed == null) {
+      return true;
+    }
+    Connector existingComparable =
+        existingConnector.toBuilder().clearUpdatedAt().clearCreatedAt().build();
+    Connector refreshedComparable = refreshed.toBuilder().clearUpdatedAt().clearCreatedAt().build();
+    return !existingComparable.equals(refreshedComparable);
   }
 
   private Connector loadExistingConnector(ResourceId connectorId) {
@@ -278,6 +293,25 @@ public class ConnectorProvisioningService {
             .setTargetPointerKey(Keys.connectorPointerByName(accountId, connector.getDisplayName()))
             .setPayload(payload)
             .build());
+  }
+
+  private List<TxChange> connectorUpdateChanges(
+      String accountId, Connector existingConnector, Connector refreshedConnector) {
+    if (refreshedConnector == null
+        || !refreshedConnector.hasResourceId()
+        || refreshedConnector.getDisplayName().isBlank()) {
+      return List.of();
+    }
+    ByteString payload = ByteString.copyFrom(refreshedConnector.toByteArray());
+    String byIdPointer =
+        Keys.connectorPointerById(accountId, refreshedConnector.getResourceId().getId());
+    String existingName = existingConnector == null ? "" : existingConnector.getDisplayName();
+    String refreshedName = refreshedConnector.getDisplayName();
+    if (existingName.equals(refreshedName)) {
+      return List.of(
+          TxChange.newBuilder().setTargetPointerKey(byIdPointer).setPayload(payload).build());
+    }
+    return connectorUpsertChanges(accountId, refreshedConnector);
   }
 
   private ResourceId deterministicConnectorId(String accountId, String txId, ResourceId tableId) {

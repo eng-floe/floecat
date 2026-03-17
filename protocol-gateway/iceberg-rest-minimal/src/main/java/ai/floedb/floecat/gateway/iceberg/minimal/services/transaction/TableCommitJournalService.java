@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitReplayIndex;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -35,12 +36,36 @@ public class TableCommitJournalService {
   BlobStore blobStore;
 
   public Optional<IcebergCommitJournalEntry> get(String accountId, String tableId, String txId) {
+    byte[] payload =
+        loadPayload(Keys.tableCommitJournalPointer(accountId, tableId, txId)).orElse(null);
+    if (payload == null) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(IcebergCommitJournalEntry.parseFrom(payload));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException("failed to parse commit journal", e);
+    }
+  }
+
+  public Optional<IcebergCommitReplayIndex> getReplayIndex(String accountId, String txId) {
+    byte[] payload = loadPayload(Keys.tableCommitReplayPointer(accountId, txId)).orElse(null);
+    if (payload == null) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(IcebergCommitReplayIndex.parseFrom(payload));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException("failed to parse commit replay index", e);
+    }
+  }
+
+  private Optional<byte[]> loadPayload(String key) {
     PointerStore pointerStore = resolvePointerStore();
     BlobStore blobStore = resolveBlobStore();
     if (pointerStore == null || blobStore == null) {
       return Optional.empty();
     }
-    String key = Keys.tableCommitJournalPointer(accountId, tableId, txId);
     var pointer = pointerStore.get(key).orElse(null);
     if (pointer == null || pointer.getBlobUri() == null || pointer.getBlobUri().isBlank()) {
       return Optional.empty();
@@ -49,11 +74,7 @@ public class TableCommitJournalService {
     if (payload == null) {
       throw new IllegalStateException("missing journal blob: " + pointer.getBlobUri());
     }
-    try {
-      return Optional.of(IcebergCommitJournalEntry.parseFrom(payload));
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalStateException("failed to parse commit journal: " + pointer.getBlobUri(), e);
-    }
+    return Optional.of(payload);
   }
 
   private PointerStore resolvePointerStore() {

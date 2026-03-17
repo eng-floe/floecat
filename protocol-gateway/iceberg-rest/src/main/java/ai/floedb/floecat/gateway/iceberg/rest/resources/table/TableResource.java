@@ -40,6 +40,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableLoadService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableMetricsService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRegisterService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.grpc.StatusRuntimeException;
 import io.smallrye.common.annotation.Blocking;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Inject;
@@ -53,6 +54,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.Config;
@@ -135,8 +137,14 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
-    requestContextFactory.table(prefix, namespace, table);
-    return Response.noContent().build();
+    try {
+      requestContextFactory.table(prefix, namespace, table);
+      return IcebergErrorResponses.statusOnly(Response.Status.NO_CONTENT);
+    } catch (WebApplicationException exception) {
+      return IcebergErrorResponses.webApplicationStatusOnly(exception);
+    } catch (StatusRuntimeException exception) {
+      return IcebergErrorResponses.grpcStatusOnly(exception);
+    }
   }
 
   @Path("/tables/{table}")

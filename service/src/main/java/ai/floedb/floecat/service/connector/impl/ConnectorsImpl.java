@@ -69,6 +69,7 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -688,12 +689,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   var auth = toConnectorAuth(spec.getAuth());
 
                   var cfg =
-                      new ConnectorConfig(
-                          kind,
-                          spec.getDisplayName() != null ? spec.getDisplayName() : "",
-                          mustNonEmpty(spec.getUri(), "uri", corr),
-                          spec.getPropertiesMap(),
-                          auth);
+                      applyIcebergMetadataBootstrap(
+                          new ConnectorConfig(
+                              kind,
+                              spec.getDisplayName() != null ? spec.getDisplayName() : "",
+                              mustNonEmpty(spec.getUri(), "uri", corr),
+                              spec.getPropertiesMap(),
+                              auth));
 
                   var resolved = resolveCredentials(cfg, spec.getAuth());
                   try (var connector = ConnectorFactory.create(resolved)) {
@@ -901,6 +903,20 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       return CredentialResolverSupport.apply(base, auth.getCredentials(), context);
     }
     return base;
+  }
+
+  private static ConnectorConfig applyIcebergMetadataBootstrap(ConnectorConfig base) {
+    if (base.kind() != Kind.ICEBERG) {
+      return base;
+    }
+    Map<String, String> options = new LinkedHashMap<>(base.options());
+    options.remove("metadata-location");
+    String external = options.get("external.metadata-location");
+    if (external == null || external.isBlank()) {
+      return options.equals(base.options()) ? base : base.withOptions(options);
+    }
+    return new ConnectorConfig(
+        base.kind(), base.displayName(), base.uri(), options, base.auth(), external);
   }
 
   private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {

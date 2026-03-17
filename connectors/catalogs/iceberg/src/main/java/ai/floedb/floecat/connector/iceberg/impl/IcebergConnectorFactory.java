@@ -41,6 +41,7 @@ final class IcebergConnectorFactory {
   static FloecatConnector create(
       String uri,
       Map<String, String> options,
+      String resolvedMetadataLocation,
       String authScheme,
       Map<String, String> authProps,
       Map<String, String> headerHints) {
@@ -49,7 +50,8 @@ final class IcebergConnectorFactory {
 
     Map<String, String> opts = (options == null) ? Collections.emptyMap() : options;
     Map<String, String> cleanOpts = new HashMap<>(opts);
-    IcebergSource source = selectSource(cleanOpts);
+    cleanOpts.remove("metadata-location");
+    IcebergSource source = selectSource(cleanOpts, resolvedMetadataLocation);
     boolean ndvEnabled = IcebergConnector.parseNdvEnabled(cleanOpts);
     double ndvSampleFraction = IcebergConnector.parseNdvSampleFraction(cleanOpts);
     long ndvMaxFiles = 0L;
@@ -63,17 +65,17 @@ final class IcebergConnectorFactory {
       }
     }
 
-    String externalMetadata = cleanOpts.get("external.metadata-location");
-    validateOptions(source, externalMetadata);
+    String metadataLocation = metadataLocation(cleanOpts, resolvedMetadataLocation);
+    validateOptions(source, metadataLocation);
     return switch (source) {
       case FILESYSTEM -> {
-        var loaded = IcebergConnector.loadExternalTable(externalMetadata, cleanOpts);
+        var loaded = IcebergConnector.loadExternalTable(metadataLocation, cleanOpts);
         Table table = loaded.table();
         FileIO fileIO = loaded.fileIO();
         String namespaceFq = cleanOpts.getOrDefault("external.namespace", "");
         String detectedName =
             (table.name() == null || table.name().isBlank())
-                ? IcebergConnector.deriveTableName(externalMetadata)
+                ? IcebergConnector.deriveTableName(metadataLocation)
                 : table.name();
         String tableName = cleanOpts.getOrDefault("external.table-name", detectedName);
         yield new IcebergFilesystemConnector(
@@ -173,9 +175,11 @@ final class IcebergConnectorFactory {
     props.putIfAbsent("s3.region", region);
   }
 
-  static IcebergSource selectSource(Map<String, String> options) {
+  static IcebergSource selectSource(Map<String, String> options, String resolvedMetadataLocation) {
     if (options == null) {
-      return IcebergSource.GLUE;
+      return hasMetadataLocation(resolvedMetadataLocation)
+          ? IcebergSource.FILESYSTEM
+          : IcebergSource.GLUE;
     }
     String source = options.get("iceberg.source");
     if (source != null && !source.isBlank()) {
@@ -187,22 +191,31 @@ final class IcebergConnectorFactory {
         default -> throw new IllegalArgumentException("Unsupported iceberg.source: " + source);
       };
     }
-    String externalMetadata = options.get("external.metadata-location");
-    if (externalMetadata != null && !externalMetadata.isBlank()) {
+    String metadataLocation = metadataLocation(options, resolvedMetadataLocation);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
       return IcebergSource.FILESYSTEM;
     }
     return IcebergSource.GLUE;
   }
 
-  static void validateOptions(IcebergSource source, String externalMetadata) {
-    boolean hasExternal = externalMetadata != null && !externalMetadata.isBlank();
-    if (source == IcebergSource.FILESYSTEM && !hasExternal) {
+  static void validateOptions(IcebergSource source, String metadataLocation) {
+    boolean hasMetadata = metadataLocation != null && !metadataLocation.isBlank();
+    if (source == IcebergSource.FILESYSTEM && !hasMetadata) {
       throw new IllegalArgumentException(
-          "external.metadata-location is required for iceberg.source=filesystem");
+          "metadata-location is required for iceberg.source=filesystem");
     }
-    if (source != IcebergSource.FILESYSTEM && hasExternal) {
+    if (source != IcebergSource.FILESYSTEM && hasMetadata) {
       throw new IllegalArgumentException(
-          "external.metadata-location is only valid with iceberg.source=filesystem");
+          "metadata-location is only valid with iceberg.source=filesystem");
     }
+  }
+
+  private static String metadataLocation(
+      Map<String, String> options, String resolvedMetadataLocation) {
+    return hasMetadataLocation(resolvedMetadataLocation) ? resolvedMetadataLocation : null;
+  }
+
+  private static boolean hasMetadataLocation(String metadataLocation) {
+    return metadataLocation != null && !metadataLocation.isBlank();
   }
 }

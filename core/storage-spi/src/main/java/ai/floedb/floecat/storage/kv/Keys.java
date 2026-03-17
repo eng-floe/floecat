@@ -84,6 +84,12 @@ public final class Keys {
         encodeSegment(aid), encodeSegment(tid), encodeSegment(xid));
   }
 
+  public static String tableCommitReplayPointer(String accountId, String txId) {
+    String aid = req("account_id", accountId);
+    String xid = req("tx_id", txId);
+    return String.format("/accounts/%s/tx-journal/%s", encodeSegment(aid), encodeSegment(xid));
+  }
+
   public static String tableCommitOutboxPendingScanPrefix() {
     return "/accounts/";
   }

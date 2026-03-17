@@ -131,7 +131,6 @@ public abstract class IcebergConnector implements FloecatConnector {
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
-
     return new TableDescriptor(
         namespaceFq,
         tableName,
@@ -197,7 +196,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     for (Snapshot snapshot :
         snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds)) {
       long snapshotId = snapshot.snapshotId();
-      long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
+      Long parentId = snapshot.parentId();
       long createdMs = snapshot.timestampMillis();
 
       Integer snapshotSchemaId = snapshot != null ? snapshot.schemaId() : null;

@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.spi;
 
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.Connector;
+import java.util.LinkedHashMap;
 
 public final class ConnectorConfigMapper {
   public static ConnectorConfig fromProto(Connector c) {
@@ -31,8 +32,13 @@ public final class ConnectorConfigMapper {
         };
 
     var auth = toAuth(c.getAuth());
+    return new ConnectorConfig(kind, c.getDisplayName(), c.getUri(), normalizedOptions(c), auth);
+  }
 
-    return new ConnectorConfig(kind, c.getDisplayName(), c.getUri(), c.getPropertiesMap(), auth);
+  private static java.util.Map<String, String> normalizedOptions(Connector c) {
+    var options = new LinkedHashMap<>(c.getPropertiesMap());
+    options.remove("metadata-location");
+    return options;
   }
 
   private static ConnectorConfig.Auth toAuth(AuthConfig auth) {

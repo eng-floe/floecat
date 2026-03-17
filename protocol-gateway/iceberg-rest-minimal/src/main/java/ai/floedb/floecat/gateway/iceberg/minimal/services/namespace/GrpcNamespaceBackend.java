@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
+import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -34,6 +35,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.minimal.resources.common.CatalogResolver;
+import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -110,6 +112,31 @@ public class GrpcNamespaceBackend implements NamespaceBackend {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey));
     }
     return namespaceStub().createNamespace(request.build()).getNamespace();
+  }
+
+  @Override
+  public Namespace updateProperties(
+      String prefix,
+      List<String> namespacePath,
+      Map<String, String> properties,
+      String idempotencyKey) {
+    Namespace existing = get(prefix, namespacePath);
+    ResourceId namespaceId = existing.getResourceId();
+    NamespaceSpec spec =
+        NamespaceSpec.newBuilder()
+            .setCatalogId(existing.getCatalogId())
+            .setDisplayName(existing.getDisplayName())
+            .addAllPath(existing.getParentsList())
+            .putAllProperties(properties == null ? Map.of() : properties)
+            .build();
+    return namespaceStub()
+        .updateNamespace(
+            UpdateNamespaceRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .setSpec(spec)
+                .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+                .build())
+        .getNamespace();
   }
 
   @Override

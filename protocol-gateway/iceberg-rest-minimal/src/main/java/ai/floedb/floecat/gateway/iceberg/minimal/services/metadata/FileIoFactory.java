@@ -103,7 +103,7 @@ public final class FileIoFactory {
     return filtered;
   }
 
-  private static boolean isFileIoProperty(String key) {
+  public static boolean isFileIoProperty(String key) {
     if (key == null || key.isBlank()) {
       return false;
     }

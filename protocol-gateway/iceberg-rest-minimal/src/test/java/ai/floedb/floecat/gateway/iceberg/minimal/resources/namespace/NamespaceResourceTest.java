@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -96,8 +97,20 @@ class NamespaceResourceTest {
   }
 
   @Test
+  void missingNamespaceHeadReturns404WithoutEntity() {
+    doThrow(Status.NOT_FOUND.withDescription("missing").asRuntimeException())
+        .when(backend)
+        .exists("foo", List.of("missing"));
+
+    var response = resource.exists("foo", "missing");
+
+    assertEquals(404, response.getStatus());
+    assertNull(response.getEntity());
+  }
+
+  @Test
   void deleteReturns204() {
-    assertEquals(204, resource.delete("foo", "analytics").getStatus());
+    assertEquals(204, resource.delete("foo", "analytics", "idem-1").getStatus());
     verify(backend).delete("foo", List.of("analytics"));
   }
 

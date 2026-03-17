@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.minimal.resources.system;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.CatalogConfigDto;
@@ -34,13 +33,33 @@ class ConfigResourceTest {
     CatalogConfigDto payload = (CatalogConfigDto) resource.getConfig("examples").getEntity();
 
     assertEquals("examples", payload.defaults().get("catalog-name"));
+    assertEquals("PT30M", payload.idempotencyKeyLifetime());
+    assertTrue(payload.endpoints().contains("POST /v1/{prefix}/namespaces/{namespace}/properties"));
     assertTrue(payload.endpoints().contains("POST /v1/{prefix}/tables/rename"));
-    assertTrue(payload.endpoints().contains("POST /v1/{prefix}/transactions/commit"));
-    assertFalse(payload.endpoints().contains("POST /v1/{prefix}/views/rename"));
-    assertFalse(
+    assertTrue(payload.endpoints().contains("POST /v1/{prefix}/views/rename"));
+    assertTrue(
+        payload.endpoints().contains("POST /v1/{prefix}/namespaces/{namespace}/register-view"));
+    assertTrue(
+        payload
+            .endpoints()
+            .contains("GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials"));
+    assertTrue(
         payload
             .endpoints()
             .contains("POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan"));
+    assertTrue(
+        payload
+            .endpoints()
+            .contains("GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}"));
+    assertTrue(
+        payload
+            .endpoints()
+            .contains("DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}"));
+    assertTrue(
+        payload
+            .endpoints()
+            .contains("POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks"));
+    assertTrue(payload.endpoints().contains("POST /v1/{prefix}/transactions/commit"));
   }
 
   private static final class TestConfig implements MinimalGatewayConfig {
@@ -77,6 +96,21 @@ class ConfigResourceTest {
     @Override
     public Duration idempotencyKeyLifetime() {
       return Duration.ofMinutes(30);
+    }
+
+    @Override
+    public Duration planTaskTtl() {
+      return Duration.ofMinutes(5);
+    }
+
+    @Override
+    public int planTaskFilesPerTask() {
+      return 128;
+    }
+
+    @Override
+    public java.util.Optional<StorageCredentialConfig> storageCredential() {
+      return java.util.Optional.empty();
     }
 
     @Override
@@ -122,6 +156,11 @@ class ConfigResourceTest {
     @Override
     public java.util.Optional<String> defaultWarehousePath() {
       return java.util.Optional.of("s3://floecat/");
+    }
+
+    @Override
+    public java.util.Optional<DeltaCompatConfig> deltaCompat() {
+      return java.util.Optional.empty();
     }
 
     @Override

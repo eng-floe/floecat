@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.minimal.api.request;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -25,4 +26,11 @@ public record MetricsReportRequest(
     @JsonProperty("report-type") String reportType,
     @JsonProperty("table-name") String tableName,
     @JsonProperty("snapshot-id") Long snapshotId,
-    Map<String, Object> metrics) {}
+    @JsonProperty("sequence-number") Long sequenceNumber,
+    @JsonProperty("operation") String operation,
+    @JsonProperty("schema-id") Integer schemaId,
+    @JsonProperty("projected-field-ids") List<Integer> projectedFieldIds,
+    @JsonProperty("projected-field-names") List<String> projectedFieldNames,
+    @JsonProperty("filter") Map<String, Object> filter,
+    Map<String, Object> metrics,
+    Map<String, String> metadata) {}

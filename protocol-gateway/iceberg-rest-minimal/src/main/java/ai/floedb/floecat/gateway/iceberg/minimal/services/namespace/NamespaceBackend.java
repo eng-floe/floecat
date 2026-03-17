@@ -35,5 +35,11 @@ public interface NamespaceBackend {
       Map<String, String> properties,
       String idempotencyKey);
 
+  Namespace updateProperties(
+      String prefix,
+      List<String> namespacePath,
+      Map<String, String> properties,
+      String idempotencyKey);
+
   void delete(String prefix, List<String> namespacePath);
 }

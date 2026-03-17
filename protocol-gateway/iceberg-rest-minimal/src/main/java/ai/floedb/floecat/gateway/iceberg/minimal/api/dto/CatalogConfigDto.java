@@ -24,4 +24,4 @@ public record CatalogConfigDto(
     Map<String, String> defaults,
     Map<String, String> overrides,
     List<String> endpoints,
-    @JsonProperty("idempotency-key-lifetime-ms") String idempotencyKeyLifetimeMs) {}
+    @JsonProperty("idempotency-key-lifetime") String idempotencyKeyLifetime) {}

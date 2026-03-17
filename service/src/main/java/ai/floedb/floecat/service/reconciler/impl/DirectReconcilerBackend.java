@@ -294,6 +294,11 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
+  public Optional<Table> fetchTable(ReconcileContext ctx, ResourceId tableId) {
+    return tableRepo.getById(tableId);
+  }
+
+  @Override
   public SnapshotPin snapshotPinFor(
       ReconcileContext ctx,
       ResourceId tableId,

@@ -154,7 +154,7 @@ public interface FloecatConnector extends Closeable {
 
   record SnapshotBundle(
       long snapshotId,
-      long parentId,
+      Long parentId,
       long upstreamCreatedAtMs,
       TableStats tableStats,
       List<ColumnStatsView> columnStats,

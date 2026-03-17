@@ -46,7 +46,10 @@ public class TableAdminResource {
 
   @POST
   @Path("/tables/rename")
-  public Response rename(@PathParam("prefix") String prefix, RenameRequest request) {
+  public Response rename(
+      @PathParam("prefix") String prefix,
+      @HeaderParam("Idempotency-Key") String idempotencyKey,
+      RenameRequest request) {
     if (request == null
         || request.source() == null
         || request.destination() == null

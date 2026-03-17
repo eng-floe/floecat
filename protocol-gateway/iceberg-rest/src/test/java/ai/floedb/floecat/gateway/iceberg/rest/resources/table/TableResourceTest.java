@@ -789,7 +789,12 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
-    given().when().head("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/db/tables/orders")
+        .then()
+        .statusCode(204)
+        .header("Content-Length", equalTo("0"));
   }
 
   @Test
@@ -801,7 +806,12 @@ class TableResourceTest extends AbstractRestResourceTest {
                 .build());
     when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
-    given().when().head("/v1/foo/namespaces/db/tables/missing").then().statusCode(404);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/db/tables/missing")
+        .then()
+        .statusCode(404)
+        .header("Content-Length", equalTo("0"));
   }
 
   @Test

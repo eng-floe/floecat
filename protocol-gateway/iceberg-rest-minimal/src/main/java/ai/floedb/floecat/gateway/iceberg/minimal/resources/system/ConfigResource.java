@@ -57,17 +57,31 @@ public class ConfigResource {
                 "POST /v1/{prefix}/namespaces",
                 "GET /v1/{prefix}/namespaces/{namespace}",
                 "DELETE /v1/{prefix}/namespaces/{namespace}",
+                "POST /v1/{prefix}/namespaces/{namespace}/properties",
                 "GET /v1/{prefix}/namespaces/{namespace}/tables",
                 "POST /v1/{prefix}/namespaces/{namespace}/tables",
                 "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
                 "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
                 "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
                 "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
+                "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan",
+                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
+                "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}/plan/{plan-id}",
+                "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/tasks",
                 "POST /v1/{prefix}/namespaces/{namespace}/register",
+                "GET /v1/{prefix}/namespaces/{namespace}/views",
+                "POST /v1/{prefix}/namespaces/{namespace}/views",
+                "GET /v1/{prefix}/namespaces/{namespace}/views/{view}",
+                "POST /v1/{prefix}/namespaces/{namespace}/views/{view}",
+                "DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}",
+                "HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}",
+                "POST /v1/{prefix}/views/rename",
+                "POST /v1/{prefix}/namespaces/{namespace}/register-view",
                 "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics",
                 "POST /v1/{prefix}/tables/rename",
                 "POST /v1/{prefix}/transactions/commit"),
-            Long.toString(config.idempotencyKeyLifetime().toMillis()));
+            config.idempotencyKeyLifetime().toString());
     return Response.ok(payload).build();
   }
 

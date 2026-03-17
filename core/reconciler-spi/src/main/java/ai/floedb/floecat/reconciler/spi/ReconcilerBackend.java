@@ -19,6 +19,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -43,6 +44,10 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId namespaceId, NameRef table, TableSpecDescriptor descriptor);
 
   Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table);
+
+  default Optional<Table> fetchTable(ReconcileContext ctx, ResourceId tableId) {
+    return Optional.empty();
+  }
 
   SnapshotPin snapshotPinFor(
       ReconcileContext ctx, ResourceId tableId, SnapshotRef ref, Optional<Timestamp> asOf);

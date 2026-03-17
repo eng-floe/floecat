@@ -18,6 +18,7 @@
 #   make build-all               # build all modules only (skip tests)
 #   make proto                   # generate/install protobuf stubs
 #   make test                    # unit + IT (service, REST gateway, client-cli, in-memory)
+#   TEST_INCLUDE_MINIMAL=1 make test  # also include minimal REST gateway tests
 #   make test-localstack          # unit + IT (fixtures + catalog LocalStack)
 #   make unit-test               # unit tests only (service, REST gateway, client-cli)
 #   make integration-test        # integration tests only (service, REST gateway, client-cli)
@@ -135,6 +136,11 @@ $(shell mkdir -p $(PID_DIR) $(LOG_DIR) $(BIN_DIR) >/dev/null)
 # ---------- Reactor shorthands ----------
 REACTOR_SERVICE := -pl service -am
 REACTOR_REST := -pl protocol-gateway/iceberg-rest -am
+TEST_INCLUDE_MINIMAL ?= 0
+TEST_GATEWAY_MODULES := service,protocol-gateway/iceberg-rest,client-cli
+ifeq ($(TEST_INCLUDE_MINIMAL),1)
+TEST_GATEWAY_MODULES := $(TEST_GATEWAY_MODULES),protocol-gateway/iceberg-rest-minimal
+endif
 
 # ---------- Version / Artifacts ----------
 VERSION := $(shell sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -n1)
@@ -327,7 +333,7 @@ test: $(PROTO_JAR) keycloak-up
 	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
-	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    verify'
 
 .PHONY: test-localstack
@@ -343,7 +349,7 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
 	  $(LOCALSTACK_ENV) \
 	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
-	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    verify'
 
 .PHONY: localstack-restart
@@ -377,7 +383,7 @@ unit-test:
 	@echo "==> [TEST] unit tests (service, REST gateway, client-cli)"
 	$(MVN) $(MVN_TESTALL) \
 	  -Dfloecat.fixtures.use-aws-s3=false \
-	  -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	  -pl $(TEST_GATEWAY_MODULES) -am \
 	  -DskipITs=true \
 	  test
 
@@ -388,7 +394,7 @@ integration-test: keycloak-up
 	  echo "==> [TEST] integration tests (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
-	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    -DskipUTs=true -DfailIfNoTests=false \
 	    verify'
 
@@ -399,7 +405,7 @@ verify: keycloak-up
 	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
-	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
+	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    verify'
 
 # ===================================================
@@ -852,8 +858,14 @@ compose-shell:
 	@echo "==> [COMPOSE] shell"
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
 
-compose-smoke: docker
+compose-smoke: docker-service docker-cli
+ifeq ($(COMPOSE_SMOKE_GATEWAY_VARIANT),minimal)
+compose-smoke: docker-iceberg-rest-minimal
+else
+compose-smoke: docker-iceberg-rest
+endif
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
+	  FLOECAT_ICEBERG_REST_IMAGE=$${FLOECAT_ICEBERG_REST_IMAGE:-$$(if [ "$${COMPOSE_SMOKE_GATEWAY_VARIANT}" = "minimal" ]; then echo floecat-iceberg-rest-minimal:local; else echo floecat-iceberg-rest:local; fi)} \
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
 	  ./tools/compose-smoke.sh

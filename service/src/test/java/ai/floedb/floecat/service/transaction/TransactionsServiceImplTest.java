@@ -32,6 +32,9 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -44,6 +47,7 @@ import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.TxChange;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -158,7 +162,7 @@ class TransactionsServiceImplTest {
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
     when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
-        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.retryable("X", "retry"));
+        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.retryable("X", "retry", null));
     when(intentRepo.update(
             argThat(
                 candidate ->
@@ -296,7 +300,7 @@ class TransactionsServiceImplTest {
     when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
-                "EXPECTED_VERSION_MISMATCH", "pointer version changed", 3L, 4L, null));
+                "EXPECTED_VERSION_MISMATCH", "pointer version changed", 3L, 4L, null, null));
     when(pointerStore.get("/accounts/acct/custom/key-1")).thenReturn(Optional.empty());
     when(intentRepo.update(
             argThat(
@@ -379,7 +383,7 @@ class TransactionsServiceImplTest {
     when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
-                "EXPECTED_VERSION_MISMATCH", "pointer version changed", 1L, 2L, null));
+                "EXPECTED_VERSION_MISMATCH", "pointer version changed", 1L, 2L, null, null));
     when(pointerStore.get("/accounts/acct/custom/key-1"))
         .thenReturn(
             Optional.of(
@@ -635,6 +639,76 @@ class TransactionsServiceImplTest {
     assertTrue((Boolean) m.invoke(service, TransactionState.TS_APPLIED));
   }
 
+  @Test
+  void connectorPayloadUsesDurableConnectorBlobUriForByIdPointer() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    inject(service, "pointerStore", pointerStore);
+    when(pointerStore.get(any())).thenReturn(Optional.empty());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn-1")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setDisplayName("conn-name")
+            .setState(ConnectorState.CS_ACTIVE)
+            .build();
+    byte[] payload = connector.toByteArray();
+    String sha = ai.floedb.floecat.service.repo.util.ResourceHash.sha256Hex(payload);
+    String pointerKey = Keys.connectorPointerById("acct", "conn-1");
+
+    Object planned =
+        invokePlanIntent(
+            service,
+            "acct",
+            "tx-1",
+            TxChange.newBuilder()
+                .setTargetPointerKey(pointerKey)
+                .setPayload(ByteString.copyFrom(payload))
+                .build());
+
+    assertEquals(Keys.connectorBlobUri("acct", "conn-1", sha), invokePlannedBlobUri(planned));
+  }
+
+  @Test
+  void connectorPayloadUsesDurableConnectorBlobUriForByNamePointer() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    inject(service, "pointerStore", pointerStore);
+    when(pointerStore.get(any())).thenReturn(Optional.empty());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn-1")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setDisplayName("conn-name")
+            .setState(ConnectorState.CS_ACTIVE)
+            .build();
+    byte[] payload = connector.toByteArray();
+    String sha = ai.floedb.floecat.service.repo.util.ResourceHash.sha256Hex(payload);
+    String pointerKey = Keys.connectorPointerByName("acct", "conn-name");
+
+    Object planned =
+        invokePlanIntent(
+            service,
+            "acct",
+            "tx-1",
+            TxChange.newBuilder()
+                .setTargetPointerKey(pointerKey)
+                .setPayload(ByteString.copyFrom(payload))
+                .build());
+
+    assertEquals(Keys.connectorBlobUri("acct", "conn-1", sha), invokePlannedBlobUri(planned));
+  }
+
   private static Transaction invokeCommitPrivate(
       TransactionsServiceImpl service,
       String accountId,
@@ -675,6 +749,22 @@ class TransactionsServiceImplTest {
             "abortExpired", Transaction.class, com.google.protobuf.Timestamp.class);
     m.setAccessible(true);
     return (Transaction) m.invoke(service, txn, now);
+  }
+
+  private static Object invokePlanIntent(
+      TransactionsServiceImpl service, String accountId, String txId, TxChange change)
+      throws Exception {
+    Method m =
+        TransactionsServiceImpl.class.getDeclaredMethod(
+            "planIntent", String.class, String.class, TxChange.class);
+    m.setAccessible(true);
+    return m.invoke(service, accountId, txId, change);
+  }
+
+  private static String invokePlannedBlobUri(Object plannedIntent) throws Exception {
+    Method m = plannedIntent.getClass().getDeclaredMethod("blobUri");
+    m.setAccessible(true);
+    return (String) m.invoke(plannedIntent);
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

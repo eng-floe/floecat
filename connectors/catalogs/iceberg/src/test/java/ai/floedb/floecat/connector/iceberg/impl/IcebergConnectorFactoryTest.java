@@ -27,14 +27,21 @@ class IcebergConnectorFactoryTest {
 
   @Test
   void createsRestConnectorWhenSourceRest() {
-    var source = IcebergConnectorFactory.selectSource(Map.of("iceberg.source", "rest"));
+    var source = IcebergConnectorFactory.selectSource(Map.of("iceberg.source", "rest"), null);
     assertEquals(IcebergConnectorFactory.IcebergSource.REST, source);
   }
 
   @Test
   void createsGlueConnectorWhenSourceGlue() {
-    var source = IcebergConnectorFactory.selectSource(Map.of("iceberg.source", "glue"));
+    var source = IcebergConnectorFactory.selectSource(Map.of("iceberg.source", "glue"), null);
     assertEquals(IcebergConnectorFactory.IcebergSource.GLUE, source);
+  }
+
+  @Test
+  void selectsFilesystemWhenResolvedMetadataLocationPresent() {
+    var source =
+        IcebergConnectorFactory.selectSource(Map.of(), "s3://bucket/db/orders/metadata.json");
+    assertEquals(IcebergConnectorFactory.IcebergSource.FILESYSTEM, source);
   }
 
   @Test
@@ -45,7 +52,7 @@ class IcebergConnectorFactoryTest {
             () ->
                 IcebergConnectorFactory.validateOptions(
                     IcebergConnectorFactory.IcebergSource.FILESYSTEM, ""));
-    assertTrue(ex.getMessage().contains("external.metadata-location"));
+    assertTrue(ex.getMessage().contains("metadata-location"));
   }
 
   @Test

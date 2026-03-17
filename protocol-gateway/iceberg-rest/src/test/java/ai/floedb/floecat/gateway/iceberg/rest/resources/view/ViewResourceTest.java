@@ -542,14 +542,24 @@ class ViewResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
 
-    given().when().head("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/db/views/reports")
+        .then()
+        .statusCode(204)
+        .header("Content-Length", equalTo("0"));
   }
 
   @Test
   void viewExistsHeadNotFoundContract() {
     when(directoryStub.resolveView(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
-    given().when().head("/v1/foo/namespaces/db/views/missing").then().statusCode(404);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/db/views/missing")
+        .then()
+        .statusCode(404)
+        .header("Content-Length", equalTo("0"));
   }
 
   private void writeMetadataFile(Path root, String location, ViewMetadataView metadata)

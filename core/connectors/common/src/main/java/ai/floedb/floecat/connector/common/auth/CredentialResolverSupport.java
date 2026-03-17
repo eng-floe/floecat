@@ -207,7 +207,13 @@ public final class CredentialResolverSupport {
 
     var auth = new ConnectorConfig.Auth(base.auth().scheme(), authProps, headerHints);
 
-    return new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, auth);
+    return new ConnectorConfig(
+        base.kind(),
+        base.displayName(),
+        base.uri(),
+        options,
+        auth,
+        base.resolvedMetadataLocation());
   }
 
   private static void putIfNotBlank(Map<String, String> target, String key, String value) {

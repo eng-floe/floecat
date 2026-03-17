@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.TxChange;
+import java.time.Duration;
 import java.util.List;
 
 public interface TransactionBackend {
@@ -38,7 +40,14 @@ public interface TransactionBackend {
 
   GetTableResponse getTable(ResourceId tableId);
 
-  BeginTransactionResponse beginTransaction(String idempotencyKey, String requestHash);
+  ListSnapshotsResponse listSnapshots(ResourceId tableId);
+
+  default BeginTransactionResponse beginTransaction(String idempotencyKey, String requestHash) {
+    return beginTransaction(idempotencyKey, requestHash, null);
+  }
+
+  BeginTransactionResponse beginTransaction(
+      String idempotencyKey, String requestHash, Duration ttl);
 
   GetTransactionResponse getTransaction(String txId);
 

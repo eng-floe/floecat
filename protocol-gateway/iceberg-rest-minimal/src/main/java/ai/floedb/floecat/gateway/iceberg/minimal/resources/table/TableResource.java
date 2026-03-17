@@ -31,13 +31,15 @@ import ai.floedb.floecat.gateway.iceberg.minimal.api.request.TransactionCommitRe
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.minimal.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.minimal.resources.common.NamespacePaths;
-import ai.floedb.floecat.gateway.iceberg.minimal.resources.common.NotYetImplementedResponses;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.table.ConnectorCleanupService;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.table.TableBackend;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.table.TableMetadataMapper;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.table.TableStorageCleanupService;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.transaction.TransactionCommitService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -53,6 +55,9 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -65,7 +70,9 @@ public class TableResource {
   private final TableMetadataImportService metadataImportService;
   private final TransactionCommitService transactionCommitService;
   private final ConnectorCleanupService connectorCleanupService;
+  private final TableStorageCleanupService tableStorageCleanupService;
   private final MinimalGatewayConfig config;
+  private final DeltaIcebergMetadataService deltaMetadataService;
 
   public TableResource(
       TableBackend backend,
@@ -73,13 +80,17 @@ public class TableResource {
       TableMetadataImportService metadataImportService,
       TransactionCommitService transactionCommitService,
       ConnectorCleanupService connectorCleanupService,
-      MinimalGatewayConfig config) {
+      TableStorageCleanupService tableStorageCleanupService,
+      MinimalGatewayConfig config,
+      DeltaIcebergMetadataService deltaMetadataService) {
     this.backend = backend;
     this.mapper = mapper;
     this.metadataImportService = metadataImportService;
     this.transactionCommitService = transactionCommitService;
     this.connectorCleanupService = connectorCleanupService;
+    this.tableStorageCleanupService = tableStorageCleanupService;
     this.config = config;
+    this.deltaMetadataService = deltaMetadataService;
   }
 
   @GET
@@ -134,38 +145,27 @@ public class TableResource {
     try {
       List<String> namespacePath = NamespacePaths.split(namespace);
       String resolvedLocation = resolvedTableLocation(namespace, request);
-      TableCreateRequest effectiveRequest =
-          new TableCreateRequest(
-              request.name(),
-              request.schema(),
-              request.partitionSpec(),
-              request.writeOrder(),
-              resolvedLocation,
-              request.properties(),
-              false);
-      String metadataLocation = initialMetadataLocation(resolvedLocation);
-      var imported = metadataImportService.buildInitialMetadata(effectiveRequest, metadataLocation);
-      Map<String, String> mergedProperties = new java.util.LinkedHashMap<>(imported.properties());
-      mergedProperties.remove("metadata-location");
-      if (request.properties() != null) {
-        mergedProperties.putAll(request.properties());
-        mergedProperties.remove("metadata-location");
-      }
-      Table created =
-          backend.create(
+      Response txResponse =
+          transactionCommitService.commit(
               prefix,
-              namespacePath,
-              request.name().trim(),
-              mapper.readTree(imported.schemaJson()),
-              resolvedLocation,
-              mergedProperties,
-              idempotencyKey);
-      return Response.ok(
-              new LoadTableResultDto(
-                  metadataLocation,
-                  TableMetadataMapper.loadImportedMetadata(
-                      created, imported.icebergMetadata(), mapper),
-                  Map.of()))
+              idempotencyKey,
+              new TransactionCommitRequest(
+                  List.of(
+                      new TransactionCommitRequest.TableChange(
+                          new TableIdentifierDto(namespacePath, request.name().trim()),
+                          List.of(Map.of("type", "assert-create")),
+                          createTableUpdates(request, resolvedLocation)))));
+      if (txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+        return txResponse;
+      }
+      Table created = backend.get(prefix, namespacePath, request.name().trim());
+      Snapshot snapshot = null;
+      try {
+        snapshot = backend.currentSnapshot(prefix, namespacePath, request.name().trim());
+      } catch (StatusRuntimeException ignored) {
+        // Newly created tables may not have a current snapshot yet.
+      }
+      return Response.ok(loadResult(prefix, namespacePath, created, snapshot, SnapshotMode.ALL))
           .build();
     } catch (StatusRuntimeException exception) {
       return tableError(exception);
@@ -182,8 +182,10 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
+      @QueryParam("snapshots") String snapshots,
       @HeaderParam("If-None-Match") String ifNoneMatch) {
     try {
+      SnapshotMode snapshotMode = parseSnapshotMode(snapshots);
       List<String> namespacePath = NamespacePaths.split(namespace);
       Table tableRecord = backend.get(prefix, namespacePath, table);
       Snapshot snapshot = null;
@@ -192,19 +194,25 @@ public class TableResource {
       } catch (StatusRuntimeException ignored) {
         // Empty tables are valid and may not have a current snapshot yet.
       }
-      String metadataLocation = TableMetadataMapper.metadataLocation(tableRecord, snapshot);
-      String etag = metadataLocation == null ? null : '"' + metadataLocation + '"';
+      LoadTableResultDto result =
+          loadResult(prefix, namespacePath, tableRecord, snapshot, snapshotMode);
+      String metadataLocation = result.metadataLocation();
+      String etag =
+          metadataLocation == null
+              ? null
+              : '"' + metadataLocation + "|snapshots=" + snapshotMode.name().toLowerCase() + '"';
       if (etag != null && ifNoneMatch != null && ifNoneMatch.trim().equals(etag)) {
         return Response.notModified().build();
       }
-      Response.ResponseBuilder builder =
-          Response.ok(loadResult(prefix, namespacePath, tableRecord, snapshot));
+      Response.ResponseBuilder builder = Response.ok(result);
       if (etag != null) {
         builder.header("ETag", etag);
       }
       return builder.build();
     } catch (StatusRuntimeException exception) {
       return tableError(exception);
+    } catch (IllegalArgumentException exception) {
+      return IcebergErrorResponses.validation(exception.getMessage());
     }
   }
 
@@ -244,7 +252,8 @@ public class TableResource {
       } catch (StatusRuntimeException ignored) {
         // property-only commits may not have snapshots in unit tests
       }
-      return Response.ok(loadResult(prefix, namespacePath, committed, snapshot)).build();
+      return Response.ok(loadResult(prefix, namespacePath, committed, snapshot, SnapshotMode.ALL))
+          .build();
     } catch (StatusRuntimeException exception) {
       return tableError(exception);
     }
@@ -255,10 +264,15 @@ public class TableResource {
   public Response delete(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
-      @PathParam("table") String table) {
+      @PathParam("table") String table,
+      @QueryParam("purgeRequested") Boolean purgeRequested,
+      @HeaderParam("Idempotency-Key") String idempotencyKey) {
     try {
       List<String> namespacePath = NamespacePaths.split(namespace);
       Table existing = backend.get(prefix, namespacePath, table);
+      if (Boolean.TRUE.equals(purgeRequested)) {
+        tableStorageCleanupService.purgeTableData(existing);
+      }
       connectorCleanupService.deleteManagedConnector(existing);
       backend.delete(prefix, namespacePath, table);
       return Response.noContent().build();
@@ -277,7 +291,7 @@ public class TableResource {
       backend.exists(prefix, NamespacePaths.split(namespace), table);
       return Response.noContent().build();
     } catch (StatusRuntimeException exception) {
-      return IcebergErrorResponses.grpc(exception);
+      return IcebergErrorResponses.grpcStatusOnly(exception);
     }
   }
 
@@ -296,34 +310,53 @@ public class TableResource {
     if (request.name() == null || request.name().isBlank()) {
       return IcebergErrorResponses.validation("name is required");
     }
-    if (Boolean.TRUE.equals(request.overwrite())) {
-      return NotYetImplementedResponses.endpoint("Register overwrite is not implemented yet");
-    }
     try {
+      List<String> namespacePath = NamespacePaths.split(namespace);
       var imported =
           metadataImportService.importMetadata(
               request.metadataLocation().trim(),
               FileIoFactory.filterIoProperties(
                   request.properties() == null ? Map.of() : request.properties()));
-      Map<String, String> mergedProperties = new java.util.LinkedHashMap<>(imported.properties());
-      if (request.properties() != null) {
-        mergedProperties.putAll(request.properties());
-      }
-      Table created =
-          backend.create(
-              prefix,
-              NamespacePaths.split(namespace),
-              request.name().trim(),
-              mapper.readTree(imported.schemaJson()),
-              imported.tableLocation(),
-              mergedProperties,
-              idempotencyKey);
-      return Response.ok(
-              new LoadTableResultDto(
+      String tableName = request.name().trim();
+      boolean overwrite = Boolean.TRUE.equals(request.overwrite());
+      Map<String, String> mergedProperties =
+          mergeRegisteredProperties(
+              Map.of(), imported, request.metadataLocation().trim(), request.properties());
+      if (overwrite) {
+        try {
+          Table existing = backend.get(prefix, namespacePath, tableName);
+          mergedProperties =
+              mergeRegisteredProperties(
+                  existing.getPropertiesMap(),
+                  imported,
                   request.metadataLocation().trim(),
-                  TableMetadataMapper.loadImportedMetadata(
-                      created, imported.icebergMetadata(), mapper),
-                  Map.of()))
+                  request.properties());
+        } catch (StatusRuntimeException exception) {
+          if (exception.getStatus().getCode() != Status.Code.NOT_FOUND) {
+            throw exception;
+          }
+        }
+      }
+      Response txResponse =
+          transactionCommitService.registerImported(
+              prefix,
+              idempotencyKey,
+              namespacePath,
+              tableName,
+              imported,
+              mergedProperties,
+              overwrite);
+      if (txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
+        return txResponse;
+      }
+      Table created = backend.get(prefix, namespacePath, tableName);
+      Snapshot snapshot = null;
+      try {
+        snapshot = backend.currentSnapshot(prefix, namespacePath, tableName);
+      } catch (StatusRuntimeException ignored) {
+        // A registered table may still have no current snapshot in tests.
+      }
+      return Response.ok(loadResult(prefix, namespacePath, created, snapshot, SnapshotMode.ALL))
           .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
@@ -332,25 +365,116 @@ public class TableResource {
     }
   }
 
+  private Map<String, String> mergeRegisteredProperties(
+      Map<String, String> existingProperties,
+      TableMetadataImportService.ImportedMetadata imported,
+      String metadataLocation,
+      Map<String, String> requestProperties) {
+    Map<String, String> merged = new LinkedHashMap<>();
+    if (existingProperties != null && !existingProperties.isEmpty()) {
+      merged.putAll(existingProperties);
+    }
+    if (imported != null && imported.properties() != null) {
+      merged.putAll(imported.properties());
+    }
+    if (imported != null
+        && imported.tableLocation() != null
+        && !imported.tableLocation().isBlank()) {
+      merged.put("location", imported.tableLocation());
+    }
+    if (requestProperties != null && !requestProperties.isEmpty()) {
+      merged.putAll(requestProperties);
+    }
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      merged.put("metadata-location", metadataLocation);
+    }
+    return merged;
+  }
+
   private LoadTableResultDto loadResult(
-      String prefix, List<String> namespacePath, Table tableRecord, Snapshot snapshot) {
+      String prefix,
+      List<String> namespacePath,
+      Table tableRecord,
+      Snapshot snapshot,
+      SnapshotMode snapshotMode) {
+    List<Snapshot> allSnapshots =
+        listSnapshots(prefix, namespacePath, tableRecord.getDisplayName());
+    if (deltaMetadataService != null && deltaMetadataService.enabledFor(tableRecord)) {
+      var delta = deltaMetadataService.load(tableRecord, allSnapshots);
+      String metadataLocation = delta.metadata().getMetadataLocation();
+      Map<String, Object> metadata =
+          TableMetadataMapper.loadImportedMetadata(tableRecord, delta.metadata(), mapper);
+      metadata =
+          TableMetadataMapper.overlaySnapshots(
+              metadata, selectSnapshots(metadata, delta.snapshots(), snapshotMode));
+      return new LoadTableResultDto(metadataLocation, metadata, Map.of());
+    }
     String metadataLocation = TableMetadataMapper.metadataLocation(tableRecord, snapshot);
     Map<String, Object> metadata = TableMetadataMapper.loadMetadata(tableRecord, snapshot, mapper);
-    List<Snapshot> snapshots = listSnapshots(prefix, namespacePath, tableRecord.getDisplayName());
-    if (metadataLocation != null && TableMetadataMapper.requiresHydration(metadata)) {
+    String snapshotMetadataLocation = TableMetadataMapper.snapshotMetadataLocation(snapshot);
+    boolean staleSnapshotMetadata =
+        metadataLocation != null
+            && snapshotMetadataLocation != null
+            && !metadataLocation.equals(snapshotMetadataLocation);
+    if (metadataLocation != null
+        && (TableMetadataMapper.requiresHydration(metadata) || staleSnapshotMetadata)) {
       try {
+        List<Snapshot> selectedSnapshots = selectSnapshots(metadata, allSnapshots, snapshotMode);
         var hydrated =
             metadataImportService.loadTableMetadata(
                 metadataLocation, FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap()));
         metadata =
             TableMetadataMapper.loadHydratedMetadata(
-                tableRecord, hydrated, metadataLocation, mapper, snapshots);
+                tableRecord, hydrated, metadataLocation, mapper, selectedSnapshots);
       } catch (IllegalArgumentException ignored) {
         // Fall back to the in-catalog view when metadata-file hydration is unavailable.
       }
     }
-    metadata = TableMetadataMapper.overlaySnapshots(metadata, snapshots);
+    metadata =
+        TableMetadataMapper.overlaySnapshots(
+            metadata, selectSnapshots(metadata, allSnapshots, snapshotMode));
     return new LoadTableResultDto(metadataLocation, metadata, Map.of());
+  }
+
+  private SnapshotMode parseSnapshotMode(String raw) {
+    if (raw == null || raw.isBlank() || "all".equalsIgnoreCase(raw)) {
+      return SnapshotMode.ALL;
+    }
+    if ("refs".equalsIgnoreCase(raw)) {
+      return SnapshotMode.REFS;
+    }
+    throw new IllegalArgumentException("snapshots must be one of [all, refs]");
+  }
+
+  private List<Snapshot> selectSnapshots(
+      Map<String, Object> metadata, List<Snapshot> snapshots, SnapshotMode snapshotMode) {
+    if (snapshotMode != SnapshotMode.REFS || snapshots == null || snapshots.isEmpty()) {
+      return snapshots;
+    }
+    Collection<Long> refIds = referencedSnapshotIds(metadata);
+    if (refIds.isEmpty()) {
+      return List.of();
+    }
+    return snapshots.stream().filter(s -> refIds.contains(s.getSnapshotId())).toList();
+  }
+
+  @SuppressWarnings("unchecked")
+  private Collection<Long> referencedSnapshotIds(Map<String, Object> metadata) {
+    Object refs = metadata == null ? null : metadata.get("refs");
+    if (!(refs instanceof Map<?, ?> refMap) || refMap.isEmpty()) {
+      return List.of();
+    }
+    List<Long> ids = new ArrayList<>(refMap.size());
+    for (Object refValue : refMap.values()) {
+      if (!(refValue instanceof Map<?, ?> values)) {
+        continue;
+      }
+      Object snapshotId = values.get("snapshot-id");
+      if (snapshotId instanceof Number number) {
+        ids.add(number.longValue());
+      }
+    }
+    return List.copyOf(ids);
   }
 
   private List<Snapshot> listSnapshots(
@@ -378,12 +502,7 @@ public class TableResource {
             request.properties(),
             request.stageCreate());
     String metadataLocation = syntheticStageMetadataLocation(resolvedLocation);
-    Map<String, String> ioProperties =
-        FileIoFactory.filterIoProperties(
-            effectiveRequest.properties() == null ? Map.of() : effectiveRequest.properties());
-    var imported =
-        metadataImportService.writeInitialMetadata(
-            effectiveRequest, metadataLocation, ioProperties);
+    var imported = metadataImportService.buildInitialMetadata(effectiveRequest, metadataLocation);
     return new LoadTableResultDto(
         metadataLocation,
         TableMetadataMapper.loadImportedMetadata(
@@ -395,6 +514,125 @@ public class TableResource {
             imported.icebergMetadata(),
             mapper),
         stagedCreateConfig(metadataLocation));
+  }
+
+  private List<Map<String, Object>> createTableUpdates(
+      TableCreateRequest request, String resolvedLocation) {
+    List<Map<String, Object>> updates = new ArrayList<>();
+    updates.add(Map.of("action", "set-location", "location", resolvedLocation));
+
+    Integer formatVersion = requestedFormatVersion(request.properties());
+    updates.add(
+        Map.of(
+            "action",
+            "upgrade-format-version",
+            "format-version",
+            formatVersion == null ? 2 : formatVersion));
+
+    updates.add(
+        Map.of("action", "add-schema", "schema", mapper.convertValue(request.schema(), Map.class)));
+    updates.add(
+        Map.of(
+            "action",
+            "set-current-schema",
+            "schema-id",
+            requiredNonNegativeInt(request.schema(), "schema-id", "schema")));
+
+    Map<String, Object> partitionSpec = defaultPartitionSpec(request.partitionSpec());
+    updates.add(Map.of("action", "add-spec", "spec", partitionSpec));
+    updates.add(
+        Map.of(
+            "action",
+            "set-default-spec",
+            "spec-id",
+            requiredNonNegativeInt(partitionSpec, "spec-id", "partition-spec")));
+
+    Map<String, Object> sortOrder = defaultSortOrder(request.writeOrder());
+    updates.add(Map.of("action", "add-sort-order", "sort-order", sortOrder));
+    updates.add(
+        Map.of(
+            "action",
+            "set-default-sort-order",
+            "sort-order-id",
+            requiredNonNegativeInt(sortOrder, "order-id", "write-order")));
+
+    Map<String, String> properties = createProperties(request.properties());
+    if (!properties.isEmpty()) {
+      updates.add(Map.of("action", "set-properties", "updates", properties));
+    }
+    return List.copyOf(updates);
+  }
+
+  private enum SnapshotMode {
+    ALL,
+    REFS
+  }
+
+  private Map<String, Object> defaultPartitionSpec(com.fasterxml.jackson.databind.JsonNode node) {
+    if (node == null || node.isNull()) {
+      return new LinkedHashMap<>(Map.of("spec-id", 0, "fields", List.of()));
+    }
+    return mapper.convertValue(node, Map.class);
+  }
+
+  private Map<String, Object> defaultSortOrder(com.fasterxml.jackson.databind.JsonNode node) {
+    if (node == null || node.isNull()) {
+      return new LinkedHashMap<>(Map.of("order-id", 0, "fields", List.of()));
+    }
+    return mapper.convertValue(node, Map.class);
+  }
+
+  private Integer requestedFormatVersion(Map<String, String> properties) {
+    if (properties == null) {
+      return null;
+    }
+    String value = properties.get("format-version");
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      int parsed = Integer.parseInt(value);
+      return parsed >= 1 ? parsed : null;
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
+  }
+
+  private Map<String, String> createProperties(Map<String, String> requestProperties) {
+    Map<String, String> properties = new LinkedHashMap<>();
+    if (requestProperties != null && !requestProperties.isEmpty()) {
+      properties.putAll(requestProperties);
+    }
+    properties.putIfAbsent("last-sequence-number", "0");
+    properties.remove("metadata-location");
+    return properties;
+  }
+
+  private Integer requiredNonNegativeInt(JsonNode node, String key, String fieldName) {
+    if (node == null) {
+      throw new IllegalArgumentException(fieldName + " is required");
+    }
+    return requiredNonNegativeInt(mapper.convertValue(node, Map.class), key, fieldName);
+  }
+
+  private Integer requiredNonNegativeInt(Map<String, Object> map, String key, String fieldName) {
+    Object raw = map == null ? null : map.get(key);
+    Integer value;
+    if (raw instanceof Number number) {
+      value = number.intValue();
+    } else if (raw instanceof String text && !text.isBlank()) {
+      try {
+        value = Integer.parseInt(text);
+      } catch (NumberFormatException e) {
+        value = null;
+      }
+    } else {
+      value = null;
+    }
+    if (value == null || value < 0) {
+      throw new IllegalArgumentException(fieldName + " requires " + key);
+    }
+    return value;
   }
 
   private String resolvedTableLocation(String namespace, TableCreateRequest request) {
@@ -455,17 +693,6 @@ public class TableResource {
     return base + "/metadata/00000-stage.metadata.json";
   }
 
-  private String initialMetadataLocation(String tableLocation) {
-    if (tableLocation == null || tableLocation.isBlank()) {
-      return null;
-    }
-    String base =
-        tableLocation.endsWith("/")
-            ? tableLocation.substring(0, tableLocation.length() - 1)
-            : tableLocation;
-    return base + "/metadata/00000.metadata.json";
-  }
-
   private Map<String, String> stagedCreateConfig(String metadataLocation) {
     String metadataDirectory = metadataDirectory(metadataLocation);
     if (metadataDirectory == null || metadataDirectory.isBlank()) {
@@ -506,7 +733,23 @@ public class TableResource {
     if (request.metrics() == null) {
       return IcebergErrorResponses.validation("metrics is required");
     }
+    boolean scanReport =
+        request.filter() != null
+            && request.schemaId() != null
+            && !isEmpty(request.projectedFieldIds())
+            && !isEmpty(request.projectedFieldNames());
+    boolean commitReport =
+        request.sequenceNumber() != null
+            && request.operation() != null
+            && !request.operation().isBlank();
+    if (!scanReport && !commitReport) {
+      return IcebergErrorResponses.validation("metrics report missing required fields");
+    }
     return Response.noContent().build();
+  }
+
+  private boolean isEmpty(Collection<?> values) {
+    return values == null || values.isEmpty();
   }
 
   private Response tableError(StatusRuntimeException exception) {

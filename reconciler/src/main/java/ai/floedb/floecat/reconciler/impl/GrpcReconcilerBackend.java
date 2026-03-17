@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -204,6 +205,20 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
           directory(ctx)
               .resolveTable(ResolveTableRequest.newBuilder().setRef(normalizedTable).build())
               .getResourceId());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return Optional.empty();
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public Optional<ai.floedb.floecat.catalog.rpc.Table> fetchTable(
+      ReconcileContext ctx, ResourceId tableId) {
+    try {
+      return Optional.of(
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -579,8 +594,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .setTableId(snapshot.getTableId())
             .setSnapshotId(snapshot.getSnapshotId())
             .setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt())
-            .setIngestedAt(snapshot.getIngestedAt())
-            .setParentSnapshotId(snapshot.getParentSnapshotId());
+            .setIngestedAt(snapshot.getIngestedAt());
+    if (snapshot.hasParentSnapshotId()) {
+      builder.setParentSnapshotId(snapshot.getParentSnapshotId());
+    }
     if (!snapshot.getSchemaJson().isBlank()) {
       builder.setSchemaJson(snapshot.getSchemaJson());
     }

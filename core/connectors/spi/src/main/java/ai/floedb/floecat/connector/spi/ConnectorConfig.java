@@ -21,7 +21,17 @@ import java.util.Map;
 import java.util.Objects;
 
 public record ConnectorConfig(
-    Kind kind, String displayName, String uri, Map<String, String> options, Auth auth) {
+    Kind kind,
+    String displayName,
+    String uri,
+    Map<String, String> options,
+    Auth auth,
+    String resolvedMetadataLocation) {
+
+  public ConnectorConfig(
+      Kind kind, String displayName, String uri, Map<String, String> options, Auth auth) {
+    this(kind, displayName, uri, options, auth, null);
+  }
 
   public ConnectorConfig {
     Objects.requireNonNull(kind);
@@ -29,6 +39,18 @@ public record ConnectorConfig(
     Objects.requireNonNull(uri);
     options = options == null ? Map.of() : Collections.unmodifiableMap(options);
     auth = auth == null ? new Auth("none", Map.of(), Map.of()) : auth;
+    resolvedMetadataLocation =
+        (resolvedMetadataLocation == null || resolvedMetadataLocation.isBlank())
+            ? null
+            : resolvedMetadataLocation;
+  }
+
+  public ConnectorConfig withOptions(Map<String, String> nextOptions) {
+    return new ConnectorConfig(kind, displayName, uri, nextOptions, auth, resolvedMetadataLocation);
+  }
+
+  public ConnectorConfig withResolvedMetadataLocation(String metadataLocation) {
+    return new ConnectorConfig(kind, displayName, uri, options, auth, metadataLocation);
   }
 
   public enum Kind {

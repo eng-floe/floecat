@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -547,6 +548,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         cleanupIntentsBestEffort(intents);
         return applied;
       }
+      logIntentApplyFailure(applyPhaseTxn.getTxId(), intents, outcome);
       annotateIntentApplyFailure(intents, outcome, now);
       return transitionTransactionState(
           accountId,
@@ -557,6 +559,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           "cannot transition to apply_failed_conflict");
     }
 
+    logIntentApplyFailure(applyPhaseTxn.getTxId(), intents, outcome);
     annotateIntentApplyFailure(intents, outcome, now);
     return transitionTransactionState(
         accountId,
@@ -679,8 +682,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
-        String sha = ResourceHash.sha256Hex(payload);
-        blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
+        blobUri = payloadBlobUri(accountId, txId, pointerKey, payload);
         inlineBytes = payload;
         inlineContentType = "application/octet-stream";
       }
@@ -732,8 +734,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
-        String sha = ResourceHash.sha256Hex(payload);
-        blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
+        blobUri = payloadBlobUri(accountId, txId, pointerKey, payload);
       }
       case CHANGEPAYLOAD_NOT_SET -> {
         throw new IllegalArgumentException(
@@ -771,6 +772,83 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             intent.getTxId(), intent.getTargetPointerKey());
       }
     }
+  }
+
+  private void logIntentApplyFailure(
+      String txId,
+      List<TransactionIntent> intents,
+      TransactionIntentApplierSupport.ApplyOutcome outcome) {
+    if (outcome == null) {
+      return;
+    }
+    String pointerKey = outcome.pointerKey();
+    TransactionIntent matchingIntent = null;
+    if (pointerKey != null && intents != null) {
+      for (var intent : intents) {
+        if (intent != null && pointerKey.equals(intent.getTargetPointerKey())) {
+          matchingIntent = intent;
+          break;
+        }
+      }
+    }
+    if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
+      LOG.warnf(
+          "Transaction apply conflict txId=%s pointerKey=%s expectedVersion=%s actualVersion=%s"
+              + " errorCode=%s conflictOwner=%s intentKind=%s intentBlob=%s",
+          txId,
+          pointerKey,
+          outcome.expectedVersion(),
+          outcome.actualVersion(),
+          outcome.errorCode(),
+          outcome.conflictOwner(),
+          describeIntent(matchingIntent),
+          matchingIntent == null ? null : matchingIntent.getBlobUri());
+      return;
+    }
+    LOG.warnf(
+        "Transaction apply retryable failure txId=%s pointerKey=%s errorCode=%s message=%s"
+            + " intentKind=%s intentBlob=%s",
+        txId,
+        pointerKey,
+        outcome.errorCode(),
+        outcome.errorMessage(),
+        describeIntent(matchingIntent),
+        matchingIntent == null ? null : matchingIntent.getBlobUri());
+  }
+
+  private String describeIntent(TransactionIntent intent) {
+    if (intent == null) {
+      return "<unknown>";
+    }
+    String key = intent.getTargetPointerKey();
+    if (key == null || key.isBlank()) {
+      return "<missing-key>";
+    }
+    if (key.contains("/tables/by-id/")) {
+      return "table-by-id";
+    }
+    if (key.contains("/tables/by-name/")) {
+      return "table-by-name";
+    }
+    if (key.contains("/connectors/by-id/")) {
+      return "connector-by-id";
+    }
+    if (key.contains("/connectors/by-name/")) {
+      return "connector-by-name";
+    }
+    if (key.contains("/snapshots/by-id/")) {
+      return "snapshot-by-id";
+    }
+    if (key.contains("/snapshots/by-time/")) {
+      return "snapshot-by-time";
+    }
+    if (key.contains("/tx-journal/")) {
+      return "commit-journal";
+    }
+    if (key.contains("/tx-outbox/")) {
+      return "commit-outbox";
+    }
+    return "pointer";
   }
 
   private void cleanupIntents(String accountId, String txId) {
@@ -968,6 +1046,58 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
+  }
+
+  private String payloadBlobUri(String accountId, String txId, String pointerKey, byte[] payload) {
+    String sha = ResourceHash.sha256Hex(payload);
+    Connector connector = parseConnectorPayload(payload);
+    if (connector == null || !connector.hasResourceId()) {
+      return Keys.transactionObjectBlobUri(accountId, txId, sha);
+    }
+    if (!accountId.equals(connector.getResourceId().getAccountId())) {
+      throw new IllegalArgumentException("connector payload account mismatch for " + pointerKey);
+    }
+    if (isConnectorByIdPointer(pointerKey)) {
+      String expected = Keys.connectorPointerById(accountId, connector.getResourceId().getId());
+      if (!expected.equals(pointerKey)) {
+        throw new IllegalArgumentException(
+            "connector payload resource_id does not match target for " + pointerKey);
+      }
+      return Keys.connectorBlobUri(accountId, connector.getResourceId().getId(), sha);
+    }
+    if (isConnectorByNamePointer(pointerKey)) {
+      String displayName = connector.getDisplayName();
+      if (displayName == null || displayName.isBlank()) {
+        throw new IllegalArgumentException(
+            "connector payload missing display_name for " + pointerKey);
+      }
+      String expected = Keys.connectorPointerByName(accountId, displayName);
+      if (!expected.equals(pointerKey)) {
+        throw new IllegalArgumentException(
+            "connector payload display_name does not match target for " + pointerKey);
+      }
+      return Keys.connectorBlobUri(accountId, connector.getResourceId().getId(), sha);
+    }
+    return Keys.transactionObjectBlobUri(accountId, txId, sha);
+  }
+
+  private Connector parseConnectorPayload(byte[] payload) {
+    if (payload == null || payload.length == 0) {
+      return null;
+    }
+    try {
+      return Connector.parseFrom(payload);
+    } catch (Exception ignored) {
+      return null;
+    }
+  }
+
+  private boolean isConnectorByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/connectors/by-id/");
+  }
+
+  private boolean isConnectorByNamePointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/connectors/by-name/");
   }
 
   private record ResolvedTxTarget(String pointerKey, ResourceId tableId) {}

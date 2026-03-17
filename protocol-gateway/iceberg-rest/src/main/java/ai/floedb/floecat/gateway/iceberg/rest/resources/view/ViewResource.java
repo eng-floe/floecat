@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.resources.view;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewCreateService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewDeleteService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewListService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewLoadService;
+import io.grpc.StatusRuntimeException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -36,6 +38,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
@@ -88,8 +91,14 @@ public class ViewResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("view") String view) {
-    ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
-    return viewLoadService.exists(viewContext);
+    try {
+      ViewRequestContext viewContext = requestContextFactory.view(prefix, namespace, view);
+      return viewLoadService.exists(viewContext);
+    } catch (WebApplicationException exception) {
+      return IcebergErrorResponses.webApplicationStatusOnly(exception);
+    } catch (StatusRuntimeException exception) {
+      return IcebergErrorResponses.grpcStatusOnly(exception);
+    }
   }
 
   @Path("/{view}")

@@ -44,6 +44,7 @@ class TableAdminResourceTest {
         resource
             .rename(
                 "foo",
+                "idem-1",
                 new RenameRequest(
                     new RenameRequest.TableIdentifierBody(List.of("db"), "orders"),
                     new RenameRequest.TableIdentifierBody(List.of("analytics"), "orders_new")))

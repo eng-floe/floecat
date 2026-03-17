@@ -50,13 +50,15 @@ public class TransactionIntentApplierSupport {
       String errorMessage,
       Long expectedVersion,
       Long actualVersion,
-      String conflictOwner) {
+      String conflictOwner,
+      String pointerKey) {
     public static ApplyOutcome applied() {
-      return new ApplyOutcome(ApplyStatus.APPLIED, null, null, null, null, null);
+      return new ApplyOutcome(ApplyStatus.APPLIED, null, null, null, null, null, null);
     }
 
-    public static ApplyOutcome retryable(String errorCode, String errorMessage) {
-      return new ApplyOutcome(ApplyStatus.RETRYABLE, errorCode, errorMessage, null, null, null);
+    public static ApplyOutcome retryable(String errorCode, String errorMessage, String pointerKey) {
+      return new ApplyOutcome(
+          ApplyStatus.RETRYABLE, errorCode, errorMessage, null, null, null, pointerKey);
     }
 
     public static ApplyOutcome conflict(
@@ -64,14 +66,16 @@ public class TransactionIntentApplierSupport {
         String errorMessage,
         Long expectedVersion,
         Long actualVersion,
-        String conflictOwner) {
+        String conflictOwner,
+        String pointerKey) {
       return new ApplyOutcome(
           ApplyStatus.CONFLICT,
           errorCode,
           errorMessage,
           expectedVersion,
           actualVersion,
-          conflictOwner);
+          conflictOwner,
+          pointerKey);
     }
   }
 
@@ -149,7 +153,8 @@ public class TransactionIntentApplierSupport {
       }
       Table existing = readTable(ptr.getBlobUri());
       if (existing == null || !existing.hasResourceId()) {
-        return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "name pointer table missing");
+        return ApplyOutcome.retryable(
+            "NAME_POINTER_READ_FAILED", "name pointer table missing", key);
       }
       String existingId = existing.getResourceId().getId();
       if (!Objects.equals(existingId, nextTableId)) {
@@ -158,7 +163,8 @@ public class TransactionIntentApplierSupport {
             "name pointer is owned by a different table",
             null,
             null,
-            existingId);
+            existingId,
+            key);
       }
       Pointer next =
           Pointer.newBuilder()
@@ -170,7 +176,8 @@ public class TransactionIntentApplierSupport {
         return ApplyOutcome.applied();
       }
     }
-    return ApplyOutcome.retryable("NAME_POINTER_UPDATE_FAILED", "name pointer update conflict");
+    return ApplyOutcome.retryable(
+        "NAME_POINTER_UPDATE_FAILED", "name pointer update conflict", key);
   }
 
   private ApplyOutcome deleteNamePointerIfOwned(String key, Table expectedOwner) {
@@ -182,7 +189,8 @@ public class TransactionIntentApplierSupport {
       }
       Table existing = readTable(ptr.getBlobUri());
       if (existing == null || !existing.hasResourceId()) {
-        return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
+        return ApplyOutcome.retryable(
+            "NAME_POINTER_READ_FAILED", "old name pointer table missing", key);
       }
       String existingId = existing.getResourceId().getId();
       if (!Objects.equals(existingId, ownerId)) {
@@ -192,7 +200,8 @@ public class TransactionIntentApplierSupport {
         return ApplyOutcome.applied();
       }
     }
-    return ApplyOutcome.retryable("NAME_POINTER_DELETE_FAILED", "old name pointer delete conflict");
+    return ApplyOutcome.retryable(
+        "NAME_POINTER_DELETE_FAILED", "old name pointer delete conflict", key);
   }
 
   public void upsertPointerBestEffort(String key, String blobUri) {
@@ -227,7 +236,7 @@ public class TransactionIntentApplierSupport {
   public ApplyOutcome applyTransactionBestEffort(
       List<TransactionIntent> intents, TransactionIntentRepository intentRepo) {
     if (intents == null || intents.isEmpty()) {
-      return ApplyOutcome.retryable("EMPTY_TRANSACTION", "transaction has no intents");
+      return ApplyOutcome.retryable("EMPTY_TRANSACTION", "transaction has no intents", null);
     }
 
     var ops = new ArrayList<PointerStore.CasOp>();
@@ -243,6 +252,7 @@ public class TransactionIntentApplierSupport {
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
             null,
             null,
+            null,
             null);
       }
     }
@@ -252,7 +262,7 @@ public class TransactionIntentApplierSupport {
       if (conflictOutcome != null) {
         return conflictOutcome;
       }
-      return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+      return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict", null);
     }
 
     return ApplyOutcome.applied();
@@ -273,7 +283,8 @@ public class TransactionIntentApplierSupport {
           "pointer version does not match intent expected_version",
           intent.getExpectedVersion(),
           actualVersion,
-          null);
+          null,
+          pointerKey);
     }
 
     if (current != null && intent.getBlobUri().equals(current.getBlobUri())) {
@@ -302,12 +313,13 @@ public class TransactionIntentApplierSupport {
           "pointer version does not match intent expected_version",
           intent.getExpectedVersion(),
           actualVersion,
-          null);
+          null,
+          pointerKey);
     }
 
     Table nextTable = readTable(intent.getBlobUri());
     if (nextTable == null) {
-      return ApplyOutcome.retryable("TABLE_BLOB_MISSING", "table blob missing");
+      return ApplyOutcome.retryable("TABLE_BLOB_MISSING", "table blob missing", pointerKey);
     }
     ApplyOutcome targetValidation = validateTableIntentTarget(pointerKey, nextTable);
     if (targetValidation.status != ApplyStatus.APPLIED) {
@@ -348,7 +360,8 @@ public class TransactionIntentApplierSupport {
     if (current != null) {
       Table oldTable = readTable(current.getBlobUri());
       if (oldTable == null) {
-        return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
+        return ApplyOutcome.retryable(
+            "NAME_POINTER_READ_FAILED", "old name pointer table missing", pointerKey);
       }
       String oldNameKey =
           Keys.tablePointerByName(
@@ -370,7 +383,12 @@ public class TransactionIntentApplierSupport {
   private ApplyOutcome validateTableIntentTarget(String pointerKey, Table nextTable) {
     if (nextTable == null || !nextTable.hasResourceId()) {
       return ApplyOutcome.conflict(
-          "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
+          "TABLE_INTENT_INVALID_PAYLOAD",
+          "table payload is missing resource_id",
+          null,
+          null,
+          null,
+          pointerKey);
     }
     String expectedKey;
     try {
@@ -383,7 +401,8 @@ public class TransactionIntentApplierSupport {
           "table payload has invalid resource_id fields",
           null,
           null,
-          null);
+          null,
+          pointerKey);
     }
     if (!Objects.equals(expectedKey, pointerKey)) {
       return ApplyOutcome.conflict(
@@ -391,7 +410,8 @@ public class TransactionIntentApplierSupport {
           "table payload resource_id does not match target pointer",
           null,
           null,
-          null);
+          null,
+          pointerKey);
     }
     return ApplyOutcome.applied();
   }
@@ -413,7 +433,7 @@ public class TransactionIntentApplierSupport {
     }
     Table existing = readTable(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
-      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "name pointer table missing");
+      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "name pointer table missing", key);
     }
     String existingId = existing.getResourceId().getId();
     if (!Objects.equals(existingId, nextTableId)) {
@@ -422,7 +442,8 @@ public class TransactionIntentApplierSupport {
           "name pointer is owned by a different table",
           null,
           null,
-          existingId);
+          existingId,
+          key);
     }
     Pointer next =
         Pointer.newBuilder()
@@ -441,7 +462,8 @@ public class TransactionIntentApplierSupport {
     }
     Table existing = readTable(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
-      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
+      return ApplyOutcome.retryable(
+          "NAME_POINTER_READ_FAILED", "old name pointer table missing", key);
     }
     if (Objects.equals(existing.getResourceId().getId(), ownerTableId)) {
       return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
@@ -457,7 +479,8 @@ public class TransactionIntentApplierSupport {
           "transaction attempts multiple updates to pointer key " + key,
           null,
           null,
-          null);
+          null,
+          key);
     }
     ops.add(op);
     return ApplyOutcome.applied();
@@ -476,7 +499,8 @@ public class TransactionIntentApplierSupport {
             "pointer version changed before apply",
             intent.getExpectedVersion(),
             actual,
-            null);
+            null,
+            intent.getTargetPointerKey());
       }
     }
     return null;

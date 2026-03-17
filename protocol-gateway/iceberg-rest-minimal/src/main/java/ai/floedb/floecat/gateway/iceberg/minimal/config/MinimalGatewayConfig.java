@@ -41,6 +41,14 @@ public interface MinimalGatewayConfig {
   @WithDefault("PT30M")
   Duration idempotencyKeyLifetime();
 
+  @WithDefault("PT5M")
+  Duration planTaskTtl();
+
+  @WithDefault("128")
+  int planTaskFilesPerTask();
+
+  Optional<StorageCredentialConfig> storageCredential();
+
   Optional<String> metadataFileIo();
 
   Optional<String> metadataFileIoRoot();
@@ -60,9 +68,25 @@ public interface MinimalGatewayConfig {
 
   Optional<String> defaultWarehousePath();
 
+  Optional<DeltaCompatConfig> deltaCompat();
+
   @WithDefault("false")
   boolean logRequestBodies();
 
   @WithDefault("8192")
   int logRequestBodyMaxChars();
+
+  interface DeltaCompatConfig {
+    @WithDefault("false")
+    boolean enabled();
+
+    @WithDefault("true")
+    boolean readOnly();
+  }
+
+  interface StorageCredentialConfig {
+    Optional<String> scope();
+
+    Map<String, String> properties();
+  }
 }

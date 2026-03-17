@@ -17,7 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
-import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcWithHeaders;
@@ -25,6 +24,8 @@ import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -104,12 +105,18 @@ public class TableCommitSideEffectService {
         if (snapshotId == null) {
           continue;
         }
-        snapshotStub.deleteSnapshot(
-            DeleteSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshotId(snapshotId)
-                .setPrecondition(Precondition.newBuilder().setExpectedVersion(0L).build())
-                .build());
+        try {
+          snapshotStub.deleteSnapshot(
+              DeleteSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshotId(snapshotId)
+                  .build());
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+            continue;
+          }
+          throw e;
+        }
       }
       return true;
     } catch (RuntimeException e) {

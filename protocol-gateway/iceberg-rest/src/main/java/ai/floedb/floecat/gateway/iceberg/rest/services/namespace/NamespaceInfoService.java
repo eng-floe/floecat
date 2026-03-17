@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceResponseMapper;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -36,7 +37,7 @@ public class NamespaceInfoService {
   }
 
   public Response exists(NamespaceRequestContext namespaceContext) {
-    return Response.noContent().build();
+    return IcebergErrorResponses.statusOnly(Response.Status.NO_CONTENT);
   }
 
   private Namespace load(ResourceId namespaceId) {

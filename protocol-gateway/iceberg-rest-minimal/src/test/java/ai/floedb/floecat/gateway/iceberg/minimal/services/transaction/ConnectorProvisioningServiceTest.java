@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.minimal.services.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
@@ -37,7 +38,6 @@ import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.minimal.grpc.GrpcWithHeaders;
-import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.Timestamps;
 import java.util.List;
 import java.util.Map;
@@ -55,7 +55,7 @@ class ConnectorProvisioningServiceTest {
       new ConnectorProvisioningService(config, grpc);
 
   @Test
-  void refreshesExistingConnectorMetadataLocationOnCommit() {
+  void doesNotRewriteExistingConnectorForMetadataLocationOnlyRefresh() {
     when(config.metadataS3PathStyleAccess()).thenReturn(true);
     when(grpc.raw()).thenReturn(clients);
     when(clients.connector()).thenReturn(connectorStub);
@@ -80,27 +80,24 @@ class ConnectorProvisioningServiceTest {
         Connector.newBuilder()
             .setResourceId(connectorId)
             .setKind(ConnectorKind.CK_ICEBERG)
-            .setDisplayName("register:minimal:iceberg.orders")
+            .setDisplayName("register:minimal:iceberg.duckdb_mutation_smoke")
             .setUri("s3://floecat/iceberg/duckdb_mutation_smoke")
             .setState(ConnectorState.CS_ACTIVE)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setSource(
                 SourceSelector.newBuilder()
                     .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
-                    .setTable("orders")
+                    .setTable("duckdb_mutation_smoke")
                     .build())
             .setDestination(
                 DestinationTarget.newBuilder()
                     .setCatalogId(catalogId)
                     .setNamespaceId(namespaceId)
                     .setTableId(tableId)
-                    .setTableDisplayName("orders")
+                    .setTableDisplayName("duckdb_mutation_smoke")
                     .build())
             .setCreatedAt(Timestamps.fromMillis(1))
             .setUpdatedAt(Timestamps.fromMillis(1))
-            .putProperties(
-                "external.metadata-location",
-                "s3://floecat/iceberg/duckdb_mutation_smoke/metadata/00001-old.metadata.json")
             .putProperties("iceberg.source", "filesystem")
             .build();
     when(connectorStub.getConnector(any()))
@@ -137,19 +134,145 @@ class ConnectorProvisioningServiceTest {
             table);
 
     assertEquals(connectorId, result.connectorId());
-    assertFalse(result.connectorTxChanges().isEmpty());
-    Connector refreshed =
-        parseConnector(result.connectorTxChanges().get(0).getPayload().toByteArray());
+    assertTrue(result.connectorTxChanges().isEmpty());
+  }
+
+  @Test
+  void skipsConnectorRewriteWhenExistingConnectorIsAlreadyCurrent() {
+    when(config.metadataS3PathStyleAccess()).thenReturn(true);
+    when(grpc.raw()).thenReturn(clients);
+    when(clients.connector()).thenReturn(connectorStub);
+    when(grpc.withHeaders(connectorStub)).thenReturn(connectorStub);
+
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("tbl-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct-1").setId("ns-1").build();
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct-1").setId("cat-1").build();
+
+    Connector existingConnector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setDisplayName("register:minimal:iceberg.duckdb_mutation_smoke")
+            .setUri("s3://floecat/iceberg/duckdb_mutation_smoke")
+            .setState(ConnectorState.CS_ACTIVE)
+            .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+                    .setTable("duckdb_mutation_smoke")
+                    .build())
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .setTableId(tableId)
+                    .setTableDisplayName("duckdb_mutation_smoke")
+                    .build())
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .setUpdatedAt(Timestamps.fromMillis(2))
+            .putProperties("iceberg.source", "filesystem")
+            .putProperties(
+                "external.metadata-location",
+                "s3://floecat/iceberg/duckdb_mutation_smoke/metadata/00003-new.metadata.json")
+            .build();
+    when(connectorStub.getConnector(any()))
+        .thenReturn(GetConnectorResponse.newBuilder().setConnector(existingConnector).build());
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("duckdb_mutation_smoke")
+            .setUpstream(
+                UpstreamRef.newBuilder()
+                    .setConnectorId(connectorId)
+                    .addNamespacePath("iceberg")
+                    .setTableDisplayName("duckdb_mutation_smoke")
+                    .setUri("s3://floecat/iceberg/duckdb_mutation_smoke"))
+            .putAllProperties(
+                Map.of(
+                    "location", "s3://floecat/iceberg/duckdb_mutation_smoke",
+                    "metadata-location",
+                        "s3://floecat/iceberg/duckdb_mutation_smoke/metadata/00003-new.metadata.json"))
+            .build();
+
+    var result =
+        service.resolveOrCreateForCommit(
+            "acct-1",
+            "tx-1",
+            List.of("iceberg"),
+            namespaceId,
+            catalogId,
+            "duckdb_mutation_smoke",
+            tableId,
+            table);
+
+    assertEquals(connectorId, result.connectorId());
+    assertTrue(result.connectorTxChanges().isEmpty());
+  }
+
+  @Test
+  void createManagedConnectorPersistsExternalMetadataLocation() {
+    when(config.metadataS3PathStyleAccess()).thenReturn(true);
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("tbl-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct-1").setId("ns-1").build();
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct-1").setId("cat-1").build();
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("duckdb_mutation_smoke")
+            .putAllProperties(
+                Map.of(
+                    "location", "s3://floecat/iceberg/duckdb_mutation_smoke",
+                    "metadata-location",
+                        "s3://floecat/iceberg/duckdb_mutation_smoke/metadata/00003-new.metadata.json"))
+            .build();
+
+    var result =
+        service.resolveOrCreateForCommit(
+            "acct-1",
+            "tx-1",
+            List.of("iceberg"),
+            namespaceId,
+            catalogId,
+            "duckdb_mutation_smoke",
+            tableId,
+            table);
+
+    assertEquals(2, result.connectorTxChanges().size());
+    Connector created =
+        parseConnector(result.connectorTxChanges().getFirst().getPayload().toByteArray());
     assertEquals(
         "s3://floecat/iceberg/duckdb_mutation_smoke/metadata/00003-new.metadata.json",
-        refreshed.getPropertiesMap().get("external.metadata-location"));
-    assertEquals("s3://floecat/iceberg/duckdb_mutation_smoke", refreshed.getUri());
+        created.getPropertiesMap().get("external.metadata-location"));
+    assertFalse(created.getPropertiesMap().containsKey("metadata-location"));
   }
 
   private Connector parseConnector(byte[] payload) {
     try {
       return Connector.parseFrom(payload);
-    } catch (InvalidProtocolBufferException e) {
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
       throw new AssertionError(e);
     }
   }

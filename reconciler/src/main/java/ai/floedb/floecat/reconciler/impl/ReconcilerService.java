@@ -21,6 +21,7 @@ import static ai.floedb.floecat.reconciler.util.NameParts.split;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -186,6 +187,9 @@ public class ReconcilerService {
     try {
       stored = backend.lookupConnector(ctx, connectorId);
     } catch (RuntimeException e) {
+      if (isMissingConnectorFailure(e)) {
+        return new Result(0, 0, 0, 0, 0, null);
+      }
       return new Result(
           0,
           0,
@@ -210,50 +214,53 @@ public class ReconcilerService {
     final DestinationTarget dest =
         stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
 
-    var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
+    var baseConfig = ConnectorConfigMapper.fromProto(stored);
+    final String sourceNsFq;
+    if (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty()) {
+      sourceNsFq = fq(source.getNamespace().getSegmentsList());
+    } else {
+      return new Result(
+          0, 0, 1, 0, 0, new IllegalArgumentException("connector.source.namespace is required"));
+    }
+
+    final ResourceId destCatalogId = dest.getCatalogId();
+    final String destNsFq;
+    final ResourceId destNamespaceId;
+
+    if (dest.hasNamespaceId()) {
+      destNamespaceId = dest.getNamespaceId();
+      destNsFq = resolveNamespaceFq(ctx, destNamespaceId);
+    } else {
+      destNsFq =
+          (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+              ? fq(dest.getNamespace().getSegmentsList())
+              : sourceNsFq;
+
+      destNamespaceId = ensureNamespace(ctx, destCatalogId, destNsFq);
+    }
+
+    String scopeNamespaceFq = destNsFq != null ? destNsFq : sourceNsFq;
+    if (!scope.matchesNamespace(scopeNamespaceFq)) {
+      return new Result(
+          0,
+          0,
+          1,
+          0,
+          0,
+          new IllegalArgumentException(
+              "Connector destination namespace "
+                  + scopeNamespaceFq
+                  + " does not match requested scope"));
+    }
+
+    Table existingDestinationTable =
+        initialDestinationTable(
+            ctx, captureMode, destCatalogId, destNamespaceId, dest, sourceNsFq, source);
+    var cfg = applyIcebergOverrides(baseConfig, existingDestinationTable);
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
     try (FloecatConnector connector = connectorOpener.open(resolved)) {
       ensureNotCancelled(cancelCheck);
-      final ResourceId destCatalogId = dest.getCatalogId();
-
-      final String sourceNsFq;
-      if (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty()) {
-        sourceNsFq = fq(source.getNamespace().getSegmentsList());
-      } else {
-        return new Result(
-            0, 0, 1, 0, 0, new IllegalArgumentException("connector.source.namespace is required"));
-      }
-
-      final String destNsFq;
-      final ResourceId destNamespaceId;
-
-      if (dest.hasNamespaceId()) {
-        destNamespaceId = dest.getNamespaceId();
-        destNsFq = resolveNamespaceFq(ctx, destNamespaceId);
-      } else {
-        destNsFq =
-            (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
-                ? fq(dest.getNamespace().getSegmentsList())
-                : sourceNsFq;
-
-        destNamespaceId = ensureNamespace(ctx, destCatalogId, destNsFq);
-      }
-
-      String scopeNamespaceFq = destNsFq != null ? destNsFq : sourceNsFq;
-      if (!scope.matchesNamespace(scopeNamespaceFq)) {
-        return new Result(
-            0,
-            0,
-            1,
-            0,
-            0,
-            new IllegalArgumentException(
-                "Connector destination namespace "
-                    + scopeNamespaceFq
-                    + " does not match requested scope"));
-      }
-
       if (!destB.hasNamespaceId()) {
         destB.setNamespaceId(destNamespaceId);
         destB.clearNamespace();
@@ -335,20 +342,40 @@ public class ReconcilerService {
           boolean includeStats =
               captureMode == CaptureMode.STATS_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
+          Table refreshedDestinationTable = backend.fetchTable(ctx, destTableId).orElse(null);
           Set<Long> targetSnapshotIds =
               scope.hasSnapshotFilter() ? Set.copyOf(scope.destinationSnapshotIds()) : Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
               knownSnapshotIdsForEnumeration(fullRescan, knownSnapshotIds);
-          var upstreamBundles =
-              connector.enumerateSnapshotsWithStats(
-                  sourceNsFq,
-                  srcTable,
-                  destTableId,
-                  includeSelectors,
-                  new FloecatConnector.SnapshotEnumerationOptions(
-                      includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
+          var refreshedCfg = applyIcebergOverrides(baseConfig, refreshedDestinationTable);
+          List<FloecatConnector.SnapshotBundle> upstreamBundles;
+          if (sameConnectorRuntimeConfig(refreshedCfg, cfg)) {
+            upstreamBundles =
+                connector.enumerateSnapshotsWithStats(
+                    sourceNsFq,
+                    srcTable,
+                    destTableId,
+                    includeSelectors,
+                    new FloecatConnector.SnapshotEnumerationOptions(
+                        includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
+          } else {
+            var refreshedResolved = resolveCredentials(refreshedCfg, stored.getAuth(), connectorId);
+            try (FloecatConnector refreshedConnector = connectorOpener.open(refreshedResolved)) {
+              upstreamBundles =
+                  refreshedConnector.enumerateSnapshotsWithStats(
+                      sourceNsFq,
+                      srcTable,
+                      destTableId,
+                      includeSelectors,
+                      new FloecatConnector.SnapshotEnumerationOptions(
+                          includeStats,
+                          fullRescan,
+                          enumerationKnownSnapshotIds,
+                          targetSnapshotIds));
+            }
+          }
           var bundles =
               filterBundlesForMode(
                   upstreamBundles,
@@ -493,7 +520,7 @@ public class ReconcilerService {
       }
 
       DestinationTarget updated = destB.build();
-      if (!updated.equals(stored.getDestination())) {
+      if (captureMode != CaptureMode.STATS_ONLY && !updated.equals(stored.getDestination())) {
         try {
           backend.updateConnectorDestination(ctx, stored.getResourceId(), updated);
         } catch (RuntimeException e) {
@@ -638,9 +665,11 @@ public class ReconcilerService {
       ResourceId tableId,
       FloecatConnector.SnapshotBundle bundle,
       Snapshot existing) {
-    long parentSnapshotId = bundle.parentId();
-    if (parentSnapshotId <= 0 && existing != null) {
+    Long parentSnapshotId = bundle.parentId();
+    boolean hasParentSnapshotId = parentSnapshotId != null;
+    if (!hasParentSnapshotId && existing != null && existing.hasParentSnapshotId()) {
       parentSnapshotId = existing.getParentSnapshotId();
+      hasParentSnapshotId = true;
     }
 
     Timestamp upstreamTimestamp;
@@ -657,8 +686,8 @@ public class ReconcilerService {
             .setTableId(tableId)
             .setSnapshotId(bundle.snapshotId())
             .setUpstreamCreatedAt(upstreamTimestamp);
-    if (parentSnapshotId > 0) {
-      builder.setParentSnapshotId(parentSnapshotId);
+    if (hasParentSnapshotId) {
+      builder.setParentSnapshotId(parentSnapshotId.longValue());
     }
     applyField(
         () -> bundle.schemaJson(),
@@ -1157,19 +1186,103 @@ public class ReconcilerService {
         .orElse(base);
   }
 
-  private static ConnectorConfig applyIcebergOverrides(ConnectorConfig base) {
+  private static ConnectorConfig applyIcebergOverrides(
+      ConnectorConfig base, Table destinationTable) {
     if (base.kind() != ConnectorConfig.Kind.ICEBERG) {
       return base;
     }
     Map<String, String> options = new LinkedHashMap<>(base.options());
+    options.remove("metadata-location");
+    String source = options.get("iceberg.source");
+    boolean filesystemSource = source != null && "filesystem".equalsIgnoreCase(source.trim());
     String external = options.get("external.metadata-location");
-    if (external == null || external.isBlank()) {
-      return base;
+    boolean hasFilesystemBootstrap = external != null && !external.isBlank();
+    if (!filesystemSource && !hasFilesystemBootstrap) {
+      return options.equals(base.options()) ? base : base.withOptions(options);
     }
-    options.putIfAbsent("iceberg.source", "filesystem");
-    return options.equals(base.options())
-        ? base
-        : new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, base.auth());
+    if (filesystemSource && hasFilesystemBootstrap) {
+      return new ConnectorConfig(
+          base.kind(), base.displayName(), base.uri(), options, base.auth(), external);
+    }
+    String tableMetadataLocation =
+        destinationTable == null
+            ? null
+            : destinationTable.getPropertiesMap().get("metadata-location");
+    if (tableMetadataLocation != null && !tableMetadataLocation.isBlank()) {
+      return new ConnectorConfig(
+          base.kind(), base.displayName(), base.uri(), options, base.auth(), tableMetadataLocation);
+    }
+    if (external == null || external.isBlank()) {
+      return options.equals(base.options()) ? base : base.withOptions(options);
+    }
+    return new ConnectorConfig(
+        base.kind(), base.displayName(), base.uri(), options, base.auth(), external);
+  }
+
+  private Table initialDestinationTable(
+      ReconcileContext ctx,
+      CaptureMode captureMode,
+      ResourceId catalogId,
+      ResourceId destNamespaceId,
+      DestinationTarget dest,
+      String sourceNsFq,
+      SourceSelector source) {
+    if (dest != null && dest.hasTableId()) {
+      return backend.fetchTable(ctx, dest.getTableId()).orElse(null);
+    }
+    if (captureMode != CaptureMode.STATS_ONLY || source == null) {
+      return null;
+    }
+    String sourceTable = source.getTable();
+    if (sourceTable == null || sourceTable.isBlank()) {
+      return null;
+    }
+    String destTableDisplayName =
+        (dest != null
+                && dest.getTableDisplayName() != null
+                && !dest.getTableDisplayName().isBlank())
+            ? dest.getTableDisplayName()
+            : sourceTable;
+    FloecatConnector.TableDescriptor descriptor =
+        new FloecatConnector.TableDescriptor(
+            destNamespaceFq(ctx, destNamespaceId, sourceNsFq),
+            destTableDisplayName,
+            "",
+            "",
+            List.of(),
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+    Optional<ResourceId> destTableId =
+        resolveDestinationTableId(
+            ctx,
+            captureMode,
+            catalogId,
+            destNamespaceId,
+            dest,
+            descriptor,
+            ConnectorFormat.CF_ICEBERG,
+            ResourceId.getDefaultInstance(),
+            "",
+            sourceNsFq,
+            sourceTable);
+    return destTableId.flatMap(id -> backend.fetchTable(ctx, id)).orElse(null);
+  }
+
+  private String destNamespaceFq(
+      ReconcileContext ctx, ResourceId destNamespaceId, String sourceNsFq) {
+    if (destNamespaceId == null || destNamespaceId.getId().isBlank()) {
+      return sourceNsFq;
+    }
+    return resolveNamespaceFq(ctx, destNamespaceId);
+  }
+
+  private static boolean sameConnectorRuntimeConfig(ConnectorConfig left, ConnectorConfig right) {
+    return left.options().equals(right.options())
+        && java.util.Objects.equals(
+            left.resolvedMetadataLocation(), right.resolvedMetadataLocation())
+        && java.util.Objects.equals(left.auth(), right.auth())
+        && java.util.Objects.equals(left.uri(), right.uri())
+        && left.kind() == right.kind();
   }
 
   public static final class Result {
@@ -1208,6 +1321,26 @@ public class ReconcilerService {
     if (cancelRequested != null && cancelRequested.getAsBoolean()) {
       throw new ReconcileCancelledException();
     }
+  }
+
+  private static boolean isMissingConnectorFailure(Throwable error) {
+    Throwable current = error;
+    while (current != null) {
+      if (current instanceof StatusRuntimeException statusException
+          && statusException.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+        return true;
+      }
+      if (current instanceof IllegalArgumentException illegalArgumentException) {
+        String message = illegalArgumentException.getMessage();
+        if (message != null
+            && (message.startsWith("Connector not found:")
+                || message.startsWith("getConnector failed:"))) {
+          return true;
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static final class ReconcileCancelledException extends RuntimeException {

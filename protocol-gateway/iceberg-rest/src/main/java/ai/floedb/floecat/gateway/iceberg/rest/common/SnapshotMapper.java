@@ -130,7 +130,7 @@ final class SnapshotMapper {
     for (Snapshot snapshot : snapshots) {
       Map<String, Object> entry = new LinkedHashMap<>();
       entry.put("snapshot-id", snapshot.getSnapshotId());
-      if (snapshot.getParentSnapshotId() > 0) {
+      if (snapshot.hasParentSnapshotId()) {
         entry.put("parent-snapshot-id", snapshot.getParentSnapshotId());
       }
       long sequenceNumber = snapshot.getSequenceNumber();

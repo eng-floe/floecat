@@ -272,7 +272,7 @@ abstract class DeltaConnector implements FloecatConnector {
       long version,
       Snapshot snapshot) {
     final long createdMs = snapshot.getTimestamp(engine);
-    final long parent = Math.max(0L, version - 1L);
+    final Long parent = version == 0L ? null : Long.valueOf(version - 1L);
 
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
