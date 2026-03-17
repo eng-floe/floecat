@@ -2797,6 +2797,22 @@ class TransactionCommitServiceTest {
     return requestWithAddSnapshotAndSchemaId(snapshotId, 1);
   }
 
+  private TransactionCommitRequest requestWithAddSnapshotAndParentId(
+      long snapshotId, long parentId) {
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", snapshotId);
+    snapshot.put("parent-snapshot-id", parentId);
+    snapshot.put("schema-id", 1);
+    snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
+    Map<String, Object> addUpdate = new LinkedHashMap<>();
+    addUpdate.put("action", "add-snapshot");
+    addUpdate.put("snapshot", snapshot);
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(addUpdate))));
+  }
+
   private TransactionCommitRequest requestWithAddSnapshotAndSchemaId(
       long snapshotId, int schemaId) {
     Map<String, Object> snapshot = new LinkedHashMap<>();
@@ -2810,6 +2826,52 @@ class TransactionCommitServiceTest {
         List.of(
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(List.of("db"), "orders"), List.of(), List.of(addUpdate))));
+  }
+
+  @Test
+  void addSnapshotPreservesExplicitZeroParentSnapshotId() throws Exception {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", requestWithAddSnapshotAndParentId(123L, 0L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare -> {
+                  var changes = prepare.getChangesList();
+                  for (var change : changes) {
+                    Snapshot snapshot = parseSnapshot(change.getPayload());
+                    if (snapshot != null && snapshot.getSnapshotId() == 123L) {
+                      return snapshot.hasParentSnapshotId() && snapshot.getParentSnapshotId() == 0L;
+                    }
+                  }
+                  return false;
+                }));
   }
 
   private TransactionCommitRequest requestWithSetMetadataLocationAndAddSnapshot(

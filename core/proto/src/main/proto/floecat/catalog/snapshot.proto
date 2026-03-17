@@ -30,7 +30,7 @@ message Snapshot {
   int64 snapshot_id = 2;
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
-  int64 parent_snapshot_id = 5;
+  optional int64 parent_snapshot_id = 5;
   string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
   int64 sequence_number = 8;
@@ -62,7 +62,7 @@ message SnapshotSpec {
   int64 snapshot_id = 2;
   google.protobuf.Timestamp upstream_created_at = 3;
   google.protobuf.Timestamp ingested_at = 4;
-  int64 parent_snapshot_id = 5;
+  optional int64 parent_snapshot_id = 5;
   optional string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
   optional int64 sequence_number = 8;
