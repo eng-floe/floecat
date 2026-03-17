@@ -158,6 +158,22 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   @Override
+  protected Map<String, String> fallbackTablePropertiesForConstraints(
+      String namespaceFq, String tableName) {
+    try {
+      String full = namespaceFq + "." + tableName;
+      var response = ucHttp.get("/api/2.1/unity-catalog/tables/" + UcBaseSupport.url(full));
+      if (response.statusCode() < 200 || response.statusCode() >= 300) {
+        return Map.of();
+      }
+      JsonNode meta = M.readTree(response.body());
+      return extractConstraintProperties(meta);
+    } catch (Exception ignored) {
+      return Map.of();
+    }
+  }
+
+  @Override
   public List<String> listViews(String namespaceFq) {
     try {
       var tables = listTablesNode(namespaceFq);
@@ -314,6 +330,51 @@ public final class UnityDeltaConnector extends DeltaConnector {
   private static void putIfPresent(Map<String, String> props, JsonNode n, String field) {
     if (!n.path(field).isMissingNode()) {
       props.put(field, n.path(field).asText());
+    }
+  }
+
+  static Map<String, String> extractConstraintProperties(JsonNode tableMeta) {
+    if (tableMeta == null || tableMeta.isMissingNode()) {
+      return Map.of();
+    }
+    Map<String, String> out = new LinkedHashMap<>();
+    // UC exposes table properties in two shapes depending on the API version and table type:
+    // either a JSON object {"key": "value", ...} or a JSON array [{"key": ..., "value": ...}].
+    // Each parser handles one shape and no-ops on the other, so both are applied to each field.
+    collectStringMap(out, tableMeta.path("properties"));
+    collectStringMap(out, tableMeta.path("table_properties"));
+    collectKeyValueArray(out, tableMeta.path("properties"));
+    collectKeyValueArray(out, tableMeta.path("table_properties"));
+    return Map.copyOf(out);
+  }
+
+  private static void collectStringMap(Map<String, String> out, JsonNode node) {
+    if (node == null || !node.isObject()) {
+      return;
+    }
+    node.fields()
+        .forEachRemaining(
+            entry -> {
+              JsonNode value = entry.getValue();
+              if (value != null && value.isTextual() && !value.asText().isBlank()) {
+                out.put(entry.getKey(), value.asText());
+              }
+            });
+  }
+
+  private static void collectKeyValueArray(Map<String, String> out, JsonNode node) {
+    if (node == null || !node.isArray()) {
+      return;
+    }
+    for (JsonNode item : node) {
+      if (!item.isObject()) {
+        continue;
+      }
+      String key = item.path("key").asText(item.path("name").asText(""));
+      String value = item.path("value").asText("");
+      if (!key.isBlank() && !value.isBlank()) {
+        out.put(key, value);
+      }
     }
   }
 }

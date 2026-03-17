@@ -51,6 +51,20 @@ specializing discovery and catalog wiring.
 - **Metadata capture** – `IcebergConnector` embeds the serialized `IcebergMetadata` protobuf in the
   `SnapshotBundle.metadata` map so the reconciler can persist schemas/specs/refs/logs without
   leaking Iceberg-specific types into the core SPI.
+- **Constraint mapping** – Snapshot constraints currently emit only metadata that is reliably
+  exposed by core Iceberg tables:
+  - `CT_PRIMARY_KEY` from Iceberg `identifier-field-ids` (advisory, emitted as not-enforced).
+  - `CT_NOT_NULL` from required primitive schema fields (including nested struct leaves).
+  - `CT_FOREIGN_KEY`, `CT_UNIQUE`, and `CT_CHECK` are not emitted from core Iceberg metadata
+    because no portable source is defined for them.
+  - Source-specific extraction path:
+    - **REST**: snapshot/schema-derived constraints + source-specific additions (currently none).
+    - **Glue**: snapshot/schema-derived constraints + source-specific additions (currently none).
+    - **Filesystem**: snapshot/schema-derived constraints + source-specific additions (currently none).
+  - Connector matrix (current behavior):
+    - **REST**: `CT_PRIMARY_KEY`, `CT_NOT_NULL`.
+    - **Glue**: `CT_PRIMARY_KEY`, `CT_NOT_NULL`.
+    - **Filesystem**: `CT_PRIMARY_KEY`, `CT_NOT_NULL`.
 
 ## Data Flow & Lifecycle
 ```

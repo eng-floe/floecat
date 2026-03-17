@@ -94,6 +94,16 @@ final class GlueDeltaCatalog implements AutoCloseable {
     return location;
   }
 
+  Map<String, String> tableParameters(String namespace, String tableName) {
+    var response =
+        glue.getTable(GetTableRequest.builder().databaseName(namespace).name(tableName).build());
+    var table = response.table();
+    if (table == null || table.parameters() == null) {
+      return Map.of();
+    }
+    return table.parameters();
+  }
+
   @Override
   public void close() {
     try {

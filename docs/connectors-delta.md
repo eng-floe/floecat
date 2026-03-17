@@ -61,6 +61,22 @@ Databricks SQL execution, and custom file readers for S3.
   `stats.ndv.max_files`. Samples combine streaming NDV with Parquet footers for accuracy.
 - **Type mapping** – `DeltaTypeMapper` ensures nested Delta/Parquet types are faithfully represented
   when computing stats, aligning with `types/` definitions.
+- **Constraint mapping** – Snapshot constraints currently emit metadata that is reliably exposed by
+  Delta snapshots/table metadata:
+  - `CT_NOT_NULL` from non-nullable schema fields (including nested struct leaves).
+  - `CT_CHECK` from table properties using `delta.constraints.<name>=<sql_expression>`.
+  - `CT_PRIMARY_KEY`, `CT_FOREIGN_KEY`, and `CT_UNIQUE` are not emitted from core Delta metadata
+    because no portable source is defined for them.
+  - Source-specific extraction path:
+    - **Unity Catalog**: merge of snapshot metadata + UC table properties from
+      `/api/2.1/unity-catalog/tables/{full_name}`. Snapshot metadata wins on key collisions.
+    - **Glue**: merge of snapshot metadata + Glue table parameters. Snapshot metadata wins on key
+      collisions.
+    - **Filesystem**: snapshot metadata only (no catalog-level fallback source).
+  - Connector matrix (current behavior):
+    - **Unity**: `CT_NOT_NULL`, `CT_CHECK` (`delta.constraints.*`) from merged snapshot + UC metadata.
+    - **Glue**: `CT_NOT_NULL`, `CT_CHECK` (`delta.constraints.*`) from merged snapshot + Glue metadata.
+    - **Filesystem**: `CT_NOT_NULL`, `CT_CHECK` (`delta.constraints.*`) from snapshot metadata only.
 
 ## Data Flow & Lifecycle
 

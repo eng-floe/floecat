@@ -17,7 +17,10 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.Operation;
@@ -34,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
@@ -102,6 +106,66 @@ class DeltaConnectorTest {
     assertEquals(List.of(0L, 2000L, 3000L, 5000L), timestamps);
   }
 
+  @Test
+  void snapshotConstraintsUsesFallbackTablePropertiesWhenSnapshotPropertiesUnavailable() {
+    Snapshot latest = snapshot(7L, 7000L);
+    Table table = new StubTable(latest, Map.of(7L, latest));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+    connector.setFallbackTableProperties(Map.of("delta.constraints.ck_id_positive", "id > 0"));
+
+    Optional<SnapshotConstraints> constraints =
+        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 7L);
+
+    assertTrue(constraints.isPresent());
+    assertEquals(1, constraints.get().getConstraintsCount());
+    assertEquals(ConstraintType.CT_CHECK, constraints.get().getConstraints(0).getType());
+    assertEquals("ck_id_positive", constraints.get().getConstraints(0).getName());
+  }
+
+  @Test
+  void snapshotConstraintsPrefersSnapshotPropertiesOverFallbackProperties() {
+    Snapshot latest = snapshot(8L, 8000L);
+    Table table = new StubTable(latest, Map.of(8L, latest));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+    connector.setSnapshotTableProperties(Map.of("delta.constraints.ck_snapshot", "id > 0"));
+    connector.setFallbackTableProperties(Map.of("delta.constraints.ck_fallback", "id < 100"));
+
+    Optional<SnapshotConstraints> constraints =
+        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 8L);
+
+    assertTrue(constraints.isPresent());
+    assertEquals(2, constraints.get().getConstraintsCount());
+    assertEquals(
+        List.of("ck_fallback", "ck_snapshot"),
+        constraints.get().getConstraintsList().stream().map(c -> c.getName()).toList());
+    assertTrue(
+        connector.fallbackCalled.get(), "fallback source should be merged with snapshot metadata");
+  }
+
+  @Test
+  void snapshotConstraintsSnapshotExpressionWinsOnKeyCollision() {
+    // Same constraint name in both fallback and snapshot — snapshot expression must win.
+    Snapshot latest = snapshot(9L, 9000L);
+    Table table = new StubTable(latest, Map.of(9L, latest));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+    connector.setFallbackTableProperties(Map.of("delta.constraints.ck_amount", "amount > 0"));
+    connector.setSnapshotTableProperties(Map.of("delta.constraints.ck_amount", "amount >= 1"));
+
+    Optional<SnapshotConstraints> constraints =
+        connector.snapshotConstraints("ns", "tbl", ResourceId.getDefaultInstance(), 9L);
+
+    assertTrue(constraints.isPresent());
+    List<ai.floedb.floecat.catalog.rpc.ConstraintDefinition> checks =
+        constraints.get().getConstraintsList().stream()
+            .filter(c -> c.getType() == ai.floedb.floecat.catalog.rpc.ConstraintType.CT_CHECK)
+            .toList();
+    assertEquals(1, checks.size(), "duplicate key should produce exactly one CHECK constraint");
+    assertEquals("amount >= 1", checks.get(0).getCheckExpression(), "snapshot expression wins");
+  }
+
   private static Snapshot snapshot(long version, long timestampMs) {
     return new Snapshot() {
       @Override
@@ -138,6 +202,9 @@ class DeltaConnectorTest {
 
   private static final class TestDeltaConnector extends DeltaConnector {
     private final Table table;
+    private Map<String, String> snapshotTableProperties = Map.of();
+    private Map<String, String> fallbackTableProperties = Map.of();
+    private final AtomicBoolean fallbackCalled = new AtomicBoolean(false);
 
     TestDeltaConnector(Table table) {
       super("delta-test", null, path -> null, false, 0.0d, 0L);
@@ -155,6 +222,18 @@ class DeltaConnectorTest {
     }
 
     @Override
+    protected Map<String, String> snapshotTableProperties(Snapshot snapshot) {
+      return snapshotTableProperties;
+    }
+
+    @Override
+    protected Map<String, String> fallbackTablePropertiesForConstraints(
+        String namespaceFq, String tableName) {
+      fallbackCalled.set(true);
+      return fallbackTableProperties;
+    }
+
+    @Override
     public List<String> listTables(String namespaceFq) {
       return List.of();
     }
@@ -167,6 +246,14 @@ class DeltaConnectorTest {
     @Override
     public TableDescriptor describe(String namespaceFq, String tableName) {
       throw new UnsupportedOperationException();
+    }
+
+    void setSnapshotTableProperties(Map<String, String> snapshotTableProperties) {
+      this.snapshotTableProperties = snapshotTableProperties;
+    }
+
+    void setFallbackTableProperties(Map<String, String> fallbackTableProperties) {
+      this.fallbackTableProperties = fallbackTableProperties;
     }
   }
 

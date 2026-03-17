@@ -17,8 +17,13 @@
 package ai.floedb.floecat.connector.iceberg.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -365,6 +370,109 @@ public abstract class IcebergConnector implements FloecatConnector {
               metadataAttachments));
     }
     return out;
+  }
+
+  @Override
+  public Optional<SnapshotConstraints> snapshotConstraints(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+
+    int schemaId = snapshot.schemaId() == null ? table.schema().schemaId() : snapshot.schemaId();
+    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    List<ConstraintDefinition> constraints =
+        mergeConstraints(
+            mapIcebergConstraints(schema),
+            sourceSpecificConstraints(namespaceFq, tableName, table, snapshot));
+    if (constraints.isEmpty()) {
+      return Optional.empty();
+    }
+
+    return Optional.of(
+        SnapshotConstraints.newBuilder()
+            .setTableId(destinationTableId)
+            .setSnapshotId(snapshotId)
+            .addAllConstraints(constraints)
+            .build());
+  }
+
+  /**
+   * Source-specific constraint extraction hook (for example, catalog metadata side channels).
+   *
+   * <p>Default implementation contributes no additional constraints.
+   */
+  protected List<ConstraintDefinition> sourceSpecificConstraints(
+      String namespaceFq, String tableName, Table table, Snapshot snapshot) {
+    return List.of();
+  }
+
+  static List<ConstraintDefinition> mapIcebergConstraints(Schema schema) {
+    if (schema == null) {
+      return List.of();
+    }
+    List<ConstraintDefinition> out = new ArrayList<>();
+    var fieldMaps = fieldIdMaps(schema);
+    Map<Integer, String> idToPath = fieldMaps.getKey();
+
+    Set<Integer> identifierFieldIds = schema.identifierFieldIds();
+    if (!identifierFieldIds.isEmpty()) {
+      List<Integer> sortedIds =
+          identifierFieldIds.stream()
+              .sorted(
+                  Comparator.comparing(
+                          (Integer id) -> idToPath.getOrDefault(id, ""),
+                          Comparator.nullsFirst(Comparator.naturalOrder()))
+                      .thenComparingInt(Integer::intValue))
+              .toList();
+      ConstraintDefinition.Builder pk =
+          ConstraintDefinition.newBuilder()
+              .setName("pk_identifier_fields")
+              .setType(ConstraintType.CT_PRIMARY_KEY)
+              .setEnforcement(ConstraintEnforcement.CE_NOT_ENFORCED);
+      int ordinal = 1;
+      for (Integer id : sortedIds) {
+        Types.NestedField field = schema.findField(id);
+        if (field == null) {
+          continue;
+        }
+        pk.addColumns(
+            ConstraintColumnRef.newBuilder()
+                .setColumnId(id)
+                .setColumnName(idToPath.getOrDefault(id, field.name()))
+                .setOrdinal(ordinal++)
+                .build());
+      }
+      if (pk.getColumnsCount() > 0) {
+        out.add(pk.build());
+      }
+    }
+
+    collectNotNullConstraints(schema.columns(), "", out);
+    return List.copyOf(out);
+  }
+
+  static List<ConstraintDefinition> mergeConstraints(
+      List<ConstraintDefinition> primary, List<ConstraintDefinition> secondary) {
+    if ((primary == null || primary.isEmpty()) && (secondary == null || secondary.isEmpty())) {
+      return List.of();
+    }
+    // Deduplication uses full proto payload (toByteString()), not semantic identity.
+    // Constraints with different names, ordinals, or enforcement for the same logical key
+    // will both be retained. Acceptable while sourceSpecificConstraints() is unused;
+    // revisit if that hook gains implementations that may duplicate schema-derived constraints.
+    // TODO: switch to semantic dedup (type + column signature) once sourceSpecificConstraints()
+    // has implementations that may produce logically equivalent constraints under different names.
+    Map<ByteString, ConstraintDefinition> deduped = new LinkedHashMap<>();
+    for (ConstraintDefinition constraint : primary) {
+      deduped.put(constraint.toByteString(), constraint);
+    }
+    for (ConstraintDefinition constraint : secondary) {
+      deduped.putIfAbsent(constraint.toByteString(), constraint);
+    }
+    return List.copyOf(deduped.values());
   }
 
   private List<Snapshot> snapshotsToEnumerate(
@@ -1042,6 +1150,36 @@ public abstract class IcebergConnector implements FloecatConnector {
       // Use canonical {} notation for map values (matching IcebergSchemaMapper output)
       collectNestedWithOrdinal(key, name + ".key", 1, idToPath, idToOrdinal);
       collectNestedWithOrdinal(val, name + ".value", 2, idToPath, idToOrdinal);
+    }
+  }
+
+  private static void collectNotNullConstraints(
+      List<Types.NestedField> fields, String prefix, List<ConstraintDefinition> out) {
+    for (Types.NestedField field : fields) {
+      String path = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
+      if (field.isRequired() && !field.type().isStructType()) {
+        // For non-primitive types (LIST, MAP) this means the container itself is non-null;
+        // element/value nullability is a separate concern not captured here.
+        // Name uses the stable Iceberg field ID so a column rename does not change the constraint
+        // identity; the human-readable path is preserved in columns[0].column_name.
+        out.add(
+            ConstraintDefinition.newBuilder()
+                .setName("nn_" + field.fieldId())
+                .setType(ConstraintType.CT_NOT_NULL)
+                .setEnforcement(ConstraintEnforcement.CE_ENFORCED)
+                .addColumns(
+                    ConstraintColumnRef.newBuilder()
+                        .setColumnId(field.fieldId())
+                        .setColumnName(path)
+                        .setOrdinal(1)
+                        .build())
+                .build());
+      }
+      if (field.type().isStructType() && field.isRequired()) {
+        // Only descend into a struct when the struct itself is required; a required child
+        // inside an optional parent struct is conditionally present, not flat-relational NOT NULL.
+        collectNotNullConstraints(field.type().asStructType().fields(), path, out);
+      }
     }
   }
 }
