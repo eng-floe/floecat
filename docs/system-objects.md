@@ -79,6 +79,50 @@ The core pieces:
 - **`SystemObjectScannerProvider`** – SPI for providers of definitions and scanners. `definitions()` lists every `SystemObjectDef` (no filtering). `supportsEngine`/`supports(NameRef, engineKind)` gate when a definition applies. `provide(scannerId, engineKind, engineVersion)` lets the runtime look up the scanner for a node’s `scannerId`. The SPI now exposes version-aware helpers (`definitions(engineKind, engineVersion)` and `supports(NameRef, engineKind, engineVersion)`) so providers can evolve schemas per engine version. During catalog assembly `SystemNodeRegistry.mergeCatalogData` seeds the map with the `floecat_internal` base from `FloecatInternalProvider`, overlays the plugin catalog, and finally applies provider definitions so every overlay can override earlier entries.
 - **`ServiceLoaderSystemCatalogProvider`** – Discovers `EngineSystemCatalogExtension`s (which already extend `SystemObjectScannerProvider`), loads the catalog for each normalized engine kind, fingerprints it, and hands it to `SystemDefinitionRegistry`. It exposes `internalProvider()` for the shared `floecat_internal` layer and `providers()` for the extension-only overlays; provider merges happen later in `SystemNodeRegistry`.
 - **`SystemNodeRegistry` + `SystemGraph`** – The registry filters the snapshot for the requested engine/version, materialises `GraphNode`s (functions, types, aggregates) and `SystemTableNode`s (with their `scannerId`s), and caches the result, seeding each merge with the shared `information_schema` definitions provided by `FloecatInternalProvider`. Overlays are only applied when `EngineContext.enginePluginOverlaysEnabled()` returns true. Unknown or missing headers fall back to the base view while still exposing `information_schema`. `SystemGraph` builds `GraphSnapshot`s from those nodes and keeps them in an LRU `LinkedHashMap` keyed by `(engineKind, engineVersion)`. Each snapshot stores namespace buckets, table relations, and a `nodesById` map for constant-time resolution.
+- **System constraint catalog** – Planner/system constraint lookups are backed by an immutable cache keyed by `(engineKind, engineVersion, systemRelationId)` and built from the pbtxt-backed builtin table definitions loaded by `FloecatInternalProvider`/`SystemNodeRegistry` (not from `information_schema` scans). Constraints are explicit metadata (`SystemTable.constraints`) and are validated during builtin catalog load. The runtime currently de-duplicates only `CT_NOT_NULL` between explicit and nullable-derived implicit entries (and keeps other constraint kinds as declared), so semantic de-duplication of PK/UNIQUE/FK/CHECK is intentionally out of scope here.
+  - Validator note: FK referenced-column target validation is currently name-based. `referenced_table_id` satisfies FK presence requirements, but column-target lookup for validation uses `referenced_table_name`.
+  - pbtxt authoring example (common constraint types):
+```pbtxt
+system_tables {
+  name { path: "information_schema" name: "orders" }
+  display_name: "orders"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat { scanner_id: "orders_scanner" }
+  columns { name: "id" type { name: "BIGINT" } nullable: false ordinal: 1 id: 1 }
+  columns { name: "customer_id" type { name: "BIGINT" } nullable: false ordinal: 2 id: 2 }
+  columns { name: "order_no" type { name: "VARCHAR" } nullable: false ordinal: 3 id: 3 }
+  columns { name: "total_amount" type { name: "DECIMAL" } nullable: false ordinal: 4 id: 4 }
+
+  constraints {
+    name: "pk_orders"
+    type: CT_PRIMARY_KEY
+    columns { column_id: 1 column_name: "id" ordinal: 1 }
+  }
+  constraints {
+    name: "uq_orders_order_no"
+    type: CT_UNIQUE
+    columns { column_id: 3 column_name: "order_no" ordinal: 1 }
+  }
+  constraints {
+    name: "ck_orders_total_non_negative"
+    type: CT_CHECK
+    check_expression: "total_amount >= 0"
+    columns { column_id: 4 column_name: "total_amount" ordinal: 1 }
+  }
+  constraints {
+    name: "fk_orders_customers"
+    type: CT_FOREIGN_KEY
+    columns { column_id: 2 column_name: "customer_id" ordinal: 1 }
+    referenced_table_name: "information_schema.customers"
+    referenced_columns { column_id: 1 column_name: "id" ordinal: 1 }
+  }
+  constraints {
+    name: "nn_orders_total_amount"
+    type: CT_NOT_NULL
+    columns { column_id: 4 column_name: "total_amount" ordinal: 1 }
+  }
+}
+```
 - **Namespace resolution** – Objects are mapped to namespaces by canonical name, trimming everything after the final dot. That means `t` resolves to namespace `t` rather than a default schema, so every system function/table/view must be defined with a fully qualified name (e.g., `foo.bar`). If you need to expose unqualified identifiers you must provide a dedicated namespace node whose canonical path matches the identifier you intend to publish; otherwise the node will be skipped during merging because `findNamespaceId` can’t map it to an existing namespace.
 - **`CatalogOverlay` / `MetaGraph`** – The overlay implements `SystemObjectGraphView` and exposes an immutable view over `MetadataGraph` plus the `_system` snapshot from `SystemGraph`. `SystemObjectScanContext` receives this view and uses it for every lookup, so scanners consistently benefit from the metadata graph’s caches.
 - **Registry-level engine hints** – `SystemObjectsRegistry` now carries a `repeated EngineSpecific engine_specific` section that plugins can use to ship shared dictionaries (pg_opfamily/opclass/amop-like payloads) or other planner-only metadata once per `(engine_kind, engine_version)`. These payloads are filtered by `EngineSpecificRule` and travel alongside the node-level definitions, so the planner and scanners can deserialize them without adding new system tables (see `SystemObjectsRegistry.engine_specific` in `core/proto/src/main/proto/floecat/query/system_objects_registry.proto`).

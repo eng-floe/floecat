@@ -598,7 +598,8 @@ public class SystemNodeRegistry {
         def.storagePath(),
         def.storageEndpointKey(),
         matched,
-        def.flightEndpoint());
+        def.flightEndpoint(),
+        def.constraints());
   }
 
   private SystemViewDef withViewRules(SystemViewDef def, String engineKind, String engineVersion) {

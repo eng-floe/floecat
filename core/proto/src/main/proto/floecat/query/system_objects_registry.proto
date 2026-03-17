@@ -18,6 +18,7 @@ package ai.floedb.floecat.query;
 import "floecat/query/engine_specific.proto";
 import "floecat/query/sql_objects.proto";
 import "floecat/common/common.proto";
+import "floecat/catalog/constraints.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
@@ -103,6 +104,9 @@ message SystemTable {
     /** Engine backend metadata. */
     EngineTableDetails engine = 7;
   }
+
+  /** Immutable constraints declared for this system table. */
+  repeated ai.floedb.floecat.catalog.ConstraintDefinition constraints = 8;
 
   /** Engine-specific metadata scoped to this table. */
   repeated EngineSpecific engine_specific = 99;

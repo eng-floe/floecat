@@ -18,8 +18,12 @@ package ai.floedb.floecat.systemcatalog.registry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import java.util.Arrays;
@@ -188,6 +192,54 @@ final class SystemCatalogProtoMapperTest {
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
     assertThat(output.functions().get(0).engineSpecific()).isEmpty();
+  }
+
+  @Test
+  void roundTrip_preservesSystemTableConstraints() {
+    ConstraintDefinition constraint =
+        ConstraintDefinition.newBuilder()
+            .setName("pk_tables")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(
+                ConstraintColumnRef.newBuilder()
+                    .setColumnName("table_name")
+                    .setColumnId(1L)
+                    .setOrdinal(1)
+                    .build())
+            .build();
+    SystemCatalogData input =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(
+                new SystemTableDef(
+                    NameRef.newBuilder().addPath("information_schema").setName("tables").build(),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef(
+                            "table_name", name("VARCHAR"), false, 1, 1L, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(constraint))),
+            List.of(),
+            List.of());
+
+    SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
+    SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "floedb");
+
+    assertThat(output.tables()).hasSize(1);
+    assertThat(output.tables().get(0).constraints()).hasSize(1);
+    assertThat(output.tables().get(0).constraints().get(0).toByteString())
+        .isEqualTo(constraint.toByteString());
   }
 
   @Test

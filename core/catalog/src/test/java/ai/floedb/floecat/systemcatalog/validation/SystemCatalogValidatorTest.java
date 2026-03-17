@@ -18,7 +18,11 @@ package ai.floedb.floecat.systemcatalog.validation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -581,6 +585,580 @@ final class SystemCatalogValidatorTest {
     ValidationIssue issue = findFirst(issues, "engine_specific.payload_type.required");
     assertThat(issue).isNotNull();
     assertThat(issue.ctx()).isEqualTo("function:f.engineSpecific[0]");
+  }
+
+  @Test
+  void validate_tableConstraintUnknownColumnRef() {
+    ConstraintDefinition badConstraint =
+        ConstraintDefinition.newBuilder()
+            .setName("pk_tables")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("missing_col").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef(
+                            "table_name", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(badConstraint))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.column_ref.unknown");
+  }
+
+  @Test
+  void validate_tableConstraintRejectsDuplicateConstraintName() {
+    ConstraintDefinition c1 =
+        ConstraintDefinition.newBuilder()
+            .setName("dup_name")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("table_name").setOrdinal(1).build())
+            .build();
+    ConstraintDefinition c2 =
+        ConstraintDefinition.newBuilder()
+            .setName("dup_name")
+            .setType(ConstraintType.CT_UNIQUE)
+            .addColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("table_name").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef(
+                            "table_name", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(c1, c2))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.name.duplicate");
+  }
+
+  @Test
+  void validate_notNullConstraintMustHaveExactlyOneColumn() {
+    ConstraintDefinition notNullWithTwoColumns =
+        ConstraintDefinition.newBuilder()
+            .setName("bad_nn")
+            .setType(ConstraintType.CT_NOT_NULL)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c2").setOrdinal(2).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of()),
+                        new SystemColumnDef("c2", name("VARCHAR"), false, 2, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(notNullWithTwoColumns))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.not_null.single_column");
+  }
+
+  @Test
+  void validate_fkConstraintRequiresReferencedTable() {
+    ConstraintDefinition fkMissingReferencedTable =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_tables")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("x1").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(fkMissingReferencedTable))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.fk.referenced_table.required");
+  }
+
+  @Test
+  void validate_nonFkCannotSetReferencedFields() {
+    ConstraintDefinition pkWithReferencedFields =
+        ConstraintDefinition.newBuilder()
+            .setName("pk_bad")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .setReferencedTableName("other")
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(pkWithReferencedFields))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.fk_only.field.not_allowed");
+  }
+
+  @Test
+  void validate_checkRequiresExpressionAndOnlyCheckCanUseExpression() {
+    ConstraintDefinition checkWithoutExpression =
+        ConstraintDefinition.newBuilder()
+            .setName("check_bad")
+            .setType(ConstraintType.CT_CHECK)
+            .build();
+    ConstraintDefinition pkWithCheckExpression =
+        ConstraintDefinition.newBuilder()
+            .setName("pk_bad_expr")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .setCheckExpression("c1 > 0")
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(checkWithoutExpression, pkWithCheckExpression))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues))
+        .contains(
+            "table.constraint.check.expression.required",
+            "table.constraint.check_only.expression.not_allowed");
+  }
+
+  @Test
+  void validate_validCompositePrimaryKeyPasses() {
+    ConstraintDefinition compositePk =
+        ConstraintDefinition.newBuilder()
+            .setName("pk_composite")
+            .setType(ConstraintType.CT_PRIMARY_KEY)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c2").setOrdinal(2).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of()),
+                        new SystemColumnDef("c2", name("VARCHAR"), false, 2, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(compositePk))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(issues).isEmpty();
+  }
+
+  @Test
+  void validate_validCompositeForeignKeyPasses() {
+    ConstraintDefinition compositeFk =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_composite")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableName("information_schema.other_table")
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c2").setOrdinal(2).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("r1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("r2").setOrdinal(2).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(
+                        new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of()),
+                        new SystemColumnDef("c2", name("VARCHAR"), false, 2, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(compositeFk)),
+                new SystemTableDef(
+                    name("information_schema", "other_table"),
+                    "other_table",
+                    List.of(
+                        new SystemColumnDef("r1", name("VARCHAR"), false, 1, null, List.of()),
+                        new SystemColumnDef("r2", name("VARCHAR"), false, 2, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "other_tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of())),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(issues).isEmpty();
+  }
+
+  @Test
+  void validate_selfReferencingForeignKeyChecksReferencedColumnExistence() {
+    ConstraintDefinition selfFkWithUnknownReferencedColumn =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_self")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableName("tables")
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("missing_ref").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(selfFkWithUnknownReferencedColumn))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.column_ref.unknown");
+  }
+
+  @Test
+  void validate_foreignKeyReferencedColumnsCheckedAgainstReferencedTableWhenKnown() {
+    ConstraintDefinition fkWithUnknownReferencedColumn =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_known_ref")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableName("information_schema.ref_table")
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("missing_ref").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(fkWithUnknownReferencedColumn)),
+                new SystemTableDef(
+                    name("information_schema", "ref_table"),
+                    "ref_table",
+                    List.of(
+                        new SystemColumnDef("ref_id", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "ref_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of())),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.column_ref.unknown");
+  }
+
+  @Test
+  void validate_foreignKeyReferencedColumnIdNameMismatchIsRejected() {
+    ConstraintDefinition fkWithMismatchedReferencedRef =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_ref_mismatch")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableName("information_schema.ref_table")
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder()
+                    .setColumnId(1L)
+                    .setColumnName("ref_two")
+                    .setOrdinal(1)
+                    .build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(fkWithMismatchedReferencedRef)),
+                new SystemTableDef(
+                    name("information_schema", "ref_table"),
+                    "ref_table",
+                    List.of(
+                        new SystemColumnDef("ref_one", name("VARCHAR"), false, 1, 1L, List.of()),
+                        new SystemColumnDef("ref_two", name("VARCHAR"), false, 2, 2L, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "ref_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of())),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.column_ref.id_name.mismatch");
+  }
+
+  @Test
+  void validate_foreignKeyReferencedTableNameMustResolveWhenNoReferencedTableId() {
+    ConstraintDefinition fkUnknownTable =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_unknown_table")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableName("information_schema.missing_table")
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(fkUnknownTable))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.fk.referenced_table.unknown");
+  }
+
+  @Test
+  void validate_notNullConstraintOnNullableColumnIsRejected() {
+    ConstraintDefinition explicitNotNull =
+        ConstraintDefinition.newBuilder()
+            .setName("nn_bad")
+            .setType(ConstraintType.CT_NOT_NULL)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), true, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(explicitNotNull))),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues)).contains("table.constraint.not_null.column_is_nullable");
   }
 
   // ---------------------------------------------------------------------------

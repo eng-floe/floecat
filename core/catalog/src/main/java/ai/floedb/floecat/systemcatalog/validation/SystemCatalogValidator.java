@@ -14,10 +14,14 @@
 
 package ai.floedb.floecat.systemcatalog.validation;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
+import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
@@ -28,10 +32,14 @@ import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
@@ -140,6 +148,26 @@ public final class SystemCatalogValidator {
     interface Column {
       String SCHEMA_REQUIRED = "floe.column.schema.required";
       String ORDINAL_DUPLICATE = "floe.column.ordinal_duplicate";
+    }
+
+    interface Constraint {
+      String TYPE_REQUIRED = "table.constraint.type.required";
+      String NAME_DUPLICATE = "table.constraint.name.duplicate";
+      String COLUMNS_REQUIRED = "table.constraint.columns.required";
+      String FK_REFERENCED_TABLE_REQUIRED = "table.constraint.fk.referenced_table.required";
+      String FK_REFERENCED_TABLE_UNKNOWN = "table.constraint.fk.referenced_table.unknown";
+      String REFERENCED_COLUMNS_REQUIRED = "table.constraint.referenced_columns.required";
+      String FK_COLUMN_ARITY_MISMATCH = "table.constraint.fk.arity.mismatch";
+      String FK_REFERENCED_NOT_ALLOWED = "table.constraint.fk_only.field.not_allowed";
+      String CHECK_EXPRESSION_REQUIRED = "table.constraint.check.expression.required";
+      String CHECK_EXPRESSION_NOT_ALLOWED = "table.constraint.check_only.expression.not_allowed";
+      String NOT_NULL_SINGLE_COLUMN = "table.constraint.not_null.single_column";
+      String NOT_NULL_NULLABLE_COLUMN = "table.constraint.not_null.column_is_nullable";
+      String COLUMN_REF_TARGET_REQUIRED = "table.constraint.column_ref.target.required";
+      String COLUMN_REF_UNKNOWN = "table.constraint.column_ref.unknown";
+      String COLUMN_REF_ID_NAME_MISMATCH = "table.constraint.column_ref.id_name.mismatch";
+      String COLUMN_REF_ORDINAL_INVALID = "table.constraint.column_ref.ordinal.invalid";
+      String COLUMN_REF_ORDINAL_DUPLICATE = "table.constraint.column_ref.ordinal.duplicate";
     }
   }
 
@@ -747,6 +775,15 @@ public final class SystemCatalogValidator {
       return;
     }
 
+    Map<String, TableColumnIndex> tableColumnsByCanonical = new LinkedHashMap<>();
+    for (SystemTableDef table : tables) {
+      if (table == null || table.name() == null || isBlank(table.name().getName())) {
+        continue;
+      }
+      tableColumnsByCanonical.put(
+          NameRefUtil.canonical(table.name()), indexColumns(table.columns()));
+    }
+
     Set<NameRef> seen = new HashSet<>();
     for (SystemTableDef tbl : tables) {
       if (tbl == null) {
@@ -766,7 +803,287 @@ public final class SystemCatalogValidator {
       requireQualifiedObjectName("table", name, issues, Codes.Relation.TABLE_QUALIFIED_REQUIRED);
       requireNamespaceExists(
           "table", name, namespaceNames, issues, Codes.Relation.TABLE_NAMESPACE_UNKNOWN);
+      validateTableConstraints(tbl, ctx, tableColumnsByCanonical, issues);
     }
+  }
+
+  private static void validateTableConstraints(
+      SystemTableDef table,
+      String tableCtx,
+      Map<String, TableColumnIndex> tableColumnsByCanonical,
+      List<ValidationIssue> issues) {
+    List<ConstraintDefinition> constraints = table.constraints();
+    if (constraints == null || constraints.isEmpty()) {
+      return;
+    }
+    Map<String, SystemColumnDef> columnsByName = new HashMap<>();
+    Map<Long, SystemColumnDef> columnsById = new HashMap<>();
+    for (SystemColumnDef column : table.columns()) {
+      columnsByName.put(column.name(), column);
+      if (column.hasId() && column.id() > 0) {
+        columnsById.put(column.id(), column);
+      }
+    }
+    TableColumnIndex localTableIndex =
+        new TableColumnIndex(Map.copyOf(columnsByName), Map.copyOf(columnsById));
+    Set<String> constraintNames = new HashSet<>();
+    for (int i = 0; i < constraints.size(); i++) {
+      ConstraintDefinition constraint = constraints.get(i);
+      if (constraint == null) {
+        continue;
+      }
+      String constraintCtx = tableCtx + ".constraints[" + i + "]";
+      if (constraint.getType() == ConstraintType.CT_UNSPECIFIED) {
+        err(issues, Codes.Constraint.TYPE_REQUIRED, constraintCtx, null);
+      }
+
+      String constraintName = nullToEmpty(constraint.getName()).trim();
+      if (!constraintName.isEmpty() && !constraintNames.add(constraintName)) {
+        err(issues, Codes.Constraint.NAME_DUPLICATE, constraintCtx, null, constraintName);
+      }
+
+      if (requiresLocalColumns(constraint.getType()) && constraint.getColumnsCount() == 0) {
+        err(issues, Codes.Constraint.COLUMNS_REQUIRED, constraintCtx, null);
+      }
+      if (constraint.getType() == ConstraintType.CT_NOT_NULL && constraint.getColumnsCount() != 1) {
+        err(
+            issues,
+            Codes.Constraint.NOT_NULL_SINGLE_COLUMN,
+            constraintCtx,
+            null,
+            Integer.toString(constraint.getColumnsCount()));
+      } else if (constraint.getType() == ConstraintType.CT_NOT_NULL
+          && constraint.getColumnsCount() == 1) {
+        ConstraintColumnRef notNullColumn = constraint.getColumns(0);
+        SystemColumnDef target = resolveLocalColumn(columnsByName, columnsById, notNullColumn);
+        if (target != null && target.nullable()) {
+          err(
+              issues,
+              Codes.Constraint.NOT_NULL_NULLABLE_COLUMN,
+              constraintCtx,
+              null,
+              target.name());
+        }
+      }
+      if (constraint.getType() == ConstraintType.CT_FOREIGN_KEY) {
+        if (!constraint.hasReferencedTableId() && isBlank(constraint.getReferencedTableName())) {
+          err(issues, Codes.Constraint.FK_REFERENCED_TABLE_REQUIRED, constraintCtx, null);
+        }
+        if (constraint.getReferencedColumnsCount() == 0) {
+          err(issues, Codes.Constraint.REFERENCED_COLUMNS_REQUIRED, constraintCtx, null);
+        }
+        if (constraint.getColumnsCount() != constraint.getReferencedColumnsCount()) {
+          err(
+              issues,
+              Codes.Constraint.FK_COLUMN_ARITY_MISMATCH,
+              constraintCtx,
+              null,
+              Integer.toString(constraint.getColumnsCount()),
+              Integer.toString(constraint.getReferencedColumnsCount()));
+        }
+      } else if (constraint.hasReferencedTableId()
+          || !isBlank(constraint.getReferencedTableName())
+          || constraint.getReferencedColumnsCount() > 0) {
+        err(issues, Codes.Constraint.FK_REFERENCED_NOT_ALLOWED, constraintCtx, null);
+      }
+
+      if (constraint.getType() == ConstraintType.CT_CHECK) {
+        if (isBlank(constraint.getCheckExpression())) {
+          err(issues, Codes.Constraint.CHECK_EXPRESSION_REQUIRED, constraintCtx, null);
+        }
+      } else if (!isBlank(constraint.getCheckExpression())) {
+        err(issues, Codes.Constraint.CHECK_EXPRESSION_NOT_ALLOWED, constraintCtx, null);
+      }
+
+      validateConstraintColumnRefs(
+          constraintCtx + ".columns",
+          constraint.getColumnsList(),
+          columnsByName,
+          columnsById,
+          issues);
+      Map<String, SystemColumnDef> referencedColumnsByName = Map.of();
+      Map<Long, SystemColumnDef> referencedColumnsById = Map.of();
+      if (constraint.getType() == ConstraintType.CT_FOREIGN_KEY) {
+        TableColumnIndex referencedIndex =
+            resolveReferencedTableColumns(
+                table, constraint, tableColumnsByCanonical, localTableIndex);
+        if (referencedIndex != null) {
+          referencedColumnsByName = referencedIndex.byName();
+          referencedColumnsById = referencedIndex.byId();
+        } else if (!constraint.hasReferencedTableId()
+            && !isBlank(constraint.getReferencedTableName())) {
+          err(
+              issues,
+              Codes.Constraint.FK_REFERENCED_TABLE_UNKNOWN,
+              constraintCtx,
+              null,
+              constraint.getReferencedTableName());
+        }
+      }
+      validateConstraintColumnRefs(
+          constraintCtx + ".referenced_columns",
+          constraint.getReferencedColumnsList(),
+          referencedColumnsByName,
+          referencedColumnsById,
+          issues);
+    }
+  }
+
+  private static TableColumnIndex resolveReferencedTableColumns(
+      SystemTableDef localTable,
+      ConstraintDefinition constraint,
+      Map<String, TableColumnIndex> tableColumnsByCanonical,
+      TableColumnIndex localTableIndex) {
+    // Referenced-column target lookup is currently name-based only: referenced_table_id satisfies
+    // FK presence requirements but is not used to resolve a table schema in validator checks.
+    // This is acceptable for current builtin definitions (name-authored), but should be revisited
+    // if ID-first authoring becomes primary.
+    if (localTable == null
+        || localTable.name() == null
+        || constraint == null
+        || isBlank(constraint.getReferencedTableName())) {
+      return null;
+    }
+    String referencedRaw = constraint.getReferencedTableName().trim().toLowerCase();
+
+    if (referencedRaw.contains(".")) {
+      return tableColumnsByCanonical.get(referencedRaw);
+    }
+
+    String localNamespace = namespacePrefix(localTable.name());
+    if (!localNamespace.isEmpty()) {
+      TableColumnIndex inNamespace =
+          tableColumnsByCanonical.get(localNamespace + "." + referencedRaw);
+      if (inNamespace != null) {
+        return inNamespace;
+      }
+    }
+
+    if (referencedRaw.equalsIgnoreCase(nullToEmpty(localTable.name().getName()))) {
+      return localTableIndex;
+    }
+
+    return null;
+  }
+
+  private static TableColumnIndex indexColumns(List<SystemColumnDef> columns) {
+    Map<String, SystemColumnDef> byName = new LinkedHashMap<>();
+    Map<Long, SystemColumnDef> byId = new LinkedHashMap<>();
+    if (columns == null) {
+      return new TableColumnIndex(Map.of(), Map.of());
+    }
+    for (SystemColumnDef column : columns) {
+      if (column == null) {
+        continue;
+      }
+      byName.put(column.name(), column);
+      if (column.hasId() && column.id() > 0) {
+        byId.put(column.id(), column);
+      }
+    }
+    return new TableColumnIndex(Map.copyOf(byName), Map.copyOf(byId));
+  }
+
+  private static String namespacePrefix(NameRef tableName) {
+    if (tableName == null || tableName.getPathCount() == 0) {
+      return "";
+    }
+    return String.join(".", tableName.getPathList()).toLowerCase();
+  }
+
+  private static boolean requiresLocalColumns(ConstraintType type) {
+    return type == ConstraintType.CT_PRIMARY_KEY
+        || type == ConstraintType.CT_UNIQUE
+        || type == ConstraintType.CT_FOREIGN_KEY
+        || type == ConstraintType.CT_NOT_NULL;
+  }
+
+  private static void validateConstraintColumnRefs(
+      String refsCtx,
+      List<ConstraintColumnRef> refs,
+      Map<String, SystemColumnDef> columnsByName,
+      Map<Long, SystemColumnDef> columnsById,
+      List<ValidationIssue> issues) {
+    if (refs == null || refs.isEmpty()) {
+      return;
+    }
+    Set<Integer> ordinals = new HashSet<>();
+    for (int i = 0; i < refs.size(); i++) {
+      ConstraintColumnRef ref = refs.get(i);
+      if (ref == null) {
+        continue;
+      }
+      String refCtx = refsCtx + "[" + i + "]";
+      if (ref.getOrdinal() <= 0) {
+        err(
+            issues,
+            Codes.Constraint.COLUMN_REF_ORDINAL_INVALID,
+            refCtx,
+            null,
+            Integer.toString(ref.getOrdinal()));
+      } else if (!ordinals.add(ref.getOrdinal())) {
+        err(
+            issues,
+            Codes.Constraint.COLUMN_REF_ORDINAL_DUPLICATE,
+            refCtx,
+            null,
+            Integer.toString(ref.getOrdinal()));
+      }
+
+      boolean hasId = ref.getColumnId() > 0;
+      boolean hasName = !isBlank(ref.getColumnName());
+      if (!hasId && !hasName) {
+        err(issues, Codes.Constraint.COLUMN_REF_TARGET_REQUIRED, refCtx, null);
+        continue;
+      }
+      if ((columnsByName == null || columnsByName.isEmpty())
+          && (columnsById == null || columnsById.isEmpty())) {
+        continue;
+      }
+      SystemColumnDef byId =
+          hasId && columnsById != null ? columnsById.get(ref.getColumnId()) : null;
+      SystemColumnDef byName =
+          hasName && columnsByName != null ? columnsByName.get(ref.getColumnName()) : null;
+
+      if (hasId && hasName) {
+        if (byId != null && byName != null && byId.equals(byName)) {
+          continue;
+        }
+        err(
+            issues,
+            Codes.Constraint.COLUMN_REF_ID_NAME_MISMATCH,
+            refCtx,
+            null,
+            Long.toString(ref.getColumnId()),
+            ref.getColumnName());
+        continue;
+      }
+      if (byId != null || byName != null) {
+        continue;
+      }
+      err(
+          issues,
+          Codes.Constraint.COLUMN_REF_UNKNOWN,
+          refCtx,
+          null,
+          hasId ? Long.toString(ref.getColumnId()) : ref.getColumnName());
+    }
+  }
+
+  private static SystemColumnDef resolveLocalColumn(
+      Map<String, SystemColumnDef> columnsByName,
+      Map<Long, SystemColumnDef> columnsById,
+      ConstraintColumnRef ref) {
+    if (ref == null) {
+      return null;
+    }
+    if (ref.getColumnId() > 0 && columnsById.containsKey(ref.getColumnId())) {
+      return columnsById.get(ref.getColumnId());
+    }
+    if (!isBlank(ref.getColumnName()) && columnsByName.containsKey(ref.getColumnName())) {
+      return columnsByName.get(ref.getColumnName());
+    }
+    return null;
   }
 
   private static void validateViews(
@@ -1006,4 +1323,7 @@ public final class SystemCatalogValidator {
   private static String nullToEmpty(String s) {
     return s == null ? "" : s;
   }
+
+  private record TableColumnIndex(
+      Map<String, SystemColumnDef> byName, Map<Long, SystemColumnDef> byId) {}
 }

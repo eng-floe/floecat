@@ -44,11 +44,19 @@ public final class ConstraintProviderFactory {
   private final ConstraintProvider systemProvider;
 
   @Inject
-  public ConstraintProviderFactory(ConstraintRepository repository, CatalogOverlay overlay) {
-    this(repository, overlay, ConstraintProvider.NONE);
+  public ConstraintProviderFactory(
+      ConstraintRepository repository,
+      CatalogOverlay overlay,
+      SystemConstraintProvider systemProvider) {
+    this(repository, overlay, (ConstraintProvider) systemProvider);
   }
 
-  ConstraintProviderFactory(
+  static ConstraintProviderFactory forTesting(
+      ConstraintRepository repository, CatalogOverlay overlay, ConstraintProvider systemProvider) {
+    return new ConstraintProviderFactory(repository, overlay, systemProvider);
+  }
+
+  private ConstraintProviderFactory(
       ConstraintRepository repository, CatalogOverlay overlay, ConstraintProvider systemProvider) {
     this.repository = repository;
     this.overlay = overlay;

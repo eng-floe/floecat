@@ -61,7 +61,8 @@ class ConstraintProviderFactoryTest {
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
 
-    ConstraintProviderFactory factory = new ConstraintProviderFactory(repository, overlay);
+    ConstraintProviderFactory factory =
+        ConstraintProviderFactory.forTesting(repository, overlay, ConstraintProvider.NONE);
     long snapshotId = 101L;
     repository.putSnapshotConstraints(
         USER_TABLE, snapshotId, constraints(USER_TABLE, snapshotId, "pk_users"));
@@ -79,7 +80,8 @@ class ConstraintProviderFactoryTest {
     CountingConstraintRepository repository = new CountingConstraintRepository();
     CatalogOverlay overlay = mock(CatalogOverlay.class);
     when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
-    ConstraintProviderFactory factory = new ConstraintProviderFactory(repository, overlay);
+    ConstraintProviderFactory factory =
+        ConstraintProviderFactory.forTesting(repository, overlay, ConstraintProvider.NONE);
     ConstraintProvider provider = factory.provider();
 
     assertTrue(provider.constraints(USER_TABLE, OptionalLong.empty()).isEmpty());
@@ -120,7 +122,7 @@ class ConstraintProviderFactoryTest {
         };
 
     ConstraintProviderFactory factory =
-        new ConstraintProviderFactory(repository, overlay, systemProvider);
+        ConstraintProviderFactory.forTesting(repository, overlay, systemProvider);
     ConstraintProvider provider = factory.provider();
 
     var system = provider.constraints(SYSTEM_TABLE, OptionalLong.of(snapshotId)).orElseThrow();
