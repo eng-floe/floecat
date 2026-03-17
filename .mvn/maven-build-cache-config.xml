@@ -20,7 +20,7 @@
   </executionControl>
   <input>
     <global>
-      <glob>{*.java,*.xml,*.properties,*.proto}</glob>
+      <glob>{*.java,*.xml,*.properties,*.proto,*.pbtxt,*.txt,*.json,*.avro,*.parquet,*.bin,*.stats}</glob>
       <excludes>
         <exclude glob="**/target/**" entryType="FILE" matcherType="PATH"/>
       </excludes>
