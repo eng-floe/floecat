@@ -759,6 +759,7 @@ docker-service:
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
 	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
@@ -770,6 +771,7 @@ docker-iceberg-rest:
 	@echo "==> [DOCKER] iceberg-rest (jib -> docker daemon)"
 	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
@@ -780,6 +782,7 @@ docker-cli:
 	@echo "==> [DOCKER] cli (jib -> docker daemon)"
 	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
@@ -797,6 +800,7 @@ docker-publish-service:
 	@echo "==> [DOCKER] publish service (jib -> registry)"
 	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.container-image.push=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -810,6 +814,7 @@ docker-publish-iceberg-rest:
 	@echo "==> [DOCKER] publish iceberg-rest (jib -> registry)"
 	$(MVN) -f ./pom.xml -pl protocol-gateway/iceberg-rest -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.container-image.push=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
@@ -822,6 +827,7 @@ docker-publish-cli:
 	@echo "==> [DOCKER] publish cli (jib -> registry)"
 	$(MVN) -f ./pom.xml -pl client-cli -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
+	  -Dmaven.build.cache.enabled=false \
 	  -Dquarkus.container-image.build=true \
 	  -Dquarkus.container-image.push=true \
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
