@@ -13,9 +13,15 @@
   <executionControl>
     <runAlways>
       <plugins>
-        <plugin groupId="io.quarkus" artifactId="quarkus-maven-plugin"/>
         <plugin groupId="org.apache.maven.plugins" artifactId="maven-failsafe-plugin"/>
       </plugins>
+      <goalsLists>
+        <goalsList artifactId="quarkus-maven-plugin">
+          <goals>
+            <goal>build</goal>
+          </goals>
+        </goalsList>
+      </goalsLists>
     </runAlways>
   </executionControl>
   <input>
