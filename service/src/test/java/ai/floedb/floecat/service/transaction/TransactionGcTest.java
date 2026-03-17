@@ -21,12 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.gc.TransactionGc;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
@@ -51,7 +51,7 @@ class TransactionGcTest {
             .setCreatedAt(now())
             .setUpdatedAt(now())
             .build();
-    var txSha = ResourceHash.sha256Hex(tx.toByteArray());
+    var txSha = Hashing.sha256Hex(tx.toByteArray());
     var txBlob = Keys.transactionBlobUri(accountId, txId, txSha);
     blobs.put(txBlob, tx.toByteArray(), "application/x-protobuf");
     String txPtr = Keys.transactionPointerById(accountId, txId);
@@ -67,7 +67,7 @@ class TransactionGcTest {
             .setExpectedVersion(1L)
             .setCreatedAt(now())
             .build();
-    var intentSha = ResourceHash.sha256Hex(intent.toByteArray());
+    var intentSha = Hashing.sha256Hex(intent.toByteArray());
     var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
     blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
 
@@ -279,7 +279,7 @@ class TransactionGcTest {
             .setUpdatedAt(now())
             .setExpiresAt(expiresAt)
             .build();
-    var txSha = ResourceHash.sha256Hex(tx.toByteArray());
+    var txSha = Hashing.sha256Hex(tx.toByteArray());
     var txBlob = Keys.transactionBlobUri(accountId, txId, txSha);
     blobs.put(txBlob, tx.toByteArray(), "application/x-protobuf");
     String txPtr = Keys.transactionPointerById(accountId, txId);
@@ -315,7 +315,7 @@ class TransactionGcTest {
             .setExpectedVersion(1L)
             .setCreatedAt(now())
             .build();
-    var intentSha = ResourceHash.sha256Hex(intent.toByteArray());
+    var intentSha = Hashing.sha256Hex(intent.toByteArray());
     var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
     blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
     return intentBlob;

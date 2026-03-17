@@ -29,10 +29,10 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
-import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +47,7 @@ public final class Schemas {
               key -> Keys.accountBlobUri(key.accountId(), key.sha256()),
               v -> Map.of("byName", Keys.accountPointerByName(v.getDisplayName())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new AccountKey(v.getResourceId().getId(), sha);
               })
           .withCasBlobs();
@@ -63,7 +63,7 @@ public final class Schemas {
                       Keys.catalogPointerByName(
                           v.getResourceId().getAccountId(), v.getDisplayName())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new CatalogKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
@@ -83,7 +83,7 @@ public final class Schemas {
                         v.getResourceId().getAccountId(), v.getCatalogId().getId(), fullPath));
               },
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new NamespaceKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
@@ -103,7 +103,7 @@ public final class Schemas {
                           v.getNamespaceId().getId(),
                           v.getDisplayName())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new TableKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
@@ -128,7 +128,7 @@ public final class Schemas {
                               v.getTableId().getAccountId(), v.getTableId().getId(),
                               v.getSnapshotId(), Timestamps.toMillis(v.getUpstreamCreatedAt()))),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new SnapshotKey(
                     v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
               })
@@ -144,7 +144,7 @@ public final class Schemas {
               (TableStats v) -> Map.of(),
               (TableStats v) -> {
                 var norm = TableStatsNormalizer.normalize(v);
-                var sha = ResourceHash.sha256Hex(norm.toByteArray());
+                var sha = Hashing.sha256Hex(norm.toByteArray());
                 return new TableStatsKey(
                     v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
               })
@@ -162,7 +162,7 @@ public final class Schemas {
               (ColumnStats v) -> Map.of(),
               (ColumnStats v) -> {
                 var norm = ColumnStatsNormalizer.normalize(v);
-                var sha = ResourceHash.sha256Hex(norm.toByteArray());
+                var sha = Hashing.sha256Hex(norm.toByteArray());
                 return new ColumnStatsKey(
                     v.getTableId().getAccountId(),
                     v.getTableId().getId(),
@@ -184,7 +184,7 @@ public final class Schemas {
               v -> Map.of(),
               v -> {
                 var bytes = v.toByteArray();
-                var sha = ResourceHash.sha256Hex(bytes);
+                var sha = Hashing.sha256Hex(bytes);
                 return new FileColumnStatsKey(
                     v.getTableId().getAccountId(),
                     v.getTableId().getId(),
@@ -213,7 +213,7 @@ public final class Schemas {
                               v.getSnapshotId())),
                   (SnapshotConstraints v) -> {
                     var norm = ConstraintNormalizer.normalize(v);
-                    var sha = ResourceHash.sha256Hex(norm.toByteArray());
+                    var sha = Hashing.sha256Hex(norm.toByteArray());
                     return new SnapshotConstraintsKey(
                         v.getTableId().getAccountId(),
                         v.getTableId().getId(),
@@ -236,7 +236,7 @@ public final class Schemas {
                           v.getNamespaceId().getId(),
                           v.getDisplayName())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new ViewKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
@@ -253,7 +253,7 @@ public final class Schemas {
                       Keys.connectorPointerByName(
                           v.getResourceId().getAccountId(), v.getDisplayName())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new ConnectorKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
@@ -266,7 +266,7 @@ public final class Schemas {
               key -> Keys.transactionBlobUri(key.accountId(), key.txId(), key.sha256()),
               v -> Map.of(),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new TransactionKey(v.getAccountId(), v.getTxId(), sha);
               })
           .withCasBlobs();
@@ -282,7 +282,7 @@ public final class Schemas {
                       Keys.transactionIntentPointerByTx(
                           v.getAccountId(), v.getTxId(), v.getTargetPointerKey())),
               v -> {
-                var sha = ResourceHash.sha256Hex(v.toByteArray());
+                var sha = Hashing.sha256Hex(v.toByteArray());
                 return new TransactionIntentKey(
                     v.getAccountId(), v.getTxId(), v.getTargetPointerKey(), sha);
               })

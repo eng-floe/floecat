@@ -27,9 +27,9 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableStatsKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -408,7 +408,7 @@ public class StatsRepository {
     do {
       List<ColumnStats> page = columnStatsRepo.listByPrefix(colPrefix, 200, token, next);
       for (ColumnStats cs : page) {
-        String sha = ResourceHash.sha256Hex(cs.toByteArray());
+        String sha = Hashing.sha256Hex(cs.toByteArray());
         ColumnStatsKey key =
             new ColumnStatsKey(
                 cs.getTableId().getAccountId(),
@@ -430,7 +430,7 @@ public class StatsRepository {
     do {
       List<FileColumnStats> page = fileStatsRepo.listByPrefix(filePrefix, 200, token, next);
       for (FileColumnStats fs : page) {
-        String sha = ResourceHash.sha256Hex(fs.toByteArray());
+        String sha = Hashing.sha256Hex(fs.toByteArray());
         FileColumnStatsKey key =
             new FileColumnStatsKey(
                 fs.getTableId().getAccountId(),

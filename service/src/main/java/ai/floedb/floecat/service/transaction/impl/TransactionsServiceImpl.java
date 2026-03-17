@@ -30,7 +30,6 @@ import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository.PreconditionFailedException;
-import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -50,6 +49,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.Transactions;
 import ai.floedb.floecat.transaction.rpc.TxChange;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
@@ -672,14 +672,14 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (!tablePayload.getResourceId().getAccountId().equals(accountId)) {
           throw new IllegalArgumentException("table payload account mismatch for target");
         }
-        String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
+        String sha = Hashing.sha256Hex(tablePayload.toByteArray());
         blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
         inlineBytes = tablePayload.toByteArray();
         inlineContentType = "application/x-protobuf";
       }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
-        String sha = ResourceHash.sha256Hex(payload);
+        String sha = Hashing.sha256Hex(payload);
         blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
         inlineBytes = payload;
         inlineContentType = "application/octet-stream";
@@ -727,12 +727,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (!tablePayload.getResourceId().getAccountId().equals(accountId)) {
           throw new IllegalArgumentException("table payload account mismatch for target");
         }
-        String sha = ResourceHash.sha256Hex(tablePayload.toByteArray());
+        String sha = Hashing.sha256Hex(tablePayload.toByteArray());
         blobUri = Keys.tableBlobUri(accountId, tableId.getId(), sha);
       }
       case PAYLOAD -> {
         byte[] payload = change.getPayload().toByteArray();
-        String sha = ResourceHash.sha256Hex(payload);
+        String sha = Hashing.sha256Hex(payload);
         blobUri = Keys.transactionObjectBlobUri(accountId, txId, sha);
       }
       case CHANGEPAYLOAD_NOT_SET -> {

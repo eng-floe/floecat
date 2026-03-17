@@ -17,33 +17,111 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.lang.reflect.Method;
-import java.time.Duration;
-import java.util.Optional;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import org.junit.jupiter.api.Test;
 
 class GrpcReconcilerBackendTest {
   @Test
-  void withBearerPrefixLeavesExistingBearer() throws Exception {
-    var backend =
-        new GrpcReconcilerBackend(
-            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
-    Method method = GrpcReconcilerBackend.class.getDeclaredMethod("withBearerPrefix", String.class);
-    method.setAccessible(true);
-
-    String token = (String) method.invoke(backend, "Bearer abc123");
+  void withBearerPrefixLeavesExistingBearer() {
+    String token = GrpcReconcilerBackend.withBearerPrefix("Bearer abc123");
     assertThat(token).isEqualTo("Bearer abc123");
   }
 
   @Test
-  void withBearerPrefixAddsPrefixWhenMissing() throws Exception {
-    var backend =
-        new GrpcReconcilerBackend(
-            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
-    Method method = GrpcReconcilerBackend.class.getDeclaredMethod("withBearerPrefix", String.class);
-    method.setAccessible(true);
-
-    String token = (String) method.invoke(backend, "abc123");
+  void withBearerPrefixAddsPrefixWhenMissing() {
+    String token = GrpcReconcilerBackend.withBearerPrefix("abc123");
     assertThat(token).isEqualTo("Bearer abc123");
+  }
+
+  @Test
+  void snapshotConstraintsIdempotencyKeyIsStableForSamePayload() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    SnapshotConstraints constraints =
+        SnapshotConstraints.newBuilder()
+            .addConstraints(
+                ConstraintDefinition.newBuilder()
+                    .setName("pk_users")
+                    .setType(ConstraintType.CT_PRIMARY_KEY)
+                    .build())
+            .build();
+
+    PutTableConstraintsRequest request1 =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, constraints);
+    PutTableConstraintsRequest request2 =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, constraints);
+
+    assertThat(request1.getIdempotency().getKey()).isEqualTo(request2.getIdempotency().getKey());
+  }
+
+  @Test
+  void snapshotConstraintsIdempotencyKeyChangesWhenPayloadChanges() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    SnapshotConstraints first =
+        SnapshotConstraints.newBuilder()
+            .addConstraints(
+                ConstraintDefinition.newBuilder()
+                    .setName("pk_users")
+                    .setType(ConstraintType.CT_PRIMARY_KEY)
+                    .build())
+            .build();
+    SnapshotConstraints second =
+        SnapshotConstraints.newBuilder()
+            .addConstraints(
+                ConstraintDefinition.newBuilder()
+                    .setName("pk_users_alt")
+                    .setType(ConstraintType.CT_PRIMARY_KEY)
+                    .build())
+            .build();
+
+    PutTableConstraintsRequest request1 =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, first);
+    PutTableConstraintsRequest request2 =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, second);
+
+    assertThat(request1.getIdempotency().getKey()).isNotEqualTo(request2.getIdempotency().getKey());
+  }
+
+  @Test
+  void buildPutTableConstraintsRequestPopulatesAllFieldsAndStableIdempotencyKey() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    SnapshotConstraints snapshotConstraints =
+        SnapshotConstraints.newBuilder()
+            .addConstraints(
+                ConstraintDefinition.newBuilder()
+                    .setName("pk_users")
+                    .setType(ConstraintType.CT_PRIMARY_KEY)
+                    .build())
+            .build();
+
+    PutTableConstraintsRequest request =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, snapshotConstraints);
+    PutTableConstraintsRequest request2 =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, snapshotConstraints);
+
+    assertThat(request.getTableId()).isEqualTo(tableId);
+    assertThat(request.getSnapshotId()).isEqualTo(42L);
+    assertThat(request.getConstraints()).isEqualTo(snapshotConstraints);
+    assertThat(request.getIdempotency().getKey()).isNotBlank();
+    assertThat(request2.getIdempotency().getKey()).isEqualTo(request.getIdempotency().getKey());
   }
 }

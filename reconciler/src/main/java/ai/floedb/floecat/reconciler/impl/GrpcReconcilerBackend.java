@@ -34,12 +34,15 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -66,6 +69,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
@@ -132,6 +136,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @GrpcClient("floecat")
   ViewServiceGrpc.ViewServiceBlockingStub view;
+
+  @GrpcClient("floecat")
+  TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsStub;
 
   @Override
   public ResourceId ensureNamespace(ReconcileContext ctx, ResourceId catalogId, NameRef namespace) {
@@ -388,6 +395,54 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .atMost(statsTimeout);
   }
 
+  @Override
+  public void putSnapshotConstraints(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      long snapshotId,
+      SnapshotConstraints snapshotConstraints) {
+    if (snapshotConstraints == null || snapshotId < 0) {
+      return;
+    }
+    constraintsStub(ctx)
+        .putTableConstraints(
+            buildPutTableConstraintsRequest(tableId, snapshotId, snapshotConstraints));
+  }
+
+  static PutTableConstraintsRequest buildPutTableConstraintsRequest(
+      ResourceId tableId, long snapshotId, SnapshotConstraints snapshotConstraints) {
+    String idempotencyKey =
+        snapshotConstraintsIdempotencyKey(tableId, snapshotId, snapshotConstraints);
+    return PutTableConstraintsRequest.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setConstraints(snapshotConstraints)
+        .setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build())
+        .build();
+  }
+
+  private static String snapshotConstraintsIdempotencyKey(
+      ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {
+    String accountId = tableId == null ? "" : tableId.getAccountId();
+    String tableValue = tableId == null ? "" : tableId.getId();
+    int kindValue = tableId == null ? 0 : tableId.getKindValue();
+    // Idempotency is based on protobuf bytes for the emitted payload. This assumes reconciler
+    // input ordering is deterministic; semantically equivalent but differently ordered payloads
+    // will intentionally hash differently.
+    byte[] payload = constraints == null ? new byte[0] : constraints.toByteArray();
+    String digest = Hashing.sha256Hex(payload);
+    return "reconciler.constraints/"
+        + accountId
+        + "/"
+        + kindValue
+        + "/"
+        + tableValue
+        + "/"
+        + snapshotId
+        + "/"
+        + digest;
+  }
+
   private List<PutColumnStatsRequest> groupColumnRequests(List<ColumnStats> stats) {
     Map<StatsGroupKey, List<ColumnStats>> grouped = new LinkedHashMap<>();
     for (ColumnStats column : stats) {
@@ -520,6 +575,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return withHeaders(view, ctx);
   }
 
+  private TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsStub(
+      ReconcileContext ctx) {
+    return withHeaders(constraintsStub, ctx);
+  }
+
   private <T extends AbstractStub<T>> T withHeaders(T stub, ReconcileContext ctx) {
     return stub.withInterceptors(
         MetadataUtils.newAttachHeadersInterceptor(metadataForContext(ctx)));
@@ -543,7 +603,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     return AUTHORIZATION;
   }
 
-  private String withBearerPrefix(String token) {
+  static String withBearerPrefix(String token) {
     if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
       return token;
     }

@@ -21,6 +21,7 @@ import static ai.floedb.floecat.reconciler.util.NameParts.split;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -78,6 +79,8 @@ import org.jboss.logging.Logger;
 public class ReconcilerService {
   private static final Logger LOG = Logger.getLogger(ReconcilerService.class);
   private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
+  private static final BooleanSupplier NO_CANCEL = () -> false;
+  private static final ProgressListener NO_PROGRESS = (s, c, e, sp, stp, m) -> {};
 
   public enum CaptureMode {
     METADATA_ONLY,
@@ -114,15 +117,8 @@ public class ReconcilerService {
       ResourceId connectorId,
       boolean fullRescan,
       ReconcileScope scopeIn) {
-    return reconcile(
-        principal,
-        connectorId,
-        fullRescan,
-        scopeIn,
-        CaptureMode.METADATA_AND_STATS,
-        null,
-        () -> false,
-        (s, c, e, sp, stp, m) -> {});
+    return reconcileWithDefaults(
+        principal, connectorId, fullRescan, scopeIn, CaptureMode.METADATA_AND_STATS, null);
   }
 
   public Result reconcile(
@@ -131,18 +127,21 @@ public class ReconcilerService {
       boolean fullRescan,
       ReconcileScope scopeIn,
       CaptureMode captureMode) {
-    return reconcile(
-        principal,
-        connectorId,
-        fullRescan,
-        scopeIn,
-        captureMode,
-        null,
-        () -> false,
-        (s, c, e, sp, stp, m) -> {});
+    return reconcileWithDefaults(principal, connectorId, fullRescan, scopeIn, captureMode, null);
   }
 
   public Result reconcile(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      boolean fullRescan,
+      ReconcileScope scopeIn,
+      CaptureMode captureMode,
+      String bearerToken) {
+    return reconcileWithDefaults(
+        principal, connectorId, fullRescan, scopeIn, captureMode, bearerToken);
+  }
+
+  private Result reconcileWithDefaults(
       PrincipalContext principal,
       ResourceId connectorId,
       boolean fullRescan,
@@ -156,8 +155,8 @@ public class ReconcilerService {
         scopeIn,
         captureMode,
         bearerToken,
-        () -> false,
-        (s, c, e, sp, stp, m) -> {});
+        NO_CANCEL,
+        NO_PROGRESS);
   }
 
   public Result reconcile(
@@ -179,8 +178,8 @@ public class ReconcilerService {
     String corr = ctx.correlationId();
 
     final ArrayList<String> errSummaries = new ArrayList<>();
-    final BooleanSupplier cancelCheck = cancelRequested == null ? () -> false : cancelRequested;
-    final ProgressListener progressOut = progress == null ? (s, c, e, sp, stp, m) -> {} : progress;
+    final BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
+    final ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
     final Connector stored;
     try {
@@ -905,7 +904,10 @@ public class ReconcilerService {
         continue;
       }
 
-      if (!fullRescan && backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
+      boolean statsCaptured = !fullRescan && backend.statsAlreadyCaptured(ctx, tableId, snapshotId);
+      if (statsCaptured) {
+        maybeIngestSnapshotConstraints(
+            ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
         continue;
       }
 
@@ -977,8 +979,30 @@ public class ReconcilerService {
         backend.putFileColumnStats(ctx, fileStatsOut);
         statsProcessed += fileStatsOut.size();
       }
+
+      maybeIngestSnapshotConstraints(
+          ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed);
+  }
+
+  private void maybeIngestSnapshotConstraints(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      FloecatConnector connector,
+      String sourceNs,
+      String sourceTable,
+      FloecatConnector.SnapshotBundle snapshotBundle,
+      long snapshotId) {
+    if (snapshotId < 0) {
+      return;
+    }
+    Optional<SnapshotConstraints> constraints =
+        connector.snapshotConstraints(sourceNs, sourceTable, tableId, snapshotBundle);
+    if (constraints.isEmpty()) {
+      return;
+    }
+    backend.putSnapshotConstraints(ctx, tableId, snapshotId, constraints.get());
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
