@@ -45,6 +45,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import com.google.protobuf.ByteString;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -329,6 +330,7 @@ public final class SystemCatalogProtoMapper {
       default -> {}
     }
     def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
+    def.constraints().forEach(builder::addConstraints);
     def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
     return builder.build();
   }
@@ -352,7 +354,8 @@ public final class SystemCatalogProtoMapper {
         proto.getEngineSpecificList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList(),
-        flightEndpoint);
+        flightEndpoint,
+        List.copyOf(proto.getConstraintsList()));
   }
 
   private static SystemView toProtoView(SystemViewDef def) {

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.def;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
@@ -35,7 +36,8 @@ public record SystemTableDef(
     String storagePath,
     String storageEndpointKey,
     List<EngineSpecificRule> engineSpecific,
-    FlightEndpointRef flightEndpoint)
+    FlightEndpointRef flightEndpoint,
+    List<ConstraintDefinition> constraints)
     implements SystemObjectDef {
 
   public SystemTableDef {
@@ -47,6 +49,7 @@ public record SystemTableDef(
     storagePath = storagePath == null ? "" : storagePath;
     storageEndpointKey = storageEndpointKey == null ? "" : storageEndpointKey;
     engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    constraints = List.copyOf(constraints == null ? List.of() : constraints);
     Set<String> columnNames = new HashSet<>();
     for (SystemColumnDef column : columns) {
       if (!columnNames.add(column.name())) {
@@ -67,6 +70,29 @@ public record SystemTableDef(
                 + " TABLE_BACKEND_KIND_STORAGE");
       }
     }
+  }
+
+  public SystemTableDef(
+      NameRef name,
+      String displayName,
+      List<SystemColumnDef> columns,
+      TableBackendKind backendKind,
+      String scannerId,
+      String storagePath,
+      String storageEndpointKey,
+      List<EngineSpecificRule> engineSpecific,
+      FlightEndpointRef flightEndpoint) {
+    this(
+        name,
+        displayName,
+        columns,
+        backendKind,
+        scannerId,
+        storagePath,
+        storageEndpointKey,
+        engineSpecific,
+        flightEndpoint,
+        List.of());
   }
 
   @Override
