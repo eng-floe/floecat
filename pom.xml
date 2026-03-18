@@ -60,7 +60,7 @@
     <version.jline>3.30.6</version.jline>
     <version.maven>3.9.0</version.maven>
     <version.maven.plugin.tools>3.15.2</version.maven.plugin.tools>
-    <version.mockito>5.22.0</version.mockito>
+    <version.mockito>5.23.0</version.mockito>
     <version.opentelemetry>1.40.0</version.opentelemetry>
     <version.parquet>1.16.0</version.parquet>
     <version.picocli>4.7.7</version.picocli>
