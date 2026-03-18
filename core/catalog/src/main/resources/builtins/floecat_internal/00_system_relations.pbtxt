@@ -68,13 +68,13 @@ system_tables {
   columns {
     name: "table_catalog"
     type { name: "VARCHAR" }
-    nullable: true
+    nullable: false
     ordinal: 1
   }
   columns {
     name: "table_schema"
     type { name: "VARCHAR" }
-    nullable: true
+    nullable: false
     ordinal: 2
   }
   columns {
@@ -125,4 +125,136 @@ system_tables {
     nullable: false
     ordinal: 2
   }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "table_constraints"
+  }
+  display_name: "table_constraints"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "table_constraints_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns { name: "table_catalog" type { name: "VARCHAR" } nullable: false ordinal: 4 }
+  columns { name: "table_schema" type { name: "VARCHAR" } nullable: false ordinal: 5 }
+  columns { name: "table_name" type { name: "VARCHAR" } nullable: false ordinal: 6 }
+  columns { name: "constraint_type" type { name: "VARCHAR" } nullable: false ordinal: 7 }
+  columns { name: "is_deferrable" type { name: "VARCHAR" } nullable: false ordinal: 8 }
+  columns { name: "initially_deferred" type { name: "VARCHAR" } nullable: false ordinal: 9 }
+  columns { name: "enforced" type { name: "VARCHAR" } nullable: true ordinal: 10 }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "key_column_usage"
+  }
+  display_name: "key_column_usage"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "key_column_usage_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns { name: "table_catalog" type { name: "VARCHAR" } nullable: false ordinal: 4 }
+  columns { name: "table_schema" type { name: "VARCHAR" } nullable: false ordinal: 5 }
+  columns { name: "table_name" type { name: "VARCHAR" } nullable: false ordinal: 6 }
+  columns { name: "column_name" type { name: "VARCHAR" } nullable: false ordinal: 7 }
+  columns { name: "ordinal_position" type { name: "INT" } nullable: false ordinal: 8 }
+  columns {
+    name: "position_in_unique_constraint"
+    type { name: "INT" }
+    nullable: true
+    ordinal: 9
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "referential_constraints"
+  }
+  display_name: "referential_constraints"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "referential_constraints_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns {
+    name: "unique_constraint_catalog"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 4
+  }
+  columns {
+    name: "unique_constraint_schema"
+    type { name: "VARCHAR" }
+    nullable: true
+    ordinal: 5
+  }
+  columns { name: "unique_constraint_name" type { name: "VARCHAR" } nullable: true ordinal: 6 }
+  columns { name: "match_option" type { name: "VARCHAR" } nullable: false ordinal: 7 }
+  columns { name: "update_rule" type { name: "VARCHAR" } nullable: false ordinal: 8 }
+  columns { name: "delete_rule" type { name: "VARCHAR" } nullable: false ordinal: 9 }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "check_constraints"
+  }
+  display_name: "check_constraints"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "check_constraints_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns { name: "check_clause" type { name: "VARCHAR" } nullable: false ordinal: 4 }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "constraint_column_usage"
+  }
+  display_name: "constraint_column_usage"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "constraint_column_usage_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns { name: "table_catalog" type { name: "VARCHAR" } nullable: false ordinal: 4 }
+  columns { name: "table_schema" type { name: "VARCHAR" } nullable: false ordinal: 5 }
+  columns { name: "table_name" type { name: "VARCHAR" } nullable: false ordinal: 6 }
+  columns { name: "column_name" type { name: "VARCHAR" } nullable: false ordinal: 7 }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "constraint_table_usage"
+  }
+  display_name: "constraint_table_usage"
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "constraint_table_usage_scanner"
+  }
+  columns { name: "constraint_catalog" type { name: "VARCHAR" } nullable: false ordinal: 1 }
+  columns { name: "constraint_schema" type { name: "VARCHAR" } nullable: false ordinal: 2 }
+  columns { name: "constraint_name" type { name: "VARCHAR" } nullable: false ordinal: 3 }
+  columns { name: "table_catalog" type { name: "VARCHAR" } nullable: false ordinal: 4 }
+  columns { name: "table_schema" type { name: "VARCHAR" } nullable: false ordinal: 5 }
+  columns { name: "table_name" type { name: "VARCHAR" } nullable: false ordinal: 6 }
 }

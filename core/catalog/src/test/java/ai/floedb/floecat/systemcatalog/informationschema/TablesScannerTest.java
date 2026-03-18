@@ -74,6 +74,19 @@ class TablesScannerTest {
   }
 
   @Test
+  void scan_dedupesLeafWhenPathAlreadyContainsDisplayName() {
+    var builder = TestTableScanContextBuilder.builder("catalog");
+    var ns = builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");
+    builder.addTable(ns, "orders", Map.of(), Map.of());
+    SystemObjectScanContext ctx = builder.build();
+
+    var rows = new TablesScanner().scan(ctx).map(r -> r.values()).toList();
+
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsExactly("catalog", "org.sales", "orders", "BASE TABLE");
+  }
+
+  @Test
   void scanArrow_matchesRowPath() {
     var builder = TestTableScanContextBuilder.builder("catalog");
     var ns = builder.addNamespace("public");

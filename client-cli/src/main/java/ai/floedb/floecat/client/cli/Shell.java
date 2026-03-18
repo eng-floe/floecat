@@ -624,7 +624,7 @@ public class Shell implements Runnable {
          constraints add-unique <id|catalog.ns[.ns...].table> <constraint_name> <columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
-         constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table_name> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
              [--snapshot-ids id1,id2,...] [--full]
              # Runs synchronous table-scoped capture_now.

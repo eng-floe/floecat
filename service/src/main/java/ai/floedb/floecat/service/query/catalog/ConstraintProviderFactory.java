@@ -23,6 +23,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -39,6 +40,7 @@ public final class ConstraintProviderFactory {
   private static final Logger LOG = Logger.getLogger(ConstraintProviderFactory.class);
 
   private final ConstraintRepository repository;
+  private final SnapshotRepository snapshots;
 
   private final CatalogOverlay overlay;
   private final ConstraintProvider systemProvider;
@@ -46,25 +48,33 @@ public final class ConstraintProviderFactory {
   @Inject
   public ConstraintProviderFactory(
       ConstraintRepository repository,
+      SnapshotRepository snapshots,
       CatalogOverlay overlay,
       SystemConstraintProvider systemProvider) {
-    this(repository, overlay, (ConstraintProvider) systemProvider);
+    this(repository, snapshots, overlay, (ConstraintProvider) systemProvider);
   }
 
   static ConstraintProviderFactory forTesting(
-      ConstraintRepository repository, CatalogOverlay overlay, ConstraintProvider systemProvider) {
-    return new ConstraintProviderFactory(repository, overlay, systemProvider);
+      ConstraintRepository repository,
+      SnapshotRepository snapshots,
+      CatalogOverlay overlay,
+      ConstraintProvider systemProvider) {
+    return new ConstraintProviderFactory(repository, snapshots, overlay, systemProvider);
   }
 
   private ConstraintProviderFactory(
-      ConstraintRepository repository, CatalogOverlay overlay, ConstraintProvider systemProvider) {
+      ConstraintRepository repository,
+      SnapshotRepository snapshots,
+      CatalogOverlay overlay,
+      ConstraintProvider systemProvider) {
     this.repository = repository;
+    this.snapshots = snapshots;
     this.overlay = overlay;
     this.systemProvider = systemProvider == null ? ConstraintProvider.NONE : systemProvider;
   }
 
   public ConstraintProvider provider() {
-    ConstraintProvider userProvider = new CachedUserConstraintProvider(repository);
+    ConstraintProvider userProvider = new CachedUserConstraintProvider(repository, snapshots);
     return new RoutedConstraintProvider(userProvider, systemProvider, overlay);
   }
 
@@ -91,6 +101,14 @@ public final class ConstraintProviderFactory {
       return userProvider.constraints(relationId, snapshotId);
     }
 
+    @Override
+    public Optional<ConstraintSetView> latestConstraints(ResourceId relationId) {
+      if (isSystemRelation(relationId)) {
+        return systemProvider.latestConstraints(relationId);
+      }
+      return userProvider.latestConstraints(relationId);
+    }
+
     private boolean isSystemRelation(ResourceId relationId) {
       try {
         return overlay
@@ -107,12 +125,17 @@ public final class ConstraintProviderFactory {
   private static final class CachedUserConstraintProvider implements ConstraintProvider {
 
     private final ConstraintRepository repository;
+    private final SnapshotRepository snapshots;
     private final ConcurrentMap<
             SnapshotScopedRelationKey, Optional<ConstraintProvider.ConstraintSetView>>
         constraintsCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<RelationKey, Optional<ConstraintProvider.ConstraintSetView>>
+        latestConstraintsCache = new ConcurrentHashMap<>();
 
-    private CachedUserConstraintProvider(ConstraintRepository repository) {
+    private CachedUserConstraintProvider(
+        ConstraintRepository repository, SnapshotRepository snapshots) {
       this.repository = repository;
+      this.snapshots = snapshots;
     }
 
     @Override
@@ -126,6 +149,19 @@ public final class ConstraintProviderFactory {
           key ->
               repository
                   .getSnapshotConstraints(relationId, sid)
+                  .map(ConstraintProviderFactory::constraintSetView));
+    }
+
+    @Override
+    public Optional<ConstraintSetView> latestConstraints(ResourceId relationId) {
+      return latestConstraintsCache.computeIfAbsent(
+          RelationKey.of(relationId),
+          key ->
+              snapshots
+                  .getCurrentSnapshot(relationId)
+                  .flatMap(
+                      snapshot ->
+                          repository.getSnapshotConstraints(relationId, snapshot.getSnapshotId()))
                   .map(ConstraintProviderFactory::constraintSetView));
     }
   }
@@ -162,6 +198,12 @@ public final class ConstraintProviderFactory {
     @Override
     public Map<String, String> properties() {
       return properties;
+    }
+  }
+
+  private record RelationKey(String accountId, String relationId, int kindValue) {
+    static RelationKey of(ResourceId tableId) {
+      return new RelationKey(tableId.getAccountId(), tableId.getId(), tableId.getKindValue());
     }
   }
 }

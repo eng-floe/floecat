@@ -33,6 +33,7 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -63,13 +64,13 @@ public final class ColumnsScanner implements SystemObjectScanner {
               .setName("table_catalog")
               .setLogicalType("VARCHAR")
               .setFieldId(0)
-              .setNullable(true)
+              .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_schema")
               .setLogicalType("VARCHAR")
               .setFieldId(1)
-              .setNullable(true)
+              .setNullable(false)
               .build(),
           SchemaColumn.newBuilder()
               .setName("table_name")
@@ -281,11 +282,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   private static String schemaName(NamespaceNode namespace) {
-    List<String> segments = new ArrayList<>(namespace.pathSegments());
-    if (!namespace.displayName().isBlank()) {
-      segments.add(namespace.displayName());
-    }
-    return String.join(".", segments);
+    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   private static String blankToNull(String value) {

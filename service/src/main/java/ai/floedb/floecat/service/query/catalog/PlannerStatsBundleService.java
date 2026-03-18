@@ -751,7 +751,6 @@ public class PlannerStatsBundleService {
     }
 
     try {
-      OptionalLong pinnedSnapshotId = snapshotId;
       // Deliberate client-contract choice: constraints "absence" states are intentionally
       // collapsed to NOT_FOUND for planner simplicity, while callers can distinguish the cause via
       // failure.details["reason"]. This is not a statement that these storage states are
@@ -760,13 +759,15 @@ public class PlannerStatsBundleService {
       // - provider_empty: provider view with zero constraints
       // - pruned_empty: provider view exists but request-scope pruning hid all constraints
       // TODO: Revisit status mapping if planner clients need to distinguish provider_empty as
-      // FOUND with zero constraints while keeping provider_missing as NOT_FOUND.
-      var maybeView = constraintProvider.constraints(tableId, pinnedSnapshotId);
+      // FOUND with zero constraints while keeping provider_missing as NOT_FOUND. A typed
+      // ConstraintAbsenceReason enum field in ConstraintResolution would let callers branch
+      // without parsing the failure.details["reason"] string.
+      var maybeView = constraintProvider.constraints(tableId, snapshotId);
       if (maybeView.isEmpty()) {
         LOG.tracef(
             "no constraints stored for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
         return new ConstraintResolution(
-            constraintNotFoundResult(tableId, pinnedSnapshotId, "provider_missing"),
+            constraintNotFoundResult(tableId, snapshotId, "provider_missing"),
             ConstraintResolutionStatus.NOT_FOUND);
       }
 
@@ -776,7 +777,7 @@ public class PlannerStatsBundleService {
             "constraint provider returned empty bundle for %s snapshot %d",
             tableId.getId(), snapshotId.getAsLong());
         return new ConstraintResolution(
-            constraintNotFoundResult(tableId, pinnedSnapshotId, "provider_empty"),
+            constraintNotFoundResult(tableId, snapshotId, "provider_empty"),
             ConstraintResolutionStatus.NOT_FOUND);
       }
       visible = constraintPruner.prune(tableId, visible);
@@ -787,7 +788,7 @@ public class PlannerStatsBundleService {
         LOG.tracef(
             "all constraints pruned for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
         return new ConstraintResolution(
-            constraintNotFoundResult(tableId, pinnedSnapshotId, "pruned_empty"),
+            constraintNotFoundResult(tableId, snapshotId, "pruned_empty"),
             ConstraintResolutionStatus.NOT_FOUND);
       }
 
@@ -815,8 +816,7 @@ public class PlannerStatsBundleService {
           tableId.getId(),
           snapshotId.getAsLong());
       return new ConstraintResolution(
-          constraintErrorResult(tableId, OptionalLong.of(snapshotId.getAsLong()), e),
-          ConstraintResolutionStatus.ERROR);
+          constraintErrorResult(tableId, snapshotId, e), ConstraintResolutionStatus.ERROR);
     }
   }
 

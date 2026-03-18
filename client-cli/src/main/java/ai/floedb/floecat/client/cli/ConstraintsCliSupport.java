@@ -34,6 +34,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -582,7 +583,7 @@ final class ConstraintsCliSupport {
       JsonPrinter printJson) {
     String usage =
         "usage: constraints add-fk <id|catalog.ns[.ns...].table>"
-            + " <constraint_name> <local_columns_csv> <referenced_table_name>"
+            + " <constraint_name> <local_columns_csv> <referenced_table>"
             + " <referenced_columns_csv>"
             + " [--snapshot <id>]"
             + " [--etag <etag>|--version <n>] [--json]";
@@ -598,22 +599,23 @@ final class ConstraintsCliSupport {
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
     String name = Shell.Quotes.unquote(args.get(1)).trim();
     List<String> localColumns = parseColumnNames(args.get(2));
-    String referencedTable = Shell.Quotes.unquote(args.get(3)).trim();
+    String referencedTableRaw = Shell.Quotes.unquote(args.get(3)).trim();
     List<String> referencedColumns = parseColumnNames(args.get(4));
-    if (name.isEmpty() || referencedTable.isEmpty()) {
-      out.println("constraint_name and referenced_table_name cannot be blank");
+    if (name.isEmpty() || referencedTableRaw.isEmpty()) {
+      out.println("constraint_name and referenced_table cannot be blank");
       return;
     }
     if (localColumns.size() != referencedColumns.size()) {
       out.println("local_columns_csv and referenced_columns_csv must have the same length");
       return;
     }
+    NameRef referencedTable = parseReferencedTableRef(referencedTableRaw);
     ConstraintDefinition constraint =
         ConstraintDefinition.newBuilder()
             .setName(name)
             .setType(ConstraintType.CT_FOREIGN_KEY)
             .addAllColumns(columnRefs(localColumns))
-            .setReferencedTableName(referencedTable)
+            .setReferencedTable(referencedTable)
             .addAllReferencedColumns(columnRefs(referencedColumns))
             .build();
     addConstraintAndPrint(
@@ -632,6 +634,34 @@ final class ConstraintsCliSupport {
         .setTableId(tableId)
         .setSnapshotId(snapshotId)
         .setConstraint(constraint);
+  }
+
+  private static NameRef parseReferencedTableRef(String raw) {
+    String token = raw == null ? "" : raw.trim();
+    if (token.isEmpty()) {
+      throw new IllegalArgumentException("referenced_table cannot be blank");
+    }
+    String[] parts = token.split("\\.");
+    if (parts.length < 2) {
+      throw new IllegalArgumentException(
+          "referenced_table must be fully qualified: catalog.ns[.ns...].table");
+    }
+    String catalog = parts[0].trim();
+    String tableName = parts[parts.length - 1].trim();
+    if (catalog.isEmpty() || tableName.isEmpty()) {
+      throw new IllegalArgumentException(
+          "referenced_table must be fully qualified: catalog.ns[.ns...].table");
+    }
+    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog).setName(tableName);
+    for (int i = 1; i < parts.length - 1; i++) {
+      String segment = parts[i].trim();
+      if (segment.isEmpty()) {
+        throw new IllegalArgumentException(
+            "referenced_table must be fully qualified: catalog.ns[.ns...].table");
+      }
+      b.addPath(segment);
+    }
+    return b.build();
   }
 
   private static void addConstraintAndPrint(
@@ -770,9 +800,16 @@ final class ConstraintsCliSupport {
       ResourceId tableId,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       StringFlagParser parseStringFlag) {
-    String snapshotRaw = Shell.Quotes.unquote(parseStringFlag.parse(args, "--snapshot", "")).trim();
-    if (snapshotRaw.isEmpty()) {
+    int snapshotIndex = args.indexOf("--snapshot");
+    if (snapshotIndex < 0) {
       return resolveCurrentSnapshotId(tableId, snapshotsService);
+    }
+    if (snapshotIndex + 1 >= args.size() || args.get(snapshotIndex + 1).startsWith("--")) {
+      throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
+    }
+    String snapshotRaw = Shell.Quotes.unquote(args.get(snapshotIndex + 1)).trim();
+    if (snapshotRaw.isEmpty()) {
+      throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
     }
     try {
       return Long.parseLong(snapshotRaw);

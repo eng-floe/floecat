@@ -17,6 +17,8 @@ package ai.floedb.floecat.systemcatalog.validation;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
@@ -159,6 +161,7 @@ public final class SystemCatalogValidator {
       String REFERENCED_COLUMNS_REQUIRED = "table.constraint.referenced_columns.required";
       String FK_COLUMN_ARITY_MISMATCH = "table.constraint.fk.arity.mismatch";
       String FK_REFERENCED_NOT_ALLOWED = "table.constraint.fk_only.field.not_allowed";
+      String FK_BEHAVIOR_NOT_ALLOWED = "table.constraint.fk_only.behavior.not_allowed";
       String CHECK_EXPRESSION_REQUIRED = "table.constraint.check.expression.required";
       String CHECK_EXPRESSION_NOT_ALLOWED = "table.constraint.check_only.expression.not_allowed";
       String NOT_NULL_SINGLE_COLUMN = "table.constraint.not_null.single_column";
@@ -866,7 +869,7 @@ public final class SystemCatalogValidator {
         }
       }
       if (constraint.getType() == ConstraintType.CT_FOREIGN_KEY) {
-        if (!constraint.hasReferencedTableId() && isBlank(constraint.getReferencedTableName())) {
+        if (!constraint.hasReferencedTableId() && isBlank(constraint.getReferencedTable())) {
           err(issues, Codes.Constraint.FK_REFERENCED_TABLE_REQUIRED, constraintCtx, null);
         }
         if (constraint.getReferencedColumnsCount() == 0) {
@@ -882,9 +885,16 @@ public final class SystemCatalogValidator {
               Integer.toString(constraint.getReferencedColumnsCount()));
         }
       } else if (constraint.hasReferencedTableId()
-          || !isBlank(constraint.getReferencedTableName())
-          || constraint.getReferencedColumnsCount() > 0) {
+          || constraint.hasReferencedTable()
+          || constraint.getReferencedColumnsCount() > 0
+          || !isBlank(constraint.getReferencedConstraintName())) {
         err(issues, Codes.Constraint.FK_REFERENCED_NOT_ALLOWED, constraintCtx, null);
+      }
+      if (constraint.getType() != ConstraintType.CT_FOREIGN_KEY
+          && (constraint.getMatchOption() != ForeignKeyMatchOption.FK_MATCH_OPTION_UNSPECIFIED
+              || constraint.getUpdateRule() != ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED
+              || constraint.getDeleteRule() != ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED)) {
+        err(issues, Codes.Constraint.FK_BEHAVIOR_NOT_ALLOWED, constraintCtx, null);
       }
 
       if (constraint.getType() == ConstraintType.CT_CHECK) {
@@ -911,13 +921,13 @@ public final class SystemCatalogValidator {
           referencedColumnsByName = referencedIndex.byName();
           referencedColumnsById = referencedIndex.byId();
         } else if (!constraint.hasReferencedTableId()
-            && !isBlank(constraint.getReferencedTableName())) {
+            && !isBlank(constraint.getReferencedTable())) {
           err(
               issues,
               Codes.Constraint.FK_REFERENCED_TABLE_UNKNOWN,
               constraintCtx,
               null,
-              constraint.getReferencedTableName());
+              formatName(constraint.getReferencedTable()));
         }
       }
       validateConstraintColumnRefs(
@@ -934,19 +944,19 @@ public final class SystemCatalogValidator {
       ConstraintDefinition constraint,
       Map<String, TableColumnIndex> tableColumnsByCanonical,
       TableColumnIndex localTableIndex) {
-    // Referenced-column target lookup is currently name-based only: referenced_table_id satisfies
-    // FK presence requirements but is not used to resolve a table schema in validator checks.
-    // This is acceptable for current builtin definitions (name-authored), but should be revisited
-    // if ID-first authoring becomes primary.
     if (localTable == null
         || localTable.name() == null
         || constraint == null
-        || isBlank(constraint.getReferencedTableName())) {
+        || isBlank(constraint.getReferencedTable())) {
       return null;
     }
-    String referencedRaw = constraint.getReferencedTableName().trim().toLowerCase();
+    NameRef referencedTable = constraint.getReferencedTable();
+    String referencedRaw = NameRefUtil.canonical(referencedTable);
+    if (referencedRaw.isBlank()) {
+      return null;
+    }
 
-    if (referencedRaw.contains(".")) {
+    if (referencedTable.getPathCount() > 0) {
       return tableColumnsByCanonical.get(referencedRaw);
     }
 
@@ -959,7 +969,7 @@ public final class SystemCatalogValidator {
       }
     }
 
-    if (referencedRaw.equalsIgnoreCase(nullToEmpty(localTable.name().getName()))) {
+    if (referencedTable.getName().equalsIgnoreCase(nullToEmpty(localTable.name().getName()))) {
       return localTableIndex;
     }
 
@@ -1318,6 +1328,11 @@ public final class SystemCatalogValidator {
 
   private static boolean isBlank(String s) {
     return s == null || s.isBlank();
+  }
+
+  private static boolean isBlank(NameRef ref) {
+    return ref == null
+        || (ref.getCatalog().isBlank() && ref.getPathCount() == 0 && ref.getName().isBlank());
   }
 
   private static String nullToEmpty(String s) {

@@ -66,8 +66,7 @@ final class RequestScopeConstraintPruner implements ConstraintPruner {
   public List<ConstraintDefinition> prune(
       ResourceId tableId, List<ConstraintDefinition> constraints) {
     String localTableKey = relationKey(tableId);
-    Set<Long> requestedLocalColumns =
-        requestedColumnsByRelationKey.getOrDefault(localTableKey, Set.of());
+    Set<Long> requestedLocalColumns = requestedColumnsFor(localTableKey);
     boolean allLocalColumnsVisible = allColumnsVisibleRelationKeys.contains(localTableKey);
     List<ConstraintDefinition> out = new ArrayList<>(constraints.size());
     for (ConstraintDefinition constraint : constraints) {
@@ -100,9 +99,8 @@ final class RequestScopeConstraintPruner implements ConstraintPruner {
         if (constraint.hasReferencedTableId()) {
           String referencedTableKey = relationKey(constraint.getReferencedTableId());
           if (!allColumnsVisibleRelationKeys.contains(referencedTableKey)) {
-            Set<Long> requestedReferenced =
-                requestedColumnsByRelationKey.getOrDefault(referencedTableKey, Set.of());
-            referencedColumns = filterRequestedColumns(referencedColumns, requestedReferenced);
+            referencedColumns =
+                filterRequestedColumns(referencedColumns, requestedColumnsFor(referencedTableKey));
           }
         }
         builder.clearReferencedColumns().addAllReferencedColumns(referencedColumns);
@@ -110,8 +108,11 @@ final class RequestScopeConstraintPruner implements ConstraintPruner {
           continue;
         }
       } else if (constraint.getType() == ConstraintType.CT_CHECK) {
+        // Mask the expression when there are hidden columns. If columns is empty the connector
+        // didn't populate column refs; treat conservatively as "may reference hidden columns".
         if (!allLocalColumnsVisible
-            && hasUnrequestedColumns(constraint.getColumnsList(), requestedLocalColumns)) {
+            && (constraint.getColumnsList().isEmpty()
+                || hasUnrequestedColumns(constraint.getColumnsList(), requestedLocalColumns))) {
           builder.setCheckExpression("");
         }
       } else if (!constraint.getColumnsList().isEmpty() && localColumns.isEmpty()) {
@@ -120,6 +121,10 @@ final class RequestScopeConstraintPruner implements ConstraintPruner {
       out.add(builder.build());
     }
     return out;
+  }
+
+  private Set<Long> requestedColumnsFor(String relationKey) {
+    return requestedColumnsByRelationKey.getOrDefault(relationKey, Set.of());
   }
 
   static String relationKey(ResourceId tableId) {

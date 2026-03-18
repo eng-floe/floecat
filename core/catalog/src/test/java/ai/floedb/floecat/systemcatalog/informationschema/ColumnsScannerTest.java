@@ -74,6 +74,18 @@ class ColumnsScannerTest {
   }
 
   @Test
+  void scan_dedupesLeafWhenPathAlreadyContainsDisplayName() {
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");
+    builder.addTable(ns, "orders", Map.of("id", 1), Map.of("id", "long"));
+
+    SystemObjectScanContext ctx = builder.build();
+    var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows).containsExactly(List.of("marketing", "org.sales", "orders", "id", "long", 1));
+  }
+
+  @Test
   void scan_withNoTables_returnsNoRows() {
     var builder = TestTableScanContextBuilder.builder("marketing");
     var ns = builder.addNamespace("finance.sales");
