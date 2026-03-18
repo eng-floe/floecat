@@ -22,11 +22,13 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
+import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.service.repo.util.ResourceHash;
 import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -142,7 +144,7 @@ public final class Schemas {
               (TableStats v) -> Map.of(),
               (TableStats v) -> {
                 var norm = TableStatsNormalizer.normalize(v);
-                var sha = TableStatsNormalizer.sha256Hex(norm.toByteArray());
+                var sha = ResourceHash.sha256Hex(norm.toByteArray());
                 return new TableStatsKey(
                     v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
               })
@@ -160,7 +162,7 @@ public final class Schemas {
               (ColumnStats v) -> Map.of(),
               (ColumnStats v) -> {
                 var norm = ColumnStatsNormalizer.normalize(v);
-                var sha = ColumnStatsNormalizer.sha256Hex(norm.toByteArray());
+                var sha = ResourceHash.sha256Hex(norm.toByteArray());
                 return new ColumnStatsKey(
                     v.getTableId().getAccountId(),
                     v.getTableId().getId(),
@@ -182,7 +184,7 @@ public final class Schemas {
               v -> Map.of(),
               v -> {
                 var bytes = v.toByteArray();
-                var sha = ColumnStatsNormalizer.sha256Hex(bytes);
+                var sha = ResourceHash.sha256Hex(bytes);
                 return new FileColumnStatsKey(
                     v.getTableId().getAccountId(),
                     v.getTableId().getId(),
@@ -191,6 +193,34 @@ public final class Schemas {
                     sha);
               })
           .withCasBlobs();
+
+  public static final ResourceSchema<SnapshotConstraints, SnapshotConstraintsKey>
+      SNAPSHOT_CONSTRAINTS =
+          ResourceSchema.<SnapshotConstraints, SnapshotConstraintsKey>of(
+                  "snapshot-constraints",
+                  (SnapshotConstraintsKey key) ->
+                      Keys.snapshotConstraintsPointer(
+                          key.accountId(), key.tableId(), key.snapshotId()),
+                  (SnapshotConstraintsKey key) ->
+                      Keys.snapshotConstraintsBlobUri(
+                          key.accountId(), key.tableId(), key.snapshotId(), key.sha256()),
+                  (SnapshotConstraints v) ->
+                      Map.of(
+                          "bySnapshotStats",
+                          Keys.snapshotConstraintsStatsPointer(
+                              v.getTableId().getAccountId(),
+                              v.getTableId().getId(),
+                              v.getSnapshotId())),
+                  (SnapshotConstraints v) -> {
+                    var norm = ConstraintNormalizer.normalize(v);
+                    var sha = ResourceHash.sha256Hex(norm.toByteArray());
+                    return new SnapshotConstraintsKey(
+                        v.getTableId().getAccountId(),
+                        v.getTableId().getId(),
+                        v.getSnapshotId(),
+                        sha);
+                  })
+              .withCasBlobs();
 
   public static final ResourceSchema<View, ViewKey> VIEW =
       ResourceSchema.<View, ViewKey>of(

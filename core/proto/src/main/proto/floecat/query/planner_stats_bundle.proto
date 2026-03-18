@@ -21,6 +21,7 @@ option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "PlannerStatsProto";
 
 import "floecat/catalog/stats.proto";
+import "floecat/catalog/constraints.proto";
 import "floecat/common/common.proto";
 import "floecat/query/engine_specific.proto";
 
@@ -50,6 +51,15 @@ message FetchColumnStatsRequest {
 
   /** Which columns the planner needs stats for. */
   repeated TableColumnStatsRequest tables = 2;
+
+  /**
+   * When true, include table-scoped constraint bundles for requested tables.
+   * Bundles are keyed by (table_id, snapshot_id) and may include both table and
+   * column-level constraints (for example NOT NULL).
+   *
+   * Defaults to false to preserve existing stats-only behavior for older clients.
+   */
+  bool include_constraints = 3;
 }
 
 /** Columns requested for one table. */
@@ -95,13 +105,22 @@ message StatsWarning {
 message ColumnStatsBatch {
   repeated ColumnStatsResult columns = 1;
   repeated StatsWarning warnings = 2;
+
+  /**
+   * Optional table-scoped constraint bundles.
+   * Each result is addressed by table id, and the contained definitions may mix table
+   * and column-level constraints.
+   *
+   * Emitted only when requested via FetchColumnStatsRequest.include_constraints.
+   */
+  repeated TableConstraintsResult constraints = 3;
 }
 
-enum StatsStatus {
-  STATS_STATUS_UNSPECIFIED = 0;
-  STATS_STATUS_FOUND = 1;
-  STATS_STATUS_NOT_FOUND = 2;
-  STATS_STATUS_ERROR = 3;
+enum BundleResultStatus {
+  BUNDLE_RESULT_STATUS_UNSPECIFIED = 0;
+  BUNDLE_RESULT_STATUS_FOUND = 1;
+  BUNDLE_RESULT_STATUS_NOT_FOUND = 2;
+  BUNDLE_RESULT_STATUS_ERROR = 3;
 }
 
 message ColumnStatsResult {
@@ -109,22 +128,34 @@ message ColumnStatsResult {
   int64 column_id = 2;
   string column_name = 3;
 
-  StatsStatus status = 4;
+  BundleResultStatus status = 4;
 
   /** Present when status == FOUND. */
   ColumnStatsInfo stats = 10;
 
   /** Present when status != FOUND. */
-  StatsFailure failure = 11;
+  BundleFailure failure = 11;
+}
+
+/** Constraint bundle payload for one table. */
+message TableConstraintsResult {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  BundleResultStatus status = 2;
+
+  /** Present when status == FOUND. */
+  repeated ai.floedb.floecat.catalog.ConstraintDefinition constraints = 10;
+
+  /** Present when status != FOUND. */
+  BundleFailure failure = 11;
 }
 
 /**
  * Planner-specific failure metadata. The server typically sets one of:
- *   planner_stats.pin.missing – reported with `status = STATS_STATUS_ERROR`
- *   planner_stats.column_stats.missing – reported with `status = STATS_STATUS_NOT_FOUND`
- *   planner_stats.column_stats.error – reported with `status = STATS_STATUS_ERROR`
+ *   planner_stats.pin.missing – reported with `status = BUNDLE_RESULT_STATUS_ERROR`
+ *   planner_stats.column_stats.missing – reported with `status = BUNDLE_RESULT_STATUS_NOT_FOUND`
+ *   planner_stats.column_stats.error – reported with `status = BUNDLE_RESULT_STATUS_ERROR`
  */
-message StatsFailure {
+message BundleFailure {
   string code = 1;
   string message = 2;
   map<string,string> details = 10;
