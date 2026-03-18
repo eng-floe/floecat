@@ -40,6 +40,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
+| `TableConstraintsService` | `PutTableConstraints` | Persists per-snapshot constraints. Requires snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
@@ -79,6 +80,10 @@ engine release.
 - **File-level stats** – `FileColumnStats` mirrors `ColumnStats` but anchors counts and sketches to
   a file path. `PutFileColumnStats` uses the same idempotency key across streamed batches for the
   same table/snapshot pair; the service enforces consistent `table_id`/`snapshot_id` in a stream.
+- **Stats vs constraints snapshot policy** – `PutTableStats` currently accepts unknown snapshots
+  (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
+  row before write. Rationale: stats keeps existing capture ordering compatibility, while
+  constraints are modeled as snapshot-attached relational facts.
 - **Idempotency/Preconditions** – Mutating RPCs accept `IdempotencyKey` or `Precondition` (expected
   CAS version/ETag). Repository logic mirrors these fields, so clients should obey the same values
   when retrying.

@@ -141,6 +141,8 @@ enum FileContent {
 
 message PutTableStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
+  // Stats writes are accepted even when snapshot_id is not yet materialized.
+  // The service currently treats stats as create-only per (table_id, snapshot_id).
   int64 snapshot_id = 2;
   TableStats stats = 3;
   ai.floedb.floecat.common.IdempotencyKey idempotency = 4;

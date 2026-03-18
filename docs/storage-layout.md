@@ -59,6 +59,11 @@ Constraint storage semantics:
 - The persisted constraints unit is per table per snapshot (`.../constraints/by-snapshot/{snapshot_id}`).
 - The `SnapshotConstraints` payload can contain both table constraints and column-level constraints
   represented in table scope (for example `NOT NULL`).
+- Ingestion policy is intentionally asymmetric today:
+  - `PutTableConstraints` is strict and requires an existing snapshot row.
+  - `PutTableStats` is lenient and may accept writes before snapshot materialization.
+  - Rationale: preserve existing stats capture ordering while keeping constraints explicitly
+    attached to materialized snapshots.
 
 Each pointer carries a monotonically increasing version; repositories use compare-and-set to enforce
 idempotency and optimistic concurrency. Two storage implementations ship with the repo:
