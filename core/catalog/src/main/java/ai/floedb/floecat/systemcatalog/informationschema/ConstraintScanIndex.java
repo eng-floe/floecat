@@ -41,8 +41,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** Builds a compact per-scan index of visible constraints for information_schema scanners. */
-final class ConstraintScanIndex {
+/** Builds a compact per-scan index of visible constraints for metadata scanners. */
+public final class ConstraintScanIndex {
   private static final Object CACHE_KEY = new Object();
   private static final String RESOLVE_CORRELATION_ID = "information_schema.constraints";
 
@@ -52,11 +52,11 @@ final class ConstraintScanIndex {
     this.entries = entries;
   }
 
-  List<ConstraintEntry> entries() {
+  public List<ConstraintEntry> entries() {
     return entries;
   }
 
-  static ConstraintScanIndex build(SystemObjectScanContext ctx) {
+  public static ConstraintScanIndex build(SystemObjectScanContext ctx) {
     return ctx.memoized(CACHE_KEY, () -> buildUncached(ctx));
   }
 
@@ -327,11 +327,11 @@ final class ConstraintScanIndex {
     return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
-  record TableRef(ResourceId tableId, String catalog, String schema, String name) {}
+  public record TableRef(ResourceId tableId, String catalog, String schema, String name) {}
 
-  record ColumnRef(String name, int ordinal) {}
+  public record ColumnRef(String name, int ordinal) {}
 
-  record ConstraintEntry(
+  public record ConstraintEntry(
       TableRef table,
       String name,
       String typeName,
