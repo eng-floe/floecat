@@ -324,9 +324,10 @@ test: $(PROTO_JAR) keycloak-up
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
-	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
+	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory, OIDC enabled)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -Dfloecat.test.oidc=true \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -340,9 +341,10 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
-	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
+	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack + OIDC"; \
 	  $(LOCALSTACK_ENV) \
 	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
+	    -Dfloecat.test.oidc=true \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -385,9 +387,10 @@ integration-test: keycloak-up
 	@bash -c 'set -euo pipefail; \
 	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT; \
-	  echo "==> [TEST] integration tests (service, REST gateway, client-cli)"; \
+	  echo "==> [TEST] integration tests (service, REST gateway, client-cli, OIDC enabled)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -Dfloecat.test.oidc=true \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    -DskipUTs=true -DfailIfNoTests=false \
 	    verify'
@@ -396,9 +399,10 @@ verify: keycloak-up
 	@bash -c 'set -euo pipefail; \
 	  cleanup() { $(MAKE) --no-print-directory keycloak-down >/dev/null 2>&1 || true; }; \
 	  trap cleanup EXIT; \
-	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli)"; \
+	  echo "==> [VERIFY] full lifecycle (service, REST gateway, client-cli, OIDC enabled)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -Dfloecat.test.oidc=true \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
 	    verify'
 
@@ -848,8 +852,9 @@ compose-shell:
 	@echo "==> [COMPOSE] shell"
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
 
-compose-smoke: docker
+compose-smoke: docker-iceberg-rest
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
+	  FLOECAT_ICEBERG_REST_IMAGE=$${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local} \
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
 	  ./tools/compose-smoke.sh

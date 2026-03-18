@@ -15,10 +15,12 @@
 
 set -euo pipefail
 
+DUCKDB_IMAGE=${DUCKDB_IMAGE:-local/duckdb-with-extensions:latest}
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
 COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
+COMPOSE_SMOKE_OFFLINE=${COMPOSE_SMOKE_OFFLINE:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
@@ -73,10 +75,62 @@ should_run_client() {
   [[ "$normalized" == *",$client,"* ]]
 }
 
+docker_run() {
+  local pull_args=()
+  if is_truthy "${COMPOSE_SMOKE_OFFLINE}"; then
+    pull_args+=(--pull=never)
+  fi
+  docker run "${pull_args[@]}" "$@"
+}
+
 run_cli_script() {
   local compose_cmd="$1"
   local script="$2"
   printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli"
+}
+
+gateway_json_request() {
+  local compose_project="$1"
+  local method="$2"
+  local path="$3"
+  local body="${4:-}"
+  local idempotency_key="${5:-}"
+  local curl_args=(
+    --rm
+    --network
+    "${compose_project}_floecat"
+    curlimages/curl:8.12.1
+    -sS
+    -w
+    "\n%{http_code}\n"
+    -X
+    "$method"
+    "http://iceberg-rest:9200$path"
+    -H
+    "Content-Type: application/json"
+  )
+  if [ -n "$idempotency_key" ]; then
+    curl_args+=(-H "Idempotency-Key: $idempotency_key")
+  fi
+  if [ -n "$body" ]; then
+    curl_args+=(-d "$body")
+  fi
+  docker_run "${curl_args[@]}"
+}
+
+latest_s3_metadata_uri() {
+  local compose_project="$1"
+  local metadata_prefix="$2"
+  local aws_cli
+  aws_cli="docker_run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+  local metadata_key
+  metadata_key=$($aws_cli --endpoint-url http://localstack:4566 s3 ls "$metadata_prefix" --recursive \
+    | awk '$4 ~ /\.metadata\.json$/ {print $4}' \
+    | tail -n1)
+  if [ -z "$metadata_key" ]; then
+    return 1
+  fi
+  printf 's3://floecat/%s\n' "$metadata_key"
 }
 
 wait_for_connector_job() {
@@ -455,7 +509,7 @@ run_mode() {
     echo "==> [SMOKE] upstream iceberg rest import check"
 
     local aws_cli
-    aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+    aws_cli="docker_run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     local localstack_container="${compose_project}-localstack-1"
     local warehouse="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE"
     local source_namespace="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS"
@@ -486,7 +540,7 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
     metadata_dir_uri="s3://floecat/$(dirname "$metadata_key")/"
 
     local polaris_token
-    polaris_token=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    polaris_token=$(docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -X POST "http://polaris:8181/api/catalog/v1/oauth/tokens" \
       -H "Content-Type: application/x-www-form-urlencoded" \
       --data "grant_type=client_credentials&client_id=root&client_secret=s3cr3t&scope=PRINCIPAL_ROLE:ALL" \
@@ -496,14 +550,14 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
       return 1
     fi
 
-    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -X POST "http://polaris:8181/api/management/v1/catalogs" \
       -H "Authorization: Bearer $polaris_token" \
       -H "Content-Type: application/json" \
       -d "{\"catalog\":{\"name\":\"$warehouse\",\"type\":\"INTERNAL\",\"readOnly\":false,\"properties\":{\"default-base-location\":\"$bucket_root_uri\"},\"storageConfigInfo\":{\"storageType\":\"S3\",\"allowedLocations\":[\"$bucket_root_uri\",\"$metadata_dir_uri\"],\"pathStyleAccess\":true,\"roleArn\":\"arn:aws:iam::000000000000:role/polaris\"}}}" \
       >/dev/null 2>&1 || true
 
-    docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces" \
       -H "Authorization: Bearer $polaris_token" \
       -H "Content-Type: application/json" \
@@ -511,7 +565,7 @@ awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --poli
       >/dev/null 2>&1 || true
 
     local register_resp
-    register_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    register_resp=$(docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
       -X POST "http://polaris:8181/api/catalog/v1/$warehouse/namespaces/$source_namespace/register" \
       -H "Authorization: Bearer $polaris_token" \
@@ -581,7 +635,7 @@ quit")
     fi
 
     local unity_catalog_resp
-    unity_catalog_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    unity_catalog_resp=$(docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
       -X POST "http://unity:8080/api/2.1/unity-catalog/catalogs" \
       -H "Content-Type: application/json" \
@@ -595,7 +649,7 @@ quit")
     fi
 
     local unity_schema_resp
-    unity_schema_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    unity_schema_resp=$(docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
       -X POST "http://unity:8080/api/2.1/unity-catalog/schemas" \
       -H "Content-Type: application/json" \
@@ -609,7 +663,7 @@ quit")
     fi
 
     local unity_table_resp
-    unity_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
+    unity_table_resp=$(docker_run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
       -X POST "http://unity:8080/api/2.1/unity-catalog/tables" \
       -H "Content-Type: application/json" \
@@ -665,24 +719,406 @@ quit")
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
   fi
 
+  if [ "$profile" = "localstack" ]; then
+    echo "==> [SMOKE] gateway endpoint checks"
+
+    local namespace_props_resp
+    namespace_props_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/properties" \
+      '{"removals":["compose-smoke.missing"],"updates":{"compose-smoke.owner":"gateway-smoke","compose-smoke.endpoint":"namespace-properties"}}' \
+      "smoke-gateway-namespace-properties")
+    local namespace_props_code
+    namespace_props_code=$(printf "%s\n" "$namespace_props_resp" | tail -n1)
+    if [ "$namespace_props_code" != "200" ]; then
+      echo "[FAIL] $label gateway namespace property update failed (http=$namespace_props_code)"
+      echo "$namespace_props_resp"
+      return 1
+    fi
+    assert_contains "$label gateway namespace properties updated owner" "$namespace_props_resp" '"compose-smoke.owner"'
+    assert_contains "$label gateway namespace properties updated endpoint" "$namespace_props_resp" '"compose-smoke.endpoint"'
+    assert_contains "$label gateway namespace properties missing key" "$namespace_props_resp" '"compose-smoke.missing"'
+
+    local namespace_cli_out
+    namespace_cli_out=$(run_cli_script "$compose_cmd" "account t-0001
+namespace get examples.iceberg
+quit")
+    echo "$namespace_cli_out"
+    assert_contains "$label gateway namespace cli owner property" "$namespace_cli_out" "compose-smoke.owner = gateway-smoke"
+    assert_contains "$label gateway namespace cli endpoint property" "$namespace_cli_out" "compose-smoke.endpoint = namespace-properties"
+
+    local credentials_resp
+    credentials_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/credentials")
+    local credentials_code
+    credentials_code=$(printf "%s\n" "$credentials_resp" | tail -n1)
+    if [ "$credentials_code" != "200" ]; then
+      echo "[FAIL] $label gateway credentials request failed (http=$credentials_code)"
+      echo "$credentials_resp"
+      return 1
+    fi
+    assert_contains "$label gateway credentials storage credentials key" "$credentials_resp" '"storage-credentials"'
+
+    local plan_resp
+    plan_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/plan" \
+      '{}' \
+      "smoke-gateway-plan-create")
+    local plan_code
+    plan_code=$(printf "%s\n" "$plan_resp" | tail -n1)
+    if [ "$plan_code" != "200" ]; then
+      echo "[FAIL] $label gateway plan create failed (http=$plan_code)"
+      echo "$plan_resp"
+      return 1
+    fi
+    assert_contains "$label gateway plan completed status" "$plan_resp" '"status":"completed"'
+    assert_contains "$label gateway plan task list key" "$plan_resp" '"plan-tasks"'
+    assert_contains "$label gateway plan scan tasks key" "$plan_resp" '"file-scan-tasks"'
+    assert_contains "$label gateway plan data file key" "$plan_resp" '"data-file"'
+    local plan_id
+    plan_id=$(printf "%s\n" "$plan_resp" | sed -n 's/.*"plan-id":"\([^"]*\)".*/\1/p' | head -n1)
+    if [ -z "$plan_id" ]; then
+      echo "[FAIL] $label gateway plan id missing"
+      echo "$plan_resp"
+      return 1
+    fi
+
+    local plan_get_resp
+    plan_get_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/plan/${plan_id}")
+    local plan_get_code
+    plan_get_code=$(printf "%s\n" "$plan_get_resp" | tail -n1)
+    if [ "$plan_get_code" != "200" ]; then
+      echo "[FAIL] $label gateway plan fetch failed (http=$plan_get_code)"
+      echo "$plan_get_resp"
+      return 1
+    fi
+    assert_contains "$label gateway plan fetch completed status" "$plan_get_resp" '"status":"completed"'
+    assert_contains "$label gateway plan fetch scan tasks key" "$plan_get_resp" '"file-scan-tasks"'
+
+    local plan_task_resp
+    plan_task_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/tasks" \
+      '{"plan-task":"missing-task"}')
+    local plan_task_code
+    plan_task_code=$(printf "%s\n" "$plan_task_resp" | tail -n1)
+    if [ "$plan_task_code" != "404" ]; then
+      echo "[FAIL] $label gateway plan task missing-task check failed (http=$plan_task_code)"
+      echo "$plan_task_resp"
+      return 1
+    fi
+    assert_contains "$label gateway plan task not found type" "$plan_task_resp" 'NoSuchPlanTask'
+
+    local plan_delete_resp
+    plan_delete_resp=$(gateway_json_request \
+      "$compose_project" \
+      DELETE \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/plan/${plan_id}" \
+      '' \
+      "smoke-gateway-plan-delete")
+    local plan_delete_code
+    plan_delete_code=$(printf "%s\n" "$plan_delete_resp" | tail -n1)
+    if [ "$plan_delete_code" != "204" ]; then
+      echo "[FAIL] $label gateway plan delete failed (http=$plan_delete_code)"
+      echo "$plan_delete_resp"
+      return 1
+    fi
+
+    local plan_missing_resp
+    plan_missing_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/tables/trino_types/plan/${plan_id}")
+    local plan_missing_code
+    plan_missing_code=$(printf "%s\n" "$plan_missing_resp" | tail -n1)
+    if [ "$plan_missing_code" != "200" ]; then
+      echo "[FAIL] $label gateway deleted plan fetch check failed (http=$plan_missing_code)"
+      echo "$plan_missing_resp"
+      return 1
+    fi
+    assert_contains "$label gateway deleted plan cancelled status" "$plan_missing_resp" '"status":"cancelled"'
+
+    local view_name="minimal_view_smoke"
+    local view_renamed_name="minimal_view_smoke_renamed"
+    gateway_json_request "$compose_project" DELETE "/v1/examples/namespaces/iceberg/views/${view_name}" '' "smoke-gateway-view-cleanup-src" >/dev/null 2>&1 || true
+    gateway_json_request "$compose_project" DELETE "/v1/examples/namespaces/iceberg/views/${view_renamed_name}" '' "smoke-gateway-view-cleanup-dst" >/dev/null 2>&1 || true
+
+    local view_create_resp
+    view_create_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/views" \
+      "{\"name\":\"${view_name}\",\"schema\":{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"c\",\"required\":false,\"type\":\"int\"}]},\"view-version\":{\"version-id\":0,\"timestamp-ms\":1,\"schema-id\":0,\"summary\":{},\"representations\":[{\"type\":\"sql\",\"sql\":\"select 1 as c\",\"dialect\":\"ansi\"}],\"default-namespace\":[\"iceberg\"]},\"properties\":{\"compose-smoke.view\":\"create\"}}" \
+      "smoke-gateway-view-create")
+    local view_create_code
+    view_create_code=$(printf "%s\n" "$view_create_resp" | tail -n1)
+    if [ "$view_create_code" != "200" ]; then
+      echo "[FAIL] $label gateway view create failed (http=$view_create_code)"
+      echo "$view_create_resp"
+      return 1
+    fi
+    assert_contains "$label gateway view create metadata location" "$view_create_resp" '"metadata-location"'
+
+    local view_list_resp
+    view_list_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/views")
+    local view_list_code
+    view_list_code=$(printf "%s\n" "$view_list_resp" | tail -n1)
+    if [ "$view_list_code" != "200" ]; then
+      echo "[FAIL] $label gateway view list failed (http=$view_list_code)"
+      echo "$view_list_resp"
+      return 1
+    fi
+    assert_contains "$label gateway view listed" "$view_list_resp" "\"name\":\"${view_name}\""
+
+    local view_get_resp
+    view_get_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/views/${view_name}")
+    local view_get_code
+    view_get_code=$(printf "%s\n" "$view_get_resp" | tail -n1)
+    if [ "$view_get_code" != "200" ]; then
+      echo "[FAIL] $label gateway view get failed (http=$view_get_code)"
+      echo "$view_get_resp"
+      return 1
+    fi
+    assert_contains "$label gateway view get metadata key" "$view_get_resp" '"metadata"'
+
+    local view_head_resp
+    view_head_resp=$(gateway_json_request \
+      "$compose_project" \
+      HEAD \
+      "/v1/examples/namespaces/iceberg/views/${view_name}")
+    local view_head_code
+    view_head_code=$(printf "%s\n" "$view_head_resp" | tail -n1)
+    if [ "$view_head_code" != "204" ]; then
+      echo "[FAIL] $label gateway view head failed (http=$view_head_code)"
+      echo "$view_head_resp"
+      return 1
+    fi
+
+    local view_commit_resp
+    view_commit_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/views/${view_name}" \
+      "{\"requirements\":[],\"updates\":[{\"action\":\"set-location\",\"location\":\"floecat://views/iceberg/${view_name}/v2.metadata.json\"}]}" \
+      "smoke-gateway-view-commit")
+    local view_commit_code
+    view_commit_code=$(printf "%s\n" "$view_commit_resp" | tail -n1)
+    if [ "$view_commit_code" != "200" ]; then
+      echo "[FAIL] $label gateway view commit failed (http=$view_commit_code)"
+      echo "$view_commit_resp"
+      return 1
+    fi
+    assert_contains "$label gateway view commit new location" "$view_commit_resp" "floecat://views/iceberg/${view_name}/v2.metadata.json"
+
+    local view_rename_resp
+    view_rename_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/views/rename" \
+      "{\"source\":{\"namespace\":[\"iceberg\"],\"name\":\"${view_name}\"},\"destination\":{\"namespace\":[\"iceberg\"],\"name\":\"${view_renamed_name}\"}}" \
+      "smoke-gateway-view-rename")
+    local view_rename_code
+    view_rename_code=$(printf "%s\n" "$view_rename_resp" | tail -n1)
+    if [ "$view_rename_code" != "204" ]; then
+      echo "[FAIL] $label gateway view rename failed (http=$view_rename_code)"
+      echo "$view_rename_resp"
+      return 1
+    fi
+
+    local view_renamed_get_resp
+    view_renamed_get_resp=$(gateway_json_request \
+      "$compose_project" \
+      GET \
+      "/v1/examples/namespaces/iceberg/views/${view_renamed_name}")
+    local view_renamed_get_code
+    view_renamed_get_code=$(printf "%s\n" "$view_renamed_get_resp" | tail -n1)
+    if [ "$view_renamed_get_code" != "200" ]; then
+      echo "[FAIL] $label gateway renamed view get failed (http=$view_renamed_get_code)"
+      echo "$view_renamed_get_resp"
+      return 1
+    fi
+    assert_contains "$label gateway renamed view get metadata key" "$view_renamed_get_resp" '"metadata"'
+
+    local view_delete_resp
+    view_delete_resp=$(gateway_json_request \
+      "$compose_project" \
+      DELETE \
+      "/v1/examples/namespaces/iceberg/views/${view_renamed_name}" \
+      '' \
+      "smoke-gateway-view-delete")
+    local view_delete_code
+    view_delete_code=$(printf "%s\n" "$view_delete_resp" | tail -n1)
+    if [ "$view_delete_code" != "204" ]; then
+      echo "[FAIL] $label gateway view delete failed (http=$view_delete_code)"
+      echo "$view_delete_resp"
+      return 1
+    fi
+
+    local view_deleted_head_resp
+    view_deleted_head_resp=$(gateway_json_request \
+      "$compose_project" \
+      HEAD \
+      "/v1/examples/namespaces/iceberg/views/${view_renamed_name}")
+    local view_deleted_head_code
+    view_deleted_head_code=$(printf "%s\n" "$view_deleted_head_resp" | tail -n1)
+    if [ "$view_deleted_head_code" != "404" ]; then
+      echo "[FAIL] $label gateway deleted view head check failed (http=$view_deleted_head_code)"
+      echo "$view_deleted_head_resp"
+      return 1
+    fi
+
+    local register_metadata_uri
+    register_metadata_uri=$(latest_s3_metadata_uri "$compose_project" "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX") || {
+      echo "[FAIL] $label gateway register metadata not found under $COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX"
+      return 1
+    }
+    local register_table="minimal_register_smoke"
+    local register_create_resp
+    register_create_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/register" \
+      "{\"name\":\"$register_table\",\"metadata-location\":\"$register_metadata_uri\",\"properties\":{\"compose-smoke.register\":\"create\"}}" \
+      "smoke-gateway-register-create")
+    local register_create_code
+    register_create_code=$(printf "%s\n" "$register_create_resp" | tail -n1)
+    if [ "$register_create_code" != "200" ] && [ "$register_create_code" != "409" ]; then
+      echo "[FAIL] $label gateway register create failed (http=$register_create_code)"
+      echo "$register_create_resp"
+      return 1
+    fi
+
+    local register_overwrite_resp
+    register_overwrite_resp=$(gateway_json_request \
+      "$compose_project" \
+      POST \
+      "/v1/examples/namespaces/iceberg/register" \
+      "{\"name\":\"$register_table\",\"metadata-location\":\"$register_metadata_uri\",\"overwrite\":true,\"properties\":{\"compose-smoke.register\":\"overwrite\",\"compose-smoke.source\":\"curl\"}}" \
+      "smoke-gateway-register-overwrite")
+    local register_overwrite_code
+    register_overwrite_code=$(printf "%s\n" "$register_overwrite_resp" | tail -n1)
+    if [ "$register_overwrite_code" != "200" ]; then
+      echo "[FAIL] $label gateway register overwrite failed (http=$register_overwrite_code)"
+      echo "$register_overwrite_resp"
+      return 1
+    fi
+    assert_contains "$label gateway register overwrite response" "$register_overwrite_resp" '"metadata-location"'
+
+    local register_cli_out
+    register_cli_out=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table examples.iceberg.$register_table
+table get examples.iceberg.$register_table
+quit")
+    echo "$register_cli_out"
+    assert_contains "$label gateway register cli resolve" "$register_cli_out" "table id:"
+    assert_contains "$label gateway register cli metadata property" "$register_cli_out" "metadata-location = $register_metadata_uri"
+    assert_contains "$label gateway register cli current snapshot" "$register_cli_out" "current-snapshot-id = "
+
+    maybe_assert_table_stats_available \
+      "$compose_cmd" \
+      "$label gateway register stats" \
+      "examples.iceberg.$register_table" \
+      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
+      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+
+    if should_run_client duckdb; then
+      local duckdb_register_bootstrap
+      duckdb_register_bootstrap="LOAD httpfs; LOAD aws; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
+      local duckdb_register_out
+      if ! duckdb_register_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
+        duckdb -c "$duckdb_register_bootstrap SELECT 'registered_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.${register_table};" 2>&1); then
+        echo "$duckdb_register_out"
+        echo "[FAIL] $label gateway register duckdb query failed"
+        return 1
+      fi
+      echo "$duckdb_register_out"
+      assert_contains "$label gateway register duckdb query" "$duckdb_register_out" "registered_count=1"
+    fi
+
+    if should_run_client trino; then
+      local trino_register_out
+      if ! trino_register_out=$(docker_run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<PY 2>&1
+import json
+import urllib.request
+
+TRINO_URL = "http://trino:8080/v1/statement"
+HEADERS = {
+    "X-Trino-User": "smoke",
+    "X-Trino-Source": "compose-smoke",
+    "X-Trino-Catalog": "floecat",
+    "X-Trino-Schema": "iceberg",
+}
+
+sql = "SELECT 'registered_count=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.${register_table}"
+req = urllib.request.Request(
+    TRINO_URL,
+    data=sql.encode("utf-8"),
+    headers={**HEADERS, "Content-Type": "text/plain; charset=utf-8"},
+    method="POST",
+)
+rows = []
+with urllib.request.urlopen(req, timeout=60) as resp:
+    payload = json.loads(resp.read().decode("utf-8"))
+while True:
+    if payload.get("error"):
+        err = payload["error"]
+        raise RuntimeError(f"{err.get('errorName')}: {err.get('message')}")
+    if payload.get("data"):
+        rows.extend(payload["data"])
+    next_uri = payload.get("nextUri")
+    if not next_uri:
+        break
+    next_req = urllib.request.Request(next_uri, headers=HEADERS, method="GET")
+    with urllib.request.urlopen(next_req, timeout=60) as next_resp:
+        payload = json.loads(next_resp.read().decode("utf-8"))
+print(rows[0][0])
+PY
+); then
+        echo "$trino_register_out"
+        echo "[FAIL] $label gateway register trino query failed"
+        return 1
+      fi
+      echo "$trino_register_out"
+      assert_contains "$label gateway register trino query" "$trino_register_out" "registered_count=1"
+    fi
+  fi
+
   if [ "$profile" = "localstack" ] && should_run_client trino; then
     local trino_host_port="${FLOECAT_TRINO_HOST_PORT:-8081}"
     wait_for_url "http://localhost:${trino_host_port}/v1/info" 180 "Trino health"
   fi
 
   if [ "$profile" = "localstack" ] && should_run_client duckdb; then
-    local aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+    local aws_cli="docker_run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
     echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta)"
     $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/ --recursive | sed -n '1,400p' || true
     echo "==> [SMOKE] localstack pre-duckdb S3 listing (floecat-delta/call_center)"
     $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive | sed -n '1,200p' || true
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
-    local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
-    local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
+    #local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
+    local duckdb_bootstrap="LOAD httpfs; LOAD aws; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
+
+    local duckdb_query
+    duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
 
     local duckdb_out
-    if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap $duckdb_query" 2>&1); then
       echo "$duckdb_out"
       echo "[FAIL] $label duckdb command failed"
@@ -703,19 +1139,19 @@ quit")
     assert_contains "$label duckdb mutation update" "$duckdb_out" "mut_after_update=2,4,a,c2"
 
     local duckdb_rename_out
-    if duckdb_rename_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if duckdb_rename_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_rename_src_smoke VALUES (1, 'x'); ALTER TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke RENAME TO duckdb_rename_dst_smoke; SELECT 'rename_row_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_rename_dst_smoke;" 2>&1); then
       echo "$duckdb_rename_out"
       assert_contains "$label duckdb rename row count" "$duckdb_rename_out" "rename_row_count=1"
     else
       echo "$duckdb_rename_out"
       assert_contains "$label duckdb rename unsupported" "$duckdb_rename_out" "Not implemented Error: Alter Schema Entry"
-      docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke;" >/dev/null 2>&1 || true
     fi
 
     local duckdb_namespace_out
-    if duckdb_namespace_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if duckdb_namespace_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap CREATE SCHEMA IF NOT EXISTS iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_create_ok=1' AS check; DROP SCHEMA iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_drop_ok=1' AS check;" 2>&1); then
       echo "$duckdb_namespace_out"
       assert_contains "$label duckdb namespace create" "$duckdb_namespace_out" "ns_create_ok=1"
@@ -727,7 +1163,7 @@ quit")
 
     local duckdb_snapshots_out
     local duckdb_snapshots_query_fn="COPY (SELECT snapshot_id FROM iceberg_snapshots('iceberg_floecat.iceberg.duckdb_mutation_smoke') ORDER BY timestamp_ms DESC) TO '/dev/stdout' (FORMAT CSV, HEADER FALSE);"
-    if ! duckdb_snapshots_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_snapshots_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -csv -c "$duckdb_bootstrap $duckdb_snapshots_query_fn" 2>&1); then
       echo "$duckdb_snapshots_out"
       echo "[FAIL] $label duckdb time travel snapshot discovery failed"
@@ -746,7 +1182,7 @@ quit")
 
     local duckdb_tt_query="SELECT 'mut_tt_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_insert_id}); SELECT 'mut_tt_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_delete_id}); SELECT 'mut_tt_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_update_id});"
     local duckdb_tt_out
-    if ! duckdb_tt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_tt_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap $duckdb_tt_query" 2>&1); then
       echo "$duckdb_tt_out"
       echo "[FAIL] $label duckdb time travel query failed"
@@ -764,32 +1200,32 @@ quit")
       "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
 
     local alter_out
-    if alter_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if alter_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
       echo "$alter_out"
       assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
     else
       echo "$alter_out"
       assert_contains "$label duckdb mutation alter unsupported" "$alter_out" "Not implemented Error: Alter Schema Entry"
-      docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true
     fi
 
     local drop_check_out
-    if drop_check_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
-      duckdb -c "$duckdb_bootstrap SELECT COUNT(*) FROM iceberg_floecat.iceberg.duckdb_ctas_smoke;" 2>&1); then
+    if drop_check_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
+      duckdb -c "$duckdb_bootstrap SELECT COUNT(*) FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
       echo "$drop_check_out"
       echo "[FAIL] $label duckdb drop table verification failed (table still queryable)"
       return 1
     else
-      assert_contains "$label duckdb drop table verification" "$drop_check_out" "Table with name duckdb_ctas_smoke does not exist"
+      assert_contains "$label duckdb drop table verification" "$drop_check_out" "Table with name duckdb_mutation_smoke does not exist"
       echo "[PASS] $label duckdb drop table verification (expected missing-table error after DROP TABLE)"
     fi
 
     if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] duckdb iceberg format-version matrix (v1,v2)"
       local duckdb_fmt_out
-      if ! duckdb_fmt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      if ! duckdb_fmt_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v2_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v1_smoke (id INTEGER, v VARCHAR) WITH (format_version=1); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v1_smoke VALUES (101, 'duckdb_v1'); SELECT 'duckdb_fmt_v1_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v2_smoke (id INTEGER, v VARCHAR) WITH (format_version=2); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v2_smoke VALUES (201, 'duckdb_v2'); SELECT 'duckdb_fmt_v2_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v2_smoke;" 2>&1); then
         echo "$duckdb_fmt_out"
         echo "[FAIL] $label duckdb format-version matrix command failed"
@@ -816,9 +1252,9 @@ quit")
   if [ "$profile" = "localstack" ] && should_run_client trino; then
     echo "==> [SMOKE] trino federation check (localstack)"
     local trino_out
-    if ! trino_out=$(docker run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
+    if ! trino_out=$(docker_run --rm --network "${compose_project}_floecat" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
-import sys
+import os
 import urllib.request
 
 TRINO_URL = "http://trino:8080/v1/statement"
@@ -862,6 +1298,20 @@ def scalar(sql: str) -> str:
 
 
 print("trino_smoke_ok")
+suffix = os.getenv("SMOKE_TRINO_SUFFIX", "").strip()
+
+
+def smoke_name(base: str) -> str:
+    return f"{base}_{suffix}" if suffix else base
+
+
+ctas_table = smoke_name("trino_ctas_smoke")
+rename_src_table = smoke_name("trino_rename_src_smoke")
+rename_dst_table = smoke_name("trino_rename_dst_smoke")
+mutation_table = smoke_name("trino_mutation_smoke")
+namespace_name = smoke_name("trino_ns_smoke")
+meta_table = smoke_name("trino_meta_smoke")
+merge_table = smoke_name("trino_merge_smoke")
 print(scalar("SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) FROM delta.call_center"))
 print(
     scalar(
@@ -888,51 +1338,51 @@ print(
         "FROM iceberg.trino_types i JOIN delta.call_center d ON 1=0"
     )
 )
-run_sql("DROP TABLE IF EXISTS iceberg.trino_ctas_smoke")
-run_sql("CREATE TABLE iceberg.trino_ctas_smoke AS SELECT * FROM delta.call_center LIMIT 5")
-print(scalar("SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.trino_ctas_smoke"))
-run_sql("DROP TABLE iceberg.trino_ctas_smoke")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{ctas_table}")
+run_sql(f"CREATE TABLE iceberg.{ctas_table} AS SELECT * FROM delta.call_center LIMIT 5")
+print(scalar(f"SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) FROM iceberg.{ctas_table}"))
+run_sql(f"DROP TABLE iceberg.{ctas_table}")
 drop_ok = False
 try:
-    run_sql("SELECT COUNT(*) FROM iceberg.trino_ctas_smoke")
+    run_sql(f"SELECT COUNT(*) FROM iceberg.{ctas_table}")
 except Exception:
     drop_ok = True
 print("drop_table_ok=" + ("1" if drop_ok else "0"))
-run_sql("DROP SCHEMA IF EXISTS floecat.trino_ns_smoke")
-run_sql("CREATE SCHEMA IF NOT EXISTS floecat.trino_ns_smoke")
+run_sql(f"DROP SCHEMA IF EXISTS floecat.{namespace_name}")
+run_sql(f"CREATE SCHEMA IF NOT EXISTS floecat.{namespace_name}")
 print("ns_create_ok=1")
-run_sql("DROP SCHEMA floecat.trino_ns_smoke")
+run_sql(f"DROP SCHEMA floecat.{namespace_name}")
 print("ns_drop_ok=1")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_rename_dst_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_rename_src_smoke")
-run_sql("CREATE TABLE iceberg.trino_rename_src_smoke (id INTEGER, v VARCHAR)")
-run_sql("INSERT INTO iceberg.trino_rename_src_smoke VALUES (1, 'x')")
-run_sql("ALTER TABLE iceberg.trino_rename_src_smoke RENAME TO iceberg.trino_rename_dst_smoke")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{rename_dst_table}")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{rename_src_table}")
+run_sql(f"CREATE TABLE iceberg.{rename_src_table} (id INTEGER, v VARCHAR)")
+run_sql(f"INSERT INTO iceberg.{rename_src_table} VALUES (1, 'x')")
+run_sql(f"ALTER TABLE iceberg.{rename_src_table} RENAME TO iceberg.{rename_dst_table}")
 print(
     scalar(
         "SELECT 'rename_row_count=' || CAST(COUNT(*) AS VARCHAR) "
-        "FROM iceberg.trino_rename_dst_smoke"
+        f"FROM iceberg.{rename_dst_table}"
     )
 )
-run_sql("DROP TABLE iceberg.trino_rename_dst_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_meta_smoke")
-run_sql("CREATE TABLE iceberg.trino_meta_smoke (id INTEGER, v VARCHAR)")
-run_sql("ALTER TABLE iceberg.trino_meta_smoke ADD COLUMN note VARCHAR")
-run_sql("ALTER TABLE iceberg.trino_meta_smoke RENAME COLUMN v TO v2")
+run_sql(f"DROP TABLE iceberg.{rename_dst_table}")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{meta_table}")
+run_sql(f"CREATE TABLE iceberg.{meta_table} (id INTEGER, v VARCHAR)")
+run_sql(f"ALTER TABLE iceberg.{meta_table} ADD COLUMN note VARCHAR")
+run_sql(f"ALTER TABLE iceberg.{meta_table} RENAME COLUMN v TO v2")
 print(
     scalar(
         "SELECT 'meta_columns=' || CAST(COUNT(*) AS VARCHAR) "
         "FROM information_schema.columns "
         "WHERE table_catalog = 'floecat' AND table_schema = 'iceberg' "
-        "AND table_name = 'trino_meta_smoke' AND column_name IN ('id', 'v2', 'note')"
+        f"AND table_name = '{meta_table}' AND column_name IN ('id', 'v2', 'note')"
     )
 )
-run_sql("DROP TABLE iceberg.trino_meta_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_merge_smoke")
-run_sql("CREATE TABLE iceberg.trino_merge_smoke (id INTEGER, v VARCHAR)")
-run_sql("INSERT INTO iceberg.trino_merge_smoke VALUES (1, 'a'), (2, 'b')")
+run_sql(f"DROP TABLE iceberg.{meta_table}")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{merge_table}")
+run_sql(f"CREATE TABLE iceberg.{merge_table} (id INTEGER, v VARCHAR)")
+run_sql(f"INSERT INTO iceberg.{merge_table} VALUES (1, 'a'), (2, 'b')")
 run_sql(
-    "MERGE INTO iceberg.trino_merge_smoke t "
+    f"MERGE INTO iceberg.{merge_table} t "
     "USING (VALUES (2, 'b2'), (3, 'c')) s(id, v) "
     "ON t.id = s.id "
     "WHEN MATCHED THEN UPDATE SET v = s.v "
@@ -942,76 +1392,89 @@ print(
     scalar(
         "SELECT 'merge_after=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        "FROM iceberg.trino_merge_smoke"
+        f"FROM iceberg.{merge_table}"
     )
 )
-run_sql("DROP TABLE iceberg.trino_merge_smoke")
-run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
-run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
+run_sql(f"DROP TABLE iceberg.{merge_table}")
+run_sql(f"DROP TABLE IF EXISTS iceberg.{mutation_table}")
+run_sql(f"CREATE TABLE iceberg.{mutation_table} (id INTEGER, v VARCHAR)")
 print(
     scalar(
         "SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) "
-        "FROM iceberg.trino_mutation_smoke"
+        f"FROM iceberg.{mutation_table}"
     )
 )
-run_sql("INSERT INTO iceberg.trino_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+run_sql(f"INSERT INTO iceberg.{mutation_table} VALUES (1, 'a'), (2, 'b'), (3, 'c')")
 insert_snapshot_id = scalar(
     "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+    f"FROM iceberg.\"{mutation_table}$snapshots\" ORDER BY committed_at DESC LIMIT 1"
 )
 print(
     scalar(
         "SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        "FROM iceberg.trino_mutation_smoke"
+        f"FROM iceberg.{mutation_table}"
     )
 )
-run_sql("DELETE FROM iceberg.trino_mutation_smoke WHERE id = 2")
+run_sql(f"DELETE FROM iceberg.{mutation_table} WHERE id = 2")
 delete_snapshot_id = scalar(
     "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+    f"FROM iceberg.\"{mutation_table}$snapshots\" ORDER BY committed_at DESC LIMIT 1"
 )
 print(
     scalar(
         "SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        "FROM iceberg.trino_mutation_smoke"
+        f"FROM iceberg.{mutation_table}"
     )
 )
-run_sql("UPDATE iceberg.trino_mutation_smoke SET v = 'c2' WHERE id = 3")
+run_sql(f"UPDATE iceberg.{mutation_table} SET v = 'c2' WHERE id = 3")
 update_snapshot_id = scalar(
     "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
+    f"FROM iceberg.\"{mutation_table}$snapshots\" ORDER BY committed_at DESC LIMIT 1"
 )
 print(
     scalar(
         "SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        "FROM iceberg.trino_mutation_smoke"
+        f"FROM iceberg.{mutation_table}"
     )
 )
 print(
     scalar(
         "SELECT 'mut_tt_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        f"FROM iceberg.trino_mutation_smoke FOR VERSION AS OF {insert_snapshot_id}"
+        f"FROM iceberg.{mutation_table} FOR VERSION AS OF {insert_snapshot_id}"
     )
 )
 print(
     scalar(
         "SELECT 'mut_tt_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        f"FROM iceberg.trino_mutation_smoke FOR VERSION AS OF {delete_snapshot_id}"
+        f"FROM iceberg.{mutation_table} FOR VERSION AS OF {delete_snapshot_id}"
     )
 )
 print(
     scalar(
         "SELECT 'mut_tt_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
         "CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) "
-        f"FROM iceberg.trino_mutation_smoke FOR VERSION AS OF {update_snapshot_id}"
+        f"FROM iceberg.{mutation_table} FOR VERSION AS OF {update_snapshot_id}"
     )
 )
-run_sql("DROP TABLE iceberg.trino_mutation_smoke")
+run_sql(f"ALTER TABLE iceberg.{mutation_table} ADD COLUMN note VARCHAR")
+print(
+    scalar(
+        "SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
+        f"CAST(COUNT(note) AS VARCHAR) FROM iceberg.{mutation_table}"
+    )
+)
+run_sql(f"DROP TABLE iceberg.{mutation_table}")
+drop_mutation_ok = False
+try:
+    run_sql(f"SELECT COUNT(*) FROM iceberg.{mutation_table}")
+except Exception:
+    drop_mutation_ok = True
+print("drop_mutation_ok=" + ("1" if drop_mutation_ok else "0"))
 PY
 ); then
       echo "$trino_out"
@@ -1040,11 +1503,13 @@ PY
     assert_contains "$label trino time travel insert snapshot" "$trino_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label trino time travel delete snapshot" "$trino_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label trino time travel update snapshot" "$trino_out" "mut_tt_after_update=2,4,a,c2"
+    assert_contains "$label trino mutation alter" "$trino_out" "mut_after_alter=2,0"
+    assert_contains "$label trino mutation drop verification" "$trino_out" "drop_mutation_ok=1"
 
     if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] trino iceberg format-version matrix (v1,v2)"
       local trino_fmt_out
-      if ! trino_fmt_out=$(docker run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$(should_run_client duckdb && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1
+      if ! trino_fmt_out=$(docker_run --rm --network "${compose_project}_floecat" -e CHECK_DUCKDB_FORMAT_TABLES="$(should_run_client duckdb && echo true || echo false)" -i python:3.12-alpine python - <<'PY' 2>&1
 import json
 import os
 import urllib.request

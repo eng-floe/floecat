@@ -801,7 +801,12 @@ class TableResourceTest extends AbstractRestResourceTest {
                 .build());
     when(directoryStub.resolveTable(any())).thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
-    given().when().head("/v1/foo/namespaces/db/tables/missing").then().statusCode(404);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/db/tables/missing")
+        .then()
+        .statusCode(404)
+        .header("Content-Length", "0");
   }
 
   @Test

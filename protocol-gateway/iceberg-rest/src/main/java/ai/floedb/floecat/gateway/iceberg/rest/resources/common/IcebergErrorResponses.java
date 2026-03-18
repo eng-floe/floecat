@@ -69,6 +69,10 @@ public final class IcebergErrorResponses {
     return error(message, type, status.getStatusCode());
   }
 
+  public static Response statusOnly(Response.Status status) {
+    return Response.status(status).header("Content-Length", "0").build();
+  }
+
   public static Response grpcError(StatusRuntimeException exception) {
     var status = exception.getStatus();
     Response.Status httpStatus;

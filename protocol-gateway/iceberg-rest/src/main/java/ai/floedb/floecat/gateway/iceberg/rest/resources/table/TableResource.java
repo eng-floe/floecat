@@ -53,6 +53,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.Config;
@@ -135,8 +136,15 @@ public class TableResource {
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table) {
-    requestContextFactory.table(prefix, namespace, table);
-    return Response.noContent().build();
+    try {
+      requestContextFactory.table(prefix, namespace, table);
+      return Response.noContent().build();
+    } catch (WebApplicationException e) {
+      if (e.getResponse().getStatus() == Response.Status.NOT_FOUND.getStatusCode()) {
+        return IcebergErrorResponses.statusOnly(Response.Status.NOT_FOUND);
+      }
+      throw e;
+    }
   }
 
   @Path("/tables/{table}")

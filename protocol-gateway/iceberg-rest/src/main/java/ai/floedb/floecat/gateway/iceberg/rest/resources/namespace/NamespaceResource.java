@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.resources.namespace;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespacePropertiesRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.NamespaceRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
+import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.RequestContextFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.namespace.NamespaceCreateService;
@@ -37,6 +38,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -83,8 +85,15 @@ public class NamespaceResource {
   @HEAD
   public Response exists(
       @PathParam("prefix") String prefix, @PathParam("namespace") String namespace) {
-    NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
-    return namespaceInfoService.exists(namespaceContext);
+    try {
+      NamespaceRequestContext namespaceContext = requestContextFactory.namespace(prefix, namespace);
+      return namespaceInfoService.exists(namespaceContext);
+    } catch (WebApplicationException e) {
+      if (e.getResponse().getStatus() == Response.Status.NOT_FOUND.getStatusCode()) {
+        return IcebergErrorResponses.statusOnly(Response.Status.NOT_FOUND);
+      }
+      throw e;
+    }
   }
 
   @POST

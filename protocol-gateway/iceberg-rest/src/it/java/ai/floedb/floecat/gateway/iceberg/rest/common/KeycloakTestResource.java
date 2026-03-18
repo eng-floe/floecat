@@ -23,6 +23,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class KeycloakTestResource implements QuarkusTestResourceLifecycleManager {
   private static final String DEFAULT_ISSUER = "http://127.0.0.1:12221/realms/floecat";
@@ -30,37 +31,61 @@ public class KeycloakTestResource implements QuarkusTestResourceLifecycleManager
 
   @Override
   public Map<String, String> start() {
-    String issuer = System.getenv(ISSUER_ENV);
-    if (issuer == null || issuer.isBlank()) {
-      issuer = DEFAULT_ISSUER;
-    }
+    String issuer = issuer();
     String discovery = issuer.endsWith("/")
         ? issuer + ".well-known/openid-configuration"
         : issuer + "/.well-known/openid-configuration";
     try {
-      HttpRequest request =
-          HttpRequest.newBuilder()
-              .uri(URI.create(discovery))
-              .timeout(Duration.ofSeconds(5))
-              .GET()
-              .build();
-      HttpResponse<Void> response =
-          HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.discarding());
-      if (response.statusCode() / 100 != 2) {
-        throw new IllegalStateException(
-            "Keycloak discovery failed: " + response.statusCode() + " at " + discovery);
+      HttpClient client = HttpClient.newHttpClient();
+      Exception lastFailure = null;
+      for (int i = 0; i < 30; i++) {
+        try {
+          HttpRequest request =
+              HttpRequest.newBuilder()
+                  .uri(URI.create(discovery))
+                  .timeout(Duration.ofSeconds(5))
+                  .GET()
+                  .build();
+          HttpResponse<Void> response =
+              client.send(request, HttpResponse.BodyHandlers.discarding());
+          if (response.statusCode() / 100 == 2) {
+            return Map.of();
+          }
+          lastFailure =
+              new IllegalStateException(
+                  "Keycloak discovery failed: " + response.statusCode() + " at " + discovery);
+        } catch (Exception ex) {
+          lastFailure = ex;
+        }
+        TimeUnit.SECONDS.sleep(2);
       }
+      throw lastFailure;
     } catch (Exception ex) {
       throw new RuntimeException(
-          "Keycloak is not available for OIDC gateway ITs. Start it with `make oidc-up` "
+          "Keycloak is not available for OIDC gateway ITs. Start it with `make keycloak-up` "
               + "or set " + ISSUER_ENV + " to a reachable issuer.",
           ex);
     }
-    return Map.of();
   }
 
   @Override
   public void stop() {
     // no-op
+  }
+
+  public static String issuer() {
+    String issuer = System.getenv(ISSUER_ENV);
+    if (issuer == null || issuer.isBlank()) {
+      issuer = DEFAULT_ISSUER;
+    }
+    return issuer;
+  }
+
+  public static URI tokenEndpoint() {
+    String issuer = issuer();
+    return URI.create(
+        issuer.endsWith("/")
+            ? issuer + "protocol/openid-connect/token"
+            : issuer + "/protocol/openid-connect/token");
   }
 }

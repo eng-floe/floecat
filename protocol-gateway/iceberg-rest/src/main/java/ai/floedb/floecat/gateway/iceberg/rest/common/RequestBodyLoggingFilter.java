@@ -30,10 +30,15 @@ import org.jboss.logging.Logger;
 @Provider
 public class RequestBodyLoggingFilter implements ReaderInterceptor {
   private static final Logger LOG = Logger.getLogger(RequestBodyLoggingFilter.class);
-  private static final int MAX_BYTES = 64 * 1024;
+  private static final int DEFAULT_MAX_CHARS = 64 * 1024;
 
   @ConfigProperty(name = "floecat.rest.log-request-body", defaultValue = "false")
   boolean logRequestBody;
+
+  @ConfigProperty(
+      name = "floecat.rest.log-request-body-max-chars",
+      defaultValue = "" + DEFAULT_MAX_CHARS)
+  int maxChars;
 
   @Override
   public Object aroundReadFrom(ReaderInterceptorContext context) throws IOException {
@@ -48,10 +53,11 @@ public class RequestBodyLoggingFilter implements ReaderInterceptor {
     if (in == null) {
       return context.proceed();
     }
-    byte[] body = readUpTo(in, MAX_BYTES);
+    int maxBytes = Math.max(1, maxChars);
+    byte[] body = readUpTo(in, maxBytes);
     context.setInputStream(new ByteArrayInputStream(body));
     String payload = new String(body, StandardCharsets.UTF_8);
-    if (body.length >= MAX_BYTES) {
+    if (body.length >= maxBytes) {
       payload = payload + "...(truncated)";
     }
     LOG.infof("Request body payload=%s", payload);

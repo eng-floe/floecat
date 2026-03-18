@@ -135,7 +135,12 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveNamespace(any()))
         .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
 
-    given().when().head("/v1/foo/namespaces/missing").then().statusCode(404);
+    given()
+        .when()
+        .head("/v1/foo/namespaces/missing")
+        .then()
+        .statusCode(404)
+        .header("Content-Length", "0");
   }
 
   @Test
