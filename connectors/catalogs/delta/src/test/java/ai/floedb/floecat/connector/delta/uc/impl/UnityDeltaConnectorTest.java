@@ -441,4 +441,61 @@ class UnityDeltaConnectorTest {
         .cause()
         .hasMessageContaining("UC list returned HTTP 403");
   }
+
+  @Test
+  void extractConstraintPropertiesReadsMapStyleProperties() throws Exception {
+    var node =
+        DeltaConnector.M.readTree(
+            """
+            {
+              "name":"t",
+              "properties":{
+                "delta.constraints.ck_positive":"amount > 0",
+                "delta.appendOnly":"true"
+              }
+            }
+            """);
+
+    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
+
+    assertThat(props)
+        .containsEntry("delta.constraints.ck_positive", "amount > 0")
+        .containsEntry("delta.appendOnly", "true");
+  }
+
+  @Test
+  void extractConstraintPropertiesReadsTablePropertiesObjectStyle() throws Exception {
+    var node =
+        DeltaConnector.M.readTree(
+            """
+            {
+              "name":"t",
+              "table_properties":{
+                "delta.constraints.ck_nonzero":"amount <> 0"
+              }
+            }
+            """);
+
+    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
+
+    assertThat(props).containsEntry("delta.constraints.ck_nonzero", "amount <> 0");
+  }
+
+  @Test
+  void extractConstraintPropertiesReadsArrayStyleProperties() throws Exception {
+    var node =
+        DeltaConnector.M.readTree(
+            """
+            {
+              "name":"t",
+              "table_properties":[
+                {"key":"delta.constraints.ck_valid","value":"amount < 1000"}
+              ]
+            }
+            """);
+
+    Map<String, String> props = UnityDeltaConnector.extractConstraintProperties(node);
+
+    assertThat(props).containsEntry("delta.constraints.ck_valid", "amount < 1000");
+  }
 }

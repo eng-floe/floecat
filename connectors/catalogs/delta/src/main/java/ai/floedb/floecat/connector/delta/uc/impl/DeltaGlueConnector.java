@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import io.delta.kernel.engine.Engine;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 
@@ -56,6 +57,16 @@ final class DeltaGlueConnector extends DeltaConnector {
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
     return glueCatalog.storageLocation(namespaceFq, tableName);
+  }
+
+  @Override
+  protected Map<String, String> fallbackTablePropertiesForConstraints(
+      String namespaceFq, String tableName) {
+    try {
+      return glueCatalog.tableParameters(namespaceFq, tableName);
+    } catch (RuntimeException ignored) {
+      return Map.of();
+    }
   }
 
   @Override

@@ -17,8 +17,13 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -28,6 +33,7 @@ import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
+import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -36,13 +42,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.Table;
 import io.delta.kernel.engine.Engine;
+import io.delta.kernel.internal.SnapshotImpl;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
+import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -51,6 +60,7 @@ import org.apache.parquet.io.InputFile;
 abstract class DeltaConnector implements FloecatConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
+  private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";
 
   private final String connectorId;
   protected final Engine engine;
@@ -142,7 +152,67 @@ abstract class DeltaConnector implements FloecatConnector {
   @Override
   public void close() {}
 
+  @Override
+  public Optional<SnapshotConstraints> snapshotConstraints(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    if (snapshotId < 0) {
+      return Optional.empty();
+    }
+    final String tableRoot = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      return Optional.empty();
+    }
+    Map<String, String> tableProperties =
+        mergeConstraintProperties(
+            fallbackTablePropertiesForConstraints(namespaceFq, tableName),
+            snapshotTableProperties(snapshot));
+    List<ConstraintDefinition> constraints =
+        mapDeltaConstraints(snapshot.getSchema(), tableProperties);
+    if (constraints.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        SnapshotConstraints.newBuilder()
+            .setTableId(destinationTableId)
+            .setSnapshotId(snapshotId)
+            .addAllConstraints(constraints)
+            .build());
+  }
+
   protected abstract String storageLocation(String namespaceFq, String tableName);
+
+  /**
+   * Snapshot-scoped properties used for constraint extraction.
+   *
+   * <p>Default behavior reads Delta snapshot metadata when available.
+   */
+  protected Map<String, String> snapshotTableProperties(Snapshot snapshot) {
+    return extractTableProperties(snapshot);
+  }
+
+  /**
+   * Best-effort catalog-level fallback when snapshot metadata does not expose properties.
+   *
+   * <p>Returned values are merged with {@link #snapshotTableProperties(Snapshot)}. Snapshot
+   * properties win on key collisions.
+   */
+  protected Map<String, String> fallbackTablePropertiesForConstraints(
+      String namespaceFq, String tableName) {
+    return Map.of();
+  }
+
+  private static Map<String, String> mergeConstraintProperties(
+      Map<String, String> fallbackProperties, Map<String, String> snapshotProperties) {
+    if (fallbackProperties.isEmpty() && snapshotProperties.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> merged = new LinkedHashMap<>(fallbackProperties);
+    // Snapshot metadata is preferred when both sources expose the same property key.
+    merged.putAll(snapshotProperties);
+    return Map.copyOf(merged);
+  }
 
   protected Table loadTable(String tableRoot) {
     return Table.forPath(engine, tableRoot);
@@ -262,6 +332,31 @@ abstract class DeltaConnector implements FloecatConnector {
       versions.add(version);
     }
     return List.copyOf(versions);
+  }
+
+  static List<ConstraintDefinition> mapDeltaConstraints(StructType schema) {
+    return mapDeltaConstraints(schema, Map.of());
+  }
+
+  static List<ConstraintDefinition> mapDeltaConstraints(
+      StructType schema, Map<String, String> tableProperties) {
+    if (schema == null) {
+      return List.of();
+    }
+    // Compute path → ordinal map so NOT NULL constraints carry stable CID_PATH_ORDINAL column IDs,
+    // consistent with how column stats are keyed for Delta tables.
+    Map<String, Integer> ordinals = Map.of();
+    try {
+      ordinals =
+          LogicalSchemaMapper.buildColumnOrdinals(
+              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schema.toJson());
+    } catch (Exception ignored) {
+      // Fall back to columnId=0 if schema JSON conversion fails.
+    }
+    List<ConstraintDefinition> out = new ArrayList<>();
+    collectDeltaNotNullConstraints(schema.fields(), "", out, ordinals);
+    out.addAll(mapDeltaCheckConstraints(tableProperties));
+    return List.copyOf(out);
   }
 
   private SnapshotBundle buildSnapshotBundle(
@@ -403,5 +498,81 @@ abstract class DeltaConnector implements FloecatConnector {
               .build());
     }
     return builder.build();
+  }
+
+  private static void collectDeltaNotNullConstraints(
+      List<StructField> fields,
+      String prefix,
+      List<ConstraintDefinition> out,
+      Map<String, Integer> ordinals) {
+    for (StructField field : fields) {
+      String path = prefix.isEmpty() ? field.getName() : prefix + "." + field.getName();
+      boolean fieldIsNonNull = !field.isNullable();
+      boolean isStruct = field.getDataType() instanceof StructType;
+      if (fieldIsNonNull && !isStruct) {
+        int ordinal = ordinals.getOrDefault(path, 0);
+        long columnId =
+            (ordinal > 0)
+                ? ColumnIdComputer.compute(
+                    ColumnIdAlgorithm.CID_PATH_ORDINAL, path, null, ordinal, 0)
+                : 0L;
+        // Name encodes columnId when available (stable for column renames iff path+ordinal
+        // unchanged — same invariant as the column_id itself), or path for nested struct leaves
+        // where no stable ID is computable without catalog support.
+        String constraintName = (columnId != 0L) ? "nn_" + columnId : "nn_" + path;
+        out.add(
+            ConstraintDefinition.newBuilder()
+                .setName(constraintName)
+                .setType(ConstraintType.CT_NOT_NULL)
+                .setEnforcement(ConstraintEnforcement.CE_ENFORCED)
+                .addColumns(
+                    ConstraintColumnRef.newBuilder()
+                        .setColumnId(columnId)
+                        .setColumnName(path)
+                        .setOrdinal(1)
+                        .build())
+                .build());
+      }
+      if (isStruct && fieldIsNonNull) {
+        // Only descend into a struct when the struct itself is non-nullable; a non-nullable child
+        // inside a nullable parent struct is conditionally present, not flat-relational NOT NULL.
+        collectDeltaNotNullConstraints(
+            ((StructType) field.getDataType()).fields(), path, out, ordinals);
+      }
+    }
+  }
+
+  private static List<ConstraintDefinition> mapDeltaCheckConstraints(
+      Map<String, String> tableProperties) {
+    if (tableProperties == null || tableProperties.isEmpty()) {
+      return List.of();
+    }
+    List<ConstraintDefinition> checks = new ArrayList<>();
+    tableProperties.entrySet().stream()
+        .filter(e -> e.getKey() != null && e.getKey().startsWith(DELTA_CHECK_CONSTRAINT_PREFIX))
+        .sorted(Map.Entry.comparingByKey())
+        .forEach(
+            e -> {
+              String name = e.getKey().substring(DELTA_CHECK_CONSTRAINT_PREFIX.length()).trim();
+              String expression = e.getValue() == null ? "" : e.getValue().trim();
+              if (name.isEmpty() || expression.isEmpty()) {
+                return;
+              }
+              checks.add(
+                  ConstraintDefinition.newBuilder()
+                      .setName(name)
+                      .setType(ConstraintType.CT_CHECK)
+                      .setCheckExpression(expression)
+                      .setEnforcement(ConstraintEnforcement.CE_ENFORCED)
+                      .build());
+            });
+    return List.copyOf(checks);
+  }
+
+  private static Map<String, String> extractTableProperties(Snapshot snapshot) {
+    if (snapshot instanceof SnapshotImpl snapshotImpl && snapshotImpl.getMetadata() != null) {
+      return snapshotImpl.getMetadata().getConfiguration();
+    }
+    return Map.of();
   }
 }
