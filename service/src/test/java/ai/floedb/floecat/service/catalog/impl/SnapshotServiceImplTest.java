@@ -140,4 +140,55 @@ class SnapshotServiceImplTest {
 
     assertEquals("{\"type\":\"struct\"}", cap.getValue().getSchemaJson());
   }
+
+  @Test
+  void createSnapshot_preservesExplicitZeroParentSnapshotId() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsRepo = mock(StatsRepository.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.tableRepo.getById(eq(tableId)))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    when(pc.getAccountId()).thenReturn("acct");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    when(svc.snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
+    doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
+    when(svc.snapshotRepo.metaForSafe(eq(tableId), anyLong()))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1).build());
+
+    var spec =
+        SnapshotSpec.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(123L)
+            .setParentSnapshotId(0L)
+            .build();
+
+    svc.createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<Snapshot> cap = ArgumentCaptor.forClass(Snapshot.class);
+    verify(svc.snapshotRepo).create(cap.capture());
+    assertTrue(cap.getValue().hasParentSnapshotId());
+    assertEquals(0L, cap.getValue().getParentSnapshotId());
+  }
 }

@@ -269,8 +269,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           .setTableId(tableId)
                           .setSnapshotId(spec.getSnapshotId())
                           .setIngestedAt(tsNow)
-                          .setUpstreamCreatedAt(spec.getUpstreamCreatedAt())
-                          .setParentSnapshotId(spec.getParentSnapshotId());
+                          .setUpstreamCreatedAt(spec.getUpstreamCreatedAt());
+                  if (spec.hasParentSnapshotId()) {
+                    snapBuilder.setParentSnapshotId(spec.getParentSnapshotId());
+                  }
                   if (spec.hasSchemaJson() && !spec.getSchemaJson().isBlank()) {
                     snapBuilder.setSchemaJson(spec.getSchemaJson());
                   } else {
@@ -589,7 +591,12 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setUpstreamCreatedAt(spec.getUpstreamCreatedAt());
         }
-        case "parent_snapshot_id" -> builder.setParentSnapshotId(spec.getParentSnapshotId());
+        case "parent_snapshot_id" -> {
+          builder.clearParentSnapshotId();
+          if (spec.hasParentSnapshotId()) {
+            builder.setParentSnapshotId(spec.getParentSnapshotId());
+          }
+        }
         case "schema_json" -> {
           if (!spec.hasSchemaJson()) {
             throw GrpcErrors.invalidArgument(corr, SNAPSHOT_SCHEMA_JSON_REQUIRED, Map.of());
@@ -664,7 +671,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     canonicalResourceId(c, "table_id", spec.getTableId());
     c.scalar("snapshot_id", spec.getSnapshotId());
     canonicalTimestamp(c, "upstream_created_at", spec.getUpstreamCreatedAt());
-    c.scalar("parent_snapshot_id", spec.getParentSnapshotId());
+    if (spec.hasParentSnapshotId()) {
+      c.scalar("parent_snapshot_id", spec.getParentSnapshotId());
+    }
     if (spec.hasSchemaJson()) {
       c.scalar("schema_json", spec.getSchemaJson());
     }
