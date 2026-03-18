@@ -835,7 +835,7 @@ public class TransactionCommitService {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreated));
     }
     Long parentId = TableMappingUtil.asLong(snapshotMap.get("parent-snapshot-id"));
-    if (parentId != null && parentId > 0) {
+    if (parentId != null) {
       builder.setParentSnapshotId(parentId);
     }
     Long sequenceNumber = TableMappingUtil.asLong(snapshotMap.get("sequence-number"));
