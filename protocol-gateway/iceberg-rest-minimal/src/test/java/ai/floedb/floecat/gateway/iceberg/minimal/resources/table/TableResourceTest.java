@@ -53,6 +53,7 @@ import io.grpc.Status;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.SortOrder;
@@ -142,7 +143,7 @@ class TableResourceTest {
         .thenThrow(new IllegalArgumentException("metadata unavailable"));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null).getEntity();
+        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null, null).getEntity();
 
     assertEquals("s3://bucket/db/orders/metadata/00001.metadata.json", dto.metadataLocation());
     assertEquals(2, dto.metadata().get("format-version"));
@@ -201,7 +202,7 @@ class TableResourceTest {
     when(importer.loadTableMetadata("s3://bucket/db/orders/metadata/00001.metadata.json", Map.of()))
         .thenThrow(new IllegalArgumentException("metadata unavailable"));
 
-    Response response = resource.get("foo", "db", "orders", "refs", null);
+    Response response = resource.get("foo", "db", "orders", "refs", null, null);
 
     LoadTableResultDto dto = (LoadTableResultDto) response.getEntity();
     @SuppressWarnings("unchecked")
@@ -215,8 +216,83 @@ class TableResourceTest {
   }
 
   @Test
+  void returnsNotModifiedForMatchingEtag() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .putProperties(
+                "metadata-location", "s3://bucket/db/orders/metadata/00001.metadata.json")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(42L)
+            .putFormatMetadata(
+                "iceberg",
+                IcebergMetadata.newBuilder()
+                    .setFormatVersion(2)
+                    .setMetadataLocation("s3://bucket/db/orders/metadata/00001.metadata.json")
+                    .setCurrentSnapshotId(42L)
+                    .build()
+                    .toByteString())
+            .build();
+    when(backend.get("foo", List.of("db"), "orders")).thenReturn(table);
+    when(backend.currentSnapshot("foo", List.of("db"), "orders")).thenReturn(snapshot);
+    when(backend.listSnapshots("foo", List.of("db"), "orders"))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
+    when(importer.loadTableMetadata("s3://bucket/db/orders/metadata/00001.metadata.json", Map.of()))
+        .thenThrow(new IllegalArgumentException("metadata unavailable"));
+
+    Response response =
+        resource.get(
+            "foo",
+            "db",
+            "orders",
+            null,
+            null,
+            "W/\"s3://bucket/db/orders/metadata/00001.metadata.json|snapshots=all\"");
+
+    assertEquals(304, response.getStatus());
+  }
+
+  @Test
+  void rejectsWildcardIfNoneMatch() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .putProperties(
+                "metadata-location", "s3://bucket/db/orders/metadata/00001.metadata.json")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(42L)
+            .putFormatMetadata(
+                "iceberg",
+                IcebergMetadata.newBuilder()
+                    .setFormatVersion(2)
+                    .setMetadataLocation("s3://bucket/db/orders/metadata/00001.metadata.json")
+                    .setCurrentSnapshotId(42L)
+                    .build()
+                    .toByteString())
+            .build();
+    when(backend.get("foo", List.of("db"), "orders")).thenReturn(table);
+    when(backend.currentSnapshot("foo", List.of("db"), "orders")).thenReturn(snapshot);
+    when(backend.listSnapshots("foo", List.of("db"), "orders"))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
+    when(importer.loadTableMetadata("s3://bucket/db/orders/metadata/00001.metadata.json", Map.of()))
+        .thenThrow(new IllegalArgumentException("metadata unavailable"));
+
+    Response response = resource.get("foo", "db", "orders", null, null, "*");
+
+    assertEquals(400, response.getStatus());
+  }
+
+  @Test
   void rejectsInvalidSnapshotMode() {
-    Response response = resource.get("foo", "db", "orders", "bad", null);
+    Response response = resource.get("foo", "db", "orders", "bad", null, null);
 
     assertEquals(400, response.getStatus());
   }
@@ -244,7 +320,7 @@ class TableResourceTest {
                 Map.of()));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null).getEntity();
+        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null, null).getEntity();
 
     assertEquals("s3://bucket/db/orders/metadata/00001.metadata.json", dto.metadataLocation());
     assertEquals(2, dto.metadata().get("format-version"));
@@ -278,7 +354,7 @@ class TableResourceTest {
                 Map.of()));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null).getEntity();
+        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null, null).getEntity();
 
     assertEquals("s3://warehouse/db/orders", dto.metadata().get("location"));
   }
@@ -320,7 +396,7 @@ class TableResourceTest {
                 Map.of()));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null).getEntity();
+        (LoadTableResultDto) resource.get("foo", "db", "orders", null, null, null).getEntity();
 
     assertEquals(3, dto.metadata().get("last-column-id"));
   }
@@ -334,6 +410,7 @@ class TableResourceTest {
     Response response = resource.exists("foo", "db", "missing");
 
     assertEquals(404, response.getStatus());
+    assertEquals("0", response.getHeaderString("Content-Length"));
     assertNull(response.getEntity());
   }
 
@@ -366,7 +443,8 @@ class TableResourceTest {
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of(s2)));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "delta_orders", null, null).getEntity();
+        (LoadTableResultDto)
+            resource.get("foo", "db", "delta_orders", null, null, null).getEntity();
 
     assertEquals(
         "floe+delta://cat:db:delta_orders/metadata/102.metadata.json", dto.metadataLocation());
@@ -407,7 +485,7 @@ class TableResourceTest {
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of(snapshot)));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "delta_zero", null, null).getEntity();
+        (LoadTableResultDto) resource.get("foo", "db", "delta_zero", null, null, null).getEntity();
 
     assertEquals(0L, dto.metadata().get("current-snapshot-id"));
     @SuppressWarnings("unchecked")
@@ -452,7 +530,8 @@ class TableResourceTest {
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of(snapshot)));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "delta_parent_zero", null, null).getEntity();
+        (LoadTableResultDto)
+            resource.get("foo", "db", "delta_parent_zero", null, null, null).getEntity();
 
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> snapshots =
@@ -494,7 +573,8 @@ class TableResourceTest {
         .thenReturn(new DeltaIcebergMetadataService.DeltaLoadResult(metadata, List.of(snapshot)));
 
     LoadTableResultDto dto =
-        (LoadTableResultDto) resource.get("foo", "db", "delta_summary", null, null).getEntity();
+        (LoadTableResultDto)
+            resource.get("foo", "db", "delta_summary", null, null, null).getEntity();
 
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> snapshots =
@@ -536,6 +616,7 @@ class TableResourceTest {
                 .create(
                     "foo",
                     "db",
+                    null,
                     "idem-1",
                     new TableCreateRequest(
                         "orders",
@@ -595,6 +676,7 @@ class TableResourceTest {
                 .create(
                     "foo",
                     "db",
+                    null,
                     "idem-1",
                     new TableCreateRequest(
                         "orders", schema, null, null, null, Map.of("format-version", "1"), false))
@@ -653,6 +735,7 @@ class TableResourceTest {
                 .create(
                     "foo",
                     "db",
+                    null,
                     "idem-1",
                     new TableCreateRequest(
                         "orders",
@@ -670,6 +753,110 @@ class TableResourceTest {
     assertEquals("s3://floecat/db/orders/metadata", dto.config().get("write.metadata.path"));
     assertEquals("uuid-123", dto.metadata().get("table-uuid"));
     assertNull(dto.metadata().get("current-snapshot-id"));
+  }
+
+  @Test
+  void loadReturnsStorageCredentialsWhenRequested() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setDisplayName("orders")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .putProperties(
+                "metadata-location", "s3://bucket/db/orders/metadata/00001.metadata.json")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(42L)
+            .putFormatMetadata(
+                "iceberg",
+                IcebergMetadata.newBuilder()
+                    .setFormatVersion(2)
+                    .setMetadataLocation("s3://bucket/db/orders/metadata/00001.metadata.json")
+                    .setCurrentSnapshotId(42L)
+                    .build()
+                    .toByteString())
+            .build();
+    when(backend.get("foo", List.of("db"), "orders")).thenReturn(table);
+    when(backend.currentSnapshot("foo", List.of("db"), "orders")).thenReturn(snapshot);
+    when(backend.listSnapshots("foo", List.of("db"), "orders"))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(snapshot).build());
+    when(importer.loadTableMetadata("s3://bucket/db/orders/metadata/00001.metadata.json", Map.of()))
+        .thenThrow(new IllegalArgumentException("metadata unavailable"));
+    stubStorageCredentials();
+
+    LoadTableResultDto dto =
+        (LoadTableResultDto)
+            resource.get("foo", "db", "orders", null, "vended-credentials", null).getEntity();
+
+    assertEquals(1, dto.storageCredentials().size());
+    assertEquals("*", dto.storageCredentials().getFirst().prefix());
+    assertEquals("s3", dto.storageCredentials().getFirst().config().get("type"));
+  }
+
+  @Test
+  void createReturnsStorageCredentialsWhenRequested() {
+    stubStorageCredentials();
+    when(importer.buildInitialMetadata(
+            eq(
+                new TableCreateRequest(
+                    "orders",
+                    JsonNodeFactory.instance.objectNode().put("schema-id", 7).putArray("fields"),
+                    null,
+                    null,
+                    "s3://warehouse/db/orders",
+                    Map.of(),
+                    true)),
+            eq("s3://warehouse/db/orders/metadata/00000-stage.metadata.json")))
+        .thenReturn(
+            new TableMetadataImportService.ImportedMetadata(
+                "{\"type\":\"struct\",\"schema-id\":7,\"fields\":[]}",
+                Map.of(
+                    "metadata-location",
+                    "s3://warehouse/db/orders/metadata/00000-stage.metadata.json",
+                    "table-uuid",
+                    "uuid-123"),
+                "s3://warehouse/db/orders",
+                IcebergMetadata.newBuilder()
+                    .setFormatVersion(2)
+                    .setTableUuid("uuid-123")
+                    .setMetadataLocation(
+                        "s3://warehouse/db/orders/metadata/00000-stage.metadata.json")
+                    .setCurrentSchemaId(7)
+                    .build(),
+                null,
+                List.of()));
+
+    LoadTableResultDto dto =
+        (LoadTableResultDto)
+            resource
+                .create(
+                    "foo",
+                    "db",
+                    "vended-credentials",
+                    null,
+                    new TableCreateRequest(
+                        "orders",
+                        JsonNodeFactory.instance
+                            .objectNode()
+                            .put("schema-id", 7)
+                            .putArray("fields"),
+                        null,
+                        null,
+                        "s3://warehouse/db/orders",
+                        Map.of(),
+                        true))
+                .getEntity();
+
+    assertEquals(1, dto.storageCredentials().size());
+    assertEquals("*", dto.storageCredentials().getFirst().prefix());
+  }
+
+  @Test
+  void loadRejectsUnsupportedAccessDelegationMode() {
+    Response response = resource.get("foo", "db", "orders", null, "unknown", null);
+
+    assertEquals(400, response.getStatus());
   }
 
   @Test
@@ -733,10 +920,17 @@ class TableResourceTest {
 
   @Test
   void metricsReturns204ForValidPayload() {
+    when(backend.get("foo", List.of("db"), "orders"))
+        .thenReturn(
+            Table.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+                .setDisplayName("orders")
+                .build());
     assertEquals(
         204,
         resource
             .publishMetrics(
+                "foo",
                 "db",
                 "orders",
                 new MetricsReportRequest(
@@ -756,10 +950,17 @@ class TableResourceTest {
 
   @Test
   void metricsValidatesRequiredFields() {
+    when(backend.get("foo", List.of("db"), "orders"))
+        .thenReturn(
+            Table.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+                .setDisplayName("orders")
+                .build());
     assertEquals(
         400,
         resource
             .publishMetrics(
+                "foo",
                 "db",
                 "orders",
                 new MetricsReportRequest(
@@ -769,10 +970,17 @@ class TableResourceTest {
 
   @Test
   void metricsAcceptsCommitReportShape() {
+    when(backend.get("foo", List.of("db"), "orders"))
+        .thenReturn(
+            Table.newBuilder()
+                .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+                .setDisplayName("orders")
+                .build());
     assertEquals(
         204,
         resource
             .publishMetrics(
+                "foo",
                 "db",
                 "orders",
                 new MetricsReportRequest(
@@ -788,6 +996,33 @@ class TableResourceTest {
                     Map.of(),
                     Map.of()))
             .getStatus());
+  }
+
+  @Test
+  void metricsReturnsNotFoundWhenTableIsMissing() {
+    when(backend.get("foo", List.of("db"), "orders"))
+        .thenThrow(
+            Status.NOT_FOUND.withDescription("Table db.orders not found").asRuntimeException());
+
+    Response response =
+        resource.publishMetrics(
+            "foo",
+            "db",
+            "orders",
+            new MetricsReportRequest(
+                "commit-report",
+                "orders",
+                42L,
+                3L,
+                "append",
+                null,
+                null,
+                null,
+                null,
+                Map.of(),
+                Map.of()));
+
+    assertEquals(404, response.getStatus());
   }
 
   @Test
@@ -808,6 +1043,20 @@ class TableResourceTest {
     assertEquals(204, resource.delete("foo", "db", "orders", null, "idem-1").getStatus());
     verify(connectorCleanupService).deleteManagedConnector(existing);
     verify(backend).delete("foo", List.of("db"), "orders");
+  }
+
+  private void stubStorageCredentials() {
+    MinimalGatewayConfig.StorageCredentialConfig storageCredential =
+        Mockito.mock(MinimalGatewayConfig.StorageCredentialConfig.class);
+    when(config.storageCredential()).thenReturn(Optional.of(storageCredential));
+    when(storageCredential.scope()).thenReturn(Optional.of("*"));
+    when(storageCredential.properties())
+        .thenReturn(
+            Map.of(
+                "type", "s3",
+                "s3.access-key-id", "test",
+                "s3.secret-access-key", "secret",
+                "s3.region", "us-east-1"));
   }
 
   @Test
@@ -832,7 +1081,7 @@ class TableResourceTest {
     when(backend.get(any(), any(), any()))
         .thenThrow(Status.NOT_FOUND.withDescription("missing").asRuntimeException());
 
-    Response response = resource.get("foo", "db", "missing", null, null);
+    Response response = resource.get("foo", "db", "missing", null, null, null);
 
     assertEquals(404, response.getStatus());
     @SuppressWarnings("unchecked")

@@ -225,6 +225,7 @@ class ViewResourceTest {
     Response response = resource.exists("foo", "db", "missing");
 
     assertEquals(404, response.getStatus());
+    assertEquals("0", response.getHeaderString("Content-Length"));
     assertNull(response.getEntity());
   }
 

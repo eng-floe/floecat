@@ -243,10 +243,20 @@ public class IcebergMetadataCommitService {
       } else if ("assert-ref-snapshot-id".equals(type)) {
         String refName = stringValue(requirement.get("ref"));
         Long expected = longValue(requirement.get("snapshot-id"));
+        if (refName == null || refName.isBlank()) {
+          throw Status.INVALID_ARGUMENT
+              .withDescription("assert-ref-snapshot-id requires ref")
+              .asRuntimeException();
+        }
+        if (expected == null) {
+          continue;
+        }
         SnapshotRef ref = refName == null ? null : metadata.ref(refName);
         Long actual = ref == null ? null : ref.snapshotId();
-        if ((expected == null && actual != null)
-            || (expected != null && !expected.equals(actual))) {
+        if (actual == null) {
+          continue;
+        }
+        if (!expected.equals(actual)) {
           throw Status.FAILED_PRECONDITION
               .withDescription("assert-ref-snapshot-id failed for ref " + refName)
               .asRuntimeException();
@@ -259,11 +269,117 @@ public class IcebergMetadataCommitService {
     TableMetadata working = metadata;
     Long latestAddedSnapshotId = null;
     boolean explicitMainRefMutation = false;
-    for (Map<String, Object> update : updates) {
+    List<Long> deferredSnapshotRemovals = new ArrayList<>();
+    for (int index = 0; index < updates.size(); index++) {
+      Map<String, Object> update = updates.get(index);
       if (update == null) {
         continue;
       }
       String action = stringValue(update.get("action"));
+      if (isDeferredSnapshotAction(action)) {
+        org.apache.iceberg.TableMetadata.Builder builder = TableMetadata.buildFrom(working);
+        long stagedLastSequenceNumber = working.lastSequenceNumber();
+        while (index < updates.size()) {
+          Map<String, Object> snapshotUpdate = updates.get(index);
+          if (snapshotUpdate == null) {
+            index++;
+            continue;
+          }
+          String snapshotAction = stringValue(snapshotUpdate.get("action"));
+          if (!isDeferredSnapshotAction(snapshotAction)) {
+            index--;
+            break;
+          }
+          switch (snapshotAction) {
+            case "add-snapshot" -> {
+              Map<String, Object> snapshotMap = objectMap(snapshotUpdate.get("snapshot"));
+              Long requestedSequenceNumber =
+                  snapshotMap == null ? null : longValue(snapshotMap.get("sequence-number"));
+              boolean hasExistingSnapshots =
+                  working.currentSnapshot() != null || !working.snapshots().isEmpty();
+              long nextSequenceNumber =
+                  requestedSequenceNumber != null && requestedSequenceNumber >= 0
+                      ? hasExistingSnapshots && working.formatVersion() > 1
+                          ? Math.max(working.lastSequenceNumber() + 1L, requestedSequenceNumber)
+                          : requestedSequenceNumber
+                      : working.formatVersion() <= 1
+                          ? 0L
+                          : Math.max(1L, stagedLastSequenceNumber + 1L);
+              if (working.formatVersion() > 1 && nextSequenceNumber > stagedLastSequenceNumber) {
+                Map<String, String> properties = new LinkedHashMap<>(working.properties());
+                properties.put("last-sequence-number", Long.toString(nextSequenceNumber));
+                builder.setProperties(properties);
+                stagedLastSequenceNumber = nextSequenceNumber;
+              }
+              Map<String, Object> effectiveSnapshotMap = snapshotMap;
+              if (snapshotMap != null
+                  && requestedSequenceNumber != null
+                  && requestedSequenceNumber != nextSequenceNumber) {
+                effectiveSnapshotMap = new LinkedHashMap<>(snapshotMap);
+                effectiveSnapshotMap.put("sequence-number", nextSequenceNumber);
+              }
+              org.apache.iceberg.Snapshot snapshot =
+                  parseSnapshot(effectiveSnapshotMap, nextSequenceNumber);
+              builder.addSnapshot(snapshot);
+              latestAddedSnapshotId = snapshot.snapshotId();
+            }
+            case "set-statistics",
+                "remove-statistics",
+                "set-partition-statistics",
+                "remove-partition-statistics" -> {
+              // Statistics sidecars are optional for correctness. Minimal accepts these updates
+              // for client compatibility but does not persist them separately.
+            }
+            case "remove-snapshots" -> {
+              List<Long> snapshotIds = longList(snapshotUpdate.get("snapshot-ids"));
+              if (snapshotIds.isEmpty()) {
+                throw Status.INVALID_ARGUMENT
+                    .withDescription("remove-snapshots requires snapshot-ids")
+                    .asRuntimeException();
+              }
+              deferredSnapshotRemovals.addAll(snapshotIds);
+            }
+            case "set-snapshot-ref" -> {
+              String refName = stringValue(snapshotUpdate.get("ref-name"));
+              if (refName == null || refName.isBlank()) {
+                refName = stringValue(snapshotUpdate.get("ref"));
+              }
+              if (refName == null || refName.isBlank()) {
+                throw Status.INVALID_ARGUMENT
+                    .withDescription("set-snapshot-ref requires ref")
+                    .asRuntimeException();
+              }
+              SnapshotRef ref = buildRef(snapshotUpdate);
+              builder.setRef(refName, ref);
+              if (SnapshotRef.MAIN_BRANCH.equals(refName)) {
+                explicitMainRefMutation = true;
+              }
+            }
+            case "remove-snapshot-ref" -> {
+              String refName = stringValue(snapshotUpdate.get("ref-name"));
+              if (refName == null || refName.isBlank()) {
+                refName = stringValue(snapshotUpdate.get("ref"));
+              }
+              if (refName == null || refName.isBlank()) {
+                throw Status.INVALID_ARGUMENT
+                    .withDescription("remove-snapshot-ref requires ref")
+                    .asRuntimeException();
+              }
+              builder.removeRef(refName);
+              if (SnapshotRef.MAIN_BRANCH.equals(refName)) {
+                explicitMainRefMutation = true;
+              }
+            }
+            default ->
+                throw Status.INVALID_ARGUMENT
+                    .withDescription("unsupported commit update action: " + snapshotAction)
+                    .asRuntimeException();
+          }
+          index++;
+        }
+        working = builder.build();
+        continue;
+      }
       org.apache.iceberg.TableMetadata.Builder builder = TableMetadata.buildFrom(working);
       switch (action) {
         case "set-properties" -> builder.setProperties(stringMap(update.get("updates")));
@@ -293,7 +409,14 @@ public class IcebergMetadataCommitService {
                 .withDescription("upgrade-format-version requires format-version")
                 .asRuntimeException();
           }
-          builder.upgradeFormatVersion(version);
+          if (version > working.formatVersion()) {
+            builder.upgradeFormatVersion(version);
+          } else if (version < working.formatVersion()
+              && working.currentSnapshot() == null
+              && working.snapshots().isEmpty()) {
+            working = importService.rebuildEmptyMetadataAtFormatVersion(working, version);
+            builder = TableMetadata.buildFrom(working);
+          }
         }
         case "add-schema" -> builder.addSchema(parseSchema(update.get("schema")));
         case "set-current-schema" ->
@@ -308,55 +431,11 @@ public class IcebergMetadataCommitService {
             builder.addSortOrder(parseSortOrder(working.schema(), update.get("sort-order")));
         case "set-default-sort-order" ->
             builder.setDefaultSortOrder(resolveSortOrderId(working, update.get("sort-order-id")));
-        case "add-snapshot" -> {
-          org.apache.iceberg.Snapshot snapshot = parseSnapshot(update.get("snapshot"));
-          builder.addSnapshot(snapshot);
-          latestAddedSnapshotId = snapshot.snapshotId();
-        }
-        case "set-statistics",
-            "remove-statistics",
-            "set-partition-statistics",
-            "remove-partition-statistics" -> {
-          // Statistics sidecars are optional for correctness. Minimal accepts these updates
-          // for client compatibility but does not persist them separately.
-        }
         case "add-encryption-key" ->
             builder.addEncryptionKey(buildEncryptionKey(update.get("encryption-key")));
         case "remove-encryption-key" -> builder.removeEncryptionKey(requireKeyId(update));
         case "remove-schemas" ->
             invokeBuilder(builder, "removeSchemas", intList(update.get("schema-ids")));
-        case "remove-snapshots" -> builder.removeSnapshots(longList(update.get("snapshot-ids")));
-        case "set-snapshot-ref" -> {
-          String refName = stringValue(update.get("ref-name"));
-          if (refName == null || refName.isBlank()) {
-            refName = stringValue(update.get("ref"));
-          }
-          if (refName == null || refName.isBlank()) {
-            throw Status.INVALID_ARGUMENT
-                .withDescription("set-snapshot-ref requires ref")
-                .asRuntimeException();
-          }
-          SnapshotRef ref = buildRef(update);
-          builder.setRef(refName, ref);
-          if (SnapshotRef.MAIN_BRANCH.equals(refName)) {
-            explicitMainRefMutation = true;
-          }
-        }
-        case "remove-snapshot-ref" -> {
-          String refName = stringValue(update.get("ref-name"));
-          if (refName == null || refName.isBlank()) {
-            refName = stringValue(update.get("ref"));
-          }
-          if (refName == null || refName.isBlank()) {
-            throw Status.INVALID_ARGUMENT
-                .withDescription("remove-snapshot-ref requires ref")
-                .asRuntimeException();
-          }
-          builder.removeRef(refName);
-          if (SnapshotRef.MAIN_BRANCH.equals(refName)) {
-            explicitMainRefMutation = true;
-          }
-        }
         default ->
             throw Status.INVALID_ARGUMENT
                 .withDescription("unsupported commit update action: " + action)
@@ -370,7 +449,24 @@ public class IcebergMetadataCommitService {
               .setBranchSnapshot(latestAddedSnapshotId, SnapshotRef.MAIN_BRANCH)
               .build();
     }
+    if (!deferredSnapshotRemovals.isEmpty()) {
+      working =
+          TableMetadata.buildFrom(working)
+              .removeSnapshots(List.copyOf(deferredSnapshotRemovals))
+              .build();
+    }
     return working;
+  }
+
+  private boolean isDeferredSnapshotAction(String action) {
+    return "add-snapshot".equals(action)
+        || "set-statistics".equals(action)
+        || "remove-statistics".equals(action)
+        || "set-partition-statistics".equals(action)
+        || "remove-partition-statistics".equals(action)
+        || "remove-snapshots".equals(action)
+        || "set-snapshot-ref".equals(action)
+        || "remove-snapshot-ref".equals(action);
   }
 
   private TableMetadata bootstrapCreateMetadata(List<Map<String, Object>> updates) {
@@ -946,7 +1042,7 @@ public class IcebergMetadataCommitService {
     }
   }
 
-  private org.apache.iceberg.Snapshot parseSnapshot(Object value) {
+  private org.apache.iceberg.Snapshot parseSnapshot(Object value, long defaultSequenceNumber) {
     Map<String, Object> snapshot = objectMap(value);
     if (snapshot == null || snapshot.isEmpty()) {
       throw Status.INVALID_ARGUMENT
@@ -954,7 +1050,10 @@ public class IcebergMetadataCommitService {
           .asRuntimeException();
     }
     Map<String, Object> sanitized = new LinkedHashMap<>();
-    copyIfPresent(snapshot, sanitized, "sequence-number");
+    Long sequenceNumber = longValue(snapshot.get("sequence-number"));
+    sanitized.put(
+        "sequence-number",
+        sequenceNumber == null || sequenceNumber <= 0 ? defaultSequenceNumber : sequenceNumber);
     copyIfPresent(snapshot, sanitized, "snapshot-id");
     copyIfPresent(snapshot, sanitized, "parent-snapshot-id");
     copyIfPresent(snapshot, sanitized, "timestamp-ms");

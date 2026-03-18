@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.request.TableCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.TableMetadataImportService;
@@ -89,11 +90,14 @@ class TableCommitConcurrencyResourceTest {
                 new IcebergMetadataCommitService.PlannedCommit(
                     ((Table) invocation.getArgument(0)).toBuilder().putProperties("k", "v").build(),
                     List.of()));
+    AccountContext accountContext = Mockito.mock(AccountContext.class);
+    when(accountContext.getAccountId()).thenReturn("acct-1");
 
     TransactionCommitService txService =
         new TransactionCommitService(
             backend,
             testConfig(),
+            accountContext,
             tableFormatSupport,
             metadataCommitService,
             connectorProvisioningService,
@@ -149,6 +153,21 @@ class TableCommitConcurrencyResourceTest {
       }
 
       @Override
+      public String authMode() {
+        return "dev";
+      }
+
+      @Override
+      public String authHeader() {
+        return "authorization";
+      }
+
+      @Override
+      public String accountClaim() {
+        return "account_id";
+      }
+
+      @Override
       public Optional<String> defaultAccountId() {
         return Optional.of("acct-1");
       }
@@ -161,6 +180,11 @@ class TableCommitConcurrencyResourceTest {
       @Override
       public Optional<String> defaultPrefix() {
         return Optional.of("examples");
+      }
+
+      @Override
+      public boolean devAllowMissingAuth() {
+        return false;
       }
 
       @Override

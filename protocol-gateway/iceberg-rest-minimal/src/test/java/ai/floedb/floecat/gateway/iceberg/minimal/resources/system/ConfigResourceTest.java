@@ -74,6 +74,21 @@ class ConfigResourceTest {
     }
 
     @Override
+    public String authMode() {
+      return "dev";
+    }
+
+    @Override
+    public String authHeader() {
+      return "authorization";
+    }
+
+    @Override
+    public String accountClaim() {
+      return "account_id";
+    }
+
+    @Override
     public java.util.Optional<String> defaultAccountId() {
       return java.util.Optional.of("account1");
     }
@@ -86,6 +101,11 @@ class ConfigResourceTest {
     @Override
     public java.util.Optional<String> defaultPrefix() {
       return java.util.Optional.of("examples");
+    }
+
+    @Override
+    public boolean devAllowMissingAuth() {
+      return false;
     }
 
     @Override

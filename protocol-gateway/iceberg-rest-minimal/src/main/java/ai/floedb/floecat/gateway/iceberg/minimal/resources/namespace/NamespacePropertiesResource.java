@@ -60,7 +60,7 @@ public class NamespacePropertiesResource {
     TreeSet<String> conflicts = new TreeSet<>(removals);
     conflicts.retainAll(updates.keySet());
     if (!conflicts.isEmpty()) {
-      return IcebergErrorResponses.validation("A key cannot be in both removals and updates");
+      return IcebergErrorResponses.unprocessable("A key cannot be in both removals and updates");
     }
     try {
       List<String> namespacePath = NamespacePaths.split(namespace);

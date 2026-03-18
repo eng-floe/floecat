@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.minimal.resources.common.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
@@ -97,6 +98,7 @@ public class TransactionCommitService {
 
   private final TransactionBackend backend;
   private final MinimalGatewayConfig config;
+  private final AccountContext accountContext;
   private final TableFormatSupport tableFormatSupport;
   private final IcebergMetadataCommitService metadataCommitService;
   private final ConnectorProvisioningService connectorProvisioningService;
@@ -107,6 +109,7 @@ public class TransactionCommitService {
   public TransactionCommitService(
       TransactionBackend backend,
       MinimalGatewayConfig config,
+      AccountContext accountContext,
       TableFormatSupport tableFormatSupport,
       IcebergMetadataCommitService metadataCommitService,
       ConnectorProvisioningService connectorProvisioningService,
@@ -114,6 +117,7 @@ public class TransactionCommitService {
       TableCommitSideEffectService sideEffectService) {
     this.backend = backend;
     this.config = config;
+    this.accountContext = accountContext;
     this.tableFormatSupport = tableFormatSupport;
     this.metadataCommitService = metadataCommitService;
     this.connectorProvisioningService = connectorProvisioningService;
@@ -122,6 +126,10 @@ public class TransactionCommitService {
   }
 
   public Response commit(String prefix, String idempotencyKey, TransactionCommitRequest request) {
+    String accountId = requestAccountId();
+    if (accountId == null) {
+      return IcebergErrorResponses.validation("account context is required");
+    }
     if (request == null || request.tableChanges() == null || request.tableChanges().isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
@@ -136,7 +144,6 @@ public class TransactionCommitService {
     String txId = null;
     try {
       ResourceId catalogId = backend.resolveCatalog(prefix).getResourceId();
-      String replayAccountId = catalogId == null ? null : catalogId.getAccountId();
       var begun = backend.beginTransaction(beginKey, requestHash, transactionLifetime());
       txId = begun.getTransaction().getTxId();
       var current = backend.getTransaction(txId);
@@ -165,20 +172,36 @@ public class TransactionCommitService {
         return IcebergErrorResponses.commitStateUnknown("transaction state is unknown");
       }
       if (state == TransactionState.TS_APPLIED) {
-        validateReplayState(
-            prefix,
-            loadReplayValidationEntries(
-                prefix, catalogId, replayAccountId, txId, requestHash, request.tableChanges()),
-            request.tableChanges());
-        processPostCommitTasks(
-            txId,
-            loadReplayPostCommitTasks(
-                prefix, catalogId, replayAccountId, txId, requestHash, request.tableChanges()));
+        try {
+          validateReplayState(
+              prefix,
+              loadReplayValidationEntries(
+                  prefix, catalogId, accountId, txId, requestHash, request.tableChanges()),
+              request.tableChanges());
+          processPostCommitTasks(
+              txId,
+              loadReplayPostCommitTasks(
+                  prefix, catalogId, accountId, txId, requestHash, request.tableChanges()));
+        } catch (StatusRuntimeException exception) {
+          if (!isMissingReplayState(exception)) {
+            throw exception;
+          }
+          LOG.infof(
+              "Applied transaction replay state missing; accepting txId=%s prefix=%s",
+              txId, prefix);
+        }
         return Response.noContent().build();
       }
 
       PlannedTransaction planned =
-          planChanges(prefix, catalogId, txId, txCreatedAtMs, requestHash, request.tableChanges());
+          planChanges(
+              prefix,
+              catalogId,
+              accountId,
+              txId,
+              txCreatedAtMs,
+              requestHash,
+              request.tableChanges());
       List<TxChange> changes = planned.changes();
       LOG.infof(
           "Prepared transaction plan prefix=%s txId=%s tableChanges=%d txChanges=%d state=%s",
@@ -241,6 +264,10 @@ public class TransactionCommitService {
       TableMetadataImportService.ImportedMetadata imported,
       Map<String, String> mergedProperties,
       boolean overwrite) {
+    String accountId = requestAccountId();
+    if (accountId == null) {
+      return IcebergErrorResponses.validation("account context is required");
+    }
     if (namespacePath == null || namespacePath.isEmpty()) {
       return IcebergErrorResponses.validation("namespace is required");
     }
@@ -258,7 +285,6 @@ public class TransactionCommitService {
     String txId = null;
     try {
       ResourceId catalogId = backend.resolveCatalog(prefix).getResourceId();
-      String replayAccountId = catalogId == null ? null : catalogId.getAccountId();
       var begun = backend.beginTransaction(beginKey, requestHash, transactionLifetime());
       txId = begun.getTransaction().getTxId();
       var current = backend.getTransaction(txId);
@@ -281,16 +307,25 @@ public class TransactionCommitService {
             "transaction request does not match existing transaction payload");
       }
       if (state == TransactionState.TS_APPLIED) {
-        validateImportedReplayState(
-            prefix,
-            loadImportedReplayValidationEntries(
-                prefix, catalogId, replayAccountId, txId, requestHash, namespacePath, tableName),
-            namespacePath,
-            tableName.trim());
-        processPostCommitTasks(
-            txId,
-            loadImportedReplayPostCommitTasks(
-                prefix, catalogId, replayAccountId, txId, requestHash, namespacePath, tableName));
+        try {
+          validateImportedReplayState(
+              prefix,
+              loadImportedReplayValidationEntries(
+                  prefix, catalogId, accountId, txId, requestHash, namespacePath, tableName),
+              namespacePath,
+              tableName.trim());
+          processPostCommitTasks(
+              txId,
+              loadImportedReplayPostCommitTasks(
+                  prefix, catalogId, accountId, txId, requestHash, namespacePath, tableName));
+        } catch (StatusRuntimeException exception) {
+          if (!isMissingReplayState(exception)) {
+            throw exception;
+          }
+          LOG.infof(
+              "Applied imported registration replay state missing; accepting txId=%s prefix=%s",
+              txId, prefix);
+        }
         return Response.noContent().build();
       }
       if (state == TransactionState.TS_APPLY_FAILED_CONFLICT) {
@@ -304,6 +339,7 @@ public class TransactionCommitService {
           planImportedRegistration(
               prefix,
               catalogId,
+              accountId,
               txId,
               txCreatedAtMs,
               requestHash,
@@ -350,13 +386,13 @@ public class TransactionCommitService {
   private PlannedTransaction planChanges(
       String prefix,
       ResourceId catalogId,
+      String accountId,
       String txId,
       long txCreatedAtMs,
       String requestHash,
       List<TransactionCommitRequest.TableChange> tableChanges) {
     List<TxChange> out = new ArrayList<>();
     List<PostCommitTask> postCommitTasks = new ArrayList<>();
-    String replayAccountId = catalogId == null ? null : catalogId.getAccountId();
     for (TransactionCommitRequest.TableChange change : tableChanges) {
       NormalizedIdentifier identifier = validateChange(change);
       List<String> namespacePath = identifier.namespacePath();
@@ -393,10 +429,6 @@ public class TransactionCommitService {
             existingResponse.hasMeta() ? existingResponse.getMeta().getPointerVersion() : 0L;
         tableId = currentTable.getResourceId();
       } else {
-        String accountId =
-            !namespaceId.getAccountId().isBlank()
-                ? namespaceId.getAccountId()
-                : catalogId.getAccountId();
         tableId =
             atomicCreateTableId(accountId, txId, catalogId, namespaceId, namespacePath, tableName);
         currentTable =
@@ -408,6 +440,21 @@ public class TransactionCommitService {
         throw Status.ABORTED
             .withDescription(
                 "Delta compatibility mode is read-only; table commits are disabled for Delta tables")
+            .asRuntimeException();
+      }
+      Response nullRefRequirementError =
+          validateNullSnapshotRefRequirements(currentTable, change.requirements());
+      if (nullRefRequirementError != null) {
+        if (nullRefRequirementError.getStatus() == Response.Status.BAD_REQUEST.getStatusCode()) {
+          throw Status.INVALID_ARGUMENT
+              .withDescription("assert-ref-snapshot-id requires ref")
+              .asRuntimeException();
+        }
+        throw Status.FAILED_PRECONDITION
+            .withDescription(
+                nullRefRequirementError.getEntity() == null
+                    ? "assert-ref-snapshot-id failed"
+                    : "assert-ref-snapshot-id failed")
             .asRuntimeException();
       }
 
@@ -437,13 +484,17 @@ public class TransactionCommitService {
       } else {
         updated = applyUpdates(currentTable, updates);
       }
-      String accountId =
-          firstNonBlank(
-              tableId.getAccountId(),
-              firstNonBlank(namespaceId.getAccountId(), catalogId.getAccountId()));
+      ResourceId scopedTableId = scopeTableIdWithAccount(tableId, accountId);
       ConnectorProvisioningService.ProvisionResult provisioned =
           connectorProvisioningService.resolveOrCreateForCommit(
-              accountId, txId, namespacePath, namespaceId, catalogId, tableName, tableId, updated);
+              accountId,
+              txId,
+              namespacePath,
+              namespaceId,
+              catalogId,
+              tableName,
+              scopedTableId,
+              updated);
       updated = provisioned.table();
       if (!provisioned.connectorTxChanges().isEmpty()) {
         out.addAll(provisioned.connectorTxChanges());
@@ -460,7 +511,7 @@ public class TransactionCommitService {
           buildCommitJournalEntry(
               txId,
               requestHash,
-              tableId,
+              scopedTableId,
               namespacePath,
               tableName,
               provisioned.connectorId(),
@@ -470,7 +521,8 @@ public class TransactionCommitService {
               txCreatedAtMs);
       out.add(
           TxChange.newBuilder()
-              .setTargetPointerKey(Keys.tableCommitJournalPointer(accountId, tableId.getId(), txId))
+              .setTargetPointerKey(
+                  Keys.tableCommitJournalPointer(accountId, scopedTableId.getId(), txId))
               .setPayload(ByteString.copyFrom(journal.toByteArray()))
               .build());
       postCommitTasks.add(
@@ -484,12 +536,12 @@ public class TransactionCommitService {
               List.copyOf(journal.getAddedSnapshotIdsList()),
               List.copyOf(journal.getRemovedSnapshotIdsList())));
     }
-    if (replayAccountId != null && !replayAccountId.isBlank() && txId != null && !txId.isBlank()) {
+    if (txId != null && !txId.isBlank()) {
       IcebergCommitReplayIndex replayIndex =
           buildCommitReplayIndex(txId, requestHash, postCommitTasks, txCreatedAtMs);
       out.add(
           TxChange.newBuilder()
-              .setTargetPointerKey(Keys.tableCommitReplayPointer(replayAccountId, txId))
+              .setTargetPointerKey(Keys.tableCommitReplayPointer(accountId, txId))
               .setPayload(ByteString.copyFrom(replayIndex.toByteArray()))
               .build());
     }
@@ -647,6 +699,7 @@ public class TransactionCommitService {
   private PlannedTransaction planImportedRegistration(
       String prefix,
       ResourceId catalogId,
+      String accountId,
       String txId,
       long txCreatedAtMs,
       String requestHash,
@@ -657,7 +710,6 @@ public class TransactionCommitService {
       boolean overwrite) {
     List<TxChange> out = new ArrayList<>();
     List<PostCommitTask> postCommitTasks = new ArrayList<>();
-    String replayAccountId = catalogId == null ? null : catalogId.getAccountId();
     ResourceId namespaceId = backend.resolveNamespace(prefix, namespacePath).getResourceId();
 
     GetTableResponse existingResponse = null;
@@ -689,10 +741,6 @@ public class TransactionCommitService {
       if (overwrite) {
         // Register overwrite on a missing table behaves like create.
       }
-      String accountId =
-          !namespaceId.getAccountId().isBlank()
-              ? namespaceId.getAccountId()
-              : catalogId.getAccountId();
       tableId =
           atomicCreateTableId(accountId, txId, catalogId, namespaceId, namespacePath, tableName);
       currentTable = newCreateTableStub(tableId, catalogId, namespaceId, tableName, txCreatedAtMs);
@@ -704,13 +752,17 @@ public class TransactionCommitService {
         metadataCommitService.planImported(
             currentTable, tableId, imported, mergedProperties, existingSnapshotIds);
     Table updated = planned.table();
-    String accountId =
-        firstNonBlank(
-            tableId.getAccountId(),
-            firstNonBlank(namespaceId.getAccountId(), catalogId.getAccountId()));
+    ResourceId scopedTableId = scopeTableIdWithAccount(tableId, accountId);
     ConnectorProvisioningService.ProvisionResult provisioned =
         connectorProvisioningService.resolveOrCreateForCommit(
-            accountId, txId, namespacePath, namespaceId, catalogId, tableName, tableId, updated);
+            accountId,
+            txId,
+            namespacePath,
+            namespaceId,
+            catalogId,
+            tableName,
+            scopedTableId,
+            updated);
     updated = provisioned.table();
     if (!provisioned.connectorTxChanges().isEmpty()) {
       out.addAll(provisioned.connectorTxChanges());
@@ -726,7 +778,7 @@ public class TransactionCommitService {
         buildCommitJournalEntry(
             txId,
             requestHash,
-            tableId,
+            scopedTableId,
             namespacePath,
             tableName,
             provisioned.connectorId(),
@@ -736,7 +788,8 @@ public class TransactionCommitService {
             txCreatedAtMs);
     out.add(
         TxChange.newBuilder()
-            .setTargetPointerKey(Keys.tableCommitJournalPointer(accountId, tableId.getId(), txId))
+            .setTargetPointerKey(
+                Keys.tableCommitJournalPointer(accountId, scopedTableId.getId(), txId))
             .setPayload(ByteString.copyFrom(journal.toByteArray()))
             .build());
     postCommitTasks.add(
@@ -749,12 +802,12 @@ public class TransactionCommitService {
             journal.getTableUuid().isBlank() ? null : journal.getTableUuid(),
             List.copyOf(journal.getAddedSnapshotIdsList()),
             List.copyOf(journal.getRemovedSnapshotIdsList())));
-    if (replayAccountId != null && !replayAccountId.isBlank() && txId != null && !txId.isBlank()) {
+    if (txId != null && !txId.isBlank()) {
       IcebergCommitReplayIndex replayIndex =
           buildCommitReplayIndex(txId, requestHash, postCommitTasks, txCreatedAtMs);
       out.add(
           TxChange.newBuilder()
-              .setTargetPointerKey(Keys.tableCommitReplayPointer(replayAccountId, txId))
+              .setTargetPointerKey(Keys.tableCommitReplayPointer(accountId, txId))
               .setPayload(ByteString.copyFrom(replayIndex.toByteArray()))
               .build());
     }
@@ -1131,6 +1184,12 @@ public class TransactionCommitService {
         : exception.getStatus().getDescription();
   }
 
+  private boolean isMissingReplayState(StatusRuntimeException exception) {
+    return exception != null
+        && exception.getStatus().getCode() == Status.Code.UNAVAILABLE
+        && descriptionOrCode(exception).startsWith("Replay validation state is missing");
+  }
+
   private void abortQuietly(String txId, String reason) {
     try {
       backend.abortTransaction(txId, reason);
@@ -1141,6 +1200,28 @@ public class TransactionCommitService {
 
   private String firstNonBlank(String first, String second) {
     return first != null && !first.isBlank() ? first : second;
+  }
+
+  private String requestAccountId() {
+    if (accountContext == null) {
+      return null;
+    }
+    String accountId = accountContext.getAccountId();
+    return accountId == null || accountId.isBlank() ? null : accountId;
+  }
+
+  private ResourceId scopeTableIdWithAccount(ResourceId tableId, String accountId) {
+    if (tableId == null) {
+      return null;
+    }
+    String resolvedAccount = firstNonBlank(tableId.getAccountId(), accountId);
+    if (resolvedAccount == null || resolvedAccount.isBlank()) {
+      return tableId;
+    }
+    if (resolvedAccount.equals(tableId.getAccountId())) {
+      return tableId;
+    }
+    return tableId.toBuilder().setAccountId(resolvedAccount).build();
   }
 
   private String explicitIdempotencyKey(String idempotencyKey) {
@@ -1231,7 +1312,7 @@ public class TransactionCommitService {
       return tasks;
     }
     return loadReplayPostCommitTasksFromJournals(
-        prefix, catalogId, txId, requestHash, tableChanges);
+        prefix, catalogId, replayAccountId, txId, requestHash, tableChanges);
   }
 
   private List<PostCommitTask> loadImportedReplayPostCommitTasks(
@@ -1247,7 +1328,8 @@ public class TransactionCommitService {
       return tasks;
     }
     IcebergCommitJournalEntry journal =
-        loadImportedReplayJournal(prefix, catalogId, txId, requestHash, namespacePath, tableName);
+        loadImportedReplayJournal(
+            prefix, catalogId, replayAccountId, txId, requestHash, namespacePath, tableName);
     if (journal == null || !journal.hasTableId()) {
       return List.of();
     }
@@ -1302,7 +1384,7 @@ public class TransactionCommitService {
       return replayEntries;
     }
     return loadReplayValidationEntriesFromJournals(
-        prefix, catalogId, txId, requestHash, tableChanges);
+        prefix, catalogId, replayAccountId, txId, requestHash, tableChanges);
   }
 
   private Map<String, IcebergCommitJournalEntry> loadImportedReplayValidationEntries(
@@ -1319,7 +1401,8 @@ public class TransactionCommitService {
       return replayEntries;
     }
     IcebergCommitJournalEntry journal =
-        loadImportedReplayJournal(prefix, catalogId, txId, requestHash, namespacePath, tableName);
+        loadImportedReplayJournal(
+            prefix, catalogId, replayAccountId, txId, requestHash, namespacePath, tableName);
     if (journal == null || journal.getTableName().isBlank()) {
       return Map.of();
     }
@@ -1334,6 +1417,7 @@ public class TransactionCommitService {
   private Map<String, IcebergCommitJournalEntry> loadReplayValidationEntriesFromJournals(
       String prefix,
       ResourceId catalogId,
+      String replayAccountId,
       String txId,
       String requestHash,
       List<TransactionCommitRequest.TableChange> tableChanges) {
@@ -1344,7 +1428,8 @@ public class TransactionCommitService {
     for (TransactionCommitRequest.TableChange change : tableChanges) {
       NormalizedIdentifier identifier = validateChange(change);
       IcebergCommitJournalEntry journal =
-          loadReplayJournal(prefix, catalogId, txId, requestHash, change, identifier);
+          loadReplayJournal(
+              prefix, catalogId, replayAccountId, txId, requestHash, change, identifier);
       if (journal != null) {
         out.put(identifier.key(), journal);
       }
@@ -1355,6 +1440,7 @@ public class TransactionCommitService {
   private List<PostCommitTask> loadReplayPostCommitTasksFromJournals(
       String prefix,
       ResourceId catalogId,
+      String replayAccountId,
       String txId,
       String requestHash,
       List<TransactionCommitRequest.TableChange> tableChanges) {
@@ -1365,7 +1451,8 @@ public class TransactionCommitService {
     for (TransactionCommitRequest.TableChange change : tableChanges) {
       NormalizedIdentifier identifier = validateChange(change);
       IcebergCommitJournalEntry journal =
-          loadReplayJournal(prefix, catalogId, txId, requestHash, change, identifier);
+          loadReplayJournal(
+              prefix, catalogId, replayAccountId, txId, requestHash, change, identifier);
       if (journal != null && journal.hasTableId()) {
         out.add(postCommitTask(journal));
       }
@@ -1376,6 +1463,7 @@ public class TransactionCommitService {
   private IcebergCommitJournalEntry loadImportedReplayJournal(
       String prefix,
       ResourceId catalogId,
+      String accountId,
       String txId,
       String requestHash,
       List<String> namespacePath,
@@ -1388,27 +1476,17 @@ public class TransactionCommitService {
       if (exception.getStatus().getCode() != Status.Code.NOT_FOUND) {
         throw exception;
       }
-      String accountId =
-          firstNonBlank(
-              namespaceId == null ? null : namespaceId.getAccountId(),
-              catalogId == null ? null : catalogId.getAccountId());
       tableId =
           atomicCreateTableId(accountId, txId, catalogId, namespaceId, namespacePath, tableName);
     }
     return loadReplayJournal(
-        firstNonBlank(
-            tableId == null ? null : tableId.getAccountId(),
-            firstNonBlank(
-                namespaceId == null ? null : namespaceId.getAccountId(),
-                catalogId == null ? null : catalogId.getAccountId())),
-        tableId,
-        txId,
-        requestHash);
+        accountId, scopeTableIdWithAccount(tableId, accountId), txId, requestHash);
   }
 
   private IcebergCommitJournalEntry loadReplayJournal(
       String prefix,
       ResourceId catalogId,
+      String accountId,
       String txId,
       String requestHash,
       TransactionCommitRequest.TableChange change,
@@ -1426,10 +1504,6 @@ public class TransactionCommitService {
           || !hasAssertCreate(change.requirements())) {
         return null;
       }
-      String accountId =
-          firstNonBlank(
-              namespaceId == null ? null : namespaceId.getAccountId(),
-              catalogId == null ? null : catalogId.getAccountId());
       tableId =
           atomicCreateTableId(
               accountId,
@@ -1440,14 +1514,7 @@ public class TransactionCommitService {
               identifier.tableName());
     }
     return loadReplayJournal(
-        firstNonBlank(
-            tableId == null ? null : tableId.getAccountId(),
-            firstNonBlank(
-                namespaceId == null ? null : namespaceId.getAccountId(),
-                catalogId == null ? null : catalogId.getAccountId())),
-        tableId,
-        txId,
-        requestHash);
+        accountId, scopeTableIdWithAccount(tableId, accountId), txId, requestHash);
   }
 
   private IcebergCommitJournalEntry loadReplayJournal(
@@ -1644,5 +1711,49 @@ public class TransactionCommitService {
 
   private String tableUuid(Table table) {
     return table == null ? null : table.getPropertiesMap().get("table-uuid");
+  }
+
+  private Response validateNullSnapshotRefRequirements(
+      Table table, List<Map<String, Object>> requirements) {
+    if (requirements == null || requirements.isEmpty()) {
+      return null;
+    }
+    for (Map<String, Object> requirement : requirements) {
+      if (requirement == null) {
+        continue;
+      }
+      String type = stringValue(requirement.get("type"));
+      if (!"assert-ref-snapshot-id".equals(type) || !requirement.containsKey("snapshot-id")) {
+        continue;
+      }
+      if (requirement.get("snapshot-id") != null) {
+        continue;
+      }
+      String refName = stringValue(requirement.get("ref"));
+      if (refName == null || refName.isBlank()) {
+        return IcebergErrorResponses.validation("assert-ref-snapshot-id requires ref");
+      }
+      if (hasSnapshotRef(table, refName)) {
+        return IcebergErrorResponses.conflict("assert-ref-snapshot-id failed for ref " + refName);
+      }
+    }
+    return null;
+  }
+
+  private boolean hasSnapshotRef(Table table, String refName) {
+    if (table == null || refName == null || refName.isBlank()) {
+      return false;
+    }
+    if ("main".equals(refName)) {
+      Long currentSnapshotId = longValue(table.getPropertiesMap().get("current-snapshot-id"));
+      if (currentSnapshotId != null && currentSnapshotId >= 0L) {
+        return true;
+      }
+    }
+    String encodedRefs = table.getPropertiesMap().get("metadata.refs");
+    if (encodedRefs == null || encodedRefs.isBlank()) {
+      return false;
+    }
+    return encodedRefs.contains(refName + "=") || encodedRefs.contains("\"" + refName + "\"");
   }
 }

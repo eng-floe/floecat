@@ -39,6 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -48,6 +49,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +68,7 @@ public class TableGatewaySupport {
   private final ObjectMapper mapper;
   private final Config mpConfig;
   private final GrpcServiceFacade grpcClient;
+  private final TableMetadataImportService tableMetadataImportService;
 
   private volatile Map<String, String> tableConfigCache;
   private volatile List<StorageCredentialDto> storageCredentialCache;
@@ -76,11 +79,23 @@ public class TableGatewaySupport {
       ObjectMapper mapper,
       Config mpConfig,
       GrpcServiceFacade grpcClient) {
+    this(grpc, config, mapper, mpConfig, grpcClient, null);
+  }
+
+  @Inject
+  public TableGatewaySupport(
+      GrpcWithHeaders grpc,
+      IcebergGatewayConfig config,
+      ObjectMapper mapper,
+      Config mpConfig,
+      GrpcServiceFacade grpcClient,
+      TableMetadataImportService tableMetadataImportService) {
     this.grpc = grpc;
     this.config = config;
     this.mapper = mapper;
     this.mpConfig = mpConfig;
     this.grpcClient = grpcClient;
+    this.tableMetadataImportService = tableMetadataImportService;
   }
 
   public TableSpec.Builder buildCreateSpec(
@@ -368,9 +383,11 @@ public class TableGatewaySupport {
       if (propertySnapshotId != null
           && propertySnapshotId > 0
           && snapshot.getSnapshotId() != propertySnapshotId) {
-        return loadSnapshotById(table.getResourceId(), propertySnapshotId);
+        return hydrateMetadataFromLocation(
+            table, loadSnapshotById(table.getResourceId(), propertySnapshotId));
       }
-      return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
+      return hydrateMetadataFromLocation(
+          table, SnapshotMetadataUtil.parseSnapshotMetadata(snapshot));
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }
@@ -382,7 +399,8 @@ public class TableGatewaySupport {
       return null;
     }
     try {
-      return loadSnapshotById(table.getResourceId(), snapshotId);
+      return hydrateMetadataFromLocation(
+          table, loadSnapshotById(table.getResourceId(), snapshotId));
     } catch (StatusRuntimeException ignored) {
       return null;
     }
@@ -401,6 +419,36 @@ public class TableGatewaySupport {
     }
     var snapshot = response.getSnapshot();
     return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
+  }
+
+  private IcebergMetadata hydrateMetadataFromLocation(Table table, IcebergMetadata metadata) {
+    if (metadata == null || tableMetadataImportService == null || table == null) {
+      return metadata;
+    }
+    String metadataLocation = MetadataLocationUtil.metadataLocation(table.getPropertiesMap());
+    if ((metadataLocation == null || metadataLocation.isBlank())
+        && metadata.getMetadataLocation() != null
+        && !metadata.getMetadataLocation().isBlank()) {
+      metadataLocation = metadata.getMetadataLocation();
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return metadata;
+    }
+    try {
+      Map<String, String> ioProps = new LinkedHashMap<>(defaultFileIoProperties());
+      if (table.getPropertiesCount() > 0) {
+        ioProps.putAll(FileIoFactory.filterIoProperties(table.getPropertiesMap()));
+      }
+      IcebergMetadata imported =
+          tableMetadataImportService.importMetadata(metadataLocation, ioProps).icebergMetadata();
+      return imported == null ? metadata : imported;
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Failed to hydrate current metadata from %s; continuing with snapshot metadata",
+          metadataLocation);
+      return metadata;
+    }
   }
 
   public IcebergGatewayConfig.RegisterConnectorTemplate connectorTemplateFor(String prefix) {

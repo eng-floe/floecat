@@ -21,19 +21,22 @@ import io.grpc.Metadata;
 import jakarta.ws.rs.core.HttpHeaders;
 
 public final class AuthMetadata {
-  private static final String AUTH_HEADER = "authorization";
-
   private AuthMetadata() {}
 
   public static Metadata fromHeaders(MinimalGatewayConfig config, HttpHeaders headers) {
     Metadata md = new Metadata();
-    String auth = headers == null ? null : headers.getHeaderString(AUTH_HEADER);
+    String authHeader = normalizeHeaderName(config.authHeader());
+    String auth = headers == null ? null : headers.getHeaderString(authHeader);
     if (auth == null || auth.isBlank()) {
       auth = config.defaultAuthorization().orElse(null);
     }
     if (auth != null && !auth.isBlank()) {
-      md.put(Metadata.Key.of(AUTH_HEADER, Metadata.ASCII_STRING_MARSHALLER), auth);
+      md.put(Metadata.Key.of(authHeader, Metadata.ASCII_STRING_MARSHALLER), auth);
     }
     return md;
+  }
+
+  private static String normalizeHeaderName(String authHeader) {
+    return authHeader == null || authHeader.isBlank() ? "authorization" : authHeader.toLowerCase();
   }
 }

@@ -23,6 +23,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitReque
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitTrafficLogger;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableRenameService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TransactionCommitService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -51,11 +52,14 @@ public class TableAdminResource {
   @Inject TransactionCommitService transactionCommitService;
   @Inject CommitTrafficLogger commitTrafficLogger;
   @Inject GrpcServiceFacade grpcClient;
+  @Inject TableMetadataImportService tableMetadataImportService;
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport =
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, grpcClient, tableMetadataImportService);
   }
 
   @Path("/tables/rename")

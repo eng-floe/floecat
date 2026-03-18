@@ -34,6 +34,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.TableMetadata;
@@ -180,10 +181,75 @@ class IcebergMetadataCommitServiceTest {
   }
 
   @Test
+  void rebuildsEmptyBootstrappedMetadataAtRequestedFormatVersion() {
+    stubInMemoryFileIo();
+    Table currentTable =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"int\"}]}")
+            .putProperties("location", "s3://warehouse/db/orders")
+            .putProperties("format-version", "2")
+            .putProperties("table-uuid", "uuid-123")
+            .build();
+
+    IcebergMetadataCommitService.PlannedCommit planned =
+        service.plan(
+            currentTable,
+            ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(),
+            List.of(),
+            List.of(
+                Map.of("action", "upgrade-format-version", "format-version", 1),
+                Map.of(
+                    "action",
+                    "add-schema",
+                    "schema",
+                    Map.of(
+                        "type",
+                        "struct",
+                        "schema-id",
+                        0,
+                        "fields",
+                        List.of(Map.of("id", 1, "name", "id", "required", false, "type", "int")))),
+                Map.of("action", "set-current-schema", "schema-id", 0)));
+
+    TableMetadata metadata =
+        importService.loadTableMetadata(
+            planned.table().getPropertiesOrThrow("metadata-location"), Map.of());
+
+    assertEquals(1, metadata.formatVersion());
+  }
+
+  @Test
+  void rejectsRemoveSnapshotsWithoutIds() {
+    stubInMemoryFileIo();
+    Table currentTable =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setSchemaJson("{\"type\":\"struct\",\"schema-id\":0,\"fields\":[]}")
+            .putProperties("location", "s3://warehouse/db/orders")
+            .putProperties("format-version", "2")
+            .build();
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.plan(
+                    currentTable,
+                    ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(),
+                    List.of(),
+                    List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of()))));
+
+    assertTrue(
+        error.getStatus().getDescription().contains("remove-snapshots requires snapshot-ids"));
+  }
+
+  @Test
   void appliesRemoveSpecRemoveSchemaAndEncryptionUpdates() throws Exception {
     stubInMemoryFileIo();
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
-    String metadataLocation = "s3://warehouse/db/orders/metadata/00000-initial.metadata.json";
+    String metadataLocation = uniqueMetadataLocation("orders");
     Schema schema0 = new Schema();
     Schema schema1 =
         new Schema(
@@ -378,6 +444,68 @@ class IcebergMetadataCommitServiceTest {
     assertEquals(101L, updated.currentSnapshot().snapshotId());
   }
 
+  @Test
+  void assertRefSnapshotIdAllowsMissingSnapshotIdForCompatibility() {
+    stubInMemoryFileIo();
+    String metadataLocation = uniqueMetadataLocation("orders");
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new Schema(),
+            PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of());
+    FileIO fileIO = new org.apache.iceberg.inmemory.InMemoryFileIO();
+    TableMetadataParser.write(metadata, fileIO.newOutputFile(metadataLocation));
+
+    Table currentTable =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .putAllProperties(importService.canonicalProperties(metadata, metadataLocation))
+            .build();
+
+    IcebergMetadataCommitService.PlannedCommit planned =
+        service.plan(
+            currentTable,
+            ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(),
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main")),
+            List.of());
+
+    assertEquals("orders", planned.table().getDisplayName());
+    assertTrue(planned.extraChanges().isEmpty());
+  }
+
+  @Test
+  void assertRefSnapshotIdSkipsStrictCheckWhenRefCannotBeResolved() {
+    stubInMemoryFileIo();
+    String metadataLocation = uniqueMetadataLocation("orders");
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new Schema(),
+            PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of());
+    FileIO fileIO = new org.apache.iceberg.inmemory.InMemoryFileIO();
+    TableMetadataParser.write(metadata, fileIO.newOutputFile(metadataLocation));
+
+    Table currentTable =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .putAllProperties(importService.canonicalProperties(metadata, metadataLocation))
+            .build();
+
+    IcebergMetadataCommitService.PlannedCommit planned =
+        service.plan(
+            currentTable,
+            ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build(),
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 101L)),
+            List.of());
+
+    assertEquals("orders", planned.table().getDisplayName());
+    assertTrue(planned.extraChanges().isEmpty());
+  }
+
   private void stubInMemoryFileIo() {
     when(config.metadataFileIo())
         .thenReturn(Optional.of("org.apache.iceberg.inmemory.InMemoryFileIO"));
@@ -388,5 +516,9 @@ class IcebergMetadataCommitServiceTest {
     when(config.metadataS3AccessKeyId()).thenReturn(Optional.empty());
     when(config.metadataS3SecretAccessKey()).thenReturn(Optional.empty());
     when(config.metadataS3PathStyleAccess()).thenReturn(true);
+  }
+
+  private String uniqueMetadataLocation(String tableName) {
+    return "s3://warehouse/db/" + tableName + "/metadata/" + UUID.randomUUID() + ".metadata.json";
   }
 }

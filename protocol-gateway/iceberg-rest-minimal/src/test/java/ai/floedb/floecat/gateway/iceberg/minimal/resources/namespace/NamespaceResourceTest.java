@@ -105,6 +105,7 @@ class NamespaceResourceTest {
     var response = resource.exists("foo", "missing");
 
     assertEquals(404, response.getStatus());
+    assertEquals("0", response.getHeaderString("Content-Length"));
     assertNull(response.getEntity());
   }
 

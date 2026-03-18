@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.minimal.services.table;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -26,6 +27,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergSnapshotLogEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,9 +69,15 @@ public final class TableMetadataMapper {
     view.put("refs", Map.of());
     view.put("snapshot-log", List.of());
     view.put("metadata-log", List.of());
-    view.put("snapshots", snapshot == null ? List.of() : List.of(snapshot(snapshot)));
+    view.put(
+        "snapshots",
+        snapshot == null
+            ? List.of()
+            : orderedSnapshots(List.of(snapshot)).stream()
+                .map(TableMetadataMapper::snapshot)
+                .toList());
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
-    properties.remove("metadata-location");
+    sanitizeDisplayProperties(properties);
     ensureDeltaNameMappingProperty(
         properties, castSchemaList(view.get("schemas")), propertyInt(table, "current-schema-id"));
     view.put("properties", properties);
@@ -92,7 +100,7 @@ public final class TableMetadataMapper {
     List<Map<String, Object>> snapshotValues =
         snapshots == null
             ? List.of()
-            : snapshots.stream()
+            : orderedSnapshots(snapshots).stream()
                 .map(
                     snapshot -> {
                       resolvableSnapshotIds.add(snapshot.getSnapshotId());
@@ -197,8 +205,7 @@ public final class TableMetadataMapper {
     view.put("metadata-log", metadataLog(metadata));
     view.put("snapshots", snapshotValues);
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
-    properties.remove("metadata-location");
-    properties.put("metadata-location", metadataLocation);
+    sanitizeDisplayProperties(properties);
     ensureDeltaNameMappingProperty(
         properties, castSchemaList(view.get("schemas")), metadata.currentSchemaId());
     view.put("properties", properties);
@@ -251,6 +258,17 @@ public final class TableMetadataMapper {
     return snapshotId >= 0L;
   }
 
+  private static List<Snapshot> orderedSnapshots(List<Snapshot> snapshots) {
+    if (snapshots == null || snapshots.size() < 2) {
+      return snapshots == null ? List.of() : snapshots;
+    }
+    return snapshots.stream()
+        .sorted(
+            Comparator.comparingLong(Snapshot::getSequenceNumber)
+                .thenComparingLong(Snapshot::getSnapshotId))
+        .toList();
+  }
+
   private static Map<String, Object> loadMetadataFromIceberg(
       Table table, IcebergMetadata metadata, Snapshot snapshot, ObjectMapper mapper) {
     Map<String, Object> view = new LinkedHashMap<>();
@@ -296,10 +314,16 @@ public final class TableMetadataMapper {
                   LinkedHashMap::putAll));
       view.put("snapshot-log", snapshotLog(metadata));
       view.put("metadata-log", metadataLog(metadata));
-      view.put("snapshots", snapshot == null ? List.of() : List.of(snapshot(snapshot)));
+      view.put(
+          "snapshots",
+          snapshot == null
+              ? List.of()
+              : orderedSnapshots(List.of(snapshot)).stream()
+                  .map(TableMetadataMapper::snapshot)
+                  .toList());
     }
     Map<String, String> properties = new LinkedHashMap<>(table.getPropertiesMap());
-    properties.remove("metadata-location");
+    sanitizeDisplayProperties(properties);
     ensureDeltaNameMappingProperty(
         properties,
         castSchemaList(view.get("schemas")),
@@ -311,6 +335,16 @@ public final class TableMetadataMapper {
   @SuppressWarnings("unchecked")
   private static List<Map<String, Object>> castSchemaList(Object value) {
     return value instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+  }
+
+  private static void sanitizeDisplayProperties(Map<String, String> properties) {
+    if (properties == null || properties.isEmpty()) {
+      return;
+    }
+    properties.remove("metadata-location");
+    properties.remove("storage_location");
+    properties.remove("last-updated-ms");
+    properties.keySet().removeIf(FileIoFactory::isFileIoProperty);
   }
 
   private static void ensureDeltaNameMappingProperty(
@@ -485,7 +519,7 @@ public final class TableMetadataMapper {
     List<Map<String, Object>> snapshotValues =
         snapshots == null
             ? List.of()
-            : snapshots.stream().map(TableMetadataMapper::snapshot).toList();
+            : orderedSnapshots(snapshots).stream().map(TableMetadataMapper::snapshot).toList();
     Set<Long> snapshotIds = new HashSet<>();
     if (snapshots != null) {
       for (Snapshot snapshot : snapshots) {

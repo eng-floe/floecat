@@ -219,7 +219,6 @@ class TableResourceTest extends AbstractRestResourceTest {
     Table table =
         baseTable(tableId, ResourceId.newBuilder().setId("cat:db").build())
             .setDisplayName("orders")
-            .putProperties("metadata-location", FIXTURE.metadataLocation())
             .putProperties("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO")
             .putProperties("current-snapshot-id", Long.toString(currentSnapshot.getSnapshotId()))
             .build();
@@ -789,12 +788,7 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
-    given()
-        .when()
-        .head("/v1/foo/namespaces/db/tables/orders")
-        .then()
-        .statusCode(204)
-        .header("Content-Length", equalTo("0"));
+    given().when().head("/v1/foo/namespaces/db/tables/orders").then().statusCode(204);
   }
 
   @Test

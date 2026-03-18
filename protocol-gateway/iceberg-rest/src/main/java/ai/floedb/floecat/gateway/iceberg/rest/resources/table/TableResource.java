@@ -31,6 +31,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestConte
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.planning.TablePlanOrchestrationService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCreateService;
@@ -79,12 +80,15 @@ public class TableResource {
   @Inject TableCreateService tableCreateService;
   @Inject CommitTrafficLogger commitTrafficLogger;
   @Inject GrpcServiceFacade grpcClient;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport =
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, grpcClient, tableMetadataImportService);
   }
 
   @GET
@@ -139,7 +143,7 @@ public class TableResource {
       @PathParam("table") String table) {
     try {
       requestContextFactory.table(prefix, namespace, table);
-      return IcebergErrorResponses.statusOnly(Response.Status.NO_CONTENT);
+      return Response.noContent().build();
     } catch (WebApplicationException exception) {
       return IcebergErrorResponses.webApplicationStatusOnly(exception);
     } catch (StatusRuntimeException exception) {

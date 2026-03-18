@@ -153,6 +153,21 @@ class ViewRegisterResourceTest {
     }
 
     @Override
+    public String authMode() {
+      return "dev";
+    }
+
+    @Override
+    public String authHeader() {
+      return "authorization";
+    }
+
+    @Override
+    public String accountClaim() {
+      return "account_id";
+    }
+
+    @Override
     public Optional<String> defaultAccountId() {
       return Optional.of("acct");
     }
@@ -165,6 +180,11 @@ class ViewRegisterResourceTest {
     @Override
     public Optional<String> defaultPrefix() {
       return Optional.of("examples");
+    }
+
+    @Override
+    public boolean devAllowMissingAuth() {
+      return false;
     }
 
     @Override

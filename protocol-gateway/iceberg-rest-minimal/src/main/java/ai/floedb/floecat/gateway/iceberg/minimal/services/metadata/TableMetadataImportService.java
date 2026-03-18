@@ -140,6 +140,22 @@ public class TableMetadataImportService {
         "Unable to construct bootstrap Iceberg metadata");
   }
 
+  public TableMetadata rebuildEmptyMetadataAtFormatVersion(
+      TableMetadata metadata, int requestedFormatVersion) {
+    if (metadata == null) {
+      throw new IllegalArgumentException("metadata is required");
+    }
+    return materializeMetadata(
+        metadata.schema(),
+        metadata.spec(),
+        metadata.sortOrder(),
+        metadata.location(),
+        new LinkedHashMap<>(metadata.properties()),
+        requestedFormatVersion,
+        blankToNull(metadata.uuid()),
+        "Unable to rebuild bootstrap Iceberg metadata");
+  }
+
   public Map<String, String> canonicalProperties(TableMetadata metadata, String metadataLocation) {
     Map<String, String> props = new LinkedHashMap<>(metadata.properties());
     props.put("metadata-location", metadataLocation);

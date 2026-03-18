@@ -73,7 +73,7 @@ class NamespacePropertiesResourceTest {
   @Test
   void updatePropertiesRejectsConflictingKeys() {
     assertEquals(
-        400,
+        422,
         resource
             .updateProperties(
                 "foo",

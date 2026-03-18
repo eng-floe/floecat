@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.LoadTableResultDto;
+import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.TableListResponseDto;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.request.MetricsReportRequest;
@@ -122,6 +123,7 @@ public class TableResource {
   public Response create(
       @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       TableCreateRequest request) {
     if (request == null) {
@@ -133,9 +135,15 @@ public class TableResource {
     if (request.schema() == null || request.schema().isNull()) {
       return IcebergErrorResponses.validation("schema is required");
     }
+    List<StorageCredentialDto> storageCredentials;
+    try {
+      storageCredentials = credentialsForAccessDelegation(accessDelegationMode);
+    } catch (IllegalArgumentException exception) {
+      return IcebergErrorResponses.validation(exception.getMessage());
+    }
     if (Boolean.TRUE.equals(request.stageCreate())) {
       try {
-        return Response.ok(stagedCreateResult(namespace, request)).build();
+        return Response.ok(stagedCreateResult(namespace, request, storageCredentials)).build();
       } catch (IllegalArgumentException exception) {
         return IcebergErrorResponses.validation(exception.getMessage());
       } catch (Exception exception) {
@@ -165,7 +173,9 @@ public class TableResource {
       } catch (StatusRuntimeException ignored) {
         // Newly created tables may not have a current snapshot yet.
       }
-      return Response.ok(loadResult(prefix, namespacePath, created, snapshot, SnapshotMode.ALL))
+      return Response.ok(
+              loadResult(
+                  prefix, namespacePath, created, snapshot, SnapshotMode.ALL, storageCredentials))
           .build();
     } catch (StatusRuntimeException exception) {
       return tableError(exception);
@@ -183,9 +193,12 @@ public class TableResource {
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       @QueryParam("snapshots") String snapshots,
+      @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("If-None-Match") String ifNoneMatch) {
     try {
       SnapshotMode snapshotMode = parseSnapshotMode(snapshots);
+      List<StorageCredentialDto> storageCredentials =
+          credentialsForAccessDelegation(accessDelegationMode);
       List<String> namespacePath = NamespacePaths.split(namespace);
       Table tableRecord = backend.get(prefix, namespacePath, table);
       Snapshot snapshot = null;
@@ -195,13 +208,17 @@ public class TableResource {
         // Empty tables are valid and may not have a current snapshot yet.
       }
       LoadTableResultDto result =
-          loadResult(prefix, namespacePath, tableRecord, snapshot, snapshotMode);
+          loadResult(
+              prefix, namespacePath, tableRecord, snapshot, snapshotMode, storageCredentials);
       String metadataLocation = result.metadataLocation();
       String etag =
           metadataLocation == null
               ? null
               : '"' + metadataLocation + "|snapshots=" + snapshotMode.name().toLowerCase() + '"';
-      if (etag != null && ifNoneMatch != null && ifNoneMatch.trim().equals(etag)) {
+      if (ifNoneMatch != null && ifNoneMatch.trim().equals("*")) {
+        return IcebergErrorResponses.validation("If-None-Match may not take the value of '*'");
+      }
+      if (etagMatches(etag, ifNoneMatch)) {
         return Response.notModified().build();
       }
       Response.ResponseBuilder builder = Response.ok(result);
@@ -252,7 +269,8 @@ public class TableResource {
       } catch (StatusRuntimeException ignored) {
         // property-only commits may not have snapshots in unit tests
       }
-      return Response.ok(loadResult(prefix, namespacePath, committed, snapshot, SnapshotMode.ALL))
+      return Response.ok(
+              loadResult(prefix, namespacePath, committed, snapshot, SnapshotMode.ALL, null))
           .build();
     } catch (StatusRuntimeException exception) {
       return tableError(exception);
@@ -356,7 +374,8 @@ public class TableResource {
       } catch (StatusRuntimeException ignored) {
         // A registered table may still have no current snapshot in tests.
       }
-      return Response.ok(loadResult(prefix, namespacePath, created, snapshot, SnapshotMode.ALL))
+      return Response.ok(
+              loadResult(prefix, namespacePath, created, snapshot, SnapshotMode.ALL, null))
           .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
@@ -396,7 +415,8 @@ public class TableResource {
       List<String> namespacePath,
       Table tableRecord,
       Snapshot snapshot,
-      SnapshotMode snapshotMode) {
+      SnapshotMode snapshotMode,
+      List<StorageCredentialDto> storageCredentials) {
     List<Snapshot> allSnapshots =
         listSnapshots(prefix, namespacePath, tableRecord.getDisplayName());
     if (deltaMetadataService != null && deltaMetadataService.enabledFor(tableRecord)) {
@@ -407,7 +427,7 @@ public class TableResource {
       metadata =
           TableMetadataMapper.overlaySnapshots(
               metadata, selectSnapshots(metadata, delta.snapshots(), snapshotMode));
-      return new LoadTableResultDto(metadataLocation, metadata, Map.of());
+      return new LoadTableResultDto(metadataLocation, metadata, Map.of(), storageCredentials);
     }
     String metadataLocation = TableMetadataMapper.metadataLocation(tableRecord, snapshot);
     Map<String, Object> metadata = TableMetadataMapper.loadMetadata(tableRecord, snapshot, mapper);
@@ -433,7 +453,7 @@ public class TableResource {
     metadata =
         TableMetadataMapper.overlaySnapshots(
             metadata, selectSnapshots(metadata, allSnapshots, snapshotMode));
-    return new LoadTableResultDto(metadataLocation, metadata, Map.of());
+    return new LoadTableResultDto(metadataLocation, metadata, Map.of(), storageCredentials);
   }
 
   private SnapshotMode parseSnapshotMode(String raw) {
@@ -444,6 +464,34 @@ public class TableResource {
       return SnapshotMode.REFS;
     }
     throw new IllegalArgumentException("snapshots must be one of [all, refs]");
+  }
+
+  private boolean etagMatches(String etag, String ifNoneMatch) {
+    if (etag == null || ifNoneMatch == null) {
+      return false;
+    }
+    String expected = normalizeEtag(etag);
+    for (String raw : ifNoneMatch.split(",")) {
+      String token = normalizeEtag(raw);
+      if (!token.isEmpty() && token.equals(expected)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private String normalizeEtag(String token) {
+    if (token == null) {
+      return "";
+    }
+    String value = token.trim();
+    if (value.startsWith("W/")) {
+      value = value.substring(2).trim();
+    }
+    if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
+      value = value.substring(1, value.length() - 1);
+    }
+    return value;
   }
 
   private List<Snapshot> selectSnapshots(
@@ -490,7 +538,8 @@ public class TableResource {
     }
   }
 
-  private LoadTableResultDto stagedCreateResult(String namespace, TableCreateRequest request) {
+  private LoadTableResultDto stagedCreateResult(
+      String namespace, TableCreateRequest request, List<StorageCredentialDto> storageCredentials) {
     String resolvedLocation = resolvedTableLocation(namespace, request);
     TableCreateRequest effectiveRequest =
         new TableCreateRequest(
@@ -513,7 +562,8 @@ public class TableResource {
                 .build(),
             imported.icebergMetadata(),
             mapper),
-        stagedCreateConfig(metadataLocation));
+        stagedCreateConfig(metadataLocation),
+        storageCredentials);
   }
 
   private List<Map<String, Object>> createTableUpdates(
@@ -715,9 +765,15 @@ public class TableResource {
   @POST
   @Path("/tables/{table}/metrics")
   public Response publishMetrics(
+      @PathParam("prefix") String prefix,
       @PathParam("namespace") String namespace,
       @PathParam("table") String table,
       MetricsReportRequest request) {
+    try {
+      backend.get(prefix, NamespacePaths.split(namespace), table);
+    } catch (StatusRuntimeException exception) {
+      return tableError(exception);
+    }
     if (request == null) {
       return IcebergErrorResponses.validation("Request body is required");
     }
@@ -746,6 +802,41 @@ public class TableResource {
       return IcebergErrorResponses.validation("metrics report missing required fields");
     }
     return Response.noContent().build();
+  }
+
+  private List<StorageCredentialDto> credentialsForAccessDelegation(String accessDelegationMode) {
+    if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
+      return null;
+    }
+    boolean vended = false;
+    for (String raw : accessDelegationMode.split(",")) {
+      String mode = raw == null ? "" : raw.trim();
+      if (mode.isEmpty()) {
+        continue;
+      }
+      if ("vended-credentials".equalsIgnoreCase(mode)) {
+        vended = true;
+        continue;
+      }
+      throw new IllegalArgumentException("Unsupported access delegation mode: " + mode);
+    }
+    if (!vended) {
+      return null;
+    }
+    Map<String, String> properties = new LinkedHashMap<>();
+    config.storageCredential().ifPresent(cfg -> properties.putAll(cfg.properties()));
+    properties.values().removeIf(value -> value == null || value.isBlank());
+    if (properties.isEmpty()) {
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no credentials are available");
+    }
+    String scope =
+        config
+            .storageCredential()
+            .flatMap(MinimalGatewayConfig.StorageCredentialConfig::scope)
+            .filter(value -> !value.isBlank())
+            .orElse("*");
+    return List.of(new StorageCredentialDto(scope, Map.copyOf(properties)));
   }
 
   private boolean isEmpty(Collection<?> values) {

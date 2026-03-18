@@ -30,11 +30,23 @@ public interface MinimalGatewayConfig {
   @WithDefault("true")
   boolean upstreamPlaintext();
 
+  @WithDefault("oidc")
+  String authMode();
+
+  @WithDefault("authorization")
+  String authHeader();
+
+  @WithDefault("account_id")
+  String accountClaim();
+
   Optional<String> defaultAccountId();
 
   Optional<String> defaultAuthorization();
 
   Optional<String> defaultPrefix();
+
+  @WithDefault("false")
+  boolean devAllowMissingAuth();
 
   Map<String, String> catalogMapping();
 

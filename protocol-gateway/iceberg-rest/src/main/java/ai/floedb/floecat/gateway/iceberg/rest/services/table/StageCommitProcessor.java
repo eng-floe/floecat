@@ -31,6 +31,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -60,12 +61,15 @@ public class StageCommitProcessor {
   @Inject StagedTableService stagedTableService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   private TableGatewaySupport tableSupport;
 
   @PostConstruct
   void initSupport() {
-    this.tableSupport = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    this.tableSupport =
+        new TableGatewaySupport(
+            grpc, config, mapper, mpConfig, grpcClient, tableMetadataImportService);
   }
 
   public StageCommitResult commitStage(

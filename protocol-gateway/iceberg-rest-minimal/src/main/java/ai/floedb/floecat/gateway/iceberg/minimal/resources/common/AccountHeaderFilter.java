@@ -1,0 +1,292 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.gateway.iceberg.minimal.resources.common;
+
+import ai.floedb.floecat.gateway.iceberg.minimal.services.account.AccountContext;
+import io.quarkus.oidc.AccessTokenCredential;
+import io.quarkus.oidc.TenantIdentityProvider;
+import io.quarkus.security.identity.SecurityIdentity;
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.container.ContainerRequestFilter;
+import jakarta.ws.rs.container.PreMatching;
+import jakarta.ws.rs.core.PathSegment;
+import jakarta.ws.rs.core.UriBuilder;
+import jakarta.ws.rs.core.UriInfo;
+import jakarta.ws.rs.ext.Provider;
+import java.net.URI;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import org.eclipse.microprofile.config.ConfigProvider;
+import org.eclipse.microprofile.jwt.JsonWebToken;
+import org.jboss.resteasy.reactive.server.ServerRequestFilter;
+
+@Provider
+@PreMatching
+public class AccountHeaderFilter implements ContainerRequestFilter {
+  private static final String DEFAULT_AUTH_HEADER = "authorization";
+  private static final String CONFIG_PREFIX = "floecat.gateway.minimal.";
+  private static final Set<String> PREFIXED_SEGMENTS =
+      new HashSet<>(List.of("namespaces", "tables", "views", "transactions"));
+
+  @Inject AccountContext accountContext;
+  @Inject SecurityIdentity identity;
+  @Inject JsonWebToken jwt;
+  @Inject Instance<TenantIdentityProvider> identityProvider;
+
+  @Override
+  @ServerRequestFilter(priority = 10)
+  public void filter(ContainerRequestContext requestContext) {
+    rewriteDefaultPrefix(requestContext);
+    if (requestContext.getUriInfo().getPath().equals("v1/config")) {
+      return;
+    }
+    boolean devMode = isDevMode();
+    String account =
+        devMode ? defaultAccount().orElse(null) : resolveAccountFromAuthClaim(requestContext);
+    if (requestContext.getProperty("authAbort") != null) {
+      return;
+    }
+    if (account == null || account.isBlank()) {
+      requestContext.abortWith(IcebergErrorResponses.unauthorized("missing account claim"));
+      return;
+    }
+    accountContext.setAccountId(account.trim());
+
+    String authHeader = resolveAuthHeaderName();
+    String auth = headerValue(requestContext, authHeader);
+    if (auth == null || auth.isBlank()) {
+      auth = defaultAuthorization().orElse(null);
+      if (auth != null) {
+        requestContext.getHeaders().putSingle(authHeader, auth);
+      }
+    }
+    if (auth == null || auth.isBlank()) {
+      if (devMode && allowMissingAuthInDev()) {
+        return;
+      }
+      requestContext.abortWith(IcebergErrorResponses.unauthorized("missing authorization header"));
+    }
+  }
+
+  private void rewriteDefaultPrefix(ContainerRequestContext context) {
+    String prefix = defaultPrefix();
+    if (prefix.isEmpty()) {
+      return;
+    }
+    UriInfo uriInfo = context.getUriInfo();
+    List<PathSegment> segments = uriInfo.getPathSegments();
+    if (segments.size() < 2 || !"v1".equals(segments.get(0).getPath())) {
+      return;
+    }
+    String second = segments.get(1).getPath();
+    if (prefix.equals(second) || !PREFIXED_SEGMENTS.contains(second)) {
+      return;
+    }
+    StringBuilder newPath = new StringBuilder("/v1/").append(prefix);
+    for (int i = 1; i < segments.size(); i++) {
+      newPath.append('/').append(segments.get(i).getPath());
+    }
+    URI newUri =
+        UriBuilder.fromUri(uriInfo.getRequestUri()).replacePath(newPath.toString()).build();
+    context.setRequestUri(newUri);
+    context.setProperty("rewrittenPath", newPath.toString());
+  }
+
+  private String resolveAuthHeaderName() {
+    try {
+      String header =
+          ConfigProvider.getConfig()
+              .getOptionalValue(CONFIG_PREFIX + "auth-header", String.class)
+              .orElse(DEFAULT_AUTH_HEADER);
+      return header == null || header.isBlank() ? DEFAULT_AUTH_HEADER : header;
+    } catch (Exception ignored) {
+      return DEFAULT_AUTH_HEADER;
+    }
+  }
+
+  private Optional<String> defaultAccount() {
+    try {
+      return ConfigProvider.getConfig()
+          .getOptionalValue(CONFIG_PREFIX + "default-account-id", String.class)
+          .map(String::trim)
+          .filter(v -> !v.isBlank());
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private Optional<String> defaultAuthorization() {
+    try {
+      return ConfigProvider.getConfig()
+          .getOptionalValue(CONFIG_PREFIX + "default-authorization", String.class)
+          .map(String::trim)
+          .filter(value -> !value.isBlank())
+          .filter(value -> !isPlaceholder(value));
+    } catch (Exception ignored) {
+      return Optional.empty();
+    }
+  }
+
+  private String resolveAccountFromAuthClaim(ContainerRequestContext requestContext) {
+    String claimName = resolveAccountClaimName();
+    SecurityIdentity resolvedIdentity = identity;
+    if (resolvedIdentity == null || resolvedIdentity.isAnonymous()) {
+      String authHeader = resolveAuthHeaderName();
+      String token = headerValue(requestContext, authHeader);
+      if (token != null && !token.isBlank()) {
+        String oidcError = ensureOidcConfigured(authHeader);
+        if (oidcError != null) {
+          requestContext.abortWith(IcebergErrorResponses.unauthorized(oidcError));
+          requestContext.setProperty("authAbort", Boolean.TRUE);
+          return null;
+        }
+        resolvedIdentity = validateOidcHeader(token);
+      } else {
+        return null;
+      }
+    }
+    Object claim = extractClaim(resolvedIdentity, claimName);
+    String account = claim == null ? null : claim.toString();
+    return account != null && !account.isBlank() ? account : null;
+  }
+
+  private SecurityIdentity validateOidcHeader(String headerValue) {
+    if (identityProvider == null || identityProvider.isUnsatisfied()) {
+      return null;
+    }
+    String token = headerValue.trim();
+    if (token.regionMatches(true, 0, "bearer ", 0, 7)) {
+      token = token.substring(7).trim();
+    }
+    if (token.isBlank()) {
+      return null;
+    }
+    try {
+      AccessTokenCredential credential = new AccessTokenCredential(token);
+      SecurityIdentity validated =
+          identityProvider.get().authenticate(credential).await().indefinitely();
+      if (validated == null || validated.isAnonymous()) {
+        return null;
+      }
+      return validated;
+    } catch (RuntimeException e) {
+      return null;
+    }
+  }
+
+  private String ensureOidcConfigured(String headerLabel) {
+    var cfg = ConfigProvider.getConfig();
+    boolean tenantEnabled =
+        cfg.getOptionalValue("quarkus.oidc.tenant-enabled", Boolean.class).orElse(true);
+    boolean hasPublicKey =
+        cfg.getOptionalValue("quarkus.oidc.public-key", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    boolean hasAuthServerUrl =
+        cfg.getOptionalValue("quarkus.oidc.auth-server-url", String.class)
+            .filter(value -> !value.isBlank())
+            .isPresent();
+    if (!tenantEnabled) {
+      return headerLabel + " header configured but OIDC tenant is disabled";
+    }
+    if (!hasPublicKey && !hasAuthServerUrl) {
+      return headerLabel
+          + " header configured but no OIDC public key or auth server URL configured";
+    }
+    return null;
+  }
+
+  private Object extractClaim(SecurityIdentity resolvedIdentity, String claimName) {
+    if (resolvedIdentity == null || resolvedIdentity.isAnonymous()) {
+      return null;
+    }
+    if (resolvedIdentity.getPrincipal() instanceof JsonWebToken jwtPrincipal) {
+      return jwtPrincipal.getClaim(claimName);
+    }
+    return jwt != null ? jwt.getClaim(claimName) : null;
+  }
+
+  private String resolveAccountClaimName() {
+    try {
+      String claim =
+          ConfigProvider.getConfig()
+              .getOptionalValue(CONFIG_PREFIX + "account-claim", String.class)
+              .orElse("account_id");
+      return claim == null || claim.isBlank() ? "account_id" : claim.trim();
+    } catch (Exception ignored) {
+      return "account_id";
+    }
+  }
+
+  private boolean allowMissingAuthInDev() {
+    try {
+      return ConfigProvider.getConfig()
+          .getOptionalValue(CONFIG_PREFIX + "dev-allow-missing-auth", Boolean.class)
+          .orElse(false);
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private boolean isDevMode() {
+    try {
+      String mode =
+          ConfigProvider.getConfig()
+              .getOptionalValue(CONFIG_PREFIX + "auth-mode", String.class)
+              .orElse("oidc");
+      return mode != null && !mode.isBlank() && mode.trim().equalsIgnoreCase("dev");
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private String defaultPrefix() {
+    try {
+      String value =
+          ConfigProvider.getConfig()
+              .getOptionalValue(CONFIG_PREFIX + "default-prefix", String.class)
+              .map(String::trim)
+              .orElse("");
+      if (value.isEmpty()) {
+        String systemValue = System.getProperty("floecat.gateway.minimal.default-prefix", "");
+        String envValue = System.getenv("FLOECAT_GATEWAY_MINIMAL_DEFAULT_PREFIX");
+        if (!systemValue.isBlank()) {
+          value = systemValue.trim();
+        } else if (envValue != null && !envValue.isBlank()) {
+          value = envValue.trim();
+        }
+      }
+      return value;
+    } catch (Exception ex) {
+      return "";
+    }
+  }
+
+  private boolean isPlaceholder(String value) {
+    String normalized = value.trim();
+    return normalized.equalsIgnoreCase("undefined") || normalized.equalsIgnoreCase("null");
+  }
+
+  private String headerValue(ContainerRequestContext context, String headerName) {
+    String value = context.getHeaderString(headerName);
+    return value == null ? null : value.trim();
+  }
+}

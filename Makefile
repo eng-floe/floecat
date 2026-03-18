@@ -330,9 +330,10 @@ test: $(PROTO_JAR) keycloak-up
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
-	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
+	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory, OIDC enabled)"; \
 	  $(MVN) $(MVN_TESTALL) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
+	    -Dfloecat.test.oidc=true \
 	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    verify'
 
@@ -346,9 +347,10 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  trap cleanup EXIT; \
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
-	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack"; \
+	  echo "==> [TEST] full suite (service + REST + CLI) fixtures LocalStack + catalog LocalStack + OIDC"; \
 	  $(LOCALSTACK_ENV) \
 	  $(MVN) $(MVN_TESTALL) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) \
+	    -Dfloecat.test.oidc=true \
 	    -pl $(TEST_GATEWAY_MODULES) -am \
 	    verify'
 
@@ -726,12 +728,26 @@ cli-docker:
 oidc-up:
 	@echo "==> [DOCKER] starting stack with Keycloak + OIDC env"
 	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  KEYCLOAK_PORT=$(KEYCLOAK_PORT) \
+	  KC_HOSTNAME=127.0.0.1 \
+	  KC_HOSTNAME_PORT=$(KEYCLOAK_PORT) \
 	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc up -d
+	@echo "==> [KEYCLOAK] waiting for realm readiness"
+	@attempts=60; \
+	for i in $$(seq 1 $$attempts); do \
+	  if curl -fs $(KEYCLOAK_HEALTH) | grep -q "\"issuer\""; then exit 0; fi; \
+	  sleep 2; \
+	done; \
+	echo "Keycloak failed to become ready at $(KEYCLOAK_HEALTH)" >&2; \
+	exit 1
 
 .PHONY: oidc-down
 oidc-down:
 	@echo "==> [DOCKER] stopping stack with Keycloak + OIDC env"
 	@FLOECAT_ENV_FILE=./env.localstack-oidc \
+	  KEYCLOAK_PORT=$(KEYCLOAK_PORT) \
+	  KC_HOSTNAME=127.0.0.1 \
+	  KC_HOSTNAME_PORT=$(KEYCLOAK_PORT) \
 	  $(DOCKER_COMPOSE_MAIN) --profile localstack-oidc down --remove-orphans
 
 .PHONY: cli-test
@@ -874,7 +890,7 @@ compose-smoke-minimal: docker-service docker-iceberg-rest-minimal docker-cli
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
 	  FLOECAT_ICEBERG_REST_IMAGE=$${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest-minimal:local} \
 	  COMPOSE_SMOKE_GATEWAY_VARIANT=minimal \
-	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack} \
+	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=$${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-false} \
 	  COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=$${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-false} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs-minimal}" \

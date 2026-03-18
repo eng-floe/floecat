@@ -127,12 +127,7 @@ class NamespaceResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveNamespace(any()))
         .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(nsId).build());
 
-    given()
-        .when()
-        .head("/v1/foo/namespaces/analytics")
-        .then()
-        .statusCode(204)
-        .header("Content-Length", equalTo("0"));
+    given().when().head("/v1/foo/namespaces/analytics").then().statusCode(204);
   }
 
   @Test

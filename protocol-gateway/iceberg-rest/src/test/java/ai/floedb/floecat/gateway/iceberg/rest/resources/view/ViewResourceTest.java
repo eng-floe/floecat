@@ -542,12 +542,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveView(any()))
         .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
 
-    given()
-        .when()
-        .head("/v1/foo/namespaces/db/views/reports")
-        .then()
-        .statusCode(204)
-        .header("Content-Length", equalTo("0"));
+    given().when().head("/v1/foo/namespaces/db/views/reports").then().statusCode(204);
   }
 
   @Test

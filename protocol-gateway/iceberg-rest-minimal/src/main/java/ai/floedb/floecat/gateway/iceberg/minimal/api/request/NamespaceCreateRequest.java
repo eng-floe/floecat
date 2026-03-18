@@ -17,8 +17,11 @@
 package ai.floedb.floecat.gateway.iceberg.minimal.api.request;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
 import java.util.Map;
 
 public record NamespaceCreateRequest(
-    List<String> namespace, @JsonProperty("properties") Map<String, String> properties) {}
+    @JsonProperty("namespace") @JsonDeserialize(using = NamespaceListDeserializer.class)
+        List<String> namespace,
+    @JsonProperty("properties") Map<String, String> properties) {}

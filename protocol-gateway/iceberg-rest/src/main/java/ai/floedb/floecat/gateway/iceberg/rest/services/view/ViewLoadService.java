@@ -18,7 +18,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.view;
 
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.ViewResponseMapper;
-import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.ViewRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService.MetadataContext;
@@ -48,6 +47,6 @@ public class ViewLoadService {
 
   public Response exists(ViewRequestContext viewContext) {
     viewClient.getView(GetViewRequest.newBuilder().setViewId(viewContext.viewId()).build());
-    return IcebergErrorResponses.statusOnly(Response.Status.NO_CONTENT);
+    return Response.noContent().build();
   }
 }

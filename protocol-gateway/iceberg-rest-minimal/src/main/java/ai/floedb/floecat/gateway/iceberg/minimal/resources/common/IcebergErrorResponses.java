@@ -27,6 +27,10 @@ public final class IcebergErrorResponses {
     return error(message, "ValidationException", Response.Status.BAD_REQUEST);
   }
 
+  public static Response unauthorized(String message) {
+    return error(message, "UnauthorizedException", Response.Status.UNAUTHORIZED);
+  }
+
   public static Response noSuchNamespace(String message) {
     return error(message, "NoSuchNamespaceException", Response.Status.NOT_FOUND);
   }
@@ -49,6 +53,13 @@ public final class IcebergErrorResponses {
 
   public static Response conflict(String message) {
     return error(message, "CommitFailedException", Response.Status.CONFLICT);
+  }
+
+  public static Response unprocessable(String message) {
+    return Response.status(422)
+        .entity(
+            Map.of("error", Map.of("message", message, "type", "ValidationException", "code", 422)))
+        .build();
   }
 
   public static Response commitStateUnknown(String message) {

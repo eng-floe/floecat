@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.minimal.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.minimal.config.MinimalGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.minimal.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.minimal.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
@@ -74,6 +75,7 @@ class TransactionCommitServiceTest {
 
   private final TransactionBackend backend = Mockito.mock(TransactionBackend.class);
   private final MinimalGatewayConfig config = Mockito.mock(MinimalGatewayConfig.class);
+  private final AccountContext accountContext = Mockito.mock(AccountContext.class);
   private final TableFormatSupport tableFormatSupport = Mockito.mock(TableFormatSupport.class);
   private final IcebergMetadataCommitService metadataCommitService =
       Mockito.mock(IcebergMetadataCommitService.class);
@@ -87,11 +89,23 @@ class TransactionCommitServiceTest {
       new TransactionCommitService(
           backend,
           config,
+          accountContext,
           tableFormatSupport,
           metadataCommitService,
           connectorProvisioningService,
           commitJournalService,
           sideEffectService);
+
+  {
+    when(accountContext.getAccountId()).thenReturn("acct-1");
+  }
+
+  @Test
+  void rejectsCommitWhenAccountContextMissing() {
+    when(accountContext.getAccountId()).thenReturn(" ");
+
+    assertEquals(400, service.commit("foo", "idem-1", request()).getStatus());
+  }
 
   @Test
   void returnsNoContentWhenApplied() {
@@ -575,7 +589,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void failsClosedWhenAppliedReplayValidationDataIsMissing() {
+  void acceptsAppliedTransactionWhenReplayValidationDataIsMissing() {
     stubLookups();
     when(backend.beginTransaction(any(), any(), any()))
         .thenReturn(
@@ -593,7 +607,7 @@ class TransactionCommitServiceTest {
     when(commitJournalService.getReplayIndex("acct-1", "tx-applied-missing-replay"))
         .thenReturn(Optional.empty());
 
-    assertEquals(503, service.commit("foo", "idem-replay-missing", request()).getStatus());
+    assertEquals(204, service.commit("foo", "idem-replay-missing", request()).getStatus());
   }
 
   @Test
@@ -631,7 +645,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void failsClosedWhenAppliedAssertCreateReplayValidationDataIsMissing() {
+  void acceptsAppliedAssertCreateWhenReplayValidationDataIsMissing() {
     when(config.deltaCompat()).thenReturn(Optional.empty());
     when(backend.resolveCatalog("foo"))
         .thenReturn(
@@ -662,7 +676,7 @@ class TransactionCommitServiceTest {
     when(backend.resolveTable("foo", List.of("db"), "orders"))
         .thenThrow(Status.NOT_FOUND.withDescription("missing").asRuntimeException());
 
-    assertEquals(503, service.commit("foo", "idem-create", requestWithAssertCreate()).getStatus());
+    assertEquals(204, service.commit("foo", "idem-create", requestWithAssertCreate()).getStatus());
   }
 
   @Test
@@ -865,6 +879,7 @@ class TransactionCommitServiceTest {
   void concurrentCommitsProduceOneWinnerAndOneConflict() throws Exception {
     var concurrentBackend = new ConcurrentConflictBackend();
     var localConfig = Mockito.mock(MinimalGatewayConfig.class);
+    var localAccountContext = Mockito.mock(AccountContext.class);
     var localTableFormatSupport = Mockito.mock(TableFormatSupport.class);
     var localMetadataCommitService = Mockito.mock(IcebergMetadataCommitService.class);
     var localConnectorProvisioningService = Mockito.mock(ConnectorProvisioningService.class);
@@ -874,12 +889,14 @@ class TransactionCommitServiceTest {
         new TransactionCommitService(
             concurrentBackend,
             localConfig,
+            localAccountContext,
             localTableFormatSupport,
             localMetadataCommitService,
             localConnectorProvisioningService,
             localCommitJournalService,
             localSideEffectService);
     when(localConfig.deltaCompat()).thenReturn(Optional.empty());
+    when(localAccountContext.getAccountId()).thenReturn("acct-1");
 
     when(localConnectorProvisioningService.resolveOrCreateForCommit(
             any(), any(), anyList(), any(), any(), any(), any(), any()))
@@ -914,6 +931,7 @@ class TransactionCommitServiceTest {
   private void stubLookups() {
     when(config.deltaCompat()).thenReturn(Optional.empty());
     when(config.idempotencyKeyLifetime()).thenReturn(Duration.ofMinutes(30));
+    when(accountContext.getAccountId()).thenReturn("acct-1");
     when(connectorProvisioningService.resolveOrCreateForCommit(
             any(), any(), anyList(), any(), any(), any(), any(), any()))
         .thenAnswer(
