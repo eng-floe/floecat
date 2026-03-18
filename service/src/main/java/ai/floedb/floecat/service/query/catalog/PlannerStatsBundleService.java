@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.catalog;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
@@ -29,8 +30,15 @@ import ai.floedb.floecat.query.rpc.ColumnStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.ColumnStatsInfo;
 import ai.floedb.floecat.query.rpc.ColumnStatsResult;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.StatsWarning;
 import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.TableConstraintsBatch;
+import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
+import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
+import ai.floedb.floecat.query.rpc.TableConstraintsBundleHeader;
+import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -41,12 +49,17 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -58,9 +71,15 @@ public class PlannerStatsBundleService {
   private static final String PIN_MISSING_CODE = "planner_stats.pin.missing";
   private static final String COLUMN_MISSING_CODE = "planner_stats.column_stats.missing";
   private static final String COLUMN_ERROR_CODE = "planner_stats.column_stats.error";
+  private static final String CONSTRAINT_MISSING_CODE = "planner_stats.constraints.missing";
+  private static final String CONSTRAINT_ERROR_CODE = "planner_stats.constraints.error";
   private static final String SCAN_CAPPED_CODE = "planner_stats.column_stats.scan_capped";
 
   private final StatsProviderFactory statsFactory;
+  private final Supplier<ConstraintProvider> constraintProviderSupplier;
+  private final BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner>
+      constraintPrunerFactory;
+  private final Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory;
   private final StatsRepository repository;
   private final int maxTables;
   private final int maxColumns;
@@ -72,6 +91,8 @@ public class PlannerStatsBundleService {
   @Inject
   public PlannerStatsBundleService(
       StatsProviderFactory statsFactory,
+      ConstraintProviderFactory constraintFactory,
+      ConstraintPrunerFactory constraintPrunerFactory,
       StatsRepository repository,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
       @ConfigProperty(name = "floecat.planner.stats.max-columns", defaultValue = "1024")
@@ -80,13 +101,27 @@ public class PlannerStatsBundleService {
           int maxResultsPerChunk) {
     this(
         statsFactory,
+        constraintFactory::provider,
+        constraintPrunerFactory::forRequest,
+        constraintPrunerFactory::forConstraintsOnlyRequest,
         repository,
         new PlannerStatsLimits(maxTables, maxColumns, maxResultsPerChunk));
   }
 
   PlannerStatsBundleService(
-      StatsProviderFactory statsFactory, StatsRepository repository, PlannerStatsLimits limits) {
+      StatsProviderFactory statsFactory,
+      Supplier<ConstraintProvider> constraintProviderSupplier,
+      BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
+      Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory,
+      StatsRepository repository,
+      PlannerStatsLimits limits) {
     this.statsFactory = Objects.requireNonNull(statsFactory, "statsFactory");
+    this.constraintProviderSupplier =
+        Objects.requireNonNull(constraintProviderSupplier, "constraintProviderSupplier");
+    this.constraintPrunerFactory =
+        Objects.requireNonNull(constraintPrunerFactory, "constraintPrunerFactory");
+    this.constraintsOnlyPrunerFactory =
+        Objects.requireNonNull(constraintsOnlyPrunerFactory, "constraintsOnlyPrunerFactory");
     this.repository = Objects.requireNonNull(repository, "repository");
     this.maxTables = Math.max(1, limits.maxTables);
     this.maxColumns = Math.max(1, limits.maxColumns);
@@ -99,8 +134,27 @@ public class PlannerStatsBundleService {
       int maxTables,
       int maxColumns,
       int maxResultsPerChunk) {
+    return forTesting(
+        statsFactory,
+        ConstraintProvider.NONE,
+        repository,
+        maxTables,
+        maxColumns,
+        maxResultsPerChunk);
+  }
+
+  public static PlannerStatsBundleService forTesting(
+      StatsProviderFactory statsFactory,
+      ConstraintProvider constraintProvider,
+      StatsRepository repository,
+      int maxTables,
+      int maxColumns,
+      int maxResultsPerChunk) {
     return new PlannerStatsBundleService(
         statsFactory,
+        () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
+        RequestScopeConstraintPruner::new,
+        RequestScopeConstraintPruner::forRequestedTablesOnly,
         repository,
         new PlannerStatsLimits(maxTables, maxColumns, maxResultsPerChunk));
   }
@@ -111,6 +165,11 @@ public class PlannerStatsBundleService {
         request == null ? FetchColumnStatsRequest.getDefaultInstance() : request;
     NormalizedRequest normalized = normalizeRequest(correlationId, safeRequest);
     List<TableRequest> tableRequests = normalized.tables();
+    ConstraintProvider constraintProvider =
+        safeRequest.getIncludeConstraints()
+            ? constraintProviderSupplier.get()
+            : ConstraintProvider.NONE;
+    SnapshotPinLookup pinLookup = statsFactory.pinLookupForQuery(ctx, correlationId);
     return Multi.createFrom()
         .<ColumnStatsBundleChunk>deferred(
             () ->
@@ -121,11 +180,42 @@ public class PlannerStatsBundleService {
                                 ctx.getQueryId(),
                                 correlationId,
                                 tableRequests,
-                                statsFactory.forQuery(ctx, correlationId),
+                                pinLookup,
+                                constraintProvider,
+                                safeRequest.getIncludeConstraints(),
+                                constraintPrunerFactory,
                                 repository,
                                 maxResultsPerChunk,
                                 tableRequests.size(),
                                 normalized.requestedColumns())));
+  }
+
+  public Multi<TableConstraintsBundleChunk> streamConstraints(
+      String correlationId, QueryContext ctx, FetchTableConstraintsRequest request) {
+    FetchTableConstraintsRequest safeRequest =
+        request == null ? FetchTableConstraintsRequest.getDefaultInstance() : request;
+    List<ResourceId> tableIds = normalizeConstraintsRequest(correlationId, safeRequest);
+    Set<String> requestedRelationKeys = new LinkedHashSet<>();
+    for (ResourceId tableId : tableIds) {
+      requestedRelationKeys.add(RequestScopeConstraintPruner.relationKey(tableId));
+    }
+    ConstraintPruner constraintPruner =
+        constraintsOnlyPrunerFactory.apply(Set.copyOf(requestedRelationKeys));
+    ConstraintProvider constraintProvider = constraintProviderSupplier.get();
+    SnapshotPinLookup pinLookup = statsFactory.pinLookupForQuery(ctx, correlationId);
+    return Multi.createFrom()
+        .<TableConstraintsBundleChunk>deferred(
+            () ->
+                Multi.createFrom()
+                    .iterable(
+                        () ->
+                            new TableConstraintsIterator(
+                                ctx.getQueryId(),
+                                tableIds,
+                                pinLookup,
+                                constraintProvider,
+                                constraintPruner,
+                                maxResultsPerChunk)));
   }
 
   private NormalizedRequest normalizeRequest(
@@ -181,6 +271,33 @@ public class PlannerStatsBundleService {
     return new NormalizedRequest(List.copyOf(normalized), totalColumns);
   }
 
+  private List<ResourceId> normalizeConstraintsRequest(
+      String correlationId, FetchTableConstraintsRequest request) {
+    if (request.getTableIdsCount() == 0) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, PLANNER_STATS_REQUEST_TABLES_MISSING, Map.of());
+    }
+    if (request.getTableIdsCount() > maxTables) {
+      throw GrpcErrors.invalidArgument(
+          correlationId,
+          PLANNER_STATS_REQUEST_TABLES_LIMIT,
+          Map.of("max_tables", Integer.toString(maxTables)));
+    }
+
+    Map<String, ResourceId> deduped = new LinkedHashMap<>(request.getTableIdsCount());
+    for (int tableIndex = 0; tableIndex < request.getTableIdsCount(); tableIndex++) {
+      ResourceId tableId = request.getTableIds(tableIndex);
+      if (tableId.getId().isBlank()) {
+        throw GrpcErrors.invalidArgument(
+            correlationId,
+            PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
+            Map.of("table_index", Integer.toString(tableIndex)));
+      }
+      deduped.putIfAbsent(RequestScopeConstraintPruner.relationKey(tableId), tableId);
+    }
+    return List.copyOf(deduped.values());
+  }
+
   private static List<Long> dedupeColumnIds(
       String correlationId, String tableId, List<Long> columnIds) {
     LinkedHashSet<Long> seen = new LinkedHashSet<>(columnIds.size());
@@ -196,96 +313,145 @@ public class PlannerStatsBundleService {
     return new ArrayList<>(seen);
   }
 
-  private static final class PlannerStatsIterator implements Iterator<ColumnStatsBundleChunk> {
+  // ---------------------------------------------------------------------------
+  // Shared iterator base
+  // ---------------------------------------------------------------------------
 
-    private final String queryId;
+  private abstract static class BundleIterator<C> implements Iterator<C> {
+
+    protected final String queryId;
+    protected long seq = 1;
+    private boolean headerEmitted = false;
+    private boolean endEmitted = false;
+
+    protected BundleIterator(String queryId) {
+      this.queryId = queryId;
+    }
+
+    @Override
+    public final boolean hasNext() {
+      return !endEmitted;
+    }
+
+    @Override
+    public final C next() {
+      if (!headerEmitted) {
+        headerEmitted = true;
+        return header();
+      }
+      if (hasMoreWork()) {
+        return batch();
+      }
+      if (!endEmitted) {
+        endEmitted = true;
+        return end();
+      }
+      throw new NoSuchElementException();
+    }
+
+    protected abstract C header();
+
+    protected abstract C batch();
+
+    protected abstract C end();
+
+    protected abstract boolean hasMoreWork();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Column stats iterator
+  // ---------------------------------------------------------------------------
+
+  private static final class PlannerStatsIterator extends BundleIterator<ColumnStatsBundleChunk> {
+
     private final String correlationId;
     private final List<TableWork> tableWorks;
-    private final StatsProvider statsProvider;
+    private final SnapshotPinLookup pinLookup;
+    private final ConstraintProvider constraintProvider;
+    private final boolean includeConstraints;
+    private final ConstraintPruner constraintPruner;
     private final StatsRepository repository;
     private final int maxResultsPerChunk;
     private final long requestedTables;
     private final long requestedColumns;
 
     private int nextTableIndex = 0;
-    private long seq = 1;
     private long returnedColumns = 0;
     private long notFoundColumns = 0;
     private long errorColumns = 0;
-    private boolean headerEmitted = false;
-    private boolean endEmitted = false;
     private final List<StatsWarning> pendingWarnings = new ArrayList<>();
 
     private PlannerStatsIterator(
         String queryId,
         String correlationId,
         List<TableRequest> tables,
-        StatsProvider statsProvider,
+        SnapshotPinLookup pinLookup,
+        ConstraintProvider constraintProvider,
+        boolean includeConstraints,
+        BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
         StatsRepository repository,
         int maxResultsPerChunk,
         long requestedTables,
         long requestedColumns) {
-      this.queryId = queryId;
+      super(queryId);
       this.correlationId = correlationId;
-      this.statsProvider = statsProvider;
+      this.pinLookup = pinLookup;
+      this.constraintProvider = constraintProvider;
+      this.includeConstraints = includeConstraints;
       this.repository = repository;
       this.maxResultsPerChunk = maxResultsPerChunk;
       this.requestedTables = requestedTables;
       this.requestedColumns = requestedColumns;
+      Set<String> requestedRelationKeys = new LinkedHashSet<>();
+      Map<String, Set<Long>> requestedColumnsByRelationKey = new LinkedHashMap<>();
       this.tableWorks = new ArrayList<>(tables.size());
       for (TableRequest table : tables) {
+        String key = RequestScopeConstraintPruner.relationKey(table.tableId());
+        requestedRelationKeys.add(key);
+        requestedColumnsByRelationKey.put(key, new LinkedHashSet<>(table.columnIds()));
         this.tableWorks.add(new TableWork(table.tableId(), table.columnIds()));
       }
+      this.constraintPruner =
+          constraintPrunerFactory.apply(
+              Set.copyOf(requestedRelationKeys),
+              requestedColumnsByRelationKey.entrySet().stream()
+                  .collect(
+                      java.util.stream.Collectors.toUnmodifiableMap(
+                          Map.Entry::getKey, e -> Set.copyOf(e.getValue()))));
     }
 
     @Override
-    public boolean hasNext() {
-      return !endEmitted;
-    }
-
-    @Override
-    public ColumnStatsBundleChunk next() {
-      if (!headerEmitted) {
-        headerEmitted = true;
-        return headerChunk();
-      }
-
-      if (hasMoreWork()) {
-        return batchChunk();
-      }
-
-      if (!endEmitted) {
-        endEmitted = true;
-        return endChunk();
-      }
-
-      throw new NoSuchElementException();
-    }
-
-    private boolean hasMoreWork() {
+    protected boolean hasMoreWork() {
       return nextTableIndex < tableWorks.size();
     }
 
-    private ColumnStatsBundleChunk headerChunk() {
-      ColumnStatsBundleHeader header = ColumnStatsBundleHeader.newBuilder().build();
+    @Override
+    protected ColumnStatsBundleChunk header() {
       return ColumnStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
           .setSeq(seq++)
-          .setHeader(header)
+          .setHeader(ColumnStatsBundleHeader.newBuilder().build())
           .build();
     }
 
-    private ColumnStatsBundleChunk batchChunk() {
+    @Override
+    protected ColumnStatsBundleChunk batch() {
       List<ColumnStatsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
+      List<TableConstraintsResult> constraintsOut = new ArrayList<>();
       while (out.size() < maxResultsPerChunk && hasMoreWork()) {
         TableWork work = tableWorks.get(nextTableIndex);
         ColumnStatsResult result = processNextColumn(work);
         out.add(result);
+        if (includeConstraints && !work.constraintsEmitted()) {
+          constraintsOut.add(processConstraints(work));
+          work.markConstraintsEmitted();
+        }
         if (!work.hasMoreColumns()) {
           nextTableIndex++;
         }
       }
-      ColumnStatsBatch.Builder batchBuilder = ColumnStatsBatch.newBuilder().addAllColumns(out);
+      ColumnStatsBatch.Builder batchBuilder =
+          ColumnStatsBatch.newBuilder().addAllColumns(out).addAllConstraints(constraintsOut);
       if (!pendingWarnings.isEmpty()) {
         batchBuilder.addAllWarnings(pendingWarnings);
         pendingWarnings.clear();
@@ -295,6 +461,23 @@ public class PlannerStatsBundleService {
           .setQueryId(queryId)
           .setSeq(seq++)
           .setBatch(batch)
+          .build();
+    }
+
+    @Override
+    protected ColumnStatsBundleChunk end() {
+      ColumnStatsBundleEnd end =
+          ColumnStatsBundleEnd.newBuilder()
+              .setRequestedTables(requestedTables)
+              .setRequestedColumns(requestedColumns)
+              .setReturnedColumns(returnedColumns)
+              .setNotFoundColumns(notFoundColumns)
+              .setErrorColumns(errorColumns)
+              .build();
+      return ColumnStatsBundleChunk.newBuilder()
+          .setQueryId(queryId)
+          .setSeq(seq++)
+          .setEnd(end)
           .build();
     }
 
@@ -325,11 +508,17 @@ public class PlannerStatsBundleService {
       return result;
     }
 
+    private TableConstraintsResult processConstraints(TableWork work) {
+      return resolveConstraintResult(
+              work.tableId, resolveSnapshot(work), constraintProvider, constraintPruner)
+          .result();
+    }
+
     private OptionalLong resolveSnapshot(TableWork work) {
       if (work.pinResolved) {
         return work.pinnedSnapshot;
       }
-      work.pinnedSnapshot = statsProvider.pinnedSnapshotId(work.tableId);
+      work.pinnedSnapshot = pinLookup.pinnedSnapshotId(work.tableId);
       work.pinResolved = true;
       return work.pinnedSnapshot;
     }
@@ -393,24 +582,19 @@ public class PlannerStatsBundleService {
       view.maxValue().ifPresent(info::setMax);
       view.ndv().ifPresent(info::setNdv);
 
-      ColumnStatsResult.Builder builder =
-          ColumnStatsResult.newBuilder()
-              .setTableId(tableId)
-              .setColumnId(columnId)
-              .setColumnName(view.columnName())
-              .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
-              .setStats(info.build());
-      return builder.build();
+      return ColumnStatsResult.newBuilder()
+          .setTableId(tableId)
+          .setColumnId(columnId)
+          .setColumnName(view.columnName())
+          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
+          .setStats(info.build())
+          .build();
     }
 
     private ColumnStatsResult buildErrorResult(
         ResourceId tableId, long columnId, long snapshotId, RuntimeException e) {
       BundleFailure failure =
-          BundleFailure.newBuilder()
-              .setCode(COLUMN_ERROR_CODE)
-              .setMessage("column stats lookup failed")
-              .putDetails("table_id", tableId.getId())
-              .putDetails("account_id", tableId.getAccountId())
+          failureBase(tableId, COLUMN_ERROR_CODE, "column stats lookup failed")
               .putDetails("column_id", Long.toString(columnId))
               .putDetails("snapshot_id", Long.toString(snapshotId))
               .putDetails("exception", e.getClass().getSimpleName())
@@ -426,35 +610,20 @@ public class PlannerStatsBundleService {
 
     private ColumnStatsResult notFoundResult(
         ResourceId tableId, long columnId, String code, String message, OptionalLong snapshotId) {
-      BundleFailure failure =
-          BundleFailure.newBuilder()
-              .setCode(code)
-              .setMessage(message)
-              .putDetails("table_id", tableId.getId())
-              .putDetails("account_id", tableId.getAccountId())
-              .putDetails("column_id", Long.toString(columnId))
-              .build();
-      if (snapshotId.isPresent()) {
-        failure =
-            failure.toBuilder()
-                .putDetails("snapshot_id", Long.toString(snapshotId.getAsLong()))
-                .build();
-      }
+      BundleFailure.Builder failure =
+          failureBase(tableId, code, message).putDetails("column_id", Long.toString(columnId));
+      snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
       return ColumnStatsResult.newBuilder()
           .setTableId(tableId)
           .setColumnId(columnId)
           .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
-          .setFailure(failure)
+          .setFailure(failure.build())
           .build();
     }
 
     private ColumnStatsResult pinMissingResult(ResourceId tableId, long columnId) {
       BundleFailure failure =
-          BundleFailure.newBuilder()
-              .setCode(PIN_MISSING_CODE)
-              .setMessage("snapshot pin missing")
-              .putDetails("table_id", tableId.getId())
-              .putDetails("account_id", tableId.getAccountId())
+          failureBase(tableId, PIN_MISSING_CODE, "snapshot pin missing")
               .putDetails("column_id", Long.toString(columnId))
               .build();
       return ColumnStatsResult.newBuilder()
@@ -464,23 +633,246 @@ public class PlannerStatsBundleService {
           .setFailure(failure)
           .build();
     }
+  }
 
-    private ColumnStatsBundleChunk endChunk() {
-      ColumnStatsBundleEnd end =
-          ColumnStatsBundleEnd.newBuilder()
-              .setRequestedTables(requestedTables)
-              .setRequestedColumns(requestedColumns)
-              .setReturnedColumns(returnedColumns)
-              .setNotFoundColumns(notFoundColumns)
-              .setErrorColumns(errorColumns)
+  // ---------------------------------------------------------------------------
+  // Constraints-only iterator
+  // ---------------------------------------------------------------------------
+
+  private static final class TableConstraintsIterator
+      extends BundleIterator<TableConstraintsBundleChunk> {
+
+    private final List<ResourceId> tableIds;
+    private final SnapshotPinLookup pinLookup;
+    private final ConstraintProvider constraintProvider;
+    private final ConstraintPruner constraintPruner;
+    private final int maxResultsPerChunk;
+
+    private int nextTableIndex = 0;
+    private long returnedTables = 0;
+    private long notFoundTables = 0;
+    private long errorTables = 0;
+
+    private TableConstraintsIterator(
+        String queryId,
+        List<ResourceId> tableIds,
+        SnapshotPinLookup pinLookup,
+        ConstraintProvider constraintProvider,
+        ConstraintPruner constraintPruner,
+        int maxResultsPerChunk) {
+      super(queryId);
+      this.tableIds = tableIds;
+      this.pinLookup = pinLookup;
+      this.constraintProvider = constraintProvider;
+      this.constraintPruner = constraintPruner;
+      this.maxResultsPerChunk = maxResultsPerChunk;
+    }
+
+    @Override
+    protected boolean hasMoreWork() {
+      return nextTableIndex < tableIds.size();
+    }
+
+    @Override
+    protected TableConstraintsBundleChunk header() {
+      return TableConstraintsBundleChunk.newBuilder()
+          .setQueryId(queryId)
+          .setSeq(seq++)
+          .setHeader(TableConstraintsBundleHeader.newBuilder().build())
+          .build();
+    }
+
+    @Override
+    protected TableConstraintsBundleChunk batch() {
+      List<TableConstraintsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
+      while (out.size() < maxResultsPerChunk && nextTableIndex < tableIds.size()) {
+        out.add(processTable(tableIds.get(nextTableIndex++)));
+      }
+      TableConstraintsBatch batch =
+          TableConstraintsBatch.newBuilder().addAllConstraints(out).build();
+      return TableConstraintsBundleChunk.newBuilder()
+          .setQueryId(queryId)
+          .setSeq(seq++)
+          .setBatch(batch)
+          .build();
+    }
+
+    @Override
+    protected TableConstraintsBundleChunk end() {
+      TableConstraintsBundleEnd end =
+          TableConstraintsBundleEnd.newBuilder()
+              .setRequestedTables(tableIds.size())
+              .setReturnedTables(returnedTables)
+              .setNotFoundTables(notFoundTables)
+              .setErrorTables(errorTables)
               .build();
-      return ColumnStatsBundleChunk.newBuilder()
+      return TableConstraintsBundleChunk.newBuilder()
           .setQueryId(queryId)
           .setSeq(seq++)
           .setEnd(end)
           .build();
     }
+
+    private TableConstraintsResult processTable(ResourceId tableId) {
+      ConstraintResolution result =
+          resolveConstraintResult(
+              tableId, pinLookup.pinnedSnapshotId(tableId), constraintProvider, constraintPruner);
+      switch (result.status()) {
+        case FOUND -> returnedTables++;
+        case NOT_FOUND -> notFoundTables++;
+        case ERROR -> errorTables++;
+      }
+      return result.result();
+    }
   }
+
+  // ---------------------------------------------------------------------------
+  // Constraint resolution (shared between both iterators)
+  // ---------------------------------------------------------------------------
+
+  private enum ConstraintResolutionStatus {
+    FOUND,
+    NOT_FOUND,
+    ERROR
+  }
+
+  private record ConstraintResolution(
+      TableConstraintsResult result, ConstraintResolutionStatus status) {}
+
+  private static ConstraintResolution resolveConstraintResult(
+      ResourceId tableId,
+      OptionalLong snapshotId,
+      ConstraintProvider constraintProvider,
+      ConstraintPruner constraintPruner) {
+    if (snapshotId.isEmpty()) {
+      LOG.debugf("constraint pin missing for %s", tableId.getId());
+      return new ConstraintResolution(
+          constraintPinMissingResult(tableId), ConstraintResolutionStatus.ERROR);
+    }
+
+    try {
+      OptionalLong pinnedSnapshotId = OptionalLong.of(snapshotId.getAsLong());
+      // Deliberate client-contract choice: constraints "absence" states are intentionally
+      // collapsed to NOT_FOUND for planner simplicity, while callers can distinguish the cause via
+      // failure.details["reason"]. This is not a statement that these storage states are
+      // equivalent:
+      // - provider_missing: no provider view
+      // - provider_empty: provider view with zero constraints
+      // - pruned_empty: provider view exists but request-scope pruning hid all constraints
+      // TODO: Revisit status mapping if planner clients need to distinguish provider_empty as
+      // FOUND with zero constraints while keeping provider_missing as NOT_FOUND.
+      var maybeView = constraintProvider.constraints(tableId, pinnedSnapshotId);
+      if (maybeView.isEmpty()) {
+        LOG.tracef(
+            "no constraints stored for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
+        return new ConstraintResolution(
+            constraintNotFoundResult(tableId, pinnedSnapshotId, "provider_missing"),
+            ConstraintResolutionStatus.NOT_FOUND);
+      }
+
+      List<ConstraintDefinition> visible = maybeView.get().constraints();
+      if (visible.isEmpty()) {
+        LOG.debugf(
+            "constraint provider returned empty bundle for %s snapshot %d",
+            tableId.getId(), snapshotId.getAsLong());
+        return new ConstraintResolution(
+            constraintNotFoundResult(tableId, pinnedSnapshotId, "provider_empty"),
+            ConstraintResolutionStatus.NOT_FOUND);
+      }
+      visible = constraintPruner.prune(tableId, visible);
+
+      // Semantics choice: provider FOUND + prune-to-empty is surfaced as NOT_FOUND to callers.
+      // This keeps client handling simple: no visible constraints for the request scope.
+      if (visible.isEmpty()) {
+        LOG.tracef(
+            "all constraints pruned for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
+        return new ConstraintResolution(
+            constraintNotFoundResult(tableId, pinnedSnapshotId, "pruned_empty"),
+            ConstraintResolutionStatus.NOT_FOUND);
+      }
+
+      LOG.tracef(
+          "constraints resolved for %s snapshot %d: %d constraints",
+          tableId.getId(), snapshotId.getAsLong(), visible.size());
+      if (LOG.isTraceEnabled()) {
+        for (ConstraintDefinition c : visible) {
+          LOG.tracef(
+              "  constraint: type=%s name=%s columns=%d enforcement=%s",
+              c.getType(), c.getName(), c.getColumnsCount(), c.getEnforcement());
+        }
+      }
+      return new ConstraintResolution(
+          TableConstraintsResult.newBuilder()
+              .setTableId(tableId)
+              .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
+              .addAllConstraints(visible)
+              .build(),
+          ConstraintResolutionStatus.FOUND);
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "constraint lookup failed for %s snapshot %d",
+          tableId.getId(),
+          snapshotId.getAsLong());
+      return new ConstraintResolution(
+          constraintErrorResult(tableId, OptionalLong.of(snapshotId.getAsLong()), e),
+          ConstraintResolutionStatus.ERROR);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Failure builders
+  // ---------------------------------------------------------------------------
+
+  private static BundleFailure.Builder failureBase(
+      ResourceId tableId, String code, String message) {
+    return BundleFailure.newBuilder()
+        .setCode(code)
+        .setMessage(message)
+        .putDetails("table_id", tableId.getId())
+        .putDetails("account_id", tableId.getAccountId());
+  }
+
+  private static TableConstraintsResult constraintPinMissingResult(ResourceId tableId) {
+    BundleFailure failure = failureBase(tableId, PIN_MISSING_CODE, "snapshot pin missing").build();
+    return TableConstraintsResult.newBuilder()
+        .setTableId(tableId)
+        .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
+        .setFailure(failure)
+        .build();
+  }
+
+  private static TableConstraintsResult constraintNotFoundResult(
+      ResourceId tableId, OptionalLong snapshotId, String reason) {
+    BundleFailure.Builder failure =
+        failureBase(tableId, CONSTRAINT_MISSING_CODE, "constraints missing")
+            .putDetails("reason", reason);
+    snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
+    return TableConstraintsResult.newBuilder()
+        .setTableId(tableId)
+        .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
+        .setFailure(failure.build())
+        .build();
+  }
+
+  private static TableConstraintsResult constraintErrorResult(
+      ResourceId tableId, OptionalLong snapshotId, RuntimeException exception) {
+    BundleFailure.Builder failure =
+        failureBase(tableId, CONSTRAINT_ERROR_CODE, "constraints lookup failed");
+    snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
+    failure
+        .putDetails("exception", exception.getClass().getSimpleName())
+        .putDetails("message", exception.getMessage() == null ? "" : exception.getMessage());
+    return TableConstraintsResult.newBuilder()
+        .setTableId(tableId)
+        .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
+        .setFailure(failure.build())
+        .build();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Supporting types
+  // ---------------------------------------------------------------------------
 
   private static final class TableWork {
     private final ResourceId tableId;
@@ -490,6 +882,7 @@ public class PlannerStatsBundleService {
     private Map<Long, ColumnStats> statsByColumn;
     private RuntimeException statsError;
     private int columnIndex = 0;
+    private boolean constraintsEmitted = false;
 
     private TableWork(ResourceId tableId, List<Long> columnIds) {
       this.tableId = tableId;
@@ -510,6 +903,14 @@ public class PlannerStatsBundleService {
 
     private int columnIndex() {
       return columnIndex;
+    }
+
+    private boolean constraintsEmitted() {
+      return constraintsEmitted;
+    }
+
+    private void markConstraintsEmitted() {
+      this.constraintsEmitted = true;
     }
   }
 

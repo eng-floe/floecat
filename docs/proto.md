@@ -45,6 +45,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
+| `PlannerStatsService` | `GetColumnStats`, `GetTableConstraints` | Split planner-facing streams for column stats and table constraints; `GetColumnStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
 | `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
@@ -84,6 +85,17 @@ engine release.
   (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
   constraints are modeled as snapshot-attached relational facts.
+- **Planner split vs combined retrieval** – `PlannerStatsService.GetTableConstraints` provides a
+  dedicated constraints-only stream, while `GetColumnStats(include_constraints=true)` remains
+  available as a combined convenience mode. Split mode is relation-scoped (table visibility pruning
+  only) because `FetchTableConstraintsRequest` does not carry column projection context; combined
+  mode can apply relation+column request-shape-aware pruning. For constraints lookups,
+  `provider_missing` means no bundle exists, while `provider_empty` means a bundle exists and is
+  explicitly empty. For planner client simplicity, both are currently surfaced as
+  `BUNDLE_RESULT_STATUS_NOT_FOUND` (same as `pruned_empty`), with
+  `failure.details.reason` preserving the distinction.
+  For CHECK masking to work correctly, connector constraint payloads should populate
+  `ConstraintDefinition.columns` with referenced local column IDs.
 - **Idempotency/Preconditions** – Mutating RPCs accept `IdempotencyKey` or `Precondition` (expected
   CAS version/ETag). Repository logic mirrors these fields, so clients should obey the same values
   when retrying.

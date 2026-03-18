@@ -20,7 +20,9 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.PlannerStatsService;
+import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -69,20 +71,7 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
 
                       String queryId =
                           mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                      var ctxOpt = queryStore.get(queryId);
-                      if (ctxOpt.isEmpty()) {
-                        throw GrpcErrors.notFound(
-                            correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
-                      }
-
-                      QueryContext ctx = ctxOpt.get();
-                      if (!ctx.isActive()) {
-                        throw GrpcErrors.preconditionFailed(
-                            correlationId,
-                            QUERY_NOT_ACTIVE,
-                            Map.of("query_id", queryId, "state", ctx.getState().name()));
-                      }
-
+                      QueryContext ctx = requireActiveQuery(correlationId, queryId);
                       return bundles.stream(correlationId, ctx, request);
                     }))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
@@ -90,5 +79,48 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
         .invoke(L::fail)
         .onCompletion()
         .invoke(L::ok);
+  }
+
+  @ActivateRequestContext
+  @Override
+  public Multi<TableConstraintsBundleChunk> getTableConstraints(
+      FetchTableConstraintsRequest request) {
+    var L = LogHelper.start(LOG, "GetTableConstraints");
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+
+    return Multi.createFrom()
+        .<TableConstraintsBundleChunk>deferred(
+            () ->
+                grpcCtx.call(
+                    () -> {
+                      var principalContext = principal.get();
+                      var correlationId = principalContext.getCorrelationId();
+                      authz.require(principalContext, "catalog.read");
+
+                      String queryId =
+                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                      QueryContext ctx = requireActiveQuery(correlationId, queryId);
+                      return bundles.streamConstraints(correlationId, ctx, request);
+                    }))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+        .onFailure()
+        .invoke(L::fail)
+        .onCompletion()
+        .invoke(L::ok);
+  }
+
+  private QueryContext requireActiveQuery(String correlationId, String queryId) {
+    var ctxOpt = queryStore.get(queryId);
+    if (ctxOpt.isEmpty()) {
+      throw GrpcErrors.notFound(correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
+    }
+    QueryContext ctx = ctxOpt.get();
+    if (!ctx.isActive()) {
+      throw GrpcErrors.preconditionFailed(
+          correlationId,
+          QUERY_NOT_ACTIVE,
+          Map.of("query_id", queryId, "state", ctx.getState().name()));
+    }
+    return ctx;
   }
 }
