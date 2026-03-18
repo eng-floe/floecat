@@ -62,12 +62,35 @@ public class ConstraintRepository {
       repo.create(normalized);
       return true;
     }
-    SnapshotConstraints currentNormalized = ConstraintNormalizer.normalize(current.get());
-    if (currentNormalized.equals(normalized)) {
+    if (current.get().equals(normalized)) {
       return false;
     }
     MutationMeta meta = repo.metaFor(key);
     return repo.update(normalized, meta.getPointerVersion());
+  }
+
+  /**
+   * Updates an existing constraints bundle using optimistic pointer-version CAS.
+   *
+   * <p>Returns false when the expected pointer version does not match current storage state.
+   *
+   * @throws BaseResourceRepository.NotFoundException when the target bundle is missing.
+   */
+  public boolean updateSnapshotConstraints(
+      ResourceId tableId, long snapshotId, SnapshotConstraints value, long expectedPointerVersion) {
+    SnapshotConstraints normalized = normalizeForKey(tableId, snapshotId, value);
+    return repo.update(normalized, expectedPointerVersion);
+  }
+
+  /**
+   * Creates a constraints bundle only when no bundle exists for the snapshot.
+   *
+   * <p>Returns false when a bundle already exists.
+   */
+  public boolean createSnapshotConstraintsIfAbsent(
+      ResourceId tableId, long snapshotId, SnapshotConstraints value) {
+    SnapshotConstraints normalized = normalizeForKey(tableId, snapshotId, value);
+    return repo.createIfAbsent(normalized);
   }
 
   public Optional<SnapshotConstraints> getSnapshotConstraints(ResourceId tableId, long snapshotId) {

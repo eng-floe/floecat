@@ -842,9 +842,6 @@ public abstract class IcebergConnector implements FloecatConnector {
   @Override
   public void close() {
     closeCatalog();
-    try {
-    } catch (Exception ignore) {
-    }
     if (externalFileIO instanceof AutoCloseable closeable) {
       try {
         closeable.close();
@@ -884,6 +881,10 @@ public abstract class IcebergConnector implements FloecatConnector {
       try {
         puffinMap = PuffinNdvProvider.readPuffinNdvWithSketches(table, snapshotId, colNames::get);
       } catch (IOException ioe) {
+        LOG.debugf(
+            ioe,
+            "Puffin NDV read failed for snapshot %d; falling back to scan-based NDV",
+            snapshotId);
       }
 
       NdvProvider bootstrap =

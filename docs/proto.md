@@ -40,7 +40,7 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
-| `TableConstraintsService` | `PutTableConstraints` | Persists per-snapshot constraints. Requires snapshot existence (`NOT_FOUND` when missing). |
+| `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |

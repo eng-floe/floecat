@@ -49,11 +49,6 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   @Override
-  public String id() {
-    return super.id();
-  }
-
-  @Override
   public List<String> listNamespaces() {
     try {
       List<String> out = new ArrayList<>();

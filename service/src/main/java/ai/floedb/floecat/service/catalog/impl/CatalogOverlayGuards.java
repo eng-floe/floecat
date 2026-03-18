@@ -23,12 +23,14 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import java.util.Map;
 
-final class CatalogOverlayGuards {
+public final class CatalogOverlayGuards {
 
   private CatalogOverlayGuards() {}
 
@@ -84,6 +86,38 @@ final class CatalogOverlayGuards {
       throw GrpcErrors.permissionDenied(
           corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
     }
+  }
+
+  /** Resolves a visible table node from overlay, enforcing table kind and existence. */
+  public static TableNode requireVisibleTableNode(
+      CatalogOverlay overlay, ResourceId tableId, String corr) {
+    if (tableId == null) {
+      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
+    }
+    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+    return overlay
+        .resolve(tableId)
+        .filter(TableNode.class::isInstance)
+        .map(TableNode.class::cast)
+        .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+  }
+
+  /**
+   * Resolves a writable table node.
+   *
+   * <p>User tables are writable. System tables are immutable and return PERMISSION_DENIED.
+   */
+  public static TableNode requireWritableTableNode(
+      CatalogOverlay overlay, ResourceId tableId, String corr) {
+    TableNode node = requireVisibleTableNode(overlay, tableId, corr);
+    if (node instanceof UserTableNode) {
+      return node;
+    }
+    if (node.origin() == GraphNodeOrigin.SYSTEM) {
+      throw GrpcErrors.permissionDenied(
+          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", tableId.getId(), "kind", "table"));
+    }
+    throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
   }
 
   private static void ensureKind(

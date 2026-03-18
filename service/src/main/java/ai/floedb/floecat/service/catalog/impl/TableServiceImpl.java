@@ -112,9 +112,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
   private void ensureTableWritable(ResourceId tableId, String corr) {
-    // Only user tables may be mutated.
-    GraphNode node = requireVisibleTableNode(tableId, corr);
-    enforceWritableTableNode(node, tableId, corr);
+    CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, corr);
   }
 
   private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
@@ -142,6 +140,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private GraphNode resolveTableNode(ResourceId tableId, String corr, boolean throwOnError) {
+    if (throwOnError) {
+      return CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, corr);
+    }
     if (tableId == null) {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
     }
@@ -158,9 +159,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   }
 
   private GraphNode requireVisibleTableNode(ResourceId tableId, String corr) {
-    GraphNode node = resolveTableNode(tableId, corr, true);
-    if (node == null) throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
-    return node;
+    return CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, corr);
   }
 
   private Table tableFromOverlayNodeOrRepo(GraphNode node, ResourceId tableId, String corr) {
