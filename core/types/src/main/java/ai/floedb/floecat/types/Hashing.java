@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.util;
+package ai.floedb.floecat.types;
 
 import java.security.MessageDigest;
 
-public final class ResourceHash {
-  private ResourceHash() {}
+/** Shared hashing helpers for cross-module stable digest generation. */
+public final class Hashing {
+  private Hashing() {}
 
   public static String sha256Hex(byte[] bytes) {
     try {

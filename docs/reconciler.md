@@ -46,6 +46,15 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
   `ConnectorState` update or raises conflicts.
 - **Statistics ingestion** – Table stats plus column/file stats are streamed one request per item via
   `PutColumnStats` / `PutFileColumnStats`, keeping a single idempotency key per table/snapshot.
+- **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
+  `PutTableConstraints` after snapshot/stats handling.
+  - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
+    the current table reconcile, including when table stats were already captured.
+  - Constraints writes are repeatable/upsert-like: reconciler may rewrite the same
+    table+snapshot constraints on repeated runs (no separate "constraints already captured"
+    tracking is introduced here).
+  - Idempotency keys are derived from `SnapshotConstraints.toByteArray()` (byte-level,
+    order-sensitive payload hashing), not semantic normalization.
 - **Mode-aware behavior** – In `STATS_ONLY`, destination-table misses are treated as skip/no-op
   rather than job-fatal errors.
 - **Error handling** – Exceptions inside the per-table loop are caught, logged, and recorded in the

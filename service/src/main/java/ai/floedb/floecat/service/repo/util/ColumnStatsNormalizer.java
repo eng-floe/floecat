@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.NdvSketch;
+import ai.floedb.floecat.types.Hashing;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -74,9 +75,7 @@ public final class ColumnStatsNormalizer {
                 .thenComparingInt(s -> s.getData().isEmpty() ? -1 : s.getData().size())
                 .thenComparing(
                     s ->
-                        s.getData().isEmpty()
-                            ? null
-                            : ResourceHash.sha256Hex(s.getData().toByteArray()),
+                        s.getData().isEmpty() ? null : Hashing.sha256Hex(s.getData().toByteArray()),
                     Comparator.nullsFirst(Comparator.naturalOrder()));
         sketches.sort(sketchCmp);
         ndv.clearSketches();

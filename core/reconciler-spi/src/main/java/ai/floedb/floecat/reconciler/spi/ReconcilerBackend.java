@@ -19,6 +19,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -60,6 +61,9 @@ public interface ReconcilerBackend {
   void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats);
 
   void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats);
+
+  default void putSnapshotConstraints(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {}
 
   String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId);
 

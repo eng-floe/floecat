@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
@@ -67,6 +68,33 @@ public interface FloecatConnector extends Closeable {
       Set<String> includeColumns,
       boolean includeStatistics) {
     return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
+  }
+
+  /**
+   * Returns per-snapshot constraints for a table snapshot, if available.
+   *
+   * <p>Default: no constraints emitted.
+   */
+  default Optional<SnapshotConstraints> snapshotConstraints(
+      String namespaceFq, String tableName, ResourceId destinationTableId, long snapshotId) {
+    return Optional.empty();
+  }
+
+  /**
+   * Returns per-snapshot constraints for the provided snapshot bundle, if available.
+   *
+   * <p>Default: delegates to {@link #snapshotConstraints(String, String, ResourceId, long)}.
+   */
+  default Optional<SnapshotConstraints> snapshotConstraints(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      SnapshotBundle snapshotBundle) {
+    if (snapshotBundle == null || snapshotBundle.snapshotId() < 0) {
+      return Optional.empty();
+    }
+    return snapshotConstraints(
+        namespaceFq, tableName, destinationTableId, snapshotBundle.snapshotId());
   }
 
   record SnapshotEnumerationOptions(
