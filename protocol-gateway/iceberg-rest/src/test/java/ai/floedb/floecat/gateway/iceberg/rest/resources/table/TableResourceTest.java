@@ -58,9 +58,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -79,7 +77,6 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
@@ -89,7 +86,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -99,8 +95,6 @@ import org.mockito.ArgumentCaptor;
 class TableResourceTest extends AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
-
-  @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
   void setUpAtomicCommitDefaults() {
@@ -127,13 +121,6 @@ class TableResourceTest extends AbstractRestResourceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenAnswer(
-            invocation ->
-                MaterializeMetadataResult.success(
-                    null,
-                    invocation.getArgument(5, String.class),
-                    invocation.getArgument(4, TableMetadata.class)));
   }
 
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {
@@ -843,7 +830,7 @@ class TableResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void stageCreatePersistsMetadataWithoutRpc() {
+  void stageCreateStoresReservationWithBootstrapMetadataLocation() {
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveNamespace(any()))
@@ -851,15 +838,30 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveTable(any()))
         .thenThrow(Status.NOT_FOUND.asRuntimeException())
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    Map<String, Object> payload =
+        new LinkedHashMap<>(JsonPath.from(stageCreateRequest("orders")).getMap("$"));
+    payload.put("location", "s3://warehouse/db/orders");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> properties = (Map<String, Object>) payload.get("properties");
+    if (properties != null) {
+      properties.remove("metadata-location");
+      if (properties.isEmpty()) {
+        payload.remove("properties");
+      }
+    }
 
-    given()
-        .body(stageCreateRequest("orders"))
-        .contentType(MediaType.APPLICATION_JSON)
-        .when()
-        .post("/v1/foo/namespaces/db/tables")
-        .then()
-        .statusCode(200)
-        .body("metadata", notNullValue());
+    JsonPath body =
+        given()
+            .body(payload)
+            .contentType(MediaType.APPLICATION_JSON)
+            .when()
+            .post("/v1/foo/namespaces/db/tables")
+            .then()
+            .statusCode(200)
+            .body("metadata", notNullValue())
+            .body("metadata-location", notNullValue())
+            .extract()
+            .jsonPath();
 
     verify(tableStub, never()).createTable(any());
     java.util.Optional<StagedTableEntry> entry =
@@ -867,6 +869,13 @@ class TableResourceTest extends AbstractRestResourceTest {
     assertTrue(entry.isPresent());
     StagedTableEntry stored = entry.get();
     assertTrue(stored.key().stageId() != null && !stored.key().stageId().isBlank());
+    String metadataLocation = body.getString("metadata-location");
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00000-"
+            + stored.request().properties().get("table-uuid")
+            + ".metadata.json",
+        metadataLocation);
+    assertEquals(metadataLocation, stored.request().properties().get("metadata-location"));
   }
 
   @Test

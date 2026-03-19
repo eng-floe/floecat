@@ -106,8 +106,6 @@ public class MaterializeMetadataService {
           "Materialized Iceberg metadata files for %s.%s to %s",
           namespaceFq, tableName, resolvedLocation);
       return new MaterializeResult(resolvedLocation, parsed);
-    } catch (MaterializeMetadataException e) {
-      throw e;
     } catch (Exception e) {
       LOG.warnf(
           e,
@@ -115,7 +113,7 @@ public class MaterializeMetadataService {
           namespaceFq,
           tableName,
           resolvedLocation == null ? requestedLocation : resolvedLocation);
-      throw new MaterializeMetadataException(
+      throw new IllegalArgumentException(
           "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
     } finally {
       closeQuietly(fileIO);
@@ -170,8 +168,6 @@ public class MaterializeMetadataService {
       }
     }
   }
-
-  // TableMappingUtil provides firstNonBlank.
 
   private static boolean hasText(String value) {
     return value != null && !value.isBlank();
@@ -319,8 +315,14 @@ public class MaterializeMetadataService {
     if (metadata == null || !hasText(metadataLocation)) {
       return metadata;
     }
+    Map<String, String> props = new LinkedHashMap<>();
+    if (metadata.properties() != null && !metadata.properties().isEmpty()) {
+      props.putAll(metadata.properties());
+    }
+    props.put("metadata-location", metadataLocation);
     return TableMetadata.buildFrom(metadata)
         .discardChanges()
+        .setProperties(props)
         .withMetadataLocation(metadataLocation)
         .build();
   }

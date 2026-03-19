@@ -27,7 +27,6 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.nor
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
@@ -520,24 +519,6 @@ public class TablePropertyService {
       return null;
     }
     return asLong(main.get("snapshot-id"));
-  }
-
-  public Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadataView metadata) {
-    if (plannedTable == null || metadata == null) {
-      return plannedTable;
-    }
-    Map<String, String> props = new LinkedHashMap<>(plannedTable.getPropertiesMap());
-    putIntProperty(props, "format-version", metadata.formatVersion());
-    putIntProperty(props, "last-column-id", metadata.lastColumnId());
-    putIntProperty(props, "current-schema-id", metadata.currentSchemaId());
-    putIntProperty(props, "default-spec-id", metadata.defaultSpecId());
-    putIntProperty(props, "last-partition-id", metadata.lastPartitionId());
-    putIntProperty(props, "default-sort-order-id", metadata.defaultSortOrderId());
-    putLongProperty(props, "last-sequence-number", metadata.lastSequenceNumber());
-    syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
-    putStringProperty(props, "table-uuid", metadata.tableUuid());
-    props.putIfAbsent("location", metadata.location());
-    return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
   }
 
   public Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadata metadata) {

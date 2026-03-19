@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.Error;
@@ -41,9 +40,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.CanonicalTableMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -96,15 +94,13 @@ public class TransactionCommitService {
   @Inject TableCommitPlanner tableCommitPlanner;
   @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
   @Inject CommitResponseBuilder responseBuilder;
-  @Inject CanonicalCommitMetadataService canonicalCommitMetadataService;
   @Inject TablePropertyService tablePropertyService;
   @Inject ConnectorProvisioningService connectorProvisioningService;
+  @Inject IcebergMetadataService icebergMetadataService;
+  @Inject MaterializeMetadataService materializeMetadataService;
   @Inject TableCommitJournalService commitJournalService;
   @Inject TableCommitOutboxService commitOutboxService;
-  @Inject TableCommitMaterializationService materializationService;
   @Inject GrpcServiceFacade grpcClient;
-  @Inject CanonicalTableMetadataService canonicalTableMetadataService;
-  @Inject TableMetadataImportService tableMetadataImportService;
 
   public Response commitCreate(
       String prefix,
@@ -342,11 +338,6 @@ public class TransactionCommitService {
                   change.updates() == null ? List.of() : List.copyOf(change.updates()),
                   tableSupport,
                   preMaterializeAssertCreate);
-          if (preMaterialized.error() != null) {
-            maybeAbortOpenTransaction(
-                currentState, txId, "metadata materialization failed before atomic commit");
-            return preMaterialized.error();
-          }
           updated = preMaterialized.table();
           committedMetadata = preMaterialized.tableMetadata();
         }
@@ -654,72 +645,137 @@ public class TransactionCommitService {
       List<Map<String, Object>> updates,
       TableGatewaySupport tableSupport,
       boolean preMaterializeAssertCreate) {
-    if (plannedTable == null || tableSupport == null) {
+    if (plannedTable == null) {
       return new PreMaterializedTable(plannedTable, null, null);
     }
-    if (!preMaterializeAssertCreate
-        && hasRequirementType(requirements, CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE)) {
-      // Keep create-table locations empty so engines can own first metadata materialization.
+    TableRequests.Commit commitRequest =
+        new TableRequests.Commit(
+            requirements == null ? List.of() : List.copyOf(requirements),
+            updates == null ? List.of() : List.copyOf(updates));
+    CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(commitRequest);
+    boolean assertCreateRequested =
+        hasRequirementType(requirements, CommitUpdateInspector.REQUIREMENT_ASSERT_CREATE);
+    boolean firstWriteAssertCreate = assertCreateRequested && parsed.containsSnapshotUpdates();
+    if (!preMaterializeAssertCreate && assertCreateRequested && !firstWriteAssertCreate) {
       return new PreMaterializedTable(plannedTable, null, null);
     }
-    String requestedLocation =
-        CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
-    boolean skipMaterialization = requestedLocation != null;
-    // Materialize metadata for every commit so metadata-location advances atomically with table
-    // state, including snapshot-mutating updates.
-    IcebergMetadata metadata = null;
+    if (icebergMetadataService == null || materializeMetadataService == null) {
+      return new PreMaterializedTable(plannedTable, null, null);
+    }
+    TableMetadata baseMetadata = null;
+    String baseMetadataLocation = null;
     try {
-      metadata =
-          tableMetadataImportService.resolveCurrentIcebergMetadata(plannedTable, tableSupport);
+      var resolved =
+          icebergMetadataService.resolveMetadata(
+              tableName,
+              plannedTable,
+              null,
+              tableSupport == null ? Map.of() : tableSupport.defaultFileIoProperties(),
+              List::of);
+      if (resolved != null && resolved.tableMetadata() != null) {
+        baseMetadata = resolved.tableMetadata();
+        baseMetadataLocation =
+            firstNonBlank(
+                resolved.tableMetadata().metadataFileLocation(),
+                resolved.tableMetadata().properties().get("metadata-location"));
+      }
     } catch (RuntimeException e) {
-      // Create/staged-create commit paths can legitimately have no readable pointer yet.
-      // Continue with a metadata-free view so we can materialize and set metadata-location
-      // before atomic apply.
       LOG.debugf(
           e,
-          "Proceeding with pre-materialization without current metadata for tableId=%s table=%s",
+          "Skipping base metadata resolution during pre-materialization tableId=%s table=%s",
           tableId == null ? "<missing>" : tableId.getId(),
           tableName);
     }
-    var commitMetadata =
-        canonicalCommitMetadataService.applyCommitUpdates(
-            tableName,
-            tableId,
-            plannedTable,
-            metadata,
-            new TableRequests.Commit(List.of(), updates == null ? List.of() : List.copyOf(updates)),
-            tableSupport);
-    if (commitMetadata == null || commitMetadata.tableMetadata() == null) {
+    if (baseMetadata == null) {
+      if (firstWriteAssertCreate) {
+        baseMetadata =
+            icebergMetadataService.bootstrapTableMetadataFromCommit(plannedTable, commitRequest);
+        baseMetadataLocation =
+            baseMetadata == null
+                ? null
+                : firstNonBlank(
+                    baseMetadata.metadataFileLocation(),
+                    baseMetadata.properties().get("metadata-location"));
+      } else {
+        baseMetadata =
+            icebergMetadataService.bootstrapTableMetadata(
+                tableName,
+                plannedTable,
+                new LinkedHashMap<>(plannedTable.getPropertiesMap()),
+                null,
+                List.of());
+        baseMetadataLocation =
+            baseMetadata == null
+                ? null
+                : firstNonBlank(
+                    baseMetadata.metadataFileLocation(),
+                    baseMetadata.properties().get("metadata-location"));
+      }
+    }
+    if (baseMetadata == null) {
       return new PreMaterializedTable(plannedTable, null, null);
     }
-    Table canonicalizedTable =
+
+    TableMetadata canonicalMetadata =
+        icebergMetadataService.applyCommitUpdates(baseMetadata, plannedTable, commitRequest);
+    String canonicalMetadataLocation =
+        firstNonBlank(
+            canonicalMetadata == null ? null : canonicalMetadata.metadataFileLocation(),
+            canonicalMetadata == null
+                ? null
+                : canonicalMetadata.properties().get("metadata-location"),
+            plannedTable.getPropertiesMap().get("metadata-location"),
+            baseMetadataLocation);
+    if (canonicalMetadata != null
+        && canonicalMetadataLocation != null
+        && !canonicalMetadataLocation.isBlank()) {
+      canonicalMetadata =
+          TableMetadata.buildFrom(canonicalMetadata)
+              .discardChanges()
+              .withMetadataLocation(canonicalMetadataLocation)
+              .build();
+    }
+    if (canonicalMetadata == null) {
+      return new PreMaterializedTable(plannedTable, null, null);
+    }
+    ai.floedb.floecat.catalog.rpc.Table canonicalizedTable =
+        tablePropertyService.applyCanonicalMetadataProperties(plannedTable, canonicalMetadata);
+    String requestedMetadataLocation = parsed.requestedMetadataLocation();
+    if (requestedMetadataLocation != null
+        && !requestedMetadataLocation.isBlank()
+        && !firstWriteAssertCreate) {
+      return new PreMaterializedTable(canonicalizedTable, canonicalMetadata, null);
+    }
+
+    MaterializeMetadataService.MaterializeResult materialized;
+    try {
+      materialized =
+          materializeMetadataService.materialize(
+              namespace, tableName, canonicalMetadata, canonicalMetadata.metadataFileLocation());
+    } catch (IllegalArgumentException e) {
+      return new PreMaterializedTable(
+          plannedTable,
+          null,
+          IcebergErrorResponses.failure(
+              "metadata materialization failed",
+              "MaterializeMetadataException",
+              Response.Status.INTERNAL_SERVER_ERROR));
+    }
+    TableMetadata committedMetadata =
+        materialized == null || materialized.tableMetadata() == null
+            ? canonicalMetadata
+            : materialized.tableMetadata();
+    ai.floedb.floecat.catalog.rpc.Table materializedTable =
         tablePropertyService.applyCanonicalMetadataProperties(
-            plannedTable, commitMetadata.tableMetadata());
-    if (skipMaterialization) {
-      return new PreMaterializedTable(canonicalizedTable, commitMetadata.tableMetadata(), null);
+            canonicalizedTable, committedMetadata);
+    String metadataLocation = materialized == null ? null : materialized.metadataLocation();
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      Map<String, String> props = new LinkedHashMap<>(materializedTable.getPropertiesMap());
+      props.put("metadata-location", metadataLocation);
+      materializedTable =
+          materializedTable.toBuilder().clearProperties().putAllProperties(props).build();
     }
-    MaterializeMetadataResult result =
-        materializationService.materializeMetadata(
-            namespace,
-            tableId,
-            tableName,
-            canonicalizedTable,
-            commitMetadata.tableMetadata(),
-            commitMetadata.tableMetadata().metadataFileLocation());
-    if (result == null) {
-      return new PreMaterializedTable(plannedTable, null, null);
-    }
-    if (result.error() != null) {
-      return new PreMaterializedTable(plannedTable, result.tableMetadata(), result.error());
-    }
-    String location = result.metadataLocation();
-    if (location == null || location.isBlank()) {
-      return new PreMaterializedTable(canonicalizedTable, result.tableMetadata(), null);
-    }
-    return new PreMaterializedTable(
-        canonicalizedTable.toBuilder().putProperties("metadata-location", location).build(),
-        result.tableMetadata(),
-        null);
+    return new PreMaterializedTable(materializedTable, committedMetadata, null);
   }
 
   private SnapshotChangePlan planAtomicSnapshotChanges(
@@ -923,8 +979,15 @@ public class TransactionCommitService {
       return null;
     }
     IcebergMetadata base =
-        canonicalTableMetadataService.toIcebergMetadata(
+        icebergMetadataService.toIcebergMetadata(
             committedMetadata, committedMetadata.metadataFileLocation());
+    if (base == null) {
+      LOG.debugf(
+          "Skipping snapshot format metadata synthesis without readable Iceberg metadata tableId=%s snapshotId=%d",
+          table == null || !table.hasResourceId() ? "<missing>" : table.getResourceId().getId(),
+          snapshotId);
+      return null;
+    }
     IcebergMetadata.Builder builder = base.toBuilder().setCurrentSnapshotId(snapshotId);
     if (operation != null && !operation.isBlank()) {
       builder.setOperation(operation);
@@ -1490,9 +1553,9 @@ public class TransactionCommitService {
     }
     try {
       var metadata =
-          tableMetadataImportService == null
-              ? (tableSupport == null ? null : tableSupport.loadCurrentMetadata(table))
-              : tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport);
+          icebergMetadataService == null
+              ? null
+              : icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport);
       if (metadata != null) {
         if (metadata.getRefsMap().containsKey(refName)
             && metadata.getRefsOrThrow(refName).getSnapshotId() >= 0L) {

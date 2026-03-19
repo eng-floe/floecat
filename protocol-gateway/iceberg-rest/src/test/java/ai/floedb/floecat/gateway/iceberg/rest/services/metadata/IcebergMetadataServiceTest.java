@@ -19,9 +19,11 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,11 +38,11 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.encryption.EncryptedKey;
 import org.junit.jupiter.api.Test;
 
-class CanonicalTableMetadataServiceTest {
+class IcebergMetadataServiceTest {
 
   @Test
   void toIcebergMetadataPersistsAvailableSupplementalMetadata() {
-    CanonicalTableMetadataService service = new CanonicalTableMetadataService();
+    IcebergMetadataService service = new IcebergMetadataService();
     service.setMapper(new ObjectMapper());
 
     TableMetadata metadata = mock(TableMetadata.class);
@@ -143,7 +145,7 @@ class CanonicalTableMetadataServiceTest {
 
   @Test
   void toTableMetadataViewUsesNormalizedBuilderShape() {
-    CanonicalTableMetadataService service = new CanonicalTableMetadataService();
+    IcebergMetadataService service = new IcebergMetadataService();
     service.setMapper(new ObjectMapper());
 
     TableMetadata metadata = mock(TableMetadata.class);
@@ -191,5 +193,53 @@ class CanonicalTableMetadataServiceTest {
     assertEquals("s3://warehouse/metadata/00003.metadata.json", view.metadataLocation());
     assertNotNull(view.properties());
     assertEquals("alice", view.properties().get("owner"));
+  }
+
+  @Test
+  void bootstrapTableMetadataSynthesizesMetadataLocationFromTableLocation() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    Table table =
+        Table.newBuilder()
+            .putProperties("location", "s3://warehouse/orders")
+            .putProperties("format-version", "2")
+            .putProperties("current-schema-id", "0")
+            .putProperties("last-column-id", "1")
+            .putProperties("default-spec-id", "0")
+            .putProperties("last-partition-id", "1000")
+            .putProperties("default-sort-order-id", "0")
+            .putProperties("table-uuid", "uuid-1")
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"}]}")
+            .build();
+
+    TableMetadata metadata =
+        service.bootstrapTableMetadata("orders", table, table.getPropertiesMap(), null, List.of());
+
+    assertNotNull(metadata);
+    assertEquals("s3://warehouse/orders", metadata.location());
+  }
+
+  @Test
+  void bootstrapTableMetadataReturnsNullWhenNoTableLocationExists() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    Table table =
+        Table.newBuilder()
+            .putProperties("format-version", "2")
+            .putProperties("current-schema-id", "0")
+            .putProperties("last-column-id", "1")
+            .putProperties("default-spec-id", "0")
+            .putProperties("default-sort-order-id", "0")
+            .setSchemaJson(
+                "{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":false,\"type\":\"long\"}]}")
+            .build();
+
+    TableMetadata metadata =
+        service.bootstrapTableMetadata("orders", table, table.getPropertiesMap(), null, List.of());
+
+    assertNull(metadata);
   }
 }

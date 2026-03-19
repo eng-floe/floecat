@@ -19,6 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -318,6 +319,103 @@ class TableCommitServiceTest {
   }
 
   @Test
+  void commitInjectsStagedMetadataLocationWhenCallerProvidesCreateInitialization() {
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException())
+        .thenReturn(ResourceId.newBuilder().setId("cat:db:orders").build());
+    Table created = tableRecord("cat:db:orders");
+    when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
+        .thenReturn(created);
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+
+    StagedTableEntry staged =
+        new StagedTableEntry(
+            new StagedTableKey("account-1", "catalog", List.of("db"), "orders", "stage-1"),
+            ResourceId.newBuilder().setId("cat").build(),
+            ResourceId.newBuilder().setId("cat:db").build(),
+            createRequestWithMetadataLocation(),
+            ai.floedb.floecat.catalog.rpc.TableSpec.newBuilder().build(),
+            List.of(Map.of("type", "assert-create")),
+            StageState.STAGED,
+            Instant.now(),
+            Instant.now(),
+            "idem");
+    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+
+    TableRequests.Commit duckdbStyleCommit =
+        new TableRequests.Commit(
+            List.of(Map.of("type", "assert-create")),
+            List.of(
+                Map.of("action", "assign-uuid", "uuid", "uuid-1"),
+                Map.of(
+                    "action",
+                    "add-schema",
+                    "schema",
+                    Map.of(
+                        "schema-id", 1, "last-column-id", 1, "type", "struct", "fields", List.of()),
+                    "last-column-id",
+                    1)));
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any()))
+        .thenReturn(new CommitTableResponseDto(metadataView.metadataLocation(), metadataView));
+
+    Response response = service.commit(commandWithStage(duckdbStyleCommit, "stage-1"));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    ArgumentCaptor<TransactionCommitRequest> txRequestCaptor =
+        ArgumentCaptor.forClass(TransactionCommitRequest.class);
+    verify(transactionCommitService)
+        .commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
+    var updates = txRequestCaptor.getValue().tableChanges().get(0).updates();
+    assertEquals(3, updates.size());
+    assertEquals("assign-uuid", updates.get(0).get("action"));
+    assertEquals("add-schema", updates.get(1).get("action"));
+    assertEquals("set-properties", updates.get(2).get("action"));
+    @SuppressWarnings("unchecked")
+    Map<String, String> propertyUpdates = (Map<String, String>) updates.get(2).get("updates");
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00000-abc.metadata.json",
+        propertyUpdates.get("metadata-location"));
+    verify(responseBuilder)
+        .buildFinalResponse(
+            any(),
+            argThat(
+                stageResult ->
+                    stageResult != null
+                        && stageResult.loadResult() != null
+                        && stageResult.loadResult().metadata() != null
+                        && "s3://warehouse/db/orders/metadata/00000-abc.metadata.json"
+                            .equals(stageResult.loadResult().metadataLocation())),
+            any(),
+            eq(tableSupport));
+  }
+
+  @Test
   void commitRejectsDeltaWhenCompatReadOnlyEnabled() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table deltaTable =
@@ -367,6 +465,18 @@ class TableCommitServiceTest {
                             .put("required", true)
                             .put("type", "long")));
     return new TableRequests.Create("orders", schema, null, Map.of(), null, null, true);
+  }
+
+  private TableRequests.Create createRequestWithMetadataLocation() {
+    TableRequests.Create base = createRequest();
+    return new TableRequests.Create(
+        base.name(),
+        base.schema(),
+        base.location(),
+        Map.of("metadata-location", "s3://warehouse/db/orders/metadata/00000-abc.metadata.json"),
+        base.partitionSpec(),
+        base.writeOrder(),
+        base.stageCreate());
   }
 
   private Table tableRecord(String id) {

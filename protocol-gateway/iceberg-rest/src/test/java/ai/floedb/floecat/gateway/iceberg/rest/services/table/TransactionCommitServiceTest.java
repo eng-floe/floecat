@@ -18,8 +18,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -53,8 +53,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.CanonicalTableMetadataService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -79,7 +79,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -101,15 +105,13 @@ class TransactionCommitServiceTest {
       Mockito.mock(TableCommitJournalService.class);
   private final TableCommitOutboxService commitOutboxService =
       Mockito.mock(TableCommitOutboxService.class);
-  private final TableCommitMaterializationService materializationService =
-      Mockito.mock(TableCommitMaterializationService.class);
+  private final IcebergMetadataService icebergMetadataService =
+      Mockito.mock(IcebergMetadataService.class);
+  private final MaterializeMetadataService materializeMetadataService =
+      Mockito.mock(MaterializeMetadataService.class);
   private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
-  private final CanonicalCommitMetadataService canonicalCommitMetadataService =
-      Mockito.mock(CanonicalCommitMetadataService.class);
   private final GrpcServiceFacade grpcClient = Mockito.mock(GrpcServiceFacade.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
-  private final CanonicalTableMetadataService canonicalTableMetadataService =
-      new CanonicalTableMetadataService();
 
   @BeforeEach
   void setUp() {
@@ -120,14 +122,12 @@ class TransactionCommitServiceTest {
     service.tableCreateTransactionMapper = tableCreateTransactionMapper;
     service.commitJournalService = commitJournalService;
     service.commitOutboxService = commitOutboxService;
-    service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
-    service.canonicalCommitMetadataService = canonicalCommitMetadataService;
     service.grpcClient = grpcClient;
     service.tablePropertyService = tablePropertyService;
     service.connectorProvisioningService = connectorProvisioningService;
-    canonicalTableMetadataService.setMapper(mapper());
-    service.canonicalTableMetadataService = canonicalTableMetadataService;
+    service.icebergMetadataService = icebergMetadataService;
+    service.materializeMetadataService = materializeMetadataService;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
     when(requestContextFactory.catalog(any()))
@@ -143,7 +143,13 @@ class TransactionCommitServiceTest {
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenReturn(tableId);
 
-    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .putProperties(
+                "metadata-location", "s3://floecat/iceberg/orders/metadata/00001.metadata.json")
+            .build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
@@ -152,12 +158,15 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    CanonicalCommitMetadataService.CanonicalCommitMetadata canonicalCommitMetadata =
-        defaultCanonicalCommitMetadata();
-    when(canonicalCommitMetadataService.applyCommitUpdates(
-            any(), any(), any(), any(), any(), any()))
-        .thenReturn(canonicalCommitMetadata);
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
+    when(icebergMetadataService.resolveMetadata(anyString(), any(Table.class), any(), any(), any()))
+        .thenReturn(new IcebergMetadataService.ResolvedMetadata(null, null, null));
+    when(icebergMetadataService.applyCommitUpdates(any(), any(Table.class), any()))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+    when(materializeMetadataService.materialize(anyString(), anyString(), any(), any()))
+        .thenReturn(
+            new MaterializeMetadataService.MaterializeResult(
+                "s3://meta/default/00001.metadata.json", null));
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     when(tableSupport.getConnector(any()))
         .thenAnswer(
@@ -220,35 +229,6 @@ class TransactionCommitServiceTest {
             List.of(),
             List.of(),
             List.of()));
-  }
-
-  private CanonicalCommitMetadataService.CanonicalCommitMetadata defaultCanonicalCommitMetadata() {
-    TableMetadata tableMetadata = Mockito.mock(TableMetadata.class);
-    when(tableMetadata.uuid()).thenReturn("tbl-id");
-    when(tableMetadata.formatVersion()).thenReturn(2);
-    when(tableMetadata.metadataFileLocation())
-        .thenReturn("s3://warehouse/orders/metadata/00001.metadata.json");
-    when(tableMetadata.location()).thenReturn("s3://warehouse/orders");
-    when(tableMetadata.lastUpdatedMillis()).thenReturn(1L);
-    when(tableMetadata.lastColumnId()).thenReturn(0);
-    when(tableMetadata.currentSchemaId()).thenReturn(0);
-    when(tableMetadata.defaultSpecId()).thenReturn(0);
-    when(tableMetadata.lastAssignedPartitionId()).thenReturn(0);
-    when(tableMetadata.defaultSortOrderId()).thenReturn(0);
-    when(tableMetadata.lastSequenceNumber()).thenReturn(0L);
-    when(tableMetadata.nextRowId()).thenReturn(0L);
-    when(tableMetadata.properties()).thenReturn(Map.of());
-    when(tableMetadata.currentSnapshot()).thenReturn(null);
-    when(tableMetadata.snapshotLog()).thenReturn(List.of());
-    when(tableMetadata.previousFiles()).thenReturn(List.of());
-    when(tableMetadata.schemas()).thenReturn(List.of());
-    when(tableMetadata.specs()).thenReturn(List.of());
-    when(tableMetadata.sortOrders()).thenReturn(List.of());
-    when(tableMetadata.refs()).thenReturn(Map.of());
-    when(tableMetadata.statisticsFiles()).thenReturn(List.of());
-    when(tableMetadata.partitionStatisticsFiles()).thenReturn(List.of());
-    when(tableMetadata.encryptionKeys()).thenReturn(List.of());
-    return new CanonicalCommitMetadataService.CanonicalCommitMetadata(tableMetadata);
   }
 
   @Test
@@ -388,6 +368,13 @@ class TransactionCommitServiceTest {
             any(TableRequests.Create.class),
             eq(tableSupport)))
         .thenReturn(createTxRequest);
+    Table tableWithoutPointer =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
+            .putProperties("location", "s3://warehouse/orders")
+            .build();
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(tableWithoutPointer, null));
     when(tableSupport.loadCurrentMetadata(any(Table.class)))
         .thenThrow(new RuntimeException("missing pointer"));
 
@@ -422,8 +409,83 @@ class TransactionCommitServiceTest {
             tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService, never())
-        .materializeMetadata(any(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void commitWithAssertCreateAndSnapshotUpdatesMaterializesReservedMetadataLocation() {
+    ResourceId createdTableId =
+        ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-create").build();
+    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
+        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Table stagedTable =
+        Table.newBuilder()
+            .setResourceId(createdTableId)
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .putProperties(
+                "metadata-location",
+                "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")
+            .build();
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(stagedTable, null));
+
+    TableMetadata baseMetadata =
+        TableMetadata.buildFrom(
+                TableMetadata.newTableMetadata(
+                    new Schema(Types.NestedField.optional(1, "id", Types.LongType.get())),
+                    PartitionSpec.unpartitioned(),
+                    SortOrder.unsorted(),
+                    "s3://floecat/iceberg/orders",
+                    Map.of()))
+            .discardChanges()
+            .withMetadataLocation("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")
+            .build();
+    when(icebergMetadataService.resolveMetadata(anyString(), any(Table.class), any(), any(), any()))
+        .thenReturn(new IcebergMetadataService.ResolvedMetadata(baseMetadata, null, null));
+    when(icebergMetadataService.applyCommitUpdates(eq(baseMetadata), any(Table.class), any()))
+        .thenReturn(baseMetadata);
+    when(materializeMetadataService.materialize(
+            eq("db"),
+            eq("orders"),
+            any(TableMetadata.class),
+            eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")))
+        .thenReturn(
+            new MaterializeMetadataService.MaterializeResult(
+                "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json", baseMetadata));
+
+    Response response =
+        service.commit("pref", "idem", requestWithAssertCreateSnapshot(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(materializeMetadataService)
+        .materialize(
+            eq("db"),
+            eq("orders"),
+            any(TableMetadata.class),
+            eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json"));
   }
 
   @Test
@@ -445,6 +507,98 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+  }
+
+  @Test
+  void commitBootstrapsFromTableWhenReservedMetadataLocationCannotBeImported() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .putProperties(
+                "metadata-location",
+                "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")
+            .putProperties("format-version", "2")
+            .putProperties("table-uuid", "uuid-1")
+            .putProperties("current-schema-id", "0")
+            .putProperties("last-column-id", "1")
+            .putProperties("default-spec-id", "0")
+            .putProperties("last-partition-id", "0")
+            .putProperties("default-sort-order-id", "0")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(icebergMetadataService.resolveMetadata(anyString(), any(Table.class), any(), any(), any()))
+        .thenThrow(
+            new IllegalArgumentException(
+                "Unable to read Iceberg metadata from reserved stage-create location"));
+
+    TableMetadata baseMetadata =
+        TableMetadata.buildFrom(
+                TableMetadata.newTableMetadata(
+                    new Schema(Types.NestedField.optional(1, "id", Types.LongType.get())),
+                    PartitionSpec.unpartitioned(),
+                    SortOrder.unsorted(),
+                    "s3://floecat/iceberg/orders",
+                    Map.of()))
+            .discardChanges()
+            .withMetadataLocation("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")
+            .build();
+    when(icebergMetadataService.bootstrapTableMetadata(
+            eq("orders"), eq(table), anyMap(), eq(null), eq(List.of())))
+        .thenReturn(baseMetadata);
+    when(icebergMetadataService.applyCommitUpdates(eq(baseMetadata), eq(table), any()))
+        .thenReturn(baseMetadata);
+    when(materializeMetadataService.materialize(
+            eq("db"),
+            eq("orders"),
+            any(TableMetadata.class),
+            eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")))
+        .thenReturn(
+            new MaterializeMetadataService.MaterializeResult(
+                "s3://floecat/iceberg/orders/metadata/00001-real.metadata.json", baseMetadata));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(icebergMetadataService)
+        .bootstrapTableMetadata(eq("orders"), eq(table), anyMap(), eq(null), eq(List.of()));
+    verify(materializeMetadataService)
+        .materialize(
+            eq("db"),
+            eq("orders"),
+            any(TableMetadata.class),
+            eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json"));
   }
 
   private com.fasterxml.jackson.databind.ObjectMapper mapper() {
@@ -705,66 +859,6 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitPreMaterializesAndPublishesMetadataLocationAtomically() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table = Table.newBuilder().setResourceId(tableId).build();
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(table)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenReturn(IcebergMetadata.getDefaultInstance());
-    when(tableSupport.connectorIntegrationEnabled()).thenReturn(false);
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", request(), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(grpcClient)
-        .prepareTransaction(
-            argThat(
-                prepare ->
-                    prepare.getChangesList().stream()
-                        .anyMatch(
-                            change ->
-                                change.hasTable()
-                                    && "s3://meta/new/00002.metadata.json"
-                                        .equals(
-                                            change
-                                                .getTable()
-                                                .getPropertiesMap()
-                                                .get("metadata-location")))));
-  }
-
-  @Test
   void prepareAddsPerTableCommitJournalEntry() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     ResourceId connectorId =
@@ -777,7 +871,7 @@ class TransactionCommitServiceTest {
         Table.newBuilder()
             .setResourceId(tableId)
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://meta/new")
+            .putProperties("metadata-location", "s3://meta/new/00001.metadata.json")
             .putProperties("table-uuid", "tbl-uuid")
             .build();
     when(tableLifecycleService.getTableResponse(any()))
@@ -837,245 +931,9 @@ class TransactionCommitServiceTest {
                       && journal.getTableName().equals("orders")
                       && journal.getAddedSnapshotIdsList().equals(List.of(123L))
                       && journal.getRemovedSnapshotIdsList().isEmpty()
-                      && journal.getMetadataLocation().equals("s3://meta/new")
+                      && journal.getMetadataLocation().equals("s3://meta/new/00001.metadata.json")
                       && journal.getTableUuid().equals("tbl-uuid");
                 }));
-  }
-
-  @Test
-  void commitWithSnapshotUpdatesPreMaterializesWhenMetadataLocationMissing() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table = Table.newBuilder().setResourceId(tableId).build();
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(table)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenReturn(IcebergMetadata.getDefaultInstance());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(grpcClient)
-        .prepareTransaction(
-            argThat(
-                prepare ->
-                    prepare.getChangesList().stream()
-                        .anyMatch(
-                            change ->
-                                change.hasTable()
-                                    && "s3://meta/new/00002.metadata.json"
-                                        .equals(
-                                            change
-                                                .getTable()
-                                                .getPropertiesMap()
-                                                .get("metadata-location")))));
-  }
-
-  @Test
-  void commitWithSnapshotUpdatesRematerializesWhenMetadataLocationAlreadyExists() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("metadata-location", "s3://meta/old/00001.metadata.json")
-            .build();
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(table)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenReturn(
-            IcebergMetadata.newBuilder()
-                .setMetadataLocation("s3://meta/old/00001.metadata.json")
-                .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
-    verify(grpcClient)
-        .prepareTransaction(
-            argThat(
-                prepare ->
-                    prepare.getChangesList().stream()
-                        .anyMatch(
-                            change ->
-                                change.hasTable()
-                                    && "s3://meta/new/00002.metadata.json"
-                                        .equals(
-                                            change
-                                                .getTable()
-                                                .getPropertiesMap()
-                                                .get("metadata-location")))));
-  }
-
-  @Test
-  void buildSnapshotIcebergMetadataUsesCommittedTableMetadataAsSourceOfTruth() throws Exception {
-    IcebergMetadata staleBase =
-        IcebergMetadata.newBuilder()
-            .setFormatVersion(2)
-            .setCurrentSchemaId(1)
-            .addSchemas(
-                ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
-                    .setSchemaId(1)
-                    .setSchemaJson(
-                        """
-                        {"schema-id":1,"type":"struct","fields":[{"id":1,"name":"old_col","required":false,"type":"string"}]}
-                        """)
-                    .build())
-            .build();
-    when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(staleBase);
-
-    TableMetadataView committedMetadata =
-        new TableMetadataView(
-            2,
-            "tbl-uuid",
-            "s3://warehouse/orders",
-            "s3://warehouse/orders/metadata/00002.metadata.json",
-            1234L,
-            Map.of("metadata-location", "s3://warehouse/orders/metadata/00002.metadata.json"),
-            2,
-            0,
-            0,
-            0,
-            0,
-            999L,
-            7L,
-            List.of(
-                Map.of(
-                    "schema-id",
-                    0,
-                    "last-column-id",
-                    2,
-                    "type",
-                    "struct",
-                    "fields",
-                    List.of(
-                        Map.of("id", 1, "name", "id", "required", true, "type", "long"),
-                        Map.of("id", 2, "name", "note", "required", false, "type", "string")))),
-            List.of(Map.of("spec-id", 0, "fields", List.of())),
-            List.of(Map.of("order-id", 0, "fields", List.of())),
-            Map.of("main", Map.of("snapshot-id", 999L, "type", "branch")),
-            List.of(Map.of("timestamp-ms", 1L, "snapshot-id", 999L)),
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(
-                Map.of(
-                    "snapshot-id",
-                    999L,
-                    "sequence-number",
-                    7L,
-                    "timestamp-ms",
-                    1L,
-                    "manifest-list",
-                    "s3://warehouse/orders/metadata/snap-999.avro",
-                    "schema-id",
-                    0,
-                    "summary",
-                    Map.of("operation", "append"))));
-
-    TableMetadata canonical =
-        canonicalTableMetadataService.toTableMetadata(
-            committedMetadata, "s3://warehouse/orders/metadata/00002.metadata.json");
-
-    Method method =
-        TransactionCommitService.class.getDeclaredMethod(
-            "buildSnapshotIcebergMetadata",
-            Table.class,
-            TableMetadata.class,
-            TableGatewaySupport.class,
-            long.class,
-            Long.class,
-            String.class,
-            Map.class);
-    method.setAccessible(true);
-
-    IcebergMetadata encoded =
-        (IcebergMetadata)
-            method.invoke(
-                service,
-                Table.getDefaultInstance(),
-                canonical,
-                tableSupport,
-                999L,
-                7L,
-                "append",
-                Map.of("operation", "append", "engine-name", "test"));
-
-    assertNotNull(encoded);
-    assertEquals(
-        "s3://warehouse/orders/metadata/00002.metadata.json", encoded.getMetadataLocation());
-    assertEquals(0, encoded.getCurrentSchemaId());
-    assertEquals(1, encoded.getSchemasCount());
-    assertEquals(0, encoded.getSchemas(0).getSchemaId());
-    assertEquals(1, encoded.getPartitionSpecsCount());
-    assertEquals(1, encoded.getSortOrdersCount());
-    assertEquals(999L, encoded.getCurrentSnapshotId());
-    assertEquals(canonical.lastSequenceNumber(), encoded.getLastSequenceNumber());
-    assertEquals("append", encoded.getOperation());
-    assertEquals("append", encoded.getSummaryOrThrow("operation"));
-    assertEquals("test", encoded.getSummaryOrThrow("engine-name"));
-    assertEquals(999L, encoded.getRefsOrThrow("main").getSnapshotId());
   }
 
   @Test
@@ -1127,111 +985,6 @@ class TransactionCommitServiceTest {
             tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService, never())
-        .materializeMetadata(any(), any(), any(), any(), any(), any());
-  }
-
-  @Test
-  void commitPreMaterializesWhenCurrentMetadataCannotBeLoaded() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    Table table = Table.newBuilder().setResourceId(tableId).build();
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(table)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenThrow(new RuntimeException("missing pointer"));
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00002.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", request(), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
-    verify(grpcClient)
-        .prepareTransaction(
-            argThat(
-                prepare ->
-                    prepare.getChangesList().stream()
-                        .anyMatch(
-                            change ->
-                                change.hasTable()
-                                    && "s3://meta/new/00002.metadata.json"
-                                        .equals(
-                                            change
-                                                .getTable()
-                                                .getPropertiesMap()
-                                                .get("metadata-location")))));
-  }
-
-  @Test
-  void commitWithAssertCreatePreMaterializesWhenMetadataLocationMissing() {
-    ResourceId plannedTableId =
-        ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-create").build();
-    Table planned = Table.newBuilder().setResourceId(plannedTableId).build();
-    when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
-        .thenThrow(new StatusRuntimeException(Status.NOT_FOUND));
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(planned, null));
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
-        .thenThrow(new RuntimeException("missing pointer"));
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenReturn(MaterializeMetadataResult.success(null, "s3://meta/new/00001.metadata.json"));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializationService).materializeMetadata(any(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -1247,7 +1000,7 @@ class TransactionCommitServiceTest {
         Table.newBuilder()
             .setResourceId(tableId)
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://meta/new")
+            .putProperties("metadata-location", "s3://meta/new/00001.metadata.json")
             .build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
@@ -1313,7 +1066,7 @@ class TransactionCommitServiceTest {
         Table.newBuilder()
             .setResourceId(tableId)
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://meta/new")
+            .putProperties("metadata-location", "s3://meta/new/00001.metadata.json")
             .build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
@@ -1368,7 +1121,7 @@ class TransactionCommitServiceTest {
         Table.newBuilder()
             .setResourceId(tableId)
             .setCatalogId(ResourceId.newBuilder().setAccountId("acct-1").setId("cat-id").build())
-            .putProperties("metadata-location", "s3://meta/new")
+            .putProperties("metadata-location", "s3://meta/new/00001.metadata.json")
             .build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
@@ -1434,7 +1187,7 @@ class TransactionCommitServiceTest {
                                     change.hasTable()
                                         && change.getTable().hasUpstream()
                                         && change.getTable().getUpstream().hasConnectorId()
-                                        && "s3://meta/new"
+                                        && "s3://meta/new/00001.metadata.json"
                                             .equals(
                                                 change
                                                     .getTable()
@@ -1577,6 +1330,51 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("CommitFailedException", error.error().type());
+  }
+
+  @Test
+  void commitFailsWhenConnectorProvisioningWouldUseMissingMetadataLocation() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("conn-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    Table tableWithoutPointer =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(tableWithoutPointer)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(tableWithoutPointer, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+
+    Response response = service.commit("pref", "idem", request(), tableSupport);
+
+    assertEquals(Response.Status.SERVICE_UNAVAILABLE.getStatusCode(), response.getStatus());
+    IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
+    assertEquals("CommitStateUnknownException", error.error().type());
+    assertEquals("connector provisioning requires metadata-location", error.error().message());
+    verify(grpcClient, never()).prepareTransaction(any());
+    verify(grpcClient, never()).commitTransaction(any());
   }
 
   @Test
@@ -2107,13 +1905,18 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableLifecycleService.resolveTableId(any(), Mockito.<List<String>>any(), any()))
         .thenThrow(Status.NOT_FOUND.asRuntimeException());
+    ResourceId createdTableId =
+        ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-created").build();
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenAnswer(
-            invocation -> {
-              @SuppressWarnings("unchecked")
-              java.util.function.Supplier<Table> supplier = invocation.getArgument(1);
-              return new TableCommitPlanner.PlanResult(supplier.get(), null);
-            });
+        .thenReturn(
+            new TableCommitPlanner.PlanResult(
+                Table.newBuilder()
+                    .setResourceId(createdTableId)
+                    .putProperties("location", "s3://warehouse/orders")
+                    .putProperties(
+                        "metadata-location", "s3://warehouse/orders/metadata/00001.metadata.json")
+                    .build(),
+                null));
 
     Response response = service.commit("pref", "idem", requestWithAssertCreate(), tableSupport);
 
@@ -2127,11 +1930,12 @@ class TransactionCommitServiceTest {
                                 change ->
                                     change.hasTableId()
                                         && change.hasTable()
-                                        && change.getTable().hasResourceId()
-                                        && change
-                                            .getTableId()
-                                            .getId()
-                                            .equals(change.getTable().getResourceId().getId())
+                                        && "s3://warehouse/orders/metadata/00001.metadata.json"
+                                            .equals(
+                                                change
+                                                    .getTable()
+                                                    .getPropertiesMap()
+                                                    .get("metadata-location"))
                                         && change.getPrecondition().getExpectedVersion() == 0L)
                         && prepare.getChangesList().stream()
                             .anyMatch(
@@ -2189,7 +1993,7 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+    when(icebergMetadataService.resolveCurrentIcebergMetadata(any(Table.class), eq(tableSupport)))
         .thenReturn(
             IcebergMetadata.newBuilder()
                 .setCurrentSnapshotId(123L)
@@ -2218,7 +2022,7 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
                 .build());
-    when(tableSupport.loadCurrentMetadata(any(Table.class)))
+    when(icebergMetadataService.resolveCurrentIcebergMetadata(any(Table.class), eq(tableSupport)))
         .thenReturn(
             IcebergMetadata.newBuilder()
                 .putRefs(
@@ -2532,7 +2336,7 @@ class TransactionCommitServiceTest {
         Table.newBuilder()
             .setResourceId(tableId)
             .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://meta/new")
+            .putProperties("metadata-location", "s3://meta/new/00001.metadata.json")
             .build();
     when(tableLifecycleService.getTableResponse(any()))
         .thenReturn(
@@ -2945,6 +2749,28 @@ class TransactionCommitServiceTest {
     return requestWithAddSnapshotAndSchemaId(snapshotId, 1);
   }
 
+  private TransactionCommitRequest requestWithAssertCreateSnapshot() {
+    Map<String, Object> setProperties = new LinkedHashMap<>();
+    setProperties.put("action", "set-properties");
+    setProperties.put(
+        "updates",
+        Map.of(
+            "metadata-location", "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json"));
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", 123L);
+    snapshot.put("schema-id", 1);
+    snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
+    Map<String, Object> addSnapshot = new LinkedHashMap<>();
+    addSnapshot.put("action", "add-snapshot");
+    addSnapshot.put("snapshot", snapshot);
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"),
+                List.of(Map.of("type", "assert-create")),
+                List.of(setProperties, addSnapshot))));
+  }
+
   private TransactionCommitRequest requestWithAddSnapshotAndParentId(
       long snapshotId, long parentId) {
     Map<String, Object> snapshot = new LinkedHashMap<>();
@@ -3079,7 +2905,7 @@ class TransactionCommitServiceTest {
               .setTableName("orders")
               .addAllAddedSnapshotIds(addedSnapshotIds)
               .addAllRemovedSnapshotIds(removedSnapshotIds)
-              .setMetadataLocation("s3://meta/new")
+              .setMetadataLocation("s3://meta/new/00001.metadata.json")
               .setCreatedAtMs(1L);
       if (connectorId != null) {
         builder.setConnectorId(connectorId);
@@ -3143,12 +2969,16 @@ class TransactionCommitServiceTest {
   }
 
   private TransactionCommitRequest requestWithAssertCreate() {
+    Map<String, Object> setMetadataLocation = new LinkedHashMap<>();
+    setMetadataLocation.put("action", "set-properties");
+    setMetadataLocation.put(
+        "updates", Map.of("metadata-location", "s3://meta/create/00001.metadata.json"));
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
                 new TableIdentifierDto(List.of("db"), "orders"),
                 List.of(Map.of("type", "assert-create")),
-                List.of())));
+                List.of(setMetadataLocation))));
   }
 
   private TransactionCommitRequest requestWithAssertRefSnapshotIdNull(String refName) {

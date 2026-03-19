@@ -34,8 +34,6 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
@@ -43,10 +41,8 @@ import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
-import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
-import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -54,8 +50,6 @@ import org.mockito.ArgumentCaptor;
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
 class TableCommitResourceTest extends AbstractRestResourceTest {
-
-  @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
   void setUpAtomicCommitDefaults() {
@@ -82,13 +76,6 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
                 .build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenAnswer(
-            invocation ->
-                MaterializeMetadataResult.success(
-                    null,
-                    invocation.getArgument(5, String.class),
-                    invocation.getArgument(4, TableMetadata.class)));
   }
 
   @Test

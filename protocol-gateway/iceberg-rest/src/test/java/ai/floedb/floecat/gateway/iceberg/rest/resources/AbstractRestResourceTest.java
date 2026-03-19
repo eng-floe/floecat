@@ -47,10 +47,10 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ImportedSnapshot;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
@@ -106,7 +106,7 @@ public abstract class AbstractRestResourceTest {
 
   @InjectMock protected GrpcWithHeaders grpc;
   @InjectMock protected GrpcClients clients;
-  @InjectMock protected TableMetadataImportService metadataImportService;
+  @InjectMock protected IcebergMetadataService metadataImportService;
   @InjectMock protected TableDropCleanupService tableDropCleanupService;
   @Inject protected StagedTableRepository stageRepository;
   @Inject protected ViewMetadataService viewMetadataService;

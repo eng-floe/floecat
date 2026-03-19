@@ -70,4 +70,18 @@ public final class MetadataLocationUtil {
     }
     return directory;
   }
+
+  public static String bootstrapMetadataLocation(String tableLocation, String tableUuid) {
+    if (tableLocation == null || tableLocation.isBlank()) {
+      return null;
+    }
+    if (tableUuid == null || tableUuid.isBlank()) {
+      return null;
+    }
+    String trimmed = tableLocation;
+    while (trimmed.endsWith("/") && trimmed.length() > 1) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1);
+    }
+    return trimmed + "/metadata/00000-" + tableUuid + ".metadata.json";
+  }
 }

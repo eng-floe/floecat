@@ -74,6 +74,13 @@ public class ConnectorProvisioningService {
         tableSupport.resolveTableLocation(requestedLocation, metadataLocation);
     Timestamp nowTs = Timestamps.fromMillis(System.currentTimeMillis());
     ResourceId existing = resolveConnectorId(table);
+    if (existing == null && (metadataLocation == null || metadataLocation.isBlank())) {
+      return new ProvisionResult(table, null, List.of(), null);
+    }
+    Response metadataLocationError = validateMetadataLocation(metadataLocation);
+    if (metadataLocationError != null) {
+      return new ProvisionResult(table, existing, List.of(), metadataLocationError);
+    }
     if (existing != null) {
       var existingConnector = tableSupport.getConnector(existing);
       if (existingConnector.isEmpty()) {
@@ -263,12 +270,7 @@ public class ConnectorProvisioningService {
       return connector.build();
     }
     String metadata =
-        metadataLocation != null && !metadataLocation.isBlank()
-            ? metadataLocation
-            : resolvedTableLocation;
-    if (metadata == null || metadata.isBlank()) {
-      return null;
-    }
+        metadataLocation != null && !metadataLocation.isBlank() ? metadataLocation : null;
     String connectorUri =
         (resolvedTableLocation != null && !resolvedTableLocation.isBlank())
             ? resolvedTableLocation
@@ -294,6 +296,22 @@ public class ConnectorProvisioningService {
         .setUri(connectorUri)
         .putAllProperties(props)
         .build();
+  }
+
+  private Response validateMetadataLocation(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return IcebergErrorResponses.failure(
+          "connector provisioning requires metadata-location",
+          "CommitStateUnknownException",
+          Response.Status.SERVICE_UNAVAILABLE);
+    }
+    if (!metadataLocation.trim().endsWith(".json")) {
+      return IcebergErrorResponses.failure(
+          "connector provisioning requires metadata-location to reference a metadata JSON file",
+          "CommitStateUnknownException",
+          Response.Status.SERVICE_UNAVAILABLE);
+    }
+    return null;
   }
 
   private ResourceId deterministicConnectorId(String accountId, String txId, ResourceId tableId) {

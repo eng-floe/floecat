@@ -28,7 +28,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
@@ -37,8 +37,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
@@ -67,7 +67,7 @@ public class TableCreateService {
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
   @Inject ObjectMapper mapper;
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
 
   public Response create(
       NamespaceRequestContext namespaceContext,
@@ -142,7 +142,7 @@ public class TableCreateService {
     Response response;
     try {
       ResolvedMetadata resolved =
-          tableMetadataImportService.resolveMetadata(
+          icebergMetadataService.resolveMetadata(
               tableName,
               created,
               tableSupport,
@@ -206,6 +206,14 @@ public class TableCreateService {
           stageId,
           effectiveReq.location(),
           effectiveReq.properties());
+      Table stubTable =
+          Table.newBuilder()
+              .setCatalogId(namespaceContext.catalogId())
+              .setNamespaceId(namespaceContext.namespaceId())
+              .setDisplayName(tableName)
+              .build();
+      var bootstrap = bootstrapStageCreate(tableName, stubTable, effectiveReq);
+      effectiveReq = bootstrap.request();
       TableSpec.Builder specBuilder =
           tableSupport.buildCreateSpec(
               namespaceContext.catalogId(),
@@ -240,20 +248,14 @@ public class TableCreateService {
           tableName,
           stored.key().stageId(),
           transactionId);
-      Table stubTable =
-          Table.newBuilder()
-              .setCatalogId(namespaceContext.catalogId())
-              .setNamespaceId(namespaceContext.namespaceId())
-              .setDisplayName(tableName)
-              .build();
       List<StorageCredentialDto> credentials;
       try {
         credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
       } catch (IllegalArgumentException e) {
+        stagedTableService.deleteStage(stored.key());
         return IcebergErrorResponses.validation(e.getMessage());
       }
-      TableMetadataView metadataView =
-          TableMetadataBuilder.fromCreateRequest(tableName, stubTable, effectiveReq);
+      TableMetadataView metadataView = bootstrap.metadataView();
       LoadTableResultDto loadResult =
           TableResponseMapper.toLoadResult(
               metadataView, tableSupport.defaultTableConfig(), credentials);
@@ -389,4 +391,42 @@ public class TableCreateService {
     }
     return request.schema() != null && !request.schema().isNull();
   }
+
+  private BootstrapResult bootstrapStageCreate(
+      String tableName, Table table, TableRequests.Create request) {
+    if (request == null) {
+      throw new IllegalArgumentException("create request is required");
+    }
+    String tableLocation = request.location();
+    if (tableLocation == null || tableLocation.isBlank()) {
+      throw new IllegalArgumentException("stage-create requires a table location");
+    }
+
+    Map<String, String> props = new java.util.LinkedHashMap<>();
+    if (request.properties() != null && !request.properties().isEmpty()) {
+      props.putAll(request.properties());
+    }
+    props.putIfAbsent("table-uuid", UUID.randomUUID().toString());
+    String tableUuid = props.get("table-uuid");
+    if (!props.containsKey(MetadataLocationUtil.PRIMARY_KEY)) {
+      MetadataLocationUtil.setMetadataLocation(
+          props, MetadataLocationUtil.bootstrapMetadataLocation(tableLocation, tableUuid));
+    }
+
+    TableRequests.Create effectiveRequest =
+        new TableRequests.Create(
+            request.name(),
+            request.schema(),
+            request.location(),
+            Map.copyOf(props),
+            request.partitionSpec(),
+            request.writeOrder(),
+            request.stageCreate());
+    TableMetadataView metadataView =
+        ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder.fromCreateRequest(
+            tableName, table, effectiveRequest);
+    return new BootstrapResult(effectiveRequest, metadataView);
+  }
+
+  private record BootstrapResult(TableRequests.Create request, TableMetadataView metadataView) {}
 }

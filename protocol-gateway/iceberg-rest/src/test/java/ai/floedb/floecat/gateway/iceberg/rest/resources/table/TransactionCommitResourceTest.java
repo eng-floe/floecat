@@ -25,8 +25,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableCommitMaterializationService;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
@@ -34,21 +32,17 @@ import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import io.grpc.Status;
-import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
 class TransactionCommitResourceTest extends AbstractRestResourceTest {
-
-  @InjectMock TableCommitMaterializationService materializationService;
 
   @BeforeEach
   void setUpTableLookup() {
@@ -59,13 +53,6 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
-    when(materializationService.materializeMetadata(any(), any(), any(), any(), any(), any()))
-        .thenAnswer(
-            invocation ->
-                MaterializeMetadataResult.success(
-                    null,
-                    invocation.getArgument(5, String.class),
-                    invocation.getArgument(4, TableMetadata.class)));
   }
 
   @Test

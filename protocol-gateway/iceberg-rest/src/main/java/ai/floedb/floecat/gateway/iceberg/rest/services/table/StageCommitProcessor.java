@@ -30,8 +30,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -60,7 +60,7 @@ public class StageCommitProcessor {
   @Inject StagedTableService stagedTableService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
 
   private TableGatewaySupport tableSupport;
 
@@ -157,7 +157,7 @@ public class StageCommitProcessor {
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
     ResolvedMetadata resolved =
-        tableMetadataImportService.resolveMetadata(
+        icebergMetadataService.resolveMetadata(
             tableName, tableRecord, tableSupport, java.util.List::of);
     TableMetadataView metadataView = resolved.metadataView();
     if (metadataView == null) {

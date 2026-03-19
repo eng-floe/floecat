@@ -392,9 +392,13 @@ public final class TableMetadataBuilder {
     long lastSequenceNumber = 0L;
     props.putIfAbsent("last-sequence-number", Long.toString(lastSequenceNumber));
     removeMetadataLocation(props);
+    String tableUuid = props.get("table-uuid");
+    if (tableUuid == null || tableUuid.isBlank()) {
+      tableUuid = table.hasResourceId() ? table.getResourceId().getId() : tableName;
+    }
     return new TableMetadataView(
         formatVersion,
-        table.hasResourceId() ? table.getResourceId().getId() : tableName,
+        tableUuid,
         hasText(location) ? location : null,
         metadataLocation,
         lastUpdatedMs,

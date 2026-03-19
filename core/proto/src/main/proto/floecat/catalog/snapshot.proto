@@ -34,7 +34,7 @@ message Snapshot {
   string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
   int64 sequence_number = 8;
-  string manifest_list = 9;
+  repeated string manifest_list = 9;
   int32 schema_id = 10;
   map<string, bytes> format_metadata = 11;
 }
@@ -65,7 +65,7 @@ message SnapshotSpec {
   optional string schema_json = 6;
   PartitionSpecInfo partition_spec = 7;
   optional int64 sequence_number = 8;
-  optional string manifest_list = 9;
+  repeated string manifest_list = 9;
   optional int32 schema_id = 10;
   map<string, bytes> format_metadata = 11;
 }

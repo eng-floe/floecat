@@ -29,9 +29,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestC
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ImportedSnapshot;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -49,7 +49,7 @@ public class TableRegisterService {
   private static final Logger LOG = Logger.getLogger(TableRegisterService.class);
 
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
   @Inject GrpcServiceFacade snapshotClient;
   @Inject TransactionCommitService transactionCommitService;
 
@@ -71,7 +71,7 @@ public class TableRegisterService {
         tableSupport.resolveRegisterFileIoProperties(req.properties());
     ImportedMetadata importedMetadata;
     try {
-      importedMetadata = tableMetadataImportService.importMetadata(metadataLocation, ioProperties);
+      importedMetadata = icebergMetadataService.importMetadata(metadataLocation, ioProperties);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }

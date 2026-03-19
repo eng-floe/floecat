@@ -33,8 +33,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -52,7 +52,7 @@ public class TableLoadService {
   @Inject GrpcServiceFacade snapshotClient;
   @Inject TableFormatSupport tableFormatSupport;
   @Inject DeltaIcebergMetadataService deltaMetadataService;
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
 
   public Response load(
       TableRequestContext tableContext,
@@ -84,30 +84,49 @@ public class TableLoadService {
               delta.snapshots());
       snapshotList = delta.snapshots();
     } else {
-      IcebergMetadata currentMetadata =
-          tableMetadataImportService.resolveCurrentIcebergMetadata(tableRecord, tableSupport);
-      ResolvedMetadata resolved =
-          tableMetadataImportService.resolveMetadata(
-              tableName,
-              tableRecord,
-              currentMetadata,
-              tableSupport.defaultFileIoProperties(),
-              () ->
-                  SnapshotLister.fetchSnapshots(
-                      snapshotClient, tableContext.tableId(), snapshotMode, currentMetadata));
-      metadata = resolved.icebergMetadata();
-      snapshotList =
-          SnapshotLister.fetchSnapshots(
-              snapshotClient, tableContext.tableId(), snapshotMode, metadata);
-      metadataView =
-          TableMetadataBuilder.fromCatalog(
-              tableName,
-              tableRecord,
-              new LinkedHashMap<>(tableRecord.getPropertiesMap()),
-              metadata,
-              snapshotList);
-      if (metadataView == null) {
+      try {
+        IcebergMetadata currentMetadata =
+            icebergMetadataService.resolveCurrentIcebergMetadata(tableRecord, tableSupport);
+        ResolvedMetadata resolved =
+            icebergMetadataService.resolveMetadata(
+                tableName,
+                tableRecord,
+                currentMetadata,
+                tableSupport.defaultFileIoProperties(),
+                () ->
+                    SnapshotLister.fetchSnapshots(
+                        snapshotClient, tableContext.tableId(), snapshotMode, currentMetadata));
+        metadata = resolved.icebergMetadata();
         metadataView = resolved.metadataView();
+        if (metadataView == null) {
+          snapshotList =
+              SnapshotLister.fetchSnapshots(
+                  snapshotClient, tableContext.tableId(), snapshotMode, metadata);
+          metadataView =
+              TableMetadataBuilder.fromCatalog(
+                  tableName,
+                  tableRecord,
+                  new LinkedHashMap<>(tableRecord.getPropertiesMap()),
+                  metadata,
+                  snapshotList);
+        }
+      } catch (IllegalArgumentException e) {
+        LOG.debugf(
+            e,
+            "Falling back to table record metadata for table=%s location=%s",
+            tableName,
+            MetadataLocationUtil.metadataLocation(tableRecord.getPropertiesMap()));
+        metadata = null;
+        snapshotList =
+            SnapshotLister.fetchSnapshots(
+                snapshotClient, tableContext.tableId(), snapshotMode, null);
+        metadataView =
+            TableMetadataBuilder.fromCatalog(
+                tableName,
+                tableRecord,
+                new LinkedHashMap<>(tableRecord.getPropertiesMap()),
+                null,
+                snapshotList);
       }
     }
     String etagValue = etagSource(metadata, snapshotMode);

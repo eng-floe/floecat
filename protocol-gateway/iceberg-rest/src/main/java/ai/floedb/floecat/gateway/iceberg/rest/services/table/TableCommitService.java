@@ -20,10 +20,15 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -92,20 +97,26 @@ public class TableCommitService {
         || txResponse.getStatus() != Response.Status.NO_CONTENT.getStatusCode()) {
       return txResponse;
     }
-    stagedEntryOpt.ifPresent(entry -> stagedTableService.deleteStage(entry.key()));
 
-    return buildCommitResponse(command, effectiveReq);
+    Response response = buildCommitResponse(command, effectiveReq, stagedEntryOpt.orElse(null));
+    if (response != null && response.getStatus() == Response.Status.OK.getStatusCode()) {
+      stagedEntryOpt.ifPresent(entry -> stagedTableService.deleteStage(entry.key()));
+    }
+    return response;
   }
 
-  private Response buildCommitResponse(CommitCommand command, TableRequests.Commit req) {
+  private Response buildCommitResponse(
+      CommitCommand command, TableRequests.Commit req, StagedTableEntry stagedEntry) {
     ResourceId tableId =
         tableLifecycleService.resolveTableId(
             command.catalogName(), command.namespacePath(), command.table());
     Table committedTable = tableLifecycleService.getTable(tableId);
     TableGatewaySupport tableSupport = command.tableSupport();
+    StageCommitProcessor.StageCommitResult stagedResponse =
+        buildStagedCommitResult(command, req, stagedEntry, committedTable);
 
     CommitTableResponseDto finalResponse =
-        responseBuilder.buildFinalResponse(committedTable, null, req, tableSupport);
+        responseBuilder.buildFinalResponse(committedTable, stagedResponse, req, tableSupport);
     if (finalResponse == null
         || finalResponse.metadata() == null
         || finalResponse.metadataLocation() == null
@@ -117,6 +128,25 @@ public class TableCommitService {
     }
 
     return Response.ok(finalResponse).build();
+  }
+
+  private StageCommitProcessor.StageCommitResult buildStagedCommitResult(
+      CommitCommand command, TableRequests.Commit req, StagedTableEntry stagedEntry, Table table) {
+    if (stagedEntry == null || stagedEntry.request() == null || table == null) {
+      return null;
+    }
+    if (CommitUpdateInspector.inspect(req).containsSnapshotUpdates()) {
+      return null;
+    }
+    TableGatewaySupport tableSupport = command.tableSupport();
+    List<StorageCredentialDto> credentials =
+        tableSupport == null ? List.of() : tableSupport.defaultCredentials();
+    LoadTableResultDto loadResult =
+        TableResponseMapper.toLoadResult(
+            TableMetadataBuilder.fromCreateRequest(command.table(), table, stagedEntry.request()),
+            tableSupport == null ? Map.of() : tableSupport.defaultTableConfig(),
+            credentials);
+    return new StageCommitProcessor.StageCommitResult(table, loadResult, false);
   }
 
   private Table loadCurrentTable(CommitCommand command) {
@@ -168,8 +198,14 @@ public class TableCommitService {
     if (req == null || stagedEntry == null) {
       return req;
     }
-    if (tableState != null || callerProvidesCreateInitialization(req)) {
+    String stagedMetadataLocation =
+        MetadataLocationUtil.metadataLocation(
+            stagedEntry.request() == null ? null : stagedEntry.request().properties());
+    if (tableState != null) {
       return req;
+    }
+    if (callerProvidesCreateInitialization(req)) {
+      return injectStagedMetadataLocation(req, stagedMetadataLocation);
     }
     TransactionCommitRequest stagedRequest =
         tableCreateTransactionMapper.buildCreateRequest(
@@ -188,7 +224,28 @@ public class TableCommitService {
     if (req.updates() != null && !req.updates().isEmpty()) {
       updates.addAll(req.updates());
     }
-    return new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
+    TableRequests.Commit merged =
+        new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
+    return injectStagedMetadataLocation(merged, stagedMetadataLocation);
+  }
+
+  private TableRequests.Commit injectStagedMetadataLocation(
+      TableRequests.Commit req, String stagedMetadataLocation) {
+    if (req == null
+        || stagedMetadataLocation == null
+        || stagedMetadataLocation.isBlank()
+        || CommitUpdateInspector.inspect(req).requestedMetadataLocation() != null) {
+      return req;
+    }
+    List<Map<String, Object>> updates =
+        req.updates() == null ? new ArrayList<>() : new ArrayList<>(req.updates());
+    updates.add(
+        Map.of(
+            "action",
+            CommitUpdateInspector.ACTION_SET_PROPERTIES,
+            "updates",
+            Map.of(MetadataLocationUtil.PRIMARY_KEY, stagedMetadataLocation)));
+    return new TableRequests.Commit(req.requirements(), List.copyOf(updates));
   }
 
   private Optional<StagedTableEntry> resolveStagedEntry(CommitCommand command) {

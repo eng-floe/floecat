@@ -617,8 +617,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (trimmed.endsWith(".json")) {
       return trimmed;
     }
-    String base = trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
-    return base + "/metadata/metadata.json";
+    throw new IllegalArgumentException(
+        "metadata location must reference a metadata JSON file: " + trimmed);
   }
 
   private String partitionJson(Table table, ContentFile<?> file) {

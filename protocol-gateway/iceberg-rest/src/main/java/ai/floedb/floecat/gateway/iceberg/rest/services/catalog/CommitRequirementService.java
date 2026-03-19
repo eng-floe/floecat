@@ -21,7 +21,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asL
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -34,7 +34,7 @@ import java.util.function.Supplier;
 
 @ApplicationScoped
 public class CommitRequirementService {
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
 
   public Response validateRequirements(
       TableGatewaySupport tableSupport,
@@ -52,9 +52,9 @@ public class CommitRequirementService {
         () -> {
           if (!metadataLoaded[0]) {
             metadataHolder[0] =
-                tableMetadataImportService == null
-                    ? (tableSupport == null ? null : tableSupport.loadCurrentMetadata(table))
-                    : tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport);
+                icebergMetadataService == null
+                    ? null
+                    : icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport);
             metadataLoaded[0] = true;
           }
           return metadataHolder[0];

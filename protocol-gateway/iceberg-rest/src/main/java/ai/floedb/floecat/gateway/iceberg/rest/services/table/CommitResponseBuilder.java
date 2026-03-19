@@ -27,8 +27,8 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.IcebergMetadataService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -40,7 +40,7 @@ import org.jboss.logging.Logger;
 public class CommitResponseBuilder {
   private static final Logger LOG = Logger.getLogger(CommitResponseBuilder.class);
 
-  @Inject TableMetadataImportService tableMetadataImportService;
+  @Inject IcebergMetadataService icebergMetadataService;
   @Inject GrpcServiceFacade snapshotClient;
 
   public String resolveRequestedMetadataLocation(TableRequests.Commit req) {
@@ -53,10 +53,15 @@ public class CommitResponseBuilder {
       TableRequests.Commit req,
       TableGatewaySupport tableSupport) {
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(req);
+    if (!parsed.containsSnapshotUpdates() && stageMaterialization != null) {
+      CommitTableResponseDto stagedResponse = preferStageMetadata(null, stageMaterialization);
+      stagedResponse = normalizeMetadataLocation(stagedResponse);
+      return preferRequestedMetadata(stagedResponse, parsed.requestedMetadataLocation());
+    }
     IcebergMetadata metadata =
-        tableMetadataImportService.resolveCurrentIcebergMetadata(committedTable, tableSupport);
+        icebergMetadataService.resolveCurrentIcebergMetadata(committedTable, tableSupport);
     ResolvedMetadata resolved =
-        tableMetadataImportService.resolveMetadata(
+        icebergMetadataService.resolveMetadata(
             committedTable == null ? null : committedTable.getDisplayName(),
             committedTable,
             metadata,
