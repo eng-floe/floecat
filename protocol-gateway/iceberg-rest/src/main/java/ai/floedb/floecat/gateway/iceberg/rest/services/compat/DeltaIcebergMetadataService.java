@@ -37,9 +37,9 @@ public class DeltaIcebergMetadataService {
   public DeltaLoadResult load(ResourceId tableId, Table table, SnapshotLister.Mode mode) {
     List<Snapshot> allSnapshots =
         SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, null);
-    IcebergMetadata metadata = translator.translate(table, allSnapshots);
-    List<Snapshot> requestedSnapshots = snapshotsForMode(mode, allSnapshots, metadata);
-    requestedSnapshots = manifestMaterializer.materialize(table, requestedSnapshots);
+    List<Snapshot> materializedSnapshots = manifestMaterializer.materialize(table, allSnapshots);
+    IcebergMetadata metadata = translator.translate(table, materializedSnapshots);
+    List<Snapshot> requestedSnapshots = snapshotsForMode(mode, materializedSnapshots, metadata);
     return new DeltaLoadResult(metadata, requestedSnapshots);
   }
 

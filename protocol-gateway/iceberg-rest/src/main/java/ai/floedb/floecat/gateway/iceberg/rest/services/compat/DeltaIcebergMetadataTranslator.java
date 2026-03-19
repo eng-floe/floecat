@@ -108,11 +108,15 @@ public class DeltaIcebergMetadataTranslator {
     if (snapshots == null || snapshots.isEmpty()) {
       return List.of();
     }
-    return snapshots.stream()
-        .sorted(
-            Comparator.comparingLong(this::snapshotSequence)
-                .thenComparingLong(Snapshot::getSnapshotId))
-        .toList();
+    List<SnapshotOrder> ordered = new ArrayList<>(snapshots.size());
+    for (int i = 0; i < snapshots.size(); i++) {
+      ordered.add(new SnapshotOrder(snapshots.get(i), i));
+    }
+    ordered.sort(
+        Comparator.comparingLong((SnapshotOrder entry) -> snapshotSequence(entry.snapshot()))
+            .thenComparingLong(entry -> snapshotMillis(entry.snapshot()))
+            .thenComparingInt(SnapshotOrder::index));
+    return ordered.stream().map(SnapshotOrder::snapshot).toList();
   }
 
   private long snapshotSequence(Snapshot snapshot) {
@@ -333,4 +337,6 @@ public class DeltaIcebergMetadataTranslator {
   }
 
   private record NormalizedSchema(int schemaId, int lastColumnId, String schemaJson) {}
+
+  private record SnapshotOrder(Snapshot snapshot, int index) {}
 }

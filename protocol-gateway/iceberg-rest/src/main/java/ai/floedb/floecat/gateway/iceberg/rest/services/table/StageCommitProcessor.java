@@ -17,8 +17,6 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
@@ -26,11 +24,13 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
@@ -60,6 +60,7 @@ public class StageCommitProcessor {
   @Inject StagedTableService stagedTableService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject TransactionCommitService transactionCommitService;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   private TableGatewaySupport tableSupport;
 
@@ -156,23 +157,16 @@ public class StageCommitProcessor {
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
-    List<Snapshot> snapshots = loadSnapshots(tableRecord.getResourceId());
     if (metadata == null) {
-      return TableResponseMapper.toLoadResultFromCreate(
-          tableName, tableRecord, entry.request(), tableConfig, credentials);
+      throw new IllegalStateException("missing committed metadata after stage commit");
     }
-    return TableResponseMapper.toLoadResult(
-        tableName, tableRecord, metadata, snapshots, tableConfig, credentials);
-  }
-
-  private List<Snapshot> loadSnapshots(ResourceId tableId) {
-    try {
-      return grpcClient
-          .listSnapshots(ListSnapshotsRequest.newBuilder().setTableId(tableId).build())
-          .getSnapshotsList();
-    } catch (StatusRuntimeException e) {
-      return List.of();
+    TableMetadataView metadataView =
+        tableMetadataImportService.importMetadataView(
+            tableRecord, metadata, tableSupport.defaultFileIoProperties());
+    if (metadataView == null) {
+      throw new IllegalStateException("failed to import canonical stage-commit metadata");
     }
+    return TableResponseMapper.toLoadResult(metadataView, tableConfig, credentials);
   }
 
   private RuntimeException mapTransactionFailure(Response response) {

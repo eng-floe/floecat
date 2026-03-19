@@ -43,7 +43,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
 @ApplicationScoped
 public class TableCommitService {
@@ -107,10 +106,8 @@ public class TableCommitService {
     TableGatewaySupport tableSupport = command.tableSupport();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
 
-    Set<Long> removedSnapshotIds = responseBuilder.removedSnapshotIds(req);
     CommitTableResponseDto finalResponse =
-        responseBuilder.buildFinalResponse(
-            command.table(), committedTable, tableId, null, req, tableSupport, removedSnapshotIds);
+        responseBuilder.buildFinalResponse(committedTable, null, req, tableSupport);
     if (finalResponse == null
         || finalResponse.metadata() == null
         || finalResponse.metadataLocation() == null

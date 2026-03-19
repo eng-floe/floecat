@@ -200,7 +200,6 @@ class IcebergRestFixtureIT {
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
                 Map.entry("parent-snapshot-id", parentSnapshotId),
-                Map.entry("sequence-number", System.currentTimeMillis()),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -353,7 +352,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", snapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -605,7 +603,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -708,7 +705,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", snapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -821,7 +817,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -957,7 +952,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),

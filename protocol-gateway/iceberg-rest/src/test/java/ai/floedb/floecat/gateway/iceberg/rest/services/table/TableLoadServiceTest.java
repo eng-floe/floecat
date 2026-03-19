@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
@@ -176,9 +177,34 @@ class TableLoadServiceTest {
                 .setMetadataLocation("s3://old/metadata/00002.metadata.json")
                 .build());
     when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
-    when(tableMetadataImportService.importMetadata(any(), any()))
+    when(tableMetadataImportService.importMetadata(
+            any(Table.class), any(IcebergMetadata.class), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
+                null,
+                new TableMetadataView(
+                    2,
+                    null,
+                    null,
+                    "s3://new/metadata/00003.metadata.json",
+                    null,
+                    Map.of(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    Map.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of()),
                 null,
                 Map.of(),
                 null,
@@ -201,7 +227,6 @@ class TableLoadServiceTest {
 
     service.load(context, "orders", null, null, null, tableSupport);
 
-    verify(tableMetadataImportService)
-        .importMetadata(eq("s3://new/metadata/00003.metadata.json"), any());
+    verify(tableMetadataImportService).importMetadata(eq(table), any(IcebergMetadata.class), any());
   }
 }

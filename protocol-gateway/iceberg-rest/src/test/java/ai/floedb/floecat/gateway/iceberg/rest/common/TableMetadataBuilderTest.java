@@ -100,7 +100,7 @@ class TableMetadataBuilderTest {
     @SuppressWarnings("unchecked")
     Map<String, Object> summary = (Map<String, Object>) snapshot.get("summary");
     assertNotNull(summary);
-    assertEquals("append", summary.get("operation"));
+    assertTrue(summary.isEmpty());
   }
 
   @Test

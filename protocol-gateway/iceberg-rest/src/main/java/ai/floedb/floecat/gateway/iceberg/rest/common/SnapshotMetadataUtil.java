@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public final class SnapshotMetadataUtil {
   private static final String ICEBERG_METADATA_KEY = "iceberg";
@@ -40,5 +42,21 @@ public final class SnapshotMetadataUtil {
       throw new IllegalStateException(
           "Failed to parse Iceberg metadata for snapshot " + snapshot.getSnapshotId(), e);
     }
+  }
+
+  public static Map<String, String> snapshotSummary(Snapshot snapshot) {
+    IcebergMetadata metadata = parseSnapshotMetadata(snapshot);
+    if (metadata == null || metadata.getSummaryMap().isEmpty()) {
+      return Map.of();
+    }
+    return Map.copyOf(new LinkedHashMap<>(metadata.getSummaryMap()));
+  }
+
+  public static String snapshotOperation(Snapshot snapshot) {
+    IcebergMetadata metadata = parseSnapshotMetadata(snapshot);
+    if (metadata == null || !metadata.hasOperation() || metadata.getOperation().isBlank()) {
+      return null;
+    }
+    return metadata.getOperation();
   }
 }

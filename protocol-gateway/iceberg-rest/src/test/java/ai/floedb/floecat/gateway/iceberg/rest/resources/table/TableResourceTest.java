@@ -83,6 +83,7 @@ import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.RestAssured;
+import io.restassured.path.json.JsonPath;
 import jakarta.ws.rs.core.MediaType;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -389,20 +390,25 @@ class TableResourceTest extends AbstractRestResourceTest {
     when(queryScanStub.fetchScanBundle(any()))
         .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
 
-    given()
-        .queryParam("snapshots", "refs")
-        .when()
-        .get("/v1/foo/namespaces/db/tables/delta_orders")
-        .then()
-        .statusCode(200)
-        .body("metadata.'current-snapshot-id'", equalTo(102))
-        .body("metadata.'current-schema-id'", equalTo(3))
-        .body("metadata.schemas[0].fields[0].id", equalTo(1))
-        .body("metadata.'snapshot-log'.size()", equalTo(2))
-        .body("metadata.snapshots.size()", equalTo(1))
-        .body("metadata.snapshots[0].'snapshot-id'", equalTo(102))
-        .body("metadata.snapshots[0].'manifest-list'", notNullValue())
-        .body("'metadata-location'", notNullValue());
+    JsonPath body =
+        given()
+            .queryParam("snapshots", "refs")
+            .when()
+            .get("/v1/foo/namespaces/db/tables/delta_orders")
+            .then()
+            .statusCode(200)
+            .body("metadata.schemas.size()", equalTo(1))
+            .body("metadata.schemas[0].fields[0].id", equalTo(1))
+            .body("metadata.'snapshot-log'.size()", equalTo(2))
+            .body("metadata.snapshots.size()", equalTo(1))
+            .body("metadata.snapshots[0].'manifest-list'", notNullValue())
+            .body("'metadata-location'", notNullValue())
+            .extract()
+            .jsonPath();
+
+    assertEquals(
+        body.getLong("metadata.snapshots[0].'snapshot-id'"),
+        body.getLong("metadata.'current-snapshot-id'"));
   }
 
   @Test

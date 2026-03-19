@@ -78,6 +78,15 @@ public final class TableMetadataBuilder {
     return buildMetadata(tableName, table, props, metadata, snapshots, metadataLocation);
   }
 
+  public static TableMetadataView fromCanonicalMetadata(
+      String tableName, IcebergMetadata metadata, List<Snapshot> snapshots) {
+    String metadataLocation =
+        metadata == null || metadata.getMetadataLocation().isBlank()
+            ? null
+            : metadata.getMetadataLocation();
+    return buildMetadata(tableName, null, Map.of(), metadata, snapshots, metadataLocation);
+  }
+
   public static TableMetadataView fromCreateRequest(
       String tableName, Table table, TableRequests.Create request) {
     return initialMetadata(tableName, table, request);
@@ -90,7 +99,14 @@ public final class TableMetadataBuilder {
       IcebergMetadata metadata,
       List<Snapshot> snapshots,
       String metadataLocation) {
-    String propertyMetadataLocation = MetadataLocationUtil.metadataLocation(props);
+    Map<String, String> effectiveProps = new LinkedHashMap<>();
+    if (metadata != null && metadata.getPropertiesCount() > 0) {
+      effectiveProps.putAll(metadata.getPropertiesMap());
+    }
+    if (props != null && !props.isEmpty()) {
+      effectiveProps.putAll(props);
+    }
+    String propertyMetadataLocation = MetadataLocationUtil.metadataLocation(effectiveProps);
     // The catalog pointer (table property) is the source of truth for current metadata location.
     // Snapshot payload metadata is used as fallback only when pointer data is unavailable.
     if (propertyMetadataLocation != null && !propertyMetadataLocation.isBlank()) {
@@ -98,7 +114,16 @@ public final class TableMetadataBuilder {
     } else if (metadataLocation == null || metadataLocation.isBlank()) {
       metadataLocation = propertyMetadataLocation;
     }
-    String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
+    String metadataLocationValue =
+        metadata != null && metadata.getLocation() != null && !metadata.getLocation().isBlank()
+            ? metadata.getLocation()
+            : null;
+    String location =
+        table != null && table.hasUpstream()
+            ? table.getUpstream().getUri()
+            : metadataLocationValue != null
+                ? metadataLocationValue
+                : effectiveProps.get("location");
     location = hasText(location) ? location : null;
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)
@@ -140,9 +165,10 @@ public final class TableMetadataBuilder {
         metadata != null && metadata.getFormatVersion() > 0
             ? Integer.valueOf(metadata.getFormatVersion())
             : null;
-    formatVersion = normalizeFormatVersion(formatVersion, maybeInt(formatVersionProperty(props)));
+    formatVersion =
+        normalizeFormatVersion(formatVersion, maybeInt(formatVersionProperty(effectiveProps)));
     if (tableUuid == null) {
-      String candidate = props.get("table-uuid");
+      String candidate = effectiveProps.get("table-uuid");
       if (candidate != null && !candidate.isBlank()) {
         tableUuid = candidate;
       }
@@ -157,37 +183,37 @@ public final class TableMetadataBuilder {
       tableUuid = tableName;
     }
     if (currentSchemaId == null) {
-      currentSchemaId = maybeInt(props.get("current-schema-id"));
+      currentSchemaId = maybeInt(effectiveProps.get("current-schema-id"));
     }
     if (lastColumnId == null) {
-      lastColumnId = maybeInt(props.get("last-column-id"));
+      lastColumnId = maybeInt(effectiveProps.get("last-column-id"));
     }
     if (defaultSpecId == null) {
-      defaultSpecId = maybeInt(props.get("default-spec-id"));
+      defaultSpecId = maybeInt(effectiveProps.get("default-spec-id"));
     }
     if (lastPartitionId == null) {
-      lastPartitionId = maybeInt(props.get("last-partition-id"));
+      lastPartitionId = maybeInt(effectiveProps.get("last-partition-id"));
     }
     if (defaultSortOrderId == null) {
-      defaultSortOrderId = maybeInt(props.get("default-sort-order-id"));
+      defaultSortOrderId = maybeInt(effectiveProps.get("default-sort-order-id"));
     }
     if (lastUpdatedMs == null) {
-      lastUpdatedMs = asLong(props.get("last-updated-ms"));
+      lastUpdatedMs = asLong(effectiveProps.get("last-updated-ms"));
     }
     if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
       lastUpdatedMs = System.currentTimeMillis();
     }
     if (currentSnapshotId == null) {
-      currentSnapshotId = asLong(props.get("current-snapshot-id"));
+      currentSnapshotId = asLong(effectiveProps.get("current-snapshot-id"));
     }
     if (lastSequenceNumber == null) {
-      lastSequenceNumber = asLong(props.get("last-sequence-number"));
+      lastSequenceNumber = asLong(effectiveProps.get("last-sequence-number"));
     }
     if (lastSequenceNumber == null) {
       lastSequenceNumber = 0L;
     }
     List<Map<String, Object>> schemaList = schemasFromMetadata(metadata);
-    if (schemaList.isEmpty()) {
+    if (schemaList.isEmpty() && table != null) {
       try {
         Map<String, Object> schema = schemaFromTable(table);
         schemaList = List.of(schema);
@@ -223,7 +249,7 @@ public final class TableMetadataBuilder {
     if (!sortOrderList.isEmpty()) {
       sortOrderList.forEach(order -> normalizeSortOrder(order));
     }
-    ensureDeltaNameMappingProperty(props, schemaList, currentSchemaId);
+    ensureDeltaNameMappingProperty(effectiveProps, schemaList, currentSchemaId);
     List<Map<String, Object>> statisticsList = sanitizeStatistics(statistics(metadata));
     List<Map<String, Object>> partitionStatisticsList =
         nonNullMapList(partitionStatistics(metadata));
@@ -252,7 +278,7 @@ public final class TableMetadataBuilder {
     }
     formatVersion = normalizeFormatVersionForSnapshots(formatVersion, maxSnapshotSequence);
     Map<String, Object> refs = refs(metadata);
-    refs = mergePropertyRefs(props, refs);
+    refs = mergePropertyRefs(effectiveProps, refs);
     if (currentSnapshotId == null || currentSnapshotId < 0) {
       Long mainRefSnapshotId = mainRefSnapshotId(refs);
       if (mainRefSnapshotId != null && snapshotIds.contains(mainRefSnapshotId)) {
@@ -260,23 +286,23 @@ public final class TableMetadataBuilder {
       }
     }
     refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
-    syncProperty(props, "table-uuid", tableUuid);
-    syncOrRemove(props, "current-snapshot-id", currentSnapshotId);
-    syncProperty(props, "last-sequence-number", lastSequenceNumber);
-    syncProperty(props, "format-version", formatVersion);
-    syncProperty(props, "current-schema-id", currentSchemaId);
-    syncProperty(props, "last-column-id", lastColumnId);
-    syncProperty(props, "default-spec-id", defaultSpecId);
-    syncProperty(props, "last-partition-id", lastPartitionId);
-    syncProperty(props, "default-sort-order-id", defaultSortOrderId);
-    removeMetadataLocation(props);
+    syncProperty(effectiveProps, "table-uuid", tableUuid);
+    syncOrRemove(effectiveProps, "current-snapshot-id", currentSnapshotId);
+    syncProperty(effectiveProps, "last-sequence-number", lastSequenceNumber);
+    syncProperty(effectiveProps, "format-version", formatVersion);
+    syncProperty(effectiveProps, "current-schema-id", currentSchemaId);
+    syncProperty(effectiveProps, "last-column-id", lastColumnId);
+    syncProperty(effectiveProps, "default-spec-id", defaultSpecId);
+    syncProperty(effectiveProps, "last-partition-id", lastPartitionId);
+    syncProperty(effectiveProps, "default-sort-order-id", defaultSortOrderId);
+    removeMetadataLocation(effectiveProps);
     return new TableMetadataView(
         formatVersion,
         tableUuid,
         location,
         metadataLocation,
         lastUpdatedMs,
-        props,
+        effectiveProps,
         lastColumnId,
         currentSchemaId,
         defaultSpecId,

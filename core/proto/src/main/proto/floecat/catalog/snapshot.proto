@@ -35,9 +35,8 @@ message Snapshot {
   PartitionSpecInfo partition_spec = 7;
   int64 sequence_number = 8;
   string manifest_list = 9;
-  map<string,string> summary = 10;
-  int32 schema_id = 11;
-  map<string, bytes> format_metadata = 12;
+  int32 schema_id = 10;
+  map<string, bytes> format_metadata = 11;
 }
 
 message ListSnapshotsRequest {
@@ -67,9 +66,8 @@ message SnapshotSpec {
   PartitionSpecInfo partition_spec = 7;
   optional int64 sequence_number = 8;
   optional string manifest_list = 9;
-  map<string,string> summary = 10;
-  optional int32 schema_id = 11;
-  map<string, bytes> format_metadata = 12;
+  optional int32 schema_id = 10;
+  map<string, bytes> format_metadata = 11;
 }
 
 message CreateSnapshotRequest {

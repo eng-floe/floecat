@@ -206,7 +206,9 @@ public final class TrinoFixtureTestSupport {
       long timestampMs = snapshot.timestampMillis();
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(timestampMs));
       if (snapshot.summary() != null) {
-        builder.putAllSummary(snapshot.summary());
+        builder.putFormatMetadata(
+            "iceberg",
+            IcebergMetadata.newBuilder().putAllSummary(snapshot.summary()).build().toByteString());
       }
       snapshots.add(builder.build());
     }

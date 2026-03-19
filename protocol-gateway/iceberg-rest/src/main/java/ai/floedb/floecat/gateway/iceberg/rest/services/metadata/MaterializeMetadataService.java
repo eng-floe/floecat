@@ -21,7 +21,6 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.fir
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -47,8 +46,36 @@ public class MaterializeMetadataService {
   @Inject ObjectMapper mapper;
   @Inject IcebergGatewayConfig config;
   @Inject TableGatewaySupport tableGatewaySupport;
+  @Inject CanonicalTableMetadataService canonicalTableMetadataService;
 
-  public record MaterializeResult(String metadataLocation, TableMetadataView metadata) {}
+  public static final class MaterializeResult {
+    private final String metadataLocation;
+    private final TableMetadataView metadata;
+    private final TableMetadata tableMetadata;
+
+    public MaterializeResult(String metadataLocation, TableMetadataView metadata) {
+      this(metadataLocation, metadata, null);
+    }
+
+    public MaterializeResult(
+        String metadataLocation, TableMetadataView metadata, TableMetadata tableMetadata) {
+      this.metadataLocation = metadataLocation;
+      this.metadata = metadata;
+      this.tableMetadata = tableMetadata;
+    }
+
+    public String metadataLocation() {
+      return metadataLocation;
+    }
+
+    public TableMetadataView metadata() {
+      return metadata;
+    }
+
+    public TableMetadata tableMetadata() {
+      return tableMetadata;
+    }
+  }
 
   public MaterializeResult materialize(
       String namespaceFq,
@@ -59,14 +86,14 @@ public class MaterializeMetadataService {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because commit metadata was empty",
           namespaceFq, tableName);
-      return new MaterializeResult(metadataLocationOverride, null);
+      return new MaterializeResult(metadataLocationOverride, null, null);
     }
     String requestedLocation = firstNonBlank(metadataLocationOverride, metadata.metadataLocation());
     if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because metadata-location was %s",
           namespaceFq, tableName, requestedLocation);
-      return new MaterializeResult(requestedLocation, metadata);
+      return canonicalizeResult(requestedLocation, metadata);
     }
     String resolvedLocation = null;
     FileIO fileIO = null;
@@ -82,15 +109,16 @@ public class MaterializeMetadataService {
         LOG.debugf(
             "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
             namespaceFq, tableName);
-        return new MaterializeResult(requestedLocation, metadata);
+        return canonicalizeResult(requestedLocation, metadata);
       }
       TableMetadataView resolvedMetadata = metadata.withMetadataLocation(resolvedLocation);
-      TableMetadata parsed = parseMetadata(resolvedMetadata, resolvedLocation);
+      TableMetadata parsed =
+          canonicalTableMetadataService.toTableMetadata(resolvedMetadata, resolvedLocation);
       writeMetadata(fileIO, resolvedLocation, parsed);
       LOG.infof(
           "Materialized Iceberg metadata files for %s.%s to %s",
           namespaceFq, tableName, resolvedLocation);
-      return new MaterializeResult(resolvedLocation, resolvedMetadata);
+      return new MaterializeResult(resolvedLocation, resolvedMetadata, parsed);
     } catch (MaterializeMetadataException e) {
       throw e;
     } catch (Exception e) {
@@ -109,6 +137,19 @@ public class MaterializeMetadataService {
 
   protected FileIO newFileIo(Map<String, String> props) {
     return FileIoFactory.createFileIo(props, config, true);
+  }
+
+  MaterializeResult canonicalizeResult(String metadataLocation, TableMetadataView metadata) {
+    if (metadata == null) {
+      return new MaterializeResult(metadataLocation, null, null);
+    }
+    TableMetadataView resolvedMetadata =
+        hasText(metadataLocation) ? metadata.withMetadataLocation(metadataLocation) : metadata;
+    TableMetadata canonical =
+        hasText(metadataLocation)
+            ? canonicalTableMetadataService.toTableMetadata(resolvedMetadata, metadataLocation)
+            : null;
+    return new MaterializeResult(metadataLocation, resolvedMetadata, canonical);
   }
 
   private boolean shouldMaterialize(String metadataLocation) {
@@ -130,15 +171,6 @@ public class MaterializeMetadataService {
     }
   }
 
-  private TableMetadata parseMetadata(TableMetadataView metadata, String metadataLocation) {
-    try {
-      JsonNode node = mapper.valueToTree(metadata);
-      return TableMetadataParser.fromJson(metadataLocation, node);
-    } catch (RuntimeException e) {
-      throw new MaterializeMetadataException("Unable to serialize Iceberg metadata", e);
-    }
-  }
-
   private void writeMetadata(FileIO fileIO, String location, TableMetadata metadata) {
     LOG.infof("Writing Iceberg metadata file %s", location == null ? "<null>" : location);
     TableMetadataParser.write(metadata, fileIO.newOutputFile(location));
@@ -157,6 +189,10 @@ public class MaterializeMetadataService {
   }
 
   // TableMappingUtil provides firstNonBlank.
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
+  }
 
   private Map<String, String> sanitizeProperties(Map<String, String> props) {
     Map<String, String> sanitized = new LinkedHashMap<>();

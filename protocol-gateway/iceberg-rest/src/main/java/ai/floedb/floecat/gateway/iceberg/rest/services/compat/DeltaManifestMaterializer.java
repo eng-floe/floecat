@@ -30,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.EndQueryRequest;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.util.Timestamps;
 import io.delta.kernel.Scan;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.data.FilteredColumnarBatch;
@@ -101,6 +103,7 @@ public class DeltaManifestMaterializer {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final PartitionSpec UNPARTITIONED = PartitionSpec.unpartitioned();
   private static final String METADATA_DIR = "metadata";
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
 
   @Inject GrpcServiceFacade grpcClient;
   @Inject TableGatewaySupport tableGatewaySupport;
@@ -129,9 +132,10 @@ public class DeltaManifestMaterializer {
           continue;
         }
         try {
-          String manifestList = ensureCompatArtifacts(fileIo, table, snapshot, metadataRoot);
-          if (manifestList != null && !manifestList.isBlank()) {
-            rewritten.add(snapshot.toBuilder().setManifestList(manifestList).build());
+          Snapshot compatSnapshot =
+              materializeCompatSnapshot(fileIo, table, snapshot, metadataRoot);
+          if (compatSnapshot != null) {
+            rewritten.add(compatSnapshot);
           } else {
             rewritten.add(snapshot);
           }
@@ -431,6 +435,54 @@ public class DeltaManifestMaterializer {
     }
   }
 
+  private Snapshot materializeCompatSnapshot(
+      FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
+    String manifestList = ensureCompatArtifacts(fileIo, table, snapshot, metadataRoot);
+    TableMetadata compatMetadata =
+        readCompatMetadata(fileIo, metadataRoot, snapshot.getSnapshotId());
+    if (compatMetadata == null || compatMetadata.currentSnapshot() == null) {
+      if (manifestList != null && !manifestList.isBlank()) {
+        return snapshot.toBuilder().setManifestList(manifestList).build();
+      }
+      return snapshot;
+    }
+    org.apache.iceberg.Snapshot compatSnapshot = compatMetadata.currentSnapshot();
+    Snapshot.Builder builder = snapshot.toBuilder().setSnapshotId(compatSnapshot.snapshotId());
+    if (!snapshot.hasUpstreamCreatedAt()) {
+      builder.setUpstreamCreatedAt(Timestamps.fromMillis(compatSnapshot.timestampMillis()));
+    }
+    if (compatSnapshot.parentId() != null) {
+      builder.setParentSnapshotId(compatSnapshot.parentId());
+    } else if (snapshot.hasParentSnapshotId()) {
+      builder.clearParentSnapshotId();
+    }
+    if (compatSnapshot.sequenceNumber() > 0) {
+      builder.setSequenceNumber(compatSnapshot.sequenceNumber());
+    }
+    String resolvedManifestList =
+        manifestList != null && !manifestList.isBlank()
+            ? manifestList
+            : compatSnapshot.manifestListLocation();
+    if (resolvedManifestList != null && !resolvedManifestList.isBlank()) {
+      builder.setManifestList(resolvedManifestList);
+    }
+    Integer schemaId = compatSnapshot.schemaId();
+    if (schemaId != null && schemaId >= 0) {
+      builder.setSchemaId(schemaId);
+    }
+    IcebergMetadata.Builder snapshotMetadata = IcebergMetadata.newBuilder();
+    if (compatSnapshot.operation() != null && !compatSnapshot.operation().isBlank()) {
+      snapshotMetadata.setOperation(compatSnapshot.operation());
+    }
+    if (compatSnapshot.summary() != null && !compatSnapshot.summary().isEmpty()) {
+      snapshotMetadata.putAllSummary(compatSnapshot.summary());
+    }
+    if (snapshotMetadata.hasOperation() || snapshotMetadata.getSummaryCount() > 0) {
+      builder.putFormatMetadata(ICEBERG_METADATA_KEY, snapshotMetadata.build().toByteString());
+    }
+    return builder.build();
+  }
+
   private String ensureCompatArtifacts(
       FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
     String manifestListPath =
@@ -443,23 +495,27 @@ public class DeltaManifestMaterializer {
 
   private String readManifestListFromCompatMetadata(
       FileIO fileIo, String metadataRoot, long snapshotId) {
+    TableMetadata metadata = readCompatMetadata(fileIo, metadataRoot, snapshotId);
+    if (metadata == null || metadata.currentSnapshot() == null) {
+      return null;
+    }
+    String manifestList = metadata.currentSnapshot().manifestListLocation();
+    if (manifestList == null || manifestList.isBlank()) {
+      return null;
+    }
+    if (!inputExists(fileIo, manifestList)) {
+      return null;
+    }
+    return manifestList;
+  }
+
+  private TableMetadata readCompatMetadata(FileIO fileIo, String metadataRoot, long snapshotId) {
     String compatMetadata = compatMetadataPath(metadataRoot, snapshotId);
     if (!inputExists(fileIo, compatMetadata)) {
       return null;
     }
     try {
-      TableMetadata metadata = TableMetadataParser.read(fileIo, compatMetadata);
-      if (metadata == null || metadata.currentSnapshot() == null) {
-        return null;
-      }
-      String manifestList = metadata.currentSnapshot().manifestListLocation();
-      if (manifestList == null || manifestList.isBlank()) {
-        return null;
-      }
-      if (!inputExists(fileIo, manifestList)) {
-        return null;
-      }
-      return manifestList;
+      return TableMetadataParser.read(fileIo, compatMetadata);
     } catch (RuntimeException e) {
       LOG.debugf(e, "Unable to read compat metadata %s", compatMetadata);
       return null;

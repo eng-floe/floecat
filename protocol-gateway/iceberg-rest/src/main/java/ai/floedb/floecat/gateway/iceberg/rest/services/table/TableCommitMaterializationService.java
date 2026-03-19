@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataViews;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -74,11 +73,13 @@ public class TableCommitMaterializationService {
       MaterializeMetadataService.MaterializeResult materializeResult =
           materializeMetadataService.materialize(namespace, table, metadata, metadataLocation);
       String resolvedLocation = materializeResult.metadataLocation();
+      var tableMetadata = materializeResult.tableMetadata();
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         if (!requestedLocation) {
           TableMetadataView resolvedMetadata =
               materializeResult.metadata() != null ? materializeResult.metadata() : metadata;
-          return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+          return MaterializeMetadataResult.success(
+              resolvedMetadata, resolvedLocation, tableMetadata);
         }
         return MaterializeMetadataResult.failure(
             IcebergErrorResponses.failure(
@@ -88,7 +89,7 @@ public class TableCommitMaterializationService {
       }
       TableMetadataView resolvedMetadata =
           materializeResult.metadata() != null ? materializeResult.metadata() : metadata;
-      return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation);
+      return MaterializeMetadataResult.success(resolvedMetadata, resolvedLocation, tableMetadata);
     } catch (MaterializeMetadataException e) {
       LOG.warnf(
           e,
@@ -333,13 +334,10 @@ public class TableCommitMaterializationService {
       }
       ioProps.putAll(FileIoFactory.filterIoProperties(tableRecord.getPropertiesMap()));
       var imported = tableMetadataImportService.importMetadata(existingMetadataLocation, ioProps);
-      TableMetadataView existing =
-          TableMetadataBuilder.fromCatalog(
-              tableName,
-              tableRecord,
-              new LinkedHashMap<>(tableRecord.getPropertiesMap()),
-              imported.icebergMetadata(),
-              List.of());
+      TableMetadataView existing = imported.metadataView();
+      if (existing == null) {
+        throw new IllegalStateException("imported metadata view missing");
+      }
       return TableMetadataViews.copy(metadata)
           .lastColumnId(firstNonNull(metadata.lastColumnId(), existing.lastColumnId()))
           .currentSchemaId(firstNonNull(metadata.currentSchemaId(), existing.currentSchemaId()))

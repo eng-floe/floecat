@@ -148,11 +148,12 @@ final class SnapshotMapper {
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
       }
-      Map<String, String> summary = new LinkedHashMap<>();
-      if (!snapshot.getSummaryMap().isEmpty()) {
-        summary.putAll(snapshot.getSummaryMap());
+      Map<String, String> summary =
+          new LinkedHashMap<>(SnapshotMetadataUtil.snapshotSummary(snapshot));
+      String operation = SnapshotMetadataUtil.snapshotOperation(snapshot);
+      if (operation != null && !operation.isBlank()) {
+        summary.putIfAbsent("operation", operation);
       }
-      summary.putIfAbsent("operation", "append");
       entry.put("summary", summary);
       out.add(entry);
     }

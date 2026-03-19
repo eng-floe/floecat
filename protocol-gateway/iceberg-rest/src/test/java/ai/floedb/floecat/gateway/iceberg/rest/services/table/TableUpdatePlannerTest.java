@@ -58,7 +58,6 @@ class TableUpdatePlannerTest {
     planner.tablePropertyService = propertyService;
     planner.snapshotUpdateService = snapshotUpdateService;
     planner.mapper = new ObjectMapper();
-    propertyService.metadataMutator = new TableCommitMetadataMutator();
   }
 
   @Test

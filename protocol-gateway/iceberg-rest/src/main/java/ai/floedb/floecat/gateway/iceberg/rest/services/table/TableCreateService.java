@@ -20,14 +20,15 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.fir
 
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
@@ -36,6 +37,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
@@ -65,6 +67,7 @@ public class TableCreateService {
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
   @Inject ObjectMapper mapper;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   public Response create(
       NamespaceRequestContext namespaceContext,
@@ -139,12 +142,24 @@ public class TableCreateService {
     Response response;
     try {
       IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
-      List<Snapshot> snapshots =
-          SnapshotLister.fetchSnapshots(
-              grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
+      TableMetadataView metadataView =
+          tableMetadataImportService.importMetadataView(
+              created, metadata, tableSupport.defaultFileIoProperties());
+      if (metadataView == null) {
+        List<ai.floedb.floecat.catalog.rpc.Snapshot> snapshots =
+            SnapshotLister.fetchSnapshots(
+                grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
+        metadataView =
+            TableMetadataBuilder.fromCatalog(
+                tableName,
+                created,
+                new java.util.LinkedHashMap<>(created.getPropertiesMap()),
+                metadata,
+                snapshots);
+      }
       response =
-          TableResponseMapper.toLoadResponse(
-              tableName, created, metadata, snapshots, tableConfig, credentials);
+          Response.ok(TableResponseMapper.toLoadResult(metadataView, tableConfig, credentials))
+              .build();
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -244,9 +259,11 @@ public class TableCreateService {
       } catch (IllegalArgumentException e) {
         return IcebergErrorResponses.validation(e.getMessage());
       }
+      TableMetadataView metadataView =
+          TableMetadataBuilder.fromCreateRequest(tableName, stubTable, effectiveReq);
       LoadTableResultDto loadResult =
-          TableResponseMapper.toLoadResultFromCreate(
-              tableName, stubTable, effectiveReq, tableSupport.defaultTableConfig(), credentials);
+          TableResponseMapper.toLoadResult(
+              metadataView, tableSupport.defaultTableConfig(), credentials);
       LOG.infof(
           "Stage-create metadata resolved stageId=%s location=%s",
           stored.key().stageId(), loadResult.metadataLocation());

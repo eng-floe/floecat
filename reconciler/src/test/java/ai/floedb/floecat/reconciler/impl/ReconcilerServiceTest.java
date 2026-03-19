@@ -42,6 +42,7 @@ import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -989,7 +990,7 @@ class ReconcilerServiceTest {
   }
 
   @Test
-  void buildSnapshotRetainsExistingDataWhenBundleOmitsFields() {
+  void buildSnapshotRetainsExistingDataWhenBundleOmitsFields() throws Exception {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
     Snapshot existing =
         Snapshot.newBuilder()
@@ -997,7 +998,12 @@ class ReconcilerServiceTest {
             .setSnapshotId(123L)
             .setSchemaJson("existing-schema")
             .setManifestList("existing-manifest")
-            .putSummary("existing-key", "existing-val")
+            .putFormatMetadata(
+                "iceberg",
+                IcebergMetadata.newBuilder()
+                    .putSummary("existing-key", "existing-val")
+                    .build()
+                    .toByteString())
             .putFormatMetadata("meta-key", ByteString.copyFromUtf8("old"))
             .build();
 
@@ -1022,11 +1028,13 @@ class ReconcilerServiceTest {
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
     Snapshot result = service.buildSnapshot(ctx, tableId, bundle, existing).orElseThrow();
+    IcebergMetadata snapshotMetadata =
+        IcebergMetadata.parseFrom(result.getFormatMetadataOrThrow("iceberg"));
 
     assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
-    assertThat(result.getSummaryMap()).containsEntry("existing-key", "existing-val");
-    assertThat(result.getSummaryMap()).containsEntry("new-key", "new-val");
+    assertThat(snapshotMetadata.getSummaryMap()).containsEntry("existing-key", "existing-val");
+    assertThat(snapshotMetadata.getSummaryMap()).containsEntry("new-key", "new-val");
     assertThat(result.getFormatMetadataMap())
         .containsEntry("meta-key", ByteString.copyFromUtf8("new"));
     assertThat(result.getFormatMetadataMap())

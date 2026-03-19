@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -52,6 +53,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.CanonicalTableMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -77,6 +79,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -101,10 +104,12 @@ class TransactionCommitServiceTest {
   private final TableCommitMaterializationService materializationService =
       Mockito.mock(TableCommitMaterializationService.class);
   private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
-  private final TableCommitMetadataMutator metadataMutator =
-      Mockito.mock(TableCommitMetadataMutator.class);
+  private final CanonicalCommitMetadataService canonicalCommitMetadataService =
+      Mockito.mock(CanonicalCommitMetadataService.class);
   private final GrpcServiceFacade grpcClient = Mockito.mock(GrpcServiceFacade.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
+  private final CanonicalTableMetadataService canonicalTableMetadataService =
+      new CanonicalTableMetadataService();
 
   @BeforeEach
   void setUp() {
@@ -117,10 +122,12 @@ class TransactionCommitServiceTest {
     service.commitOutboxService = commitOutboxService;
     service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
-    service.metadataMutator = metadataMutator;
+    service.canonicalCommitMetadataService = canonicalCommitMetadataService;
     service.grpcClient = grpcClient;
     service.tablePropertyService = tablePropertyService;
     service.connectorProvisioningService = connectorProvisioningService;
+    canonicalTableMetadataService.setMapper(mapper());
+    service.canonicalTableMetadataService = canonicalTableMetadataService;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
     when(requestContextFactory.catalog(any()))
@@ -145,9 +152,11 @@ class TransactionCommitServiceTest {
                 .build());
     when(tableCommitPlanner.plan(any(), any(), any(), any()))
         .thenReturn(new TableCommitPlanner.PlanResult(table, null));
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(defaultCommitResponse());
-    when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CanonicalCommitMetadataService.CanonicalCommitMetadata canonicalCommitMetadata =
+        defaultCanonicalCommitMetadata();
+    when(canonicalCommitMetadataService.applyCommitUpdates(
+            any(), any(), any(), any(), any(), any()))
+        .thenReturn(canonicalCommitMetadata);
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     when(tableSupport.getConnector(any()))
@@ -211,6 +220,36 @@ class TransactionCommitServiceTest {
             List.of(),
             List.of(),
             List.of()));
+  }
+
+  private CanonicalCommitMetadataService.CanonicalCommitMetadata defaultCanonicalCommitMetadata() {
+    TableMetadataView metadataView = defaultCommitResponse().metadata();
+    TableMetadata tableMetadata = Mockito.mock(TableMetadata.class);
+    when(tableMetadata.uuid()).thenReturn("tbl-id");
+    when(tableMetadata.formatVersion()).thenReturn(2);
+    when(tableMetadata.metadataFileLocation())
+        .thenReturn("s3://warehouse/orders/metadata/00001.metadata.json");
+    when(tableMetadata.location()).thenReturn("s3://warehouse/orders");
+    when(tableMetadata.lastUpdatedMillis()).thenReturn(1L);
+    when(tableMetadata.lastColumnId()).thenReturn(0);
+    when(tableMetadata.currentSchemaId()).thenReturn(0);
+    when(tableMetadata.defaultSpecId()).thenReturn(0);
+    when(tableMetadata.lastAssignedPartitionId()).thenReturn(0);
+    when(tableMetadata.defaultSortOrderId()).thenReturn(0);
+    when(tableMetadata.lastSequenceNumber()).thenReturn(0L);
+    when(tableMetadata.nextRowId()).thenReturn(0L);
+    when(tableMetadata.properties()).thenReturn(Map.of());
+    when(tableMetadata.currentSnapshot()).thenReturn(null);
+    when(tableMetadata.snapshotLog()).thenReturn(List.of());
+    when(tableMetadata.previousFiles()).thenReturn(List.of());
+    when(tableMetadata.schemas()).thenReturn(List.of());
+    when(tableMetadata.specs()).thenReturn(List.of());
+    when(tableMetadata.sortOrders()).thenReturn(List.of());
+    when(tableMetadata.refs()).thenReturn(Map.of());
+    when(tableMetadata.statisticsFiles()).thenReturn(List.of());
+    when(tableMetadata.partitionStatisticsFiles()).thenReturn(List.of());
+    when(tableMetadata.encryptionKeys()).thenReturn(List.of());
+    return new CanonicalCommitMetadataService.CanonicalCommitMetadata(metadataView, tableMetadata);
   }
 
   @Test
@@ -928,6 +967,116 @@ class TransactionCommitServiceTest {
                                                 .getTable()
                                                 .getPropertiesMap()
                                                 .get("metadata-location")))));
+  }
+
+  @Test
+  void buildSnapshotIcebergMetadataUsesCommittedTableMetadataAsSourceOfTruth() throws Exception {
+    IcebergMetadata staleBase =
+        IcebergMetadata.newBuilder()
+            .setFormatVersion(2)
+            .setCurrentSchemaId(1)
+            .addSchemas(
+                ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
+                    .setSchemaId(1)
+                    .setSchemaJson(
+                        """
+                        {"schema-id":1,"type":"struct","fields":[{"id":1,"name":"old_col","required":false,"type":"string"}]}
+                        """)
+                    .build())
+            .build();
+    when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(staleBase);
+
+    TableMetadataView committedMetadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://warehouse/orders",
+            "s3://warehouse/orders/metadata/00002.metadata.json",
+            1234L,
+            Map.of("metadata-location", "s3://warehouse/orders/metadata/00002.metadata.json"),
+            2,
+            0,
+            0,
+            0,
+            0,
+            999L,
+            7L,
+            List.of(
+                Map.of(
+                    "schema-id",
+                    0,
+                    "last-column-id",
+                    2,
+                    "type",
+                    "struct",
+                    "fields",
+                    List.of(
+                        Map.of("id", 1, "name", "id", "required", true, "type", "long"),
+                        Map.of("id", 2, "name", "note", "required", false, "type", "string")))),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of("main", Map.of("snapshot-id", 999L, "type", "branch")),
+            List.of(Map.of("timestamp-ms", 1L, "snapshot-id", 999L)),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(
+                Map.of(
+                    "snapshot-id",
+                    999L,
+                    "sequence-number",
+                    7L,
+                    "timestamp-ms",
+                    1L,
+                    "manifest-list",
+                    "s3://warehouse/orders/metadata/snap-999.avro",
+                    "schema-id",
+                    0,
+                    "summary",
+                    Map.of("operation", "append"))));
+
+    TableMetadata canonical =
+        canonicalTableMetadataService.toTableMetadata(
+            committedMetadata, "s3://warehouse/orders/metadata/00002.metadata.json");
+
+    Method method =
+        TransactionCommitService.class.getDeclaredMethod(
+            "buildSnapshotIcebergMetadata",
+            Table.class,
+            TableMetadata.class,
+            TableGatewaySupport.class,
+            long.class,
+            Long.class,
+            String.class,
+            Map.class);
+    method.setAccessible(true);
+
+    IcebergMetadata encoded =
+        (IcebergMetadata)
+            method.invoke(
+                service,
+                Table.getDefaultInstance(),
+                canonical,
+                tableSupport,
+                999L,
+                7L,
+                "append",
+                Map.of("operation", "append", "engine-name", "test"));
+
+    assertNotNull(encoded);
+    assertEquals(
+        "s3://warehouse/orders/metadata/00002.metadata.json", encoded.getMetadataLocation());
+    assertEquals(0, encoded.getCurrentSchemaId());
+    assertEquals(1, encoded.getSchemasCount());
+    assertEquals(0, encoded.getSchemas(0).getSchemaId());
+    assertEquals(1, encoded.getPartitionSpecsCount());
+    assertEquals(1, encoded.getSortOrdersCount());
+    assertEquals(999L, encoded.getCurrentSnapshotId());
+    assertEquals(canonical.lastSequenceNumber(), encoded.getLastSequenceNumber());
+    assertEquals("append", encoded.getOperation());
+    assertEquals("append", encoded.getSummaryOrThrow("operation"));
+    assertEquals("test", encoded.getSummaryOrThrow("engine-name"));
+    assertEquals(999L, encoded.getRefsOrThrow("main").getSnapshotId());
   }
 
   @Test

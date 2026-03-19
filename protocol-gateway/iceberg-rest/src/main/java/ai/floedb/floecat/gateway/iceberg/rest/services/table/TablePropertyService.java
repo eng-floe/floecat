@@ -21,18 +21,18 @@ import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asL
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringList;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.maxFieldId;
+import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.normalizeFormatVersion;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,6 +40,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import org.apache.iceberg.TableMetadata;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -54,8 +55,6 @@ public class TablePropertyService {
           "default-spec-id",
           "last-partition-id",
           "default-sort-order-id");
-
-  @Inject TableCommitMetadataMutator metadataMutator;
 
   public void stripMetadataLocation(Map<String, String> props) {
     if (props == null || props.isEmpty()) {
@@ -137,6 +136,7 @@ public class TablePropertyService {
     }
     targetProps = applySnapshotPropertyUpdates(targetProps, tableSupplier, parsed);
     targetProps = applyRefPropertyUpdates(targetProps, tableSupplier, parsed);
+    targetProps = applyLocationPropertyUpdates(targetProps, tableSupplier, updates);
     targetProps = applyTableDefinitionPropertyUpdates(targetProps, tableSupplier, updates);
     return new PropertyUpdateResult(targetProps, null);
   }
@@ -190,6 +190,34 @@ public class TablePropertyService {
     spec.setUpstream(builder.build());
     mask.addPaths("upstream.uri");
     return null;
+  }
+
+  private Map<String, String> applyLocationPropertyUpdates(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      List<Map<String, Object>> updates) {
+    if (updates == null || updates.isEmpty()) {
+      return mergedProps;
+    }
+    String location = null;
+    for (Map<String, Object> update : updates) {
+      String action = CommitUpdateInspector.actionOf(update);
+      if (!CommitUpdateInspector.ACTION_SET_LOCATION.equals(action)) {
+        continue;
+      }
+      String value = asString(update.get("location"));
+      if (value == null || value.isBlank()) {
+        continue;
+      }
+      location = value;
+      break;
+    }
+    if (location == null) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps = ensurePropertyMap(tableSupplier, mergedProps);
+    targetProps.put("location", location);
+    return targetProps;
   }
 
   private Response validationError(String message) {
@@ -320,15 +348,8 @@ public class TablePropertyService {
         mergedProps == null
             ? new LinkedHashMap<>(tableSupplier.get().getPropertiesMap())
             : new LinkedHashMap<>(mergedProps);
-    TableMetadataView base = metadataFromProperties(sourceProps);
-    TableMetadataView mutated =
-        metadataMutator.apply(
-            base, new TableRequests.Commit(List.of(), List.copyOf(definitionUpdates)));
-    if (mutated == null) {
-      return mergedProps;
-    }
     Map<String, String> mutatedProps =
-        mutated.properties() == null ? Map.of() : mutated.properties();
+        applyTableDefinitionProperties(new LinkedHashMap<>(sourceProps), definitionUpdates);
     Map<String, String> targetProps =
         mergedProps == null ? new LinkedHashMap<>(sourceProps) : mergedProps;
     boolean changed = false;
@@ -341,6 +362,144 @@ public class TablePropertyService {
       changed = true;
     }
     return changed ? targetProps : mergedProps;
+  }
+
+  private Map<String, String> applyTableDefinitionProperties(
+      Map<String, String> props, List<Map<String, Object>> updates) {
+    Integer formatVersion = asInteger(props.get("format-version"));
+    Integer lastColumnId = asInteger(props.get("last-column-id"));
+    Integer currentSchemaId = asInteger(props.get("current-schema-id"));
+    Integer defaultSpecId = asInteger(props.get("default-spec-id"));
+    Integer lastPartitionId = asInteger(props.get("last-partition-id"));
+    Integer defaultSortOrderId = asInteger(props.get("default-sort-order-id"));
+    Integer lastAddedSchemaId = null;
+    Integer lastAddedSpecId = null;
+    Integer lastAddedSortOrderId = null;
+
+    for (Map<String, Object> update : updates) {
+      if (update == null) {
+        continue;
+      }
+      CommitUpdateInspector.UpdateAction action = CommitUpdateInspector.actionTypeOf(update);
+      if (action == null) {
+        continue;
+      }
+      switch (action) {
+        case UPGRADE_FORMAT_VERSION -> {
+          Integer requested = asInteger(update.get("format-version"));
+          if (requested != null) {
+            formatVersion = requested;
+          }
+        }
+        case ADD_SCHEMA -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> schema =
+              update.get("schema") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          Integer schemaId = schema == null ? null : asInteger(schema.get("schema-id"));
+          if (schemaId != null && schemaId >= 0) {
+            lastAddedSchemaId = schemaId;
+          }
+          Integer reqLastColumn = asInteger(update.get("last-column-id"));
+          if (reqLastColumn == null) {
+            reqLastColumn = maxFieldId(schema, "fields", "id");
+          }
+          if (reqLastColumn != null) {
+            lastColumnId = reqLastColumn;
+          }
+        }
+        case SET_CURRENT_SCHEMA -> {
+          Integer schemaId =
+              resolveLastAddedId(asInteger(update.get("schema-id")), lastAddedSchemaId);
+          if (schemaId != null) {
+            currentSchemaId = schemaId;
+          }
+        }
+        case ADD_SPEC -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> spec =
+              update.get("spec") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          Integer specId = spec == null ? null : asInteger(spec.get("spec-id"));
+          if (specId != null && specId >= 0) {
+            lastAddedSpecId = specId;
+          }
+          Integer partitionFieldMax = maxPartitionFieldId(spec);
+          if (partitionFieldMax != null && partitionFieldMax >= 0) {
+            lastPartitionId = partitionFieldMax;
+          }
+        }
+        case SET_DEFAULT_SPEC -> {
+          Integer specId = resolveLastAddedId(asInteger(update.get("spec-id")), lastAddedSpecId);
+          if (specId != null) {
+            defaultSpecId = specId;
+          }
+        }
+        case ADD_SORT_ORDER -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> sortOrder =
+              update.get("sort-order") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          Integer sortOrderId = sortOrder == null ? null : asInteger(sortOrder.get("order-id"));
+          if (sortOrderId == null && sortOrder != null) {
+            sortOrderId = asInteger(sortOrder.get("sort-order-id"));
+          }
+          if (sortOrderId != null && sortOrderId >= 0) {
+            lastAddedSortOrderId = sortOrderId;
+          }
+        }
+        case SET_DEFAULT_SORT_ORDER -> {
+          Integer sortOrderId =
+              resolveLastAddedId(asInteger(update.get("sort-order-id")), lastAddedSortOrderId);
+          if (sortOrderId != null) {
+            defaultSortOrderId = sortOrderId;
+          }
+        }
+        default -> {
+          // Ignore non table-definition actions.
+        }
+      }
+    }
+
+    formatVersion = normalizeFormatVersion(formatVersion, null);
+    putIntProperty(props, "format-version", formatVersion);
+    putIntProperty(props, "last-column-id", lastColumnId);
+    putIntProperty(props, "current-schema-id", currentSchemaId);
+    putIntProperty(props, "default-spec-id", defaultSpecId);
+    putIntProperty(props, "last-partition-id", lastPartitionId);
+    putIntProperty(props, "default-sort-order-id", defaultSortOrderId);
+    return props;
+  }
+
+  private Integer resolveLastAddedId(Integer requestedId, Integer lastAddedId) {
+    if (requestedId == null) {
+      return null;
+    }
+    if (requestedId >= 0) {
+      return requestedId;
+    }
+    return requestedId == -1 ? lastAddedId : null;
+  }
+
+  private Integer maxPartitionFieldId(Map<String, Object> spec) {
+    if (spec == null || spec.isEmpty()) {
+      return null;
+    }
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> fields =
+        spec.get("fields") instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+    if (fields.isEmpty()) {
+      return 0;
+    }
+    Integer max = null;
+    for (Map<String, Object> field : fields) {
+      if (field == null) {
+        continue;
+      }
+      Integer fieldId = asInteger(field.get("field-id"));
+      if (fieldId == null) {
+        continue;
+      }
+      max = max == null ? fieldId : Math.max(max, fieldId);
+    }
+    return max == null ? 0 : max;
   }
 
   private Map<String, Map<String, Object>> loadStoredRefs(
@@ -363,45 +522,6 @@ public class TablePropertyService {
     return asLong(main.get("snapshot-id"));
   }
 
-  TableMetadataView metadataFromProperties(Map<String, String> props) {
-    Map<String, String> safeProps = props == null ? Map.of() : Map.copyOf(props);
-    Integer formatVersion = asInteger(propsValue(safeProps, "format-version"));
-    Integer lastColumnId = asInteger(propsValue(safeProps, "last-column-id"));
-    Integer currentSchemaId = asInteger(propsValue(safeProps, "current-schema-id"));
-    Integer defaultSpecId = asInteger(propsValue(safeProps, "default-spec-id"));
-    Integer lastPartitionId = asInteger(propsValue(safeProps, "last-partition-id"));
-    Integer defaultSortOrderId = asInteger(propsValue(safeProps, "default-sort-order-id"));
-    Long currentSnapshotId = asLong(propsValue(safeProps, "current-snapshot-id"));
-    Long lastSequenceNumber = asLong(propsValue(safeProps, "last-sequence-number"));
-    return new TableMetadataView(
-        formatVersion,
-        propsValue(safeProps, "table-uuid"),
-        propsValue(safeProps, "location"),
-        propsValue(safeProps, "metadata-location"),
-        null,
-        safeProps,
-        lastColumnId,
-        currentSchemaId,
-        defaultSpecId,
-        lastPartitionId,
-        defaultSortOrderId,
-        currentSnapshotId,
-        lastSequenceNumber,
-        List.of(),
-        List.of(),
-        List.of(),
-        Map.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of());
-  }
-
-  private String propsValue(Map<String, String> props, String key) {
-    return props == null || key == null ? null : props.get(key);
-  }
-
   public Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadataView metadata) {
     if (plannedTable == null || metadata == null) {
       return plannedTable;
@@ -416,7 +536,28 @@ public class TablePropertyService {
     putLongProperty(props, "last-sequence-number", metadata.lastSequenceNumber());
     syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
     putStringProperty(props, "table-uuid", metadata.tableUuid());
-    putStringProperty(props, "location", metadata.location());
+    props.putIfAbsent("location", metadata.location());
+    return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
+  }
+
+  public Table applyCanonicalMetadataProperties(Table plannedTable, TableMetadata metadata) {
+    if (plannedTable == null || metadata == null) {
+      return plannedTable;
+    }
+    Map<String, String> props = new LinkedHashMap<>(plannedTable.getPropertiesMap());
+    putIntProperty(props, "format-version", metadata.formatVersion());
+    putIntProperty(props, "last-column-id", metadata.lastColumnId());
+    putIntProperty(props, "current-schema-id", metadata.currentSchemaId());
+    putIntProperty(props, "default-spec-id", metadata.defaultSpecId());
+    putIntProperty(props, "last-partition-id", metadata.lastAssignedPartitionId());
+    putIntProperty(props, "default-sort-order-id", metadata.defaultSortOrderId());
+    putLongProperty(props, "last-sequence-number", metadata.lastSequenceNumber());
+    syncLongProperty(
+        props,
+        "current-snapshot-id",
+        metadata.currentSnapshot() == null ? null : metadata.currentSnapshot().snapshotId());
+    putStringProperty(props, "table-uuid", metadata.uuid());
+    props.putIfAbsent("location", metadata.location());
     return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
   }
 

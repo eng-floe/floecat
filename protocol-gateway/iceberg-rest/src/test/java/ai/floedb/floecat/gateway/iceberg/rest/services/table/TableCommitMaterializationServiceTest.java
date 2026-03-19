@@ -526,6 +526,8 @@ class TableCommitMaterializationServiceTest {
     when(tableMetadataImportService.importMetadata(eq(existing.metadataLocation()), any()))
         .thenReturn(
             new TableMetadataImportService.ImportedMetadata(
+                null,
+                existing,
                 table.getSchemaJson(),
                 Map.of(),
                 existing.location(),

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,12 +52,14 @@ class MaterializeMetadataServiceTest {
     MaterializeResult first =
         service.materialize("sales.us", "orders", metadata, metadata.metadataLocation());
     assertTrue(first.metadataLocation().contains("/metadata/00000-"));
+    assertNotNull(first.tableMetadata());
     assertTrue(readFile(service.fileIo(), first.metadataLocation()).contains("\"table-uuid\""));
 
     MaterializeResult second =
         service.materialize(
             "sales.us", "orders", first.metadata(), first.metadata().metadataLocation());
     assertTrue(second.metadataLocation().contains("/metadata/"));
+    assertNotNull(second.tableMetadata());
     assertTrue(
         !second.metadataLocation().equals(first.metadataLocation()),
         "Expected subsequent materialization to produce a new metadata file");
@@ -105,9 +108,24 @@ class MaterializeMetadataServiceTest {
 
     MaterializeResult result = service.materialize("sales.us", "orders", metadata, null);
 
+    assertNotNull(result.tableMetadata());
     assertTrue(
         result.metadataLocation().contains("/orders/metadata/"),
         "Expected metadata location to include table metadata directory");
+  }
+
+  @Test
+  void materializeCanonicalizesWhenWriteIsSkipped() {
+    TestMaterializeMetadataService service = new TestMaterializeMetadataService();
+    service.mapper = MAPPER;
+
+    TableMetadataView metadata = fixtureMetadata("floecat://warehouse/orders/metadata/00002.json");
+
+    MaterializeResult result =
+        service.materialize("sales.us", "orders", metadata, metadata.metadataLocation());
+
+    assertNotNull(result.tableMetadata());
+    assertTrue(result.metadataLocation().startsWith("floecat://"));
   }
 
   @Test
@@ -227,6 +245,12 @@ class MaterializeMetadataServiceTest {
 
   private static final class TestMaterializeMetadataService extends MaterializeMetadataService {
     private final ReopenableInMemoryFileIO fileIo = new ReopenableInMemoryFileIO();
+
+    private TestMaterializeMetadataService() {
+      CanonicalTableMetadataService canonical = new CanonicalTableMetadataService();
+      canonical.setMapper(MAPPER);
+      this.canonicalTableMetadataService = canonical;
+    }
 
     @Override
     protected FileIO newFileIo(Map<String, String> props) {

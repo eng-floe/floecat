@@ -852,7 +852,7 @@ compose-shell:
 	@echo "==> [COMPOSE] shell"
 	FLOECAT_ENV_FILE=$(COMPOSE_ENV_FILE) COMPOSE_PROFILES=cli $(DOCKER_COMPOSE_MAIN) run --rm --use-aliases cli
 
-compose-smoke: docker-iceberg-rest
+compose-smoke: docker
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
 	  FLOECAT_ICEBERG_REST_IMAGE=$${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local} \
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \

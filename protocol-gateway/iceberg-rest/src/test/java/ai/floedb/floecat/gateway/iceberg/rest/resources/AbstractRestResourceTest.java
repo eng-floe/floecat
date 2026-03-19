@@ -42,6 +42,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
@@ -226,7 +227,16 @@ public abstract class AbstractRestResourceTest {
                   FIXTURE.snapshots().stream()
                       .map(AbstractRestResourceTest::toImportedSnapshot)
                       .collect(Collectors.toList());
+              TableMetadataView metadataView =
+                  TableMetadataBuilder.fromCatalog(
+                      FIXTURE.table().getDisplayName(),
+                      FIXTURE.table(),
+                      props,
+                      FIXTURE.metadata(),
+                      FIXTURE.snapshots());
               return new ImportedMetadata(
+                  null,
+                  metadataView,
                   FIXTURE.table().getSchemaJson(),
                   props,
                   tableLocation,
@@ -495,7 +505,7 @@ public abstract class AbstractRestResourceTest {
         sequence,
         timestampMs,
         manifestList,
-        snapshot.getSummaryMap(),
+        SnapshotMetadataUtil.snapshotSummary(snapshot),
         snapshot.getSchemaId() == 0 ? null : snapshot.getSchemaId());
   }
 }

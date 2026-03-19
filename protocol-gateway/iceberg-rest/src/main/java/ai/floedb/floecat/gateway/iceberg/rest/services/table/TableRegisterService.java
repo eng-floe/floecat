@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
@@ -27,14 +26,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
-import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -121,17 +118,18 @@ public class TableRegisterService {
             namespaceContext.catalogName(), namespaceContext.namespacePath(), tableName);
     Table created = tableLifecycleService.getTable(tableId);
 
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
-    List<Snapshot> snapshots =
-        SnapshotLister.fetchSnapshots(
-            snapshotClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
-    return TableResponseMapper.toLoadResponse(
-        tableName,
-        created,
-        metadata,
-        snapshots,
-        tableSupport.defaultTableConfig(),
-        tableSupport.defaultCredentials());
+    if (importedMetadata.metadataView() == null) {
+      return IcebergErrorResponses.failure(
+          "Failed to load canonical registered table metadata",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
+    return Response.ok(
+            TableResponseMapper.toLoadResult(
+                importedMetadata.metadataView(),
+                tableSupport.defaultTableConfig(),
+                tableSupport.defaultCredentials()))
+        .build();
   }
 
   private Response createRegisteredTable(
@@ -210,16 +208,18 @@ public class TableRegisterService {
     }
     Table updated = tableLifecycleService.getTable(tableId);
 
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(updated);
-    List<Snapshot> snapshots =
-        SnapshotLister.fetchSnapshots(snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
-    return TableResponseMapper.toLoadResponse(
-        tableName,
-        updated,
-        metadata,
-        snapshots,
-        tableSupport.defaultTableConfig(),
-        tableSupport.defaultCredentials());
+    if (importedMetadata.metadataView() == null) {
+      return IcebergErrorResponses.failure(
+          "Failed to load canonical registered table metadata",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
+    return Response.ok(
+            TableResponseMapper.toLoadResult(
+                importedMetadata.metadataView(),
+                tableSupport.defaultTableConfig(),
+                tableSupport.defaultCredentials()))
+        .build();
   }
 
   private TransactionCommitRequest buildRegisterTransactionRequest(

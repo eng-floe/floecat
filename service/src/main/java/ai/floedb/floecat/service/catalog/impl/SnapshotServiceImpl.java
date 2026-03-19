@@ -290,9 +290,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasManifestList()) {
                     snapBuilder.setManifestList(spec.getManifestList());
                   }
-                  if (!spec.getSummaryMap().isEmpty()) {
-                    snapBuilder.putAllSummary(spec.getSummaryMap());
-                  }
                   if (spec.hasSchemaId()) {
                     snapBuilder.setSchemaId(spec.getSchemaId());
                   }
@@ -564,7 +561,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "partition_spec",
           "sequence_number",
           "manifest_list",
-          "summary",
           "schema_id",
           "format_metadata");
 
@@ -620,10 +616,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
             throw GrpcErrors.invalidArgument(corr, SNAPSHOT_MANIFEST_LIST_REQUIRED, Map.of());
           }
           builder.setManifestList(spec.getManifestList());
-        }
-        case "summary" -> {
-          builder.clearSummary();
-          builder.putAllSummary(spec.getSummaryMap());
         }
         case "schema_id" -> {
           if (!spec.hasSchemaId()) {
@@ -686,7 +678,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasManifestList()) {
       c.scalar("manifest_list", spec.getManifestList());
     }
-    c.map("summary", spec.getSummaryMap());
     if (spec.hasSchemaId()) {
       c.scalar("schema_id", spec.getSchemaId());
     }

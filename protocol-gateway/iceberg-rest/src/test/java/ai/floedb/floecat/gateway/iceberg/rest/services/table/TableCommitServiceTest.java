@@ -47,7 +47,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -174,11 +173,7 @@ class TableCommitServiceTest {
             List.of());
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
-    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(dto);
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(dto);
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any())).thenReturn(dto);
 
     Response response = service.commit(command(commitWithSingleUpdate()));
 
@@ -231,11 +226,7 @@ class TableCommitServiceTest {
             List.of());
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
-    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildInitialResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(dto);
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(dto);
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any())).thenReturn(dto);
 
     Response response = service.commit(command(request));
 
@@ -315,9 +306,7 @@ class TableCommitServiceTest {
             List.of());
     CommitTableResponseDto dto =
         new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
-    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
-    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
-        .thenReturn(dto);
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any())).thenReturn(dto);
 
     Response response = service.commit(commandWithStage(commitWithSingleUpdate(), "stage-1"));
 

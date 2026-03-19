@@ -58,8 +58,7 @@ class TableResponseMapperTest {
             .build();
     IcebergMetadata metadata = FIXTURE.metadata();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     assertNotNull(result.metadata());
     assertEquals(
@@ -94,8 +93,7 @@ class TableResponseMapperTest {
                 "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -137,8 +135,10 @@ class TableResponseMapperTest {
             fixtureWriteOrder(),
             null);
 
+    TableMetadataView metadataView =
+        TableMetadataBuilder.fromCreateRequest("orders", table, request);
     LoadTableResultDto loadResult =
-        TableResponseMapper.toLoadResultFromCreate("orders", table, request, Map.of(), List.of());
+        TableResponseMapper.toLoadResult(metadataView, Map.of(), List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata",
@@ -173,8 +173,7 @@ class TableResponseMapperTest {
                 "s3://yb-iceberg-tpcds/trino_test/metadata/00001-abc.metadata.json")
             .build();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -199,8 +198,7 @@ class TableResponseMapperTest {
                 "s3://yb-iceberg-tpcds/trino_test/metadata/00001-old.metadata.json")
             .build();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata/00002-new.metadata.json",
@@ -222,8 +220,7 @@ class TableResponseMapperTest {
                 "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .build();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     assertEquals(
         "s3://yb-iceberg-tpcds/trino_test/metadata", result.config().get("write.metadata.path"));
@@ -273,9 +270,7 @@ class TableResponseMapperTest {
             .build();
 
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(11L).setSequenceNumber(1L).build();
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult(
-            "orders", table, null, List.of(snapshot), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, null, List.of(snapshot));
 
     assertNotNull(result.metadata());
     assertEquals(2, result.metadata().formatVersion());
@@ -304,8 +299,7 @@ class TableResponseMapperTest {
                     .build())
             .build();
 
-    LoadTableResultDto result =
-        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+    LoadTableResultDto result = loadResultFromCatalog("orders", table, metadata, List.of());
 
     List<Map<String, Object>> statistics = result.metadata().statistics();
     assertFalse(statistics.isEmpty());
@@ -336,6 +330,14 @@ class TableResponseMapperTest {
     }
     Map<String, Object> payload = new LinkedHashMap<>(schema);
     return JSON.valueToTree(payload);
+  }
+
+  private static LoadTableResultDto loadResultFromCatalog(
+      String tableName, Table table, IcebergMetadata metadata, List<Snapshot> snapshots) {
+    TableMetadataView metadataView =
+        TableMetadataBuilder.fromCatalog(
+            tableName, table, new LinkedHashMap<>(table.getPropertiesMap()), metadata, snapshots);
+    return TableResponseMapper.toLoadResult(metadataView, Map.of(), List.of());
   }
 
   private static JsonNode fixturePartitionSpec() {

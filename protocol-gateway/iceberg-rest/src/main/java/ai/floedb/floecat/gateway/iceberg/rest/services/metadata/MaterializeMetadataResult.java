@@ -18,14 +18,23 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import jakarta.ws.rs.core.Response;
+import org.apache.iceberg.TableMetadata;
 
 public record MaterializeMetadataResult(
-    Response error, TableMetadataView metadata, String metadataLocation) {
+    Response error,
+    TableMetadataView metadata,
+    String metadataLocation,
+    TableMetadata tableMetadata) {
   public static MaterializeMetadataResult success(TableMetadataView metadata, String location) {
-    return new MaterializeMetadataResult(null, metadata, location);
+    return new MaterializeMetadataResult(null, metadata, location, null);
+  }
+
+  public static MaterializeMetadataResult success(
+      TableMetadataView metadata, String location, TableMetadata tableMetadata) {
+    return new MaterializeMetadataResult(null, metadata, location, tableMetadata);
   }
 
   public static MaterializeMetadataResult failure(Response error) {
-    return new MaterializeMetadataResult(error, null, null);
+    return new MaterializeMetadataResult(error, null, null, null);
   }
 }
