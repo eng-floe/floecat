@@ -19,14 +19,11 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.firstNonBlank;
 
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -43,33 +40,24 @@ public class MaterializeMetadataService {
   private static final Logger LOG = Logger.getLogger(MaterializeMetadataService.class);
   private static final Set<String> SKIPPED_SCHEMES = Set.of("floecat");
 
-  @Inject ObjectMapper mapper;
   @Inject IcebergGatewayConfig config;
   @Inject TableGatewaySupport tableGatewaySupport;
-  @Inject CanonicalTableMetadataService canonicalTableMetadataService;
 
   public static final class MaterializeResult {
     private final String metadataLocation;
-    private final TableMetadataView metadata;
     private final TableMetadata tableMetadata;
 
-    public MaterializeResult(String metadataLocation, TableMetadataView metadata) {
-      this(metadataLocation, metadata, null);
+    public MaterializeResult(String metadataLocation) {
+      this(metadataLocation, null);
     }
 
-    public MaterializeResult(
-        String metadataLocation, TableMetadataView metadata, TableMetadata tableMetadata) {
+    public MaterializeResult(String metadataLocation, TableMetadata tableMetadata) {
       this.metadataLocation = metadataLocation;
-      this.metadata = metadata;
       this.tableMetadata = tableMetadata;
     }
 
     public String metadataLocation() {
       return metadataLocation;
-    }
-
-    public TableMetadataView metadata() {
-      return metadata;
     }
 
     public TableMetadata tableMetadata() {
@@ -80,15 +68,16 @@ public class MaterializeMetadataService {
   public MaterializeResult materialize(
       String namespaceFq,
       String tableName,
-      TableMetadataView metadata,
+      TableMetadata metadata,
       String metadataLocationOverride) {
     if (metadata == null) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because commit metadata was empty",
           namespaceFq, tableName);
-      return new MaterializeResult(metadataLocationOverride, null, null);
+      return new MaterializeResult(metadataLocationOverride, null);
     }
-    String requestedLocation = firstNonBlank(metadataLocationOverride, metadata.metadataLocation());
+    String requestedLocation =
+        firstNonBlank(metadataLocationOverride, metadata.metadataFileLocation());
     if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because metadata-location was %s",
@@ -111,14 +100,12 @@ public class MaterializeMetadataService {
             namespaceFq, tableName);
         return canonicalizeResult(requestedLocation, metadata);
       }
-      TableMetadataView resolvedMetadata = metadata.withMetadataLocation(resolvedLocation);
-      TableMetadata parsed =
-          canonicalTableMetadataService.toTableMetadata(resolvedMetadata, resolvedLocation);
+      TableMetadata parsed = withMetadataLocation(metadata, resolvedLocation);
       writeMetadata(fileIO, resolvedLocation, parsed);
       LOG.infof(
           "Materialized Iceberg metadata files for %s.%s to %s",
           namespaceFq, tableName, resolvedLocation);
-      return new MaterializeResult(resolvedLocation, resolvedMetadata, parsed);
+      return new MaterializeResult(resolvedLocation, parsed);
     } catch (MaterializeMetadataException e) {
       throw e;
     } catch (Exception e) {
@@ -139,17 +126,13 @@ public class MaterializeMetadataService {
     return FileIoFactory.createFileIo(props, config, true);
   }
 
-  MaterializeResult canonicalizeResult(String metadataLocation, TableMetadataView metadata) {
+  MaterializeResult canonicalizeResult(String metadataLocation, TableMetadata metadata) {
     if (metadata == null) {
-      return new MaterializeResult(metadataLocation, null, null);
+      return new MaterializeResult(metadataLocation, null);
     }
-    TableMetadataView resolvedMetadata =
-        hasText(metadataLocation) ? metadata.withMetadataLocation(metadataLocation) : metadata;
     TableMetadata canonical =
-        hasText(metadataLocation)
-            ? canonicalTableMetadataService.toTableMetadata(resolvedMetadata, metadataLocation)
-            : null;
-    return new MaterializeResult(metadataLocation, resolvedMetadata, canonical);
+        hasText(metadataLocation) ? withMetadataLocation(metadata, metadataLocation) : metadata;
+    return new MaterializeResult(metadataLocation, canonical);
   }
 
   private boolean shouldMaterialize(String metadataLocation) {
@@ -208,7 +191,7 @@ public class MaterializeMetadataService {
   }
 
   private String resolveVersionedLocation(
-      FileIO fileIO, String metadataLocation, TableMetadataView metadata) {
+      FileIO fileIO, String metadataLocation, TableMetadata metadata) {
     String directory = null;
     if (metadataLocation != null) {
       if (metadataLocation.endsWith("/")) {
@@ -245,11 +228,11 @@ public class MaterializeMetadataService {
     return trimmed.substring(0, slash + 1);
   }
 
-  private String metadataDirectory(TableMetadataView metadata) {
+  private String metadataDirectory(TableMetadata metadata) {
     if (metadata == null) {
       return null;
     }
-    String location = firstNonBlank(metadata.metadataLocation(), metadata.location());
+    String location = firstNonBlank(metadata.metadataFileLocation(), metadata.location());
     String directory = metadataDirectoryFromLocation(location);
     if (directory != null) {
       return directory;
@@ -297,13 +280,13 @@ public class MaterializeMetadataService {
     return location.endsWith(".metadata.json");
   }
 
-  private String directoryFromMetadataLog(TableMetadataView metadata) {
-    if (metadata == null || metadata.metadataLog() == null) {
+  private String directoryFromMetadataLog(TableMetadata metadata) {
+    if (metadata == null || metadata.previousFiles() == null) {
       return null;
     }
-    for (Map<String, Object> entry : metadata.metadataLog()) {
-      Object value = entry == null ? null : entry.get("metadata-file");
-      if (value instanceof String file && !file.isBlank()) {
+    for (TableMetadata.MetadataLogEntry entry : metadata.previousFiles()) {
+      String file = entry == null ? null : entry.file();
+      if (file != null && !file.isBlank()) {
         String directory = directoryOf(file);
         if (directory != null) {
           return directory;
@@ -313,26 +296,33 @@ public class MaterializeMetadataService {
     return null;
   }
 
-  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadataView metadata) {
+  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadata metadata) {
     long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
     return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
   }
 
-  private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadataView metadata) {
+  private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadata metadata) {
     long max = parseExistingFiles(fileIO, directory);
-    if (metadata != null && metadata.metadataLog() != null) {
-      List<Map<String, Object>> entries = metadata.metadataLog();
-      for (Map<String, Object> entry : entries) {
-        Object value = entry.get("metadata-file");
-        if (value instanceof String file) {
-          long parsed = parseVersion(file);
-          if (parsed > max) {
-            max = parsed;
-          }
+    if (metadata != null && metadata.previousFiles() != null) {
+      for (TableMetadata.MetadataLogEntry entry : metadata.previousFiles()) {
+        String file = entry == null ? null : entry.file();
+        long parsed = parseVersion(file);
+        if (parsed > max) {
+          max = parsed;
         }
       }
     }
     return max < 0 ? 0 : max + 1;
+  }
+
+  private TableMetadata withMetadataLocation(TableMetadata metadata, String metadataLocation) {
+    if (metadata == null || !hasText(metadataLocation)) {
+      return metadata;
+    }
+    return TableMetadata.buildFrom(metadata)
+        .discardChanges()
+        .withMetadataLocation(metadataLocation)
+        .build();
   }
 
   private long parseExistingFiles(FileIO fileIO, String directory) {

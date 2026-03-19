@@ -680,8 +680,11 @@ public class ReconcilerService {
         value -> value > 0);
     applyField(
         () -> bundle.manifestList(),
-        () -> existing != null ? existing.getManifestList() : null,
-        builder::setManifestList,
+        () ->
+            existing != null && existing.getManifestListCount() > 0
+                ? existing.getManifestList(0)
+                : null,
+        builder::addManifestList,
         str -> str != null && !str.isBlank());
     Map<String, ByteString> mergedMetadata = new LinkedHashMap<>();
     if (existing != null && !existing.getFormatMetadataMap().isEmpty()) {

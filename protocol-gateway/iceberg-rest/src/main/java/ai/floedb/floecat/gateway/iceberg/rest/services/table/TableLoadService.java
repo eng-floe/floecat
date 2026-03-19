@@ -34,7 +34,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.DeltaIcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -84,31 +84,30 @@ public class TableLoadService {
               delta.snapshots());
       snapshotList = delta.snapshots();
     } else {
-      metadata = tableSupport.loadCurrentMetadata(tableRecord);
-      ImportedMetadata imported = importCanonicalMetadata(tableRecord, tableSupport, metadata);
-      if (imported != null && imported.metadataView() != null) {
-        metadata = imported.icebergMetadata();
-        metadataView = imported.metadataView();
-      } else {
-        metadataView =
-            TableMetadataBuilder.fromCatalog(
-                tableName,
-                tableRecord,
-                new LinkedHashMap<>(tableRecord.getPropertiesMap()),
-                metadata,
-                List.of());
-      }
+      IcebergMetadata currentMetadata =
+          tableMetadataImportService.resolveCurrentIcebergMetadata(tableRecord, tableSupport);
+      ResolvedMetadata resolved =
+          tableMetadataImportService.resolveMetadata(
+              tableName,
+              tableRecord,
+              currentMetadata,
+              tableSupport.defaultFileIoProperties(),
+              () ->
+                  SnapshotLister.fetchSnapshots(
+                      snapshotClient, tableContext.tableId(), snapshotMode, currentMetadata));
+      metadata = resolved.icebergMetadata();
       snapshotList =
           SnapshotLister.fetchSnapshots(
               snapshotClient, tableContext.tableId(), snapshotMode, metadata);
-      if (imported == null || imported.metadataView() == null) {
-        metadataView =
-            TableMetadataBuilder.fromCatalog(
-                tableName,
-                tableRecord,
-                new LinkedHashMap<>(tableRecord.getPropertiesMap()),
-                metadata,
-                snapshotList);
+      metadataView =
+          TableMetadataBuilder.fromCatalog(
+              tableName,
+              tableRecord,
+              new LinkedHashMap<>(tableRecord.getPropertiesMap()),
+              metadata,
+              snapshotList);
+      if (metadataView == null) {
+        metadataView = resolved.metadataView();
       }
     }
     String etagValue = etagSource(metadata, snapshotMode);
@@ -213,32 +212,5 @@ public class TableLoadService {
     return deltaCompat.isPresent()
         && deltaCompat.get().enabled()
         && tableFormatSupport.isDelta(table);
-  }
-
-  private ImportedMetadata importCanonicalMetadata(
-      Table tableRecord, TableGatewaySupport tableSupport, IcebergMetadata metadata) {
-    String metadataLocation = metadataLocation(metadata, tableRecord);
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    LOG.infof("Importing canonical load metadata from metadata-location=%s", metadataLocation);
-    try {
-      ImportedMetadata imported =
-          tableMetadataImportService.importMetadata(
-              tableRecord, metadata, tableSupport.defaultFileIoProperties());
-      if (imported == null) {
-        return null;
-      }
-      IcebergMetadata importedMetadata = imported.icebergMetadata();
-      LOG.infof(
-          "Hydrated load metadata schemas=%d partitionSpecs=%d sortOrders=%d",
-          importedMetadata.getSchemasCount(),
-          importedMetadata.getPartitionSpecsCount(),
-          importedMetadata.getSortOrdersCount());
-      return imported;
-    } catch (Exception e) {
-      LOG.warnf(e, "Failed to import canonical table metadata from %s", metadataLocation);
-      return null;
-    }
   }
 }

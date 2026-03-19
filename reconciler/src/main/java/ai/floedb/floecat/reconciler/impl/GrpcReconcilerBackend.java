@@ -654,8 +654,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.getSequenceNumber() > 0) {
       builder.setSequenceNumber(snapshot.getSequenceNumber());
     }
-    if (!snapshot.getManifestList().isBlank()) {
-      builder.setManifestList(snapshot.getManifestList());
+    if (snapshot.getManifestListCount() > 0 && !snapshot.getManifestList(0).isBlank()) {
+      builder.addManifestList(snapshot.getManifestList(0));
     }
     Map<String, ByteString> formatMetadata = new LinkedHashMap<>(snapshot.getFormatMetadataMap());
     Map<String, String> summary = snapshotSummary(snapshot);

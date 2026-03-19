@@ -31,12 +31,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitExcept
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.resolution.NameResolution;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -154,15 +154,12 @@ public class StageCommitProcessor {
 
   private LoadTableResultDto toLoadResult(
       String tableName, StagedTableEntry entry, Table tableRecord) {
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(tableRecord);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig();
     List<StorageCredentialDto> credentials = tableSupport.defaultCredentials();
-    if (metadata == null) {
-      throw new IllegalStateException("missing committed metadata after stage commit");
-    }
-    TableMetadataView metadataView =
-        tableMetadataImportService.importMetadataView(
-            tableRecord, metadata, tableSupport.defaultFileIoProperties());
+    ResolvedMetadata resolved =
+        tableMetadataImportService.resolveMetadata(
+            tableName, tableRecord, tableSupport, java.util.List::of);
+    TableMetadataView metadataView = resolved.metadataView();
     if (metadataView == null) {
       throw new IllegalStateException("failed to import canonical stage-commit metadata");
     }

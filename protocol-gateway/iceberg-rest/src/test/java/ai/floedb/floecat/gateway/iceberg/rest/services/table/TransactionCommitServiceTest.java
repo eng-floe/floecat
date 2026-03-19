@@ -223,7 +223,6 @@ class TransactionCommitServiceTest {
   }
 
   private CanonicalCommitMetadataService.CanonicalCommitMetadata defaultCanonicalCommitMetadata() {
-    TableMetadataView metadataView = defaultCommitResponse().metadata();
     TableMetadata tableMetadata = Mockito.mock(TableMetadata.class);
     when(tableMetadata.uuid()).thenReturn("tbl-id");
     when(tableMetadata.formatVersion()).thenReturn(2);
@@ -249,7 +248,7 @@ class TransactionCommitServiceTest {
     when(tableMetadata.statisticsFiles()).thenReturn(List.of());
     when(tableMetadata.partitionStatisticsFiles()).thenReturn(List.of());
     when(tableMetadata.encryptionKeys()).thenReturn(List.of());
-    return new CanonicalCommitMetadataService.CanonicalCommitMetadata(metadataView, tableMetadata);
+    return new CanonicalCommitMetadataService.CanonicalCommitMetadata(tableMetadata);
   }
 
   @Test

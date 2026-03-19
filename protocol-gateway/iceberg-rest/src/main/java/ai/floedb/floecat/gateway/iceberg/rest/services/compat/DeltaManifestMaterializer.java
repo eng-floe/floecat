@@ -127,7 +127,7 @@ public class DeltaManifestMaterializer {
           rewritten.add(snapshot);
           continue;
         }
-        if (!snapshot.getManifestList().isBlank()) {
+        if (hasManifestList(snapshot)) {
           rewritten.add(snapshot);
           continue;
         }
@@ -442,7 +442,7 @@ public class DeltaManifestMaterializer {
         readCompatMetadata(fileIo, metadataRoot, snapshot.getSnapshotId());
     if (compatMetadata == null || compatMetadata.currentSnapshot() == null) {
       if (manifestList != null && !manifestList.isBlank()) {
-        return snapshot.toBuilder().setManifestList(manifestList).build();
+        return snapshot.toBuilder().addManifestList(manifestList).build();
       }
       return snapshot;
     }
@@ -464,7 +464,7 @@ public class DeltaManifestMaterializer {
             ? manifestList
             : compatSnapshot.manifestListLocation();
     if (resolvedManifestList != null && !resolvedManifestList.isBlank()) {
-      builder.setManifestList(resolvedManifestList);
+      builder.clearManifestList().addManifestList(resolvedManifestList);
     }
     Integer schemaId = compatSnapshot.schemaId();
     if (schemaId != null && schemaId >= 0) {
@@ -507,6 +507,18 @@ public class DeltaManifestMaterializer {
       return null;
     }
     return manifestList;
+  }
+
+  private static boolean hasManifestList(Snapshot snapshot) {
+    if (snapshot == null || snapshot.getManifestListCount() == 0) {
+      return false;
+    }
+    for (String manifestList : snapshot.getManifestListList()) {
+      if (manifestList != null && !manifestList.isBlank()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private TableMetadata readCompatMetadata(FileIO fileIo, String metadataRoot, long snapshotId) {

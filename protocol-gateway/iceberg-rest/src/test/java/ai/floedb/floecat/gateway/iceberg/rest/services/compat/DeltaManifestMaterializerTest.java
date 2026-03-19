@@ -106,12 +106,12 @@ class DeltaManifestMaterializerTest {
     Snapshot snapshot = snapshot(7L, 7L);
 
     List<Snapshot> first = materializer.materialize(table, List.of(snapshot));
-    String firstManifestList = first.get(0).getManifestList();
+    String firstManifestList = firstManifestList(first.get(0));
     assertFalse(firstManifestList.isBlank());
     assertTrue(materializer.fileIo().newInputFile(firstManifestList).exists());
 
     List<Snapshot> second = materializer.materialize(table, List.of(snapshot));
-    String secondManifestList = second.get(0).getManifestList();
+    String secondManifestList = firstManifestList(second.get(0));
     assertEquals(firstManifestList, secondManifestList);
 
     verify(grpcClient, times(1)).fetchScanBundle(any());
@@ -124,9 +124,9 @@ class DeltaManifestMaterializerTest {
     Snapshot newSnapshot = snapshot(8L, 8L);
 
     String oldManifestList =
-        materializer.materialize(table, List.of(oldSnapshot)).get(0).getManifestList();
+        firstManifestList(materializer.materialize(table, List.of(oldSnapshot)).get(0));
     String newManifestList =
-        materializer.materialize(table, List.of(newSnapshot)).get(0).getManifestList();
+        firstManifestList(materializer.materialize(table, List.of(newSnapshot)).get(0));
 
     assertFalse(oldManifestList.isBlank());
     assertFalse(newManifestList.isBlank());
@@ -143,16 +143,16 @@ class DeltaManifestMaterializerTest {
     Snapshot secondSnapshot = snapshot(8L, 8L);
 
     List<Snapshot> first = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    String firstManifestList = first.get(0).getManifestList();
-    String secondManifestList = first.get(1).getManifestList();
+    String firstManifestList = firstManifestList(first.get(0));
+    String secondManifestList = firstManifestList(first.get(1));
     assertFalse(firstManifestList.isBlank());
     assertFalse(secondManifestList.isBlank());
     assertTrue(materializer.fileIo().newInputFile(firstManifestList).exists());
     assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
 
     List<Snapshot> second = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    assertEquals(firstManifestList, second.get(0).getManifestList());
-    assertEquals(secondManifestList, second.get(1).getManifestList());
+    assertEquals(firstManifestList, firstManifestList(second.get(0)));
+    assertEquals(secondManifestList, firstManifestList(second.get(1)));
 
     verify(grpcClient, times(2)).fetchScanBundle(any());
   }
@@ -167,7 +167,7 @@ class DeltaManifestMaterializerTest {
     Snapshot snapshot = snapshot(9L, 9L);
 
     List<Snapshot> out = withDeletes.materialize(table, List.of(snapshot));
-    String manifestList = out.get(0).getManifestList();
+    String manifestList = firstManifestList(out.get(0));
     assertFalse(manifestList.isBlank());
     ManifestFile deleteManifest =
         readManifestList(withDeletes.fileIo().newInputFile(manifestList)).stream()
@@ -212,7 +212,7 @@ class DeltaManifestMaterializerTest {
     Table table = deltaTable("column-metrics");
     Snapshot snapshot = snapshot(11L, 11L);
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     DataFile dataFile = readSingleDataFileFromManifestList(materializer.fileIo(), manifestListPath);
@@ -277,7 +277,7 @@ class DeltaManifestMaterializerTest {
                 .build());
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     ManifestFile dataManifest =
@@ -341,7 +341,7 @@ class DeltaManifestMaterializerTest {
                 .build());
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
     DataFile dataFile = readSingleDataFileFromManifestList(materializer.fileIo(), manifestListPath);
     assertEquals("us-west-2", dataFile.partition().get(0, String.class));
@@ -392,7 +392,7 @@ class DeltaManifestMaterializerTest {
     Table table = deltaTable("bundle-deletes");
     Snapshot snapshot = snapshot(13L, 13L);
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     ManifestFile deleteManifest =
@@ -456,7 +456,7 @@ class DeltaManifestMaterializerTest {
     Table table = deltaTable("manifest-sequences");
     Snapshot snapshot = snapshot(18L, 18L);
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     List<ManifestFile> manifests =
@@ -543,7 +543,7 @@ class DeltaManifestMaterializerTest {
                 .build());
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     ManifestFile deleteManifest =
@@ -592,7 +592,7 @@ class DeltaManifestMaterializerTest {
             .build();
 
     List<Snapshot> out = withDeletes.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
     ManifestFile deleteManifest =
         readManifestList(withDeletes.fileIo().newInputFile(manifestListPath)).stream()
@@ -661,7 +661,7 @@ class DeltaManifestMaterializerTest {
                 .build());
 
     List<Snapshot> out = materializer.materialize(table, List.of(snapshot));
-    String manifestListPath = out.get(0).getManifestList();
+    String manifestListPath = firstManifestList(out.get(0));
     assertFalse(manifestListPath.isBlank());
 
     ManifestFile deleteManifest =
@@ -689,7 +689,7 @@ class DeltaManifestMaterializerTest {
     Snapshot snapshot = snapshot(10L, 10L);
 
     List<Snapshot> out = noDeltaLog.materialize(table, List.of(snapshot));
-    assertFalse(out.get(0).getManifestList().isBlank());
+    assertFalse(firstManifestList(out.get(0)).isBlank());
   }
 
   @Test
@@ -720,6 +720,13 @@ class DeltaManifestMaterializerTest {
 
   private Snapshot snapshot(long snapshotId, long sequence) {
     return Snapshot.newBuilder().setSnapshotId(snapshotId).setSequenceNumber(sequence).build();
+  }
+
+  private static String firstManifestList(Snapshot snapshot) {
+    return snapshot.getManifestListList().stream()
+        .filter(manifestList -> manifestList != null && !manifestList.isBlank())
+        .findFirst()
+        .orElse("");
   }
 
   private static DataFile readSingleDataFileFromManifestList(

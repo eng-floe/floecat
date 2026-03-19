@@ -38,11 +38,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -141,22 +141,15 @@ public class TableCreateService {
     }
     Response response;
     try {
-      IcebergMetadata metadata = tableSupport.loadCurrentMetadata(created);
-      TableMetadataView metadataView =
-          tableMetadataImportService.importMetadataView(
-              created, metadata, tableSupport.defaultFileIoProperties());
-      if (metadataView == null) {
-        List<ai.floedb.floecat.catalog.rpc.Snapshot> snapshots =
-            SnapshotLister.fetchSnapshots(
-                grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, metadata);
-        metadataView =
-            TableMetadataBuilder.fromCatalog(
-                tableName,
-                created,
-                new java.util.LinkedHashMap<>(created.getPropertiesMap()),
-                metadata,
-                snapshots);
-      }
+      ResolvedMetadata resolved =
+          tableMetadataImportService.resolveMetadata(
+              tableName,
+              created,
+              tableSupport,
+              () ->
+                  SnapshotLister.fetchSnapshots(
+                      grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, null));
+      TableMetadataView metadataView = resolved.metadataView();
       response =
           Response.ok(TableResponseMapper.toLoadResult(metadataView, tableConfig, credentials))
               .build();

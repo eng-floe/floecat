@@ -41,7 +41,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.ws.rs.core.Response;
 import java.time.Instant;
 import java.util.List;
@@ -145,7 +144,6 @@ class TableCommitServiceTest {
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
     when(transactionCommitService.commit(any(), any(), any(), any()))
         .thenReturn(Response.noContent().build());
-    when(tableSupport.loadCurrentMetadata(table)).thenReturn(IcebergMetadata.getDefaultInstance());
 
     TableMetadataView metadataView =
         new TableMetadataView(
@@ -198,7 +196,6 @@ class TableCommitServiceTest {
     when(tableLifecycleService.getTable(tableId)).thenReturn(table);
     when(transactionCommitService.commit(any(), any(), any(), any()))
         .thenReturn(Response.noContent().build());
-    when(tableSupport.loadCurrentMetadata(table)).thenReturn(IcebergMetadata.getDefaultInstance());
 
     TableMetadataView metadataView =
         new TableMetadataView(
@@ -250,8 +247,6 @@ class TableCommitServiceTest {
     Table created = tableRecord("cat:db:orders");
     when(tableLifecycleService.getTable(ResourceId.newBuilder().setId("cat:db:orders").build()))
         .thenReturn(created);
-    when(tableSupport.loadCurrentMetadata(created))
-        .thenReturn(IcebergMetadata.getDefaultInstance());
     when(transactionCommitService.commit(any(), any(), any(), any()))
         .thenReturn(Response.noContent().build());
 

@@ -142,8 +142,8 @@ final class SnapshotMapper {
               ? snapshot.getUpstreamCreatedAt().getSeconds() * 1000L
               : 0L;
       entry.put("timestamp-ms", timestampMs);
-      entry.put(
-          "manifest-list", snapshot.getManifestList().isBlank() ? "" : snapshot.getManifestList());
+      String manifestList = firstManifestList(snapshot);
+      entry.put("manifest-list", manifestList == null ? "" : manifestList);
       int schemaId = snapshot.getSchemaId();
       if (schemaId >= 0) {
         entry.put("schema-id", schemaId);
@@ -195,5 +195,17 @@ final class SnapshotMapper {
       copy.add(entry == null ? Map.of() : new LinkedHashMap<>(entry));
     }
     return copy;
+  }
+
+  private static String firstManifestList(Snapshot snapshot) {
+    if (snapshot == null || snapshot.getManifestListCount() == 0) {
+      return null;
+    }
+    for (String manifestList : snapshot.getManifestListList()) {
+      if (manifestList != null && !manifestList.isBlank()) {
+        return manifestList;
+      }
+    }
+    return null;
   }
 }

@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -45,9 +46,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedSnapshot;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableRepository;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TableDropCleanupService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.view.ViewMetadataService;
@@ -243,6 +246,57 @@ public abstract class AbstractRestResourceTest {
                   FIXTURE.metadata(),
                   currentSnapshot,
                   List.copyOf(snapshots));
+            });
+    Mockito.when(
+            metadataImportService.resolveMetadata(
+                Mockito.anyString(),
+                Mockito.any(Table.class),
+                Mockito.any(),
+                Mockito.anyMap(),
+                Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              String tableName = inv.getArgument(0, String.class);
+              Table table = inv.getArgument(1, Table.class);
+              IcebergMetadata metadata = inv.getArgument(2, IcebergMetadata.class);
+              @SuppressWarnings("unchecked")
+              var snapshotsSupplier = inv.getArgument(4, java.util.function.Supplier.class);
+              List<Snapshot> snapshots =
+                  snapshotsSupplier == null ? List.of() : (List<Snapshot>) snapshotsSupplier.get();
+              Map<String, String> props =
+                  table == null ? Map.of() : new LinkedHashMap<>(table.getPropertiesMap());
+              TableMetadataView metadataView =
+                  TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
+              return new ResolvedMetadata(null, metadataView, metadata);
+            });
+    Mockito.when(
+            metadataImportService.resolveMetadata(
+                Mockito.anyString(), Mockito.any(Table.class), Mockito.any(), Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              String tableName = inv.getArgument(0, String.class);
+              Table table = inv.getArgument(1, Table.class);
+              TableGatewaySupport tableSupport = inv.getArgument(2, TableGatewaySupport.class);
+              @SuppressWarnings("unchecked")
+              var snapshotsSupplier = inv.getArgument(3, java.util.function.Supplier.class);
+              IcebergMetadata metadata =
+                  tableSupport == null ? null : tableSupport.loadCurrentMetadata(table);
+              List<Snapshot> snapshots =
+                  snapshotsSupplier == null ? List.of() : (List<Snapshot>) snapshotsSupplier.get();
+              Map<String, String> props =
+                  table == null ? Map.of() : new LinkedHashMap<>(table.getPropertiesMap());
+              TableMetadataView metadataView =
+                  TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
+              return new ResolvedMetadata(null, metadataView, metadata);
+            });
+    Mockito.when(metadataImportService.resolveCurrentIcebergMetadata(Mockito.any(), Mockito.any()))
+        .thenAnswer(
+            inv -> {
+              Table table = inv.getArgument(0, Table.class);
+              TableGatewaySupport tableSupport = inv.getArgument(1, TableGatewaySupport.class);
+              return tableSupport == null
+                  ? FIXTURE.metadata()
+                  : tableSupport.loadCurrentMetadata(table);
             });
     ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
     Mockito.when(directoryStub.resolveCatalog(Mockito.any()))
@@ -495,16 +549,16 @@ public abstract class AbstractRestResourceTest {
         snapshot.hasUpstreamCreatedAt()
             ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
             : null;
-    String manifestList = snapshot.getManifestList();
-    if (manifestList != null && manifestList.isBlank()) {
-      manifestList = null;
-    }
+    List<String> manifestLists =
+        snapshot.getManifestListList().stream()
+            .filter(value -> value != null && !value.isBlank())
+            .toList();
     return new ImportedSnapshot(
         snapshot.getSnapshotId(),
         parentId,
         sequence,
         timestampMs,
-        manifestList,
+        manifestLists,
         SnapshotMetadataUtil.snapshotSummary(snapshot),
         snapshot.getSchemaId() == 0 ? null : snapshot.getSchemaId());
   }

@@ -89,6 +89,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -130,11 +131,9 @@ class TableResourceTest extends AbstractRestResourceTest {
         .thenAnswer(
             invocation ->
                 MaterializeMetadataResult.success(
-                    invocation.getArgument(
-                        4,
-                        ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView
-                            .class),
-                    invocation.getArgument(5, String.class)));
+                    null,
+                    invocation.getArgument(5, String.class),
+                    invocation.getArgument(4, TableMetadata.class)));
   }
 
   private Table.Builder baseTable(ResourceId tableId, ResourceId nsId) {

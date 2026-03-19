@@ -30,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -45,19 +46,21 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeCreatesSequentialMetadataFiles() throws Exception {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.mapper = MAPPER;
 
-    TableMetadataView metadata = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
+    TableMetadata metadata = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
 
     MaterializeResult first =
-        service.materialize("sales.us", "orders", metadata, metadata.metadataLocation());
+        service.materialize("sales.us", "orders", metadata, metadata.metadataFileLocation());
     assertTrue(first.metadataLocation().contains("/metadata/00000-"));
     assertNotNull(first.tableMetadata());
     assertTrue(readFile(service.fileIo(), first.metadataLocation()).contains("\"table-uuid\""));
 
     MaterializeResult second =
         service.materialize(
-            "sales.us", "orders", first.metadata(), first.metadata().metadataLocation());
+            "sales.us",
+            "orders",
+            first.tableMetadata(),
+            first.tableMetadata().metadataFileLocation());
     assertTrue(second.metadataLocation().contains("/metadata/"));
     assertNotNull(second.tableMetadata());
     assertTrue(
@@ -69,7 +72,6 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeUsesTableLocationWhenMetadataLocationMissing() throws Exception {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.mapper = MAPPER;
 
     TableMetadataView base =
         TableMetadataBuilder.fromCatalog(
@@ -81,7 +83,7 @@ class MaterializeMetadataServiceTest {
     Map<String, String> props = new LinkedHashMap<>(base.properties());
     props.remove("metadata-location");
     props.put("location", "s3://warehouse/db/orders");
-    TableMetadataView metadata =
+    TableMetadataView metadataView =
         new TableMetadataView(
             base.formatVersion(),
             base.tableUuid(),
@@ -106,7 +108,8 @@ class MaterializeMetadataServiceTest {
             base.partitionStatistics(),
             base.snapshots());
 
-    MaterializeResult result = service.materialize("sales.us", "orders", metadata, null);
+    MaterializeResult result =
+        service.materialize("sales.us", "orders", toTableMetadata(metadataView, null), null);
 
     assertNotNull(result.tableMetadata());
     assertTrue(
@@ -117,12 +120,11 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeCanonicalizesWhenWriteIsSkipped() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.mapper = MAPPER;
 
-    TableMetadataView metadata = fixtureMetadata("floecat://warehouse/orders/metadata/00002.json");
+    TableMetadata metadata = fixtureMetadata("floecat://warehouse/orders/metadata/00002.json");
 
     MaterializeResult result =
-        service.materialize("sales.us", "orders", metadata, metadata.metadataLocation());
+        service.materialize("sales.us", "orders", metadata, metadata.metadataFileLocation());
 
     assertNotNull(result.tableMetadata());
     assertTrue(result.metadataLocation().startsWith("floecat://"));
@@ -131,7 +133,6 @@ class MaterializeMetadataServiceTest {
   @Test
   void materializeRejectsInconsistentSequenceMetadata() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.mapper = MAPPER;
 
     TableMetadataView base =
         TableMetadataBuilder.fromCatalog(
@@ -181,15 +182,17 @@ class MaterializeMetadataServiceTest {
         MaterializeMetadataException.class,
         () ->
             service.materialize(
-                "sales.us", "orders", withSnapshot, withSnapshot.metadataLocation()));
+                "sales.us",
+                "orders",
+                toTableMetadata(withSnapshot, withSnapshot.metadataLocation()),
+                withSnapshot.metadataLocation()));
   }
 
   @Test
   void materializeRejectsMainRefWhenCurrentSnapshotMissing() {
     TestMaterializeMetadataService service = new TestMaterializeMetadataService();
-    service.mapper = MAPPER;
 
-    TableMetadataView base = fixtureMetadata("s3://warehouse/orders/metadata/00000.seed.json");
+    TableMetadataView base = fixtureMetadataView("s3://warehouse/orders/metadata/00000.seed.json");
     Map<String, String> props = new LinkedHashMap<>(base.properties());
     props.remove("current-snapshot-id");
 
@@ -222,10 +225,17 @@ class MaterializeMetadataServiceTest {
         MaterializeMetadataException.class,
         () ->
             service.materialize(
-                "sales.us", "orders", withoutCurrent, withoutCurrent.metadataLocation()));
+                "sales.us",
+                "orders",
+                toTableMetadata(withoutCurrent, withoutCurrent.metadataLocation()),
+                withoutCurrent.metadataLocation()));
   }
 
-  private TableMetadataView fixtureMetadata(String location) {
+  private TableMetadata fixtureMetadata(String location) {
+    return toTableMetadata(fixtureMetadataView(location), location);
+  }
+
+  private TableMetadataView fixtureMetadataView(String location) {
     TableMetadataView base =
         TableMetadataBuilder.fromCatalog(
             "orders",
@@ -234,6 +244,12 @@ class MaterializeMetadataServiceTest {
             FIXTURE.metadata(),
             FIXTURE.snapshots());
     return base.withMetadataLocation(location);
+  }
+
+  private TableMetadata toTableMetadata(TableMetadataView view, String location) {
+    CanonicalTableMetadataService canonical = new CanonicalTableMetadataService();
+    canonical.setMapper(MAPPER);
+    return canonical.toTableMetadata(view, location);
   }
 
   private String readFile(InMemoryFileIO io, String location) throws IOException {
@@ -245,12 +261,6 @@ class MaterializeMetadataServiceTest {
 
   private static final class TestMaterializeMetadataService extends MaterializeMetadataService {
     private final ReopenableInMemoryFileIO fileIo = new ReopenableInMemoryFileIO();
-
-    private TestMaterializeMetadataService() {
-      CanonicalTableMetadataService canonical = new CanonicalTableMetadataService();
-      canonical.setMapper(MAPPER);
-      this.canonicalTableMetadataService = canonical;
-    }
 
     @Override
     protected FileIO newFileIo(Map<String, String> props) {

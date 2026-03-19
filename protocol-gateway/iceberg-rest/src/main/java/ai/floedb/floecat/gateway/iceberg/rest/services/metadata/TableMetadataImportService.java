@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -29,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRef;
@@ -57,9 +60,14 @@ public class TableMetadataImportService {
       Long parentSnapshotId,
       Long sequenceNumber,
       Long timestampMs,
-      String manifestList,
+      List<String> manifestLists,
       Map<String, String> summary,
       Integer schemaId) {}
+
+  public record ResolvedMetadata(
+      TableMetadata tableMetadata,
+      TableMetadataView metadataView,
+      IcebergMetadata icebergMetadata) {}
 
   public ImportedMetadata importMetadata(
       String metadataLocation, Map<String, String> ioProperties) {
@@ -106,7 +114,7 @@ public class TableMetadataImportService {
                 current.parentId(),
                 current.sequenceNumber(),
                 current.timestampMillis(),
-                current.manifestListLocation(),
+                manifestLists(current.manifestListLocation()),
                 summary,
                 current.schemaId());
       }
@@ -119,7 +127,7 @@ public class TableMetadataImportService {
                 snapshot.parentId(),
                 snapshot.sequenceNumber(),
                 snapshot.timestampMillis(),
-                snapshot.manifestListLocation(),
+                manifestLists(snapshot.manifestListLocation()),
                 summary,
                 snapshot.schemaId()));
       }
@@ -154,10 +162,83 @@ public class TableMetadataImportService {
     return importMetadata(metadataLocation, mergeIoProperties(table, defaultFileIoProperties));
   }
 
-  public TableMetadataView importMetadataView(
-      Table table, IcebergMetadata metadata, Map<String, String> defaultFileIoProperties) {
+  public ResolvedMetadata resolveMetadata(
+      String tableName,
+      Table table,
+      IcebergMetadata metadata,
+      Map<String, String> defaultFileIoProperties,
+      Supplier<List<ai.floedb.floecat.catalog.rpc.Snapshot>> snapshotsSupplier) {
     ImportedMetadata imported = importMetadata(table, metadata, defaultFileIoProperties);
-    return imported == null ? null : imported.metadataView();
+    if (imported != null && imported.metadataView() != null) {
+      return new ResolvedMetadata(
+          imported.tableMetadata(), imported.metadataView(), imported.icebergMetadata());
+    }
+    List<ai.floedb.floecat.catalog.rpc.Snapshot> snapshots =
+        snapshotsSupplier == null ? List.of() : snapshotsSupplier.get();
+    Map<String, String> props =
+        table == null ? Map.of() : new LinkedHashMap<>(table.getPropertiesMap());
+    String metadataLocation = resolveMetadataLocation(table, metadata);
+    TableMetadata tableMetadata = null;
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      try {
+        tableMetadata =
+            canonicalTableMetadataService.bootstrapTableMetadata(
+                tableName, table, props, metadata, snapshots);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "Unable to canonicalize fallback metadata table=%s location=%s",
+            tableName,
+            metadataLocation);
+      }
+    }
+    TableMetadataView metadataView;
+    if (tableMetadata != null) {
+      metadataView =
+          canonicalTableMetadataService.toTableMetadataView(tableMetadata, metadataLocation);
+    } else {
+      metadataView =
+          TableMetadataBuilder.fromCatalog(
+              tableName, table, props, metadata, snapshots == null ? List.of() : snapshots);
+    }
+    if (metadataView == null) {
+      return new ResolvedMetadata(null, null, metadata);
+    }
+    return new ResolvedMetadata(tableMetadata, metadataView, metadata);
+  }
+
+  public ResolvedMetadata resolveMetadata(
+      String tableName,
+      Table table,
+      TableGatewaySupport tableSupport,
+      Supplier<List<ai.floedb.floecat.catalog.rpc.Snapshot>> snapshotsSupplier) {
+    IcebergMetadata fallbackMetadata =
+        tableSupport == null ? null : tableSupport.loadCurrentMetadata(table);
+    Map<String, String> defaultFileIoProperties =
+        tableSupport == null ? Map.of() : tableSupport.defaultFileIoProperties();
+    IcebergMetadata currentMetadata =
+        resolveCurrentIcebergMetadata(table, fallbackMetadata, defaultFileIoProperties);
+    return resolveMetadata(
+        tableName, table, currentMetadata, defaultFileIoProperties, snapshotsSupplier);
+  }
+
+  public IcebergMetadata resolveCurrentIcebergMetadata(
+      Table table, IcebergMetadata fallbackMetadata, Map<String, String> defaultFileIoProperties) {
+    ImportedMetadata imported = importMetadata(table, fallbackMetadata, defaultFileIoProperties);
+    if (imported != null && imported.icebergMetadata() != null) {
+      return imported.icebergMetadata();
+    }
+    return fallbackMetadata;
+  }
+
+  public IcebergMetadata resolveCurrentIcebergMetadata(
+      Table table, TableGatewaySupport tableSupport) {
+    if (tableSupport == null) {
+      return null;
+    }
+    IcebergMetadata fallbackMetadata = tableSupport.loadCurrentMetadata(table);
+    return resolveCurrentIcebergMetadata(
+        table, fallbackMetadata, tableSupport.defaultFileIoProperties());
   }
 
   private String resolveMetadataLocation(Table table, IcebergMetadata metadata) {
@@ -219,6 +300,13 @@ public class TableMetadataImportService {
     if (value >= 0) {
       props.put(key, Long.toString(value));
     }
+  }
+
+  private static List<String> manifestLists(String manifestList) {
+    if (manifestList == null || manifestList.isBlank()) {
+      return List.of();
+    }
+    return List.of(manifestList);
   }
 
   private String encodeRefs(Map<String, SnapshotRef> refs) {

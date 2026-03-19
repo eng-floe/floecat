@@ -176,6 +176,11 @@ class TableLoadServiceTest {
             IcebergMetadata.newBuilder()
                 .setMetadataLocation("s3://old/metadata/00002.metadata.json")
                 .build());
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(
+            IcebergMetadata.newBuilder()
+                .setMetadataLocation("s3://old/metadata/00002.metadata.json")
+                .build());
     when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
     when(tableMetadataImportService.importMetadata(
             any(Table.class), any(IcebergMetadata.class), any()))
@@ -213,6 +218,37 @@ class TableLoadServiceTest {
                     .build(),
                 null,
                 List.of()));
+    when(tableMetadataImportService.resolveMetadata(
+            eq("orders"), any(Table.class), any(IcebergMetadata.class), any(), any()))
+        .thenReturn(
+            new TableMetadataImportService.ResolvedMetadata(
+                null,
+                new TableMetadataView(
+                    2,
+                    null,
+                    null,
+                    "s3://new/metadata/00003.metadata.json",
+                    null,
+                    Map.of(),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    Map.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of()),
+                IcebergMetadata.newBuilder()
+                    .setMetadataLocation("s3://new/metadata/00003.metadata.json")
+                    .build()));
 
     TableRequestContext context =
         new TableRequestContext(
@@ -227,6 +263,8 @@ class TableLoadServiceTest {
 
     service.load(context, "orders", null, null, null, tableSupport);
 
-    verify(tableMetadataImportService).importMetadata(eq(table), any(IcebergMetadata.class), any());
+    verify(tableMetadataImportService).resolveCurrentIcebergMetadata(table, tableSupport);
+    verify(tableMetadataImportService)
+        .resolveMetadata(eq("orders"), eq(table), any(IcebergMetadata.class), any(), any());
   }
 }

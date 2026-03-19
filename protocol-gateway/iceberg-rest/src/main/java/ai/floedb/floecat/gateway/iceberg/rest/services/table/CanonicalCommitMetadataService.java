@@ -18,20 +18,18 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asString;
 
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.CanonicalTableMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ImportedMetadata;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -61,8 +59,7 @@ public class CanonicalCommitMetadataService {
   @Inject GrpcServiceFacade snapshotClient;
   @Inject ObjectMapper mapper;
 
-  public record CanonicalCommitMetadata(
-      TableMetadataView metadataView, TableMetadata tableMetadata) {}
+  public record CanonicalCommitMetadata(TableMetadata tableMetadata) {}
 
   public CanonicalCommitMetadata applyCommitUpdates(
       String tableName,
@@ -87,9 +84,14 @@ public class CanonicalCommitMetadataService {
             canonical.metadataFileLocation(),
             table.getPropertiesMap().get("metadata-location"),
             base.metadataLocation());
-    TableMetadataView updatedView =
-        canonicalTableMetadataService.toTableMetadataView(canonical, metadataLocation);
-    return new CanonicalCommitMetadata(updatedView, canonical);
+    if (metadataLocation != null && !metadataLocation.isBlank()) {
+      canonical =
+          TableMetadata.buildFrom(canonical)
+              .discardChanges()
+              .withMetadataLocation(metadataLocation)
+              .build();
+    }
+    return new CanonicalCommitMetadata(canonical);
   }
 
   private record BaseMetadata(TableMetadata tableMetadata, String metadataLocation) {}
@@ -100,24 +102,25 @@ public class CanonicalCommitMetadataService {
       Table table,
       IcebergMetadata metadata,
       TableGatewaySupport tableSupport) {
-    ImportedMetadata imported =
-        tableMetadataImportService.importMetadata(
-            table, metadata, tableSupport.defaultFileIoProperties());
-    if (imported != null && imported.tableMetadata() != null) {
+    ResolvedMetadata resolved =
+        tableMetadataImportService.resolveMetadata(
+            tableName,
+            table,
+            metadata,
+            tableSupport.defaultFileIoProperties(),
+            () ->
+                metadata == null
+                    ? List.of()
+                    : SnapshotLister.fetchSnapshots(
+                        snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata));
+    if (resolved.tableMetadata() != null) {
       return new BaseMetadata(
-          imported.tableMetadata(), imported.tableMetadata().metadataFileLocation());
+          resolved.tableMetadata(), resolved.tableMetadata().metadataFileLocation());
     }
-    List<Snapshot> snapshots =
-        metadata == null
-            ? List.of()
-            : SnapshotLister.fetchSnapshots(
-                snapshotClient, tableId, SnapshotLister.Mode.ALL, metadata);
     LOG.debugf(
         "Falling back to catalog metadata bootstrap tableId=%s table=%s",
         tableId == null ? "<missing>" : tableId.getId(), tableName);
-    TableMetadataView baseView =
-        TableMetadataBuilder.fromCatalog(
-            tableName, table, new LinkedHashMap<>(table.getPropertiesMap()), metadata, snapshots);
+    TableMetadataView baseView = resolved.metadataView();
     if (baseView == null) {
       return null;
     }

@@ -21,13 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TrinoFixtureTestSupport;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import jakarta.ws.rs.core.Response;
@@ -39,8 +38,15 @@ import org.junit.jupiter.api.Test;
 class CommitRequirementServiceTest {
   private final CommitRequirementService service = new CommitRequirementService();
   private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+  private final TableMetadataImportService tableMetadataImportService =
+      mock(TableMetadataImportService.class);
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
+
+  CommitRequirementServiceTest() {
+    service.tableMetadataImportService = tableMetadataImportService;
+    when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
+  }
 
   @Test
   void validateRequirementsReturnsNullWhenUnset() {
@@ -134,6 +140,8 @@ class CommitRequirementServiceTest {
             .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(snapshotId).build())
             .build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -158,6 +166,8 @@ class CommitRequirementServiceTest {
     String fixtureUuid = FIXTURE.metadata().getTableUuid();
     IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setTableUuid(fixtureUuid).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -179,6 +189,8 @@ class CommitRequirementServiceTest {
             .build();
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -200,6 +212,8 @@ class CommitRequirementServiceTest {
             .build();
     IcebergMetadata metadata = FIXTURE.metadata();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -224,6 +238,8 @@ class CommitRequirementServiceTest {
     Table table = Table.newBuilder().putProperties("last-column-id", "3").build();
     IcebergMetadata staleMetadata = IcebergMetadata.newBuilder().setLastColumnId(2).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(staleMetadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(staleMetadata);
 
     Response resp =
         service.validateRequirements(
@@ -329,6 +345,8 @@ class CommitRequirementServiceTest {
             .setDefaultSortOrderId(2)
             .build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -345,7 +363,6 @@ class CommitRequirementServiceTest {
             conflict());
 
     assertNull(resp);
-    verify(tableSupport, times(1)).loadCurrentMetadata(table);
   }
 
   @Test
@@ -353,6 +370,8 @@ class CommitRequirementServiceTest {
     Table table = Table.newBuilder().build();
     IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setCurrentSchemaId(11).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -379,6 +398,8 @@ class CommitRequirementServiceTest {
             .putProperties("default-sort-order-id", "2")
             .build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(null);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(null);
 
     Response resp =
         service.validateRequirements(
@@ -395,7 +416,6 @@ class CommitRequirementServiceTest {
             conflict());
 
     assertNull(resp);
-    verify(tableSupport, times(1)).loadCurrentMetadata(table);
   }
 
   @Test
@@ -407,6 +427,8 @@ class CommitRequirementServiceTest {
             .build();
     IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setLastColumnId(0).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -417,7 +439,6 @@ class CommitRequirementServiceTest {
             conflict());
 
     assertNull(resp);
-    verify(tableSupport, times(1)).loadCurrentMetadata(table);
   }
 
   @Test
@@ -429,6 +450,8 @@ class CommitRequirementServiceTest {
             .build();
     IcebergMetadata metadata = FIXTURE.metadata().toBuilder().setCurrentSchemaId(-1).build();
     when(tableSupport.loadCurrentMetadata(table)).thenReturn(metadata);
+    when(tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(metadata);
 
     Response resp =
         service.validateRequirements(
@@ -439,7 +462,6 @@ class CommitRequirementServiceTest {
             conflict());
 
     assertNull(resp);
-    verify(tableSupport, times(1)).loadCurrentMetadata(table);
   }
 
   private Function<String, Response> validation() {

@@ -43,6 +43,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleSer
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.CanonicalTableMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -103,6 +104,7 @@ public class TransactionCommitService {
   @Inject TableCommitMaterializationService materializationService;
   @Inject GrpcServiceFacade grpcClient;
   @Inject CanonicalTableMetadataService canonicalTableMetadataService;
+  @Inject TableMetadataImportService tableMetadataImportService;
 
   public Response commitCreate(
       String prefix,
@@ -667,7 +669,8 @@ public class TransactionCommitService {
     // state, including snapshot-mutating updates.
     IcebergMetadata metadata = null;
     try {
-      metadata = tableSupport.loadCurrentMetadata(plannedTable);
+      metadata =
+          tableMetadataImportService.resolveCurrentIcebergMetadata(plannedTable, tableSupport);
     } catch (RuntimeException e) {
       // Create/staged-create commit paths can legitimately have no readable pointer yet.
       // Continue with a metadata-free view so we can materialize and set metadata-location
@@ -701,8 +704,8 @@ public class TransactionCommitService {
             tableId,
             tableName,
             canonicalizedTable,
-            commitMetadata.metadataView(),
-            commitMetadata.metadataView().metadataLocation());
+            commitMetadata.tableMetadata(),
+            commitMetadata.tableMetadata().metadataFileLocation());
     if (result == null) {
       return new PreMaterializedTable(plannedTable, null, null);
     }
@@ -864,7 +867,7 @@ public class TransactionCommitService {
     }
     String manifestList = TableMappingUtil.asString(snapshotMap.get("manifest-list"));
     if (manifestList != null && !manifestList.isBlank()) {
-      builder.setManifestList(manifestList);
+      builder.addManifestList(manifestList);
     }
     Integer schemaId = TableMappingUtil.asInteger(snapshotMap.get("schema-id"));
     if (schemaId != null && schemaId >= 0) {
@@ -1486,7 +1489,10 @@ public class TransactionCommitService {
       return false;
     }
     try {
-      var metadata = tableSupport == null ? null : tableSupport.loadCurrentMetadata(table);
+      var metadata =
+          tableMetadataImportService == null
+              ? (tableSupport == null ? null : tableSupport.loadCurrentMetadata(table))
+              : tableMetadataImportService.resolveCurrentIcebergMetadata(table, tableSupport);
       if (metadata != null) {
         if (metadata.getRefsMap().containsKey(refName)
             && metadata.getRefsOrThrow(refName).getSnapshotId() >= 0L) {

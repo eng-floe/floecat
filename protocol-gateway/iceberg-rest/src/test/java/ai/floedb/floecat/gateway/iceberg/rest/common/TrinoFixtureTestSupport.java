@@ -198,8 +198,10 @@ public final class TrinoFixtureTestSupport {
               .setTableId(tableId)
               .setSnapshotId(snapshot.snapshotId())
               .setSequenceNumber(snapshot.sequenceNumber())
-              .setManifestList(snapshot.manifestListLocation())
               .setSchemaId(snapshot.schemaId());
+      if (snapshot.manifestListLocation() != null && !snapshot.manifestListLocation().isBlank()) {
+        builder.addManifestList(snapshot.manifestListLocation());
+      }
       if (snapshot.parentId() != null) {
         builder.setParentSnapshotId(snapshot.parentId());
       }

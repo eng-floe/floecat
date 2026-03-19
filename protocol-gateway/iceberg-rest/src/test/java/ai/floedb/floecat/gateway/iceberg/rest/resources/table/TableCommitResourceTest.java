@@ -32,7 +32,6 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
@@ -47,6 +46,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import io.quarkus.test.InjectMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import org.apache.iceberg.TableMetadata;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -86,8 +86,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .thenAnswer(
             invocation ->
                 MaterializeMetadataResult.success(
-                    invocation.getArgument(4, TableMetadataView.class),
-                    invocation.getArgument(5, String.class)));
+                    null,
+                    invocation.getArgument(5, String.class),
+                    invocation.getArgument(4, TableMetadata.class)));
   }
 
   @Test

@@ -18,6 +18,8 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.metadata;
 
 import ai.floedb.floecat.catalog.rpc.PartitionField;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
@@ -38,8 +40,10 @@ import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.apache.iceberg.BlobMetadata;
 import org.apache.iceberg.HistoryEntry;
 import org.apache.iceberg.PartitionSpec;
@@ -89,6 +93,38 @@ public class CanonicalTableMetadataService {
     } catch (Exception e) {
       throw new MaterializeMetadataException("Unable to deserialize Iceberg metadata", e);
     }
+  }
+
+  public TableMetadata bootstrapTableMetadata(
+      String tableName,
+      Table table,
+      Map<String, String> props,
+      IcebergMetadata metadata,
+      List<Snapshot> snapshots) {
+    String metadataLocation =
+        metadata == null || metadata.getMetadataLocation().isBlank()
+            ? null
+            : metadata.getMetadataLocation();
+    if (props != null && !props.isEmpty()) {
+      String propertyLocation = props.get("metadata-location");
+      if (propertyLocation != null && !propertyLocation.isBlank()) {
+        metadataLocation = propertyLocation;
+      }
+    }
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return null;
+    }
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog(
+            tableName,
+            table,
+            props == null ? Map.of() : new LinkedHashMap<>(props),
+            metadata,
+            snapshots == null ? List.of() : snapshots);
+    if (view == null) {
+      return null;
+    }
+    return toTableMetadata(view, metadataLocation);
   }
 
   public IcebergMetadata toIcebergMetadata(TableMetadata metadata, String metadataLocation) {
@@ -250,7 +286,7 @@ public class CanonicalTableMetadataService {
         builder.setSequenceNumber(snapshot.sequenceNumber());
       }
       if (snapshot.manifestListLocation() != null && !snapshot.manifestListLocation().isBlank()) {
-        builder.setManifestList(snapshot.manifestListLocation());
+        builder.addManifestList(snapshot.manifestListLocation());
       }
       IcebergMetadata.Builder snapshotMetadata = IcebergMetadata.newBuilder();
       if (snapshot.summary() != null && !snapshot.summary().isEmpty()) {

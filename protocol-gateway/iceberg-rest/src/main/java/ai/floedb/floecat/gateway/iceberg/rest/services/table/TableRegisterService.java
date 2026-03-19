@@ -303,8 +303,9 @@ public class TableRegisterService {
     if (snapshot.timestampMs() != null) {
       snapshotMap.put("timestamp-ms", snapshot.timestampMs());
     }
-    if (snapshot.manifestList() != null && !snapshot.manifestList().isBlank()) {
-      snapshotMap.put("manifest-list", snapshot.manifestList());
+    String manifestList = firstManifestList(snapshot.manifestLists());
+    if (manifestList != null) {
+      snapshotMap.put("manifest-list", manifestList);
     }
     if (snapshot.summary() != null && !snapshot.summary().isEmpty()) {
       snapshotMap.put("summary", snapshot.summary());
@@ -364,5 +365,17 @@ public class TableRegisterService {
     }
     MetadataLocationUtil.setMetadataLocation(merged, metadataLocation);
     return merged;
+  }
+
+  private static String firstManifestList(List<String> manifestLists) {
+    if (manifestLists == null || manifestLists.isEmpty()) {
+      return null;
+    }
+    for (String manifestList : manifestLists) {
+      if (manifestList != null && !manifestList.isBlank()) {
+        return manifestList;
+      }
+    }
+    return null;
   }
 }

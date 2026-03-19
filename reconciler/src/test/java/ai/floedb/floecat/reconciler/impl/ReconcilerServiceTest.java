@@ -997,7 +997,7 @@ class ReconcilerServiceTest {
             .setTableId(tableId)
             .setSnapshotId(123L)
             .setSchemaJson("existing-schema")
-            .setManifestList("existing-manifest")
+            .addManifestList("existing-manifest")
             .putFormatMetadata(
                 "iceberg",
                 IcebergMetadata.newBuilder()
@@ -1031,7 +1031,7 @@ class ReconcilerServiceTest {
     IcebergMetadata snapshotMetadata =
         IcebergMetadata.parseFrom(result.getFormatMetadataOrThrow("iceberg"));
 
-    assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
+    assertThat(result.getManifestListList()).isEqualTo(existing.getManifestListList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
     assertThat(snapshotMetadata.getSummaryMap()).containsEntry("existing-key", "existing-val");
     assertThat(snapshotMetadata.getSummaryMap()).containsEntry("new-key", "new-val");

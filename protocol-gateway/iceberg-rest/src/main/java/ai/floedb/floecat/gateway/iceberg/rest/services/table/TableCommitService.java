@@ -33,7 +33,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -104,7 +103,6 @@ public class TableCommitService {
             command.catalogName(), command.namespacePath(), command.table());
     Table committedTable = tableLifecycleService.getTable(tableId);
     TableGatewaySupport tableSupport = command.tableSupport();
-    IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
 
     CommitTableResponseDto finalResponse =
         responseBuilder.buildFinalResponse(committedTable, null, req, tableSupport);

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
@@ -24,18 +23,16 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
-import ai.floedb.floecat.gateway.iceberg.rest.common.TableMetadataBuilder;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.TableMetadataImportService.ResolvedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.StageCommitProcessor.StageCommitResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Objects;
 import org.jboss.logging.Logger;
 
@@ -56,9 +53,27 @@ public class CommitResponseBuilder {
       TableRequests.Commit req,
       TableGatewaySupport tableSupport) {
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(req);
-    IcebergMetadata refreshedMetadata = tableSupport.loadCurrentMetadata(committedTable);
+    IcebergMetadata metadata =
+        tableMetadataImportService.resolveCurrentIcebergMetadata(committedTable, tableSupport);
+    ResolvedMetadata resolved =
+        tableMetadataImportService.resolveMetadata(
+            committedTable == null ? null : committedTable.getDisplayName(),
+            committedTable,
+            metadata,
+            tableSupport.defaultFileIoProperties(),
+            () ->
+                SnapshotLister.fetchSnapshots(
+                    snapshotClient,
+                    committedTable.getResourceId(),
+                    SnapshotLister.Mode.ALL,
+                    metadata));
     CommitTableResponseDto finalResponse =
-        buildCommitResponse(committedTable, refreshedMetadata, tableSupport);
+        resolved.metadataView() == null
+            ? null
+            : ensureMetadataLocation(
+                TableResponseMapper.toCommitResponse(resolved.metadataView()),
+                committedTable,
+                resolved.icebergMetadata());
     if (!parsed.containsSnapshotUpdates()) {
       finalResponse = preferStageMetadata(finalResponse, stageMaterialization);
     }
@@ -137,31 +152,6 @@ public class CommitResponseBuilder {
       return new CommitTableResponseDto(null, null);
     }
     return new CommitTableResponseDto(metadata.metadataLocation(), metadata);
-  }
-
-  private CommitTableResponseDto buildCommitResponse(
-      Table committedTable, IcebergMetadata metadata, TableGatewaySupport tableSupport) {
-    TableMetadataView canonicalView =
-        tableMetadataImportService.importMetadataView(
-            committedTable, metadata, tableSupport.defaultFileIoProperties());
-    if (canonicalView != null) {
-      return ensureMetadataLocation(
-          TableResponseMapper.toCommitResponse(canonicalView), committedTable, metadata);
-    }
-    List<Snapshot> snapshots =
-        SnapshotLister.fetchSnapshots(
-            snapshotClient, committedTable.getResourceId(), SnapshotLister.Mode.ALL, metadata);
-    TableMetadataView fallbackView =
-        TableMetadataBuilder.fromCatalog(
-            committedTable.getDisplayName(),
-            committedTable,
-            new LinkedHashMap<>(committedTable.getPropertiesMap()),
-            metadata,
-            snapshots);
-    return fallbackView == null
-        ? null
-        : ensureMetadataLocation(
-            TableResponseMapper.toCommitResponse(fallbackView), committedTable, metadata);
   }
 
   private CommitTableResponseDto ensureMetadataLocation(
