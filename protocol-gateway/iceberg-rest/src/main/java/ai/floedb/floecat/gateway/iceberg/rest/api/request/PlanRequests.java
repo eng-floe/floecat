@@ -41,4 +41,6 @@ public final class PlanRequests {
       return new Plan(null, null, null, null, null, null, null, null, null);
     }
   }
+
+  public record FetchTask(@JsonProperty("plan-task") String planTask) {}
 }
