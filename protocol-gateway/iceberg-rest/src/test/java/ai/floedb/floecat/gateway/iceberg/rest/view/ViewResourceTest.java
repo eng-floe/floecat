@@ -41,6 +41,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.support.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.support.RestResourceTestProfile;
@@ -362,7 +363,7 @@ class ViewResourceTest extends AbstractRestResourceTest {
 
   @Test
   void registerViewLoadsMetadataFromLocation() throws Exception {
-    Path root = Path.of("target/test-fake-s3");
+    Path root = TestS3Fixtures.bucketPath().getParent().toAbsolutePath();
     Files.createDirectories(root);
     ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
     when(directoryStub.resolveNamespace(any()))
