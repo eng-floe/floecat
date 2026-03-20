@@ -56,6 +56,32 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <!-- Run with: mvn -pl tools/builtin-validator exec:java@validate-pbtxt -Dexec.args="<dir>" -->
+          <execution>
+            <id>validate-pbtxt</id>
+            <goals><goal>java</goal></goals>
+            <configuration>
+              <mainClass>io.floecat.tools.validator.SystemObjectsValidatorCli</mainClass>
+            </configuration>
+          </execution>
+          <!-- Run with: mvn -pl tools/builtin-validator exec:java@fmt-pbtxt
+                         -Dexec.args="MODE /absolute/path/to/dir"
+               MODE must be one of the double-dash flags defined in BuiltinPbtxtFormatter:
+               "check" to verify format (exits 2 on diff) or "apply" to rewrite files. -->
+          <execution>
+            <id>fmt-pbtxt</id>
+            <goals><goal>java</goal></goals>
+            <configuration>
+              <mainClass>io.floecat.tools.validator.BuiltinPbtxtFormatter</mainClass>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-clean-plugin</artifactId>
         <version>${version.plugin.clean}</version>

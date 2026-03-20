@@ -25,15 +25,37 @@
 
 # Example aggregate function.
 # Replace name, types, and properties with your actual aggregate.
+
 aggregates {
-  name { name: "my_aggregate" path: "example" }
-  argument_types { name: "my_type" path: "example" }
-  state_type  { name: "my_type" path: "example" }
-  return_type { name: "my_type" path: "example" }
+  name {
+    path: "example"
+    name: "my_aggregate"
+  }
+  argument_types {
+    path: "example"
+    name: "my_type"
+  }
+  return_type {
+    path: "example"
+    name: "my_type"
+  }
+  state_type {
+    path: "example"
+    name: "my_type"
+  }
   engine_specific {
     payload_type: "example.properties"
-    properties { key: "description"      value: "replace with your aggregate description" }
-    properties { key: "state_function"   value: "my_state_function" }
-    properties { key: "final_function"   value: "my_final_function" }
+    properties {
+      key: "description"
+      value: "replace with your aggregate description"
+    }
+    properties {
+      key: "final_function"
+      value: "my_final_function"
+    }
+    properties {
+      key: "state_function"
+      value: "my_state_function"
+    }
   }
 }

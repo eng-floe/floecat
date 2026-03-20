@@ -38,6 +38,8 @@
         <maven.compiler.source>${proto.compiler.release}</maven.compiler.source>
         <maven.compiler.target>${proto.compiler.release}</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Default mode for exec:exec@fmt-pbtxt; override with -Dfmt.mode=apply to rewrite. -->
+        <fmt.mode>check</fmt.mode>
     </properties>
 
     <dependencies>
@@ -140,6 +142,56 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+
+            <!--
+              PBtxt catalog tools - invoked via exec:exec (subprocess) to avoid a Maven reactor
+              cycle (builtin-validator already depends on this module in test scope).
+              The fat JAR must exist at tools/builtin-validator/target/floecat-builtin-validator.jar
+              before these executions are used (run make build first).
+
+              Validate:  mvn -pl extensions/example exec:exec@validate-pbtxt
+              Format:    mvn -pl extensions/example exec:exec@fmt-pbtxt -Dfmt.mode=apply
+              CI check:  mvn -pl extensions/example exec:exec@fmt-pbtxt (default mode is check)
+
+              Copy this plugin block into your own extension pom.xml, updating the builtins path
+              to match your engine kind.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>validate-pbtxt</id>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>java</executable>
+                            <arguments>
+                                <argument>-cp</argument>
+                                <argument>${maven.multiModuleProjectDirectory}/tools/builtin-validator/target/floecat-builtin-validator.jar</argument>
+                                <argument>io.floecat.tools.validator.SystemObjectsValidatorCli</argument>
+                                <argument>--strict</argument>
+                                <argument>${project.basedir}/src/main/resources/builtins/example</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>fmt-pbtxt</id>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>java</executable>
+                            <arguments>
+                                <argument>-cp</argument>
+                                <argument>${maven.multiModuleProjectDirectory}/tools/builtin-validator/target/floecat-builtin-validator.jar</argument>
+                                <argument>io.floecat.tools.validator.BuiltinPbtxtFormatter</argument>
+                                <!-- Default is check (see <properties>); override with -Dfmt.mode=apply -->
+                                <argument>--${fmt.mode}</argument>
+                                <argument>${project.basedir}/src/main/resources/builtins/example</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
         </plugins>
