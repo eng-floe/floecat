@@ -20,15 +20,7 @@ import static java.lang.System.out;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
-import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
-import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
-import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
@@ -36,25 +28,14 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
-import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
-import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.client.cli.util.CsvListParserUtil;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -770,14 +751,20 @@ public class Shell implements Runnable {
       case "namespaces", "namespace" ->
           NamespaceCliSupport.handle(
               command, tail(tokens), out, namespaces, directory, () -> currentAccountId);
-      case "tables" -> cmdTables(tail(tokens));
-      case "table" -> cmdTableCrud(tail(tokens));
-      case "views" -> cmdViews(tail(tokens));
-      case "view" -> cmdViewCrud(tail(tokens));
+      case "tables", "table", "resolve", "describe" ->
+          TableCliSupport.handle(
+              command,
+              tail(tokens),
+              out,
+              tables,
+              directory,
+              () -> currentAccountId,
+              this::resolveConnectorId);
+      case "views", "view" ->
+          ViewCliSupport.handle(
+              command, tail(tokens), out, viewService, directory, () -> currentAccountId);
       case "connectors" -> cmdConnectorsList();
       case "connector" -> cmdConnectorCrud(tail(tokens));
-      case "resolve" -> cmdResolve(tail(tokens));
-      case "describe" -> cmdDescribe(tail(tokens));
       case "snapshots" -> cmdSnapshots(tail(tokens));
       case "snapshot" -> cmdSnapshotCrud(tail(tokens));
       case "stats" -> cmdStats(tail(tokens));
@@ -795,398 +782,6 @@ public class Shell implements Runnable {
 
   private List<String> tail(List<String> list) {
     return CliArgs.tail(list);
-  }
-
-  private void cmdTables(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: tables <catalog.ns[.ns...][.prefix]>");
-      return;
-    }
-    var prefix = nameRefForTablePrefix(args.get(0));
-
-    ResolveFQTablesRequest.Builder rb =
-        ResolveFQTablesRequest.newBuilder()
-            .setPrefix(prefix)
-            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
-
-    List<ResolveFQTablesResponse.Entry> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> directory.resolveFQTables(rb.setPage(pr).build()),
-            ResolveFQTablesResponse::getTablesList,
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printResolvedTables(all);
-  }
-
-  private void cmdTableCrud(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: table <create|get|update|delete> ...");
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "create" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: table create <catalog.ns[.ns...].name> "
-                  + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]"
-                  + "[--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] "
-                  + "[--format ICEBERG|DELTA] [--props k=v ...]");
-          return;
-        }
-
-        var ref = nameRefForTable(args.get(1));
-        ResourceId catalogId = resolveCatalogId(ref.getCatalog());
-
-        NameRef nsRef =
-            NameRef.newBuilder().setCatalog(ref.getCatalog()).addAllPath(ref.getPathList()).build();
-
-        ResourceId namespaceId =
-            directory
-                .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(nsRef).build())
-                .getResourceId();
-
-        String name = ref.getName();
-
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
-        String root = Quotes.unquote(parseStringFlag(args, "--root", ""));
-        String schema = Quotes.unquote(parseStringFlag(args, "--schema", ""));
-        List<String> parts = csvList(Quotes.unquote(parseStringFlag(args, "--parts", "")));
-        String formatStr = Quotes.unquote(parseStringFlag(args, "--format", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
-
-        String upConnector = Quotes.unquote(parseStringFlag(args, "--up-connector", ""));
-        String upNs = Quotes.unquote(parseStringFlag(args, "--up-ns", ""));
-        String upTable = Quotes.unquote(parseStringFlag(args, "--up-table", ""));
-
-        var ub =
-            UpstreamRef.newBuilder()
-                .setFormat(parseFormat(formatStr))
-                .setUri(root)
-                .addAllPartitionKeys(parts);
-
-        if (!upConnector.isBlank()) {
-          ub.setConnectorId(resolveConnectorId(upConnector));
-        }
-        if (!upNs.isBlank()) {
-          ub.clearNamespacePath().addAllNamespacePath(splitPathRespectingQuotesAndEscapes(upNs));
-        }
-        if (!upTable.isBlank()) {
-          ub.setTableDisplayName(upTable);
-        }
-
-        var upstream = ub.build();
-
-        var spec =
-            TableSpec.newBuilder()
-                .setCatalogId(catalogId)
-                .setNamespaceId(namespaceId)
-                .setDisplayName(name)
-                .setDescription(desc)
-                .setUpstream(upstream)
-                .setSchemaJson(schema)
-                .putAllProperties(props)
-                .build();
-
-        var resp = tables.createTable(CreateTableRequest.newBuilder().setSpec(spec).build());
-        printTable(resp.getTable());
-      }
-      case "get" -> {
-        if (args.size() < 2) {
-          out.println("usage: table get <id|catalog.ns[.ns...].table>");
-          return;
-        }
-        ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        var resp = tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
-        printTable(resp.getTable());
-      }
-      case "update" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: table update <id|catalog.ns[.ns...].table> [--catalog"
-                  + " <catalogId|catalogName>] [--namespace <namespaceId|catalog.ns[.ns...]>]"
-                  + " [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--name"
-                  + " <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...]"
-                  + " [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]");
-          return;
-        }
-
-        ResourceId tableId = resolveTableIdFlexible(args.get(1));
-
-        String catalogStr = Quotes.unquote(parseStringFlag(args, "--catalog", null));
-        String nsStr = Quotes.unquote(parseStringFlag(args, "--namespace", null));
-        String name = Quotes.unquote(parseStringFlag(args, "--name", null));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-        String root = Quotes.unquote(parseStringFlag(args, "--root", null));
-        String schema = Quotes.unquote(parseStringFlag(args, "--schema", null));
-        List<String> parts = csvList(Quotes.unquote(parseStringFlag(args, "--parts", "")));
-        String formatStr = Quotes.unquote(parseStringFlag(args, "--format", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
-
-        String upConnector = Quotes.unquote(parseStringFlag(args, "--up-connector", null));
-        String upNs = Quotes.unquote(parseStringFlag(args, "--up-ns", null));
-        String upTable = Quotes.unquote(parseStringFlag(args, "--up-table", null));
-
-        boolean changingCatalog = catalogStr != null && !catalogStr.isBlank();
-        boolean changingNs = nsStr != null && !nsStr.isBlank();
-        if (changingCatalog ^ changingNs) {
-          out.println(
-              "Error: moving a table across catalogs requires both --catalog and --namespace.");
-          return;
-        }
-
-        TableSpec.Builder sb = TableSpec.newBuilder();
-        UpstreamRef.Builder ub = UpstreamRef.newBuilder();
-
-        ArrayList<String> maskPaths = new ArrayList<>();
-        boolean touchUpstream = false;
-
-        if (catalogStr != null && !catalogStr.isBlank()) {
-          ResourceId cid =
-              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
-          sb.setCatalogId(cid);
-          maskPaths.add("catalog_id");
-        }
-
-        if (nsStr != null && !nsStr.isBlank()) {
-          ResourceId nid = looksLikeUuid(nsStr) ? namespaceRid(nsStr) : resolveNamespaceId(nsStr);
-          sb.setNamespaceId(nid);
-          maskPaths.add("namespace_id");
-        }
-
-        if (name != null) {
-          sb.setDisplayName(name);
-          maskPaths.add("display_name");
-        }
-
-        if (desc != null) {
-          sb.setDescription(desc);
-          maskPaths.add("description");
-        }
-
-        if (schema != null) {
-          sb.setSchemaJson(schema);
-          maskPaths.add("schema_json");
-        }
-
-        if (!props.isEmpty()) {
-          sb.putAllProperties(props);
-          maskPaths.add("properties");
-        }
-
-        if (root != null) {
-          ub.setUri(root);
-          maskPaths.add("upstream.uri");
-          touchUpstream = true;
-        }
-
-        if (!parts.isEmpty()) {
-          ub.addAllPartitionKeys(parts);
-          maskPaths.add("upstream.partition_keys");
-          touchUpstream = true;
-        }
-
-        if (formatStr != null && !formatStr.isBlank()) {
-          ub.setFormat(parseFormat(formatStr));
-          maskPaths.add("upstream.format");
-          touchUpstream = true;
-        }
-
-        if (upConnector != null && !upConnector.isBlank()) {
-          ub.setConnectorId(resolveConnectorId(upConnector));
-          maskPaths.add("upstream.connector_id");
-          touchUpstream = true;
-        }
-
-        if (upNs != null && !upNs.isBlank()) {
-          ub.clearNamespacePath().addAllNamespacePath(splitPathRespectingQuotesAndEscapes(upNs));
-          maskPaths.add("upstream.namespace_path");
-          touchUpstream = true;
-        }
-
-        if (upTable != null && !upTable.isBlank()) {
-          ub.setTableDisplayName(upTable);
-          maskPaths.add("upstream.table_display_name");
-          touchUpstream = true;
-        }
-
-        if (touchUpstream) {
-          sb.setUpstream(ub.build());
-        }
-
-        if (maskPaths.isEmpty()) {
-          out.println("Nothing to update. Provide one or more flags to change.");
-          return;
-        }
-
-        FieldMask mask = FieldMask.newBuilder().addAllPaths(maskPaths).build();
-
-        var updateTableBuilder =
-            UpdateTableRequest.newBuilder()
-                .setTableId(tableId)
-                .setSpec(sb.build())
-                .setUpdateMask(mask);
-        var tablePrecondition = preconditionFromEtag(args);
-        if (tablePrecondition != null) {
-          updateTableBuilder.setPrecondition(tablePrecondition);
-        }
-        var req = updateTableBuilder.build();
-
-        var resp = tables.updateTable(req);
-        printTable(resp.getTable());
-      }
-      case "delete" -> {
-        if (args.size() < 2) {
-          out.println("usage: table delete <id|catalog.ns[.ns...].table> [--etag <etag>]");
-          return;
-        }
-        ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        var deleteTableBuilder = DeleteTableRequest.newBuilder().setTableId(tableId);
-        var deleteTablePrecondition = preconditionFromEtag(args);
-        if (deleteTablePrecondition != null) {
-          deleteTableBuilder.setPrecondition(deleteTablePrecondition);
-        }
-        var req = deleteTableBuilder.build();
-        tables.deleteTable(req);
-        out.println("ok");
-      }
-      default -> out.println("unknown subcommand");
-    }
-  }
-
-  private void cmdViews(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: views <catalog.ns[.ns...]>");
-      return;
-    }
-    ResourceId namespaceId = resolveNamespaceIdFlexible(args.get(0));
-    List<View> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr ->
-                viewService.listViews(
-                    ListViewsRequest.newBuilder().setNamespaceId(namespaceId).setPage(pr).build()),
-            ListViewsResponse::getViewsList,
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printViews(all);
-  }
-
-  private void cmdViewCrud(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: view <create|get|update|delete> ...");
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "create" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props"
-                  + " k=v ...]");
-          return;
-        }
-        NameRef ref = nameRefForTable(args.get(1));
-        ResourceId catalogId = resolveCatalogId(ref.getCatalog());
-        ResourceId namespaceId =
-            directory
-                .resolveNamespace(
-                    ResolveNamespaceRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(ref.getCatalog())
-                                .addAllPath(ref.getPathList())
-                                .build())
-                        .build())
-                .getResourceId();
-        String sql = Quotes.unquote(parseStringFlag(args, "--sql", ""));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
-
-        ViewSpec.Builder spec =
-            ViewSpec.newBuilder()
-                .setCatalogId(catalogId)
-                .setNamespaceId(namespaceId)
-                .setDisplayName(ref.getName())
-                .setSql(nvl(sql, ""));
-        if (desc != null && !desc.isBlank()) {
-          spec.setDescription(desc);
-        }
-        if (!props.isEmpty()) {
-          spec.putAllProperties(props);
-        }
-        var resp = viewService.createView(CreateViewRequest.newBuilder().setSpec(spec).build());
-        printView(resp.getView());
-      }
-      case "get" -> {
-        if (args.size() < 2) {
-          out.println("usage: view get <id|catalog.ns[.ns...].name>");
-          return;
-        }
-        ResourceId viewId = resolveViewIdFlexible(args.get(1));
-        var resp = viewService.getView(GetViewRequest.newBuilder().setViewId(viewId).build());
-        printView(resp.getView());
-      }
-      case "update" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>]"
-                  + " [--sql <text>] [--desc <text>] [--props k=v ...]");
-          return;
-        }
-        ResourceId viewId = resolveViewIdFlexible(args.get(1));
-        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
-        String ns = Quotes.unquote(parseStringFlag(args, "--namespace", null));
-        String sql = Quotes.unquote(parseStringFlag(args, "--sql", null));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-        Map<String, String> props = parseKeyValueList(args, "--props");
-
-        ViewSpec.Builder spec = ViewSpec.newBuilder();
-        FieldMask.Builder mask = FieldMask.newBuilder();
-        if (display != null) {
-          spec.setDisplayName(display);
-          mask.addPaths("display_name");
-        }
-        if (ns != null) {
-          ResourceId namespaceId = resolveNamespaceIdFlexible(ns);
-          spec.setNamespaceId(namespaceId);
-          mask.addPaths("namespace_id");
-        }
-        if (sql != null) {
-          spec.setSql(sql);
-          mask.addPaths("sql");
-        }
-        if (desc != null) {
-          spec.setDescription(desc);
-          mask.addPaths("description");
-        }
-        if (!props.isEmpty()) {
-          spec.putAllProperties(props);
-          mask.addPaths("properties");
-        }
-        if (mask.getPathsCount() == 0) {
-          out.println("Nothing to update. Provide one or more flags to change.");
-          return;
-        }
-        var resp =
-            viewService.updateView(
-                UpdateViewRequest.newBuilder()
-                    .setViewId(viewId)
-                    .setSpec(spec)
-                    .setUpdateMask(mask)
-                    .build());
-        printView(resp.getView());
-      }
-      case "delete" -> {
-        if (args.size() < 2) {
-          out.println("usage: view delete <id|catalog.ns[.ns...].name>");
-          return;
-        }
-        ResourceId viewId = resolveViewIdFlexible(args.get(1));
-        viewService.deleteView(DeleteViewRequest.newBuilder().setViewId(viewId).build());
-        out.println("ok");
-      }
-      default -> out.println("unknown subcommand");
-    }
   }
 
   private void cmdConnectorsList() {
@@ -1761,71 +1356,22 @@ public class Shell implements Runnable {
     return b.build();
   }
 
-  private void cmdResolve(List<String> args) {
-    if (args.size() < 2) {
-      out.println("usage: resolve table|view|catalog|namespace <fq-or-name>");
-      return;
-    }
-    String kind = args.get(0);
-    String s = args.get(1);
-    switch (kind) {
-      case "table" ->
-          out.println(
-              "table id: "
-                  + rid(
-                      directory
-                          .resolveTable(
-                              ResolveTableRequest.newBuilder().setRef(nameRefForTable(s)).build())
-                          .getResourceId()));
-      case "view" ->
-          out.println(
-              "view id: "
-                  + rid(
-                      directory
-                          .resolveView(
-                              ResolveViewRequest.newBuilder().setRef(nameRefForTable(s)).build())
-                          .getResourceId()));
-      case "namespace" ->
-          out.println(
-              "namespace id: "
-                  + rid(
-                      directory
-                          .resolveNamespace(
-                              ResolveNamespaceRequest.newBuilder()
-                                  .setRef(nameRefForNamespace(s, false))
-                                  .build())
-                          .getResourceId()));
-      case "catalog" ->
-          out.println(
-              "catalog id: "
-                  + rid(
-                      directory
-                          .resolveCatalog(
-                              ResolveCatalogRequest.newBuilder().setRef(nameCatalog(s)).build())
-                          .getResourceId()));
-      default -> out.println("unknown kind: " + kind);
-    }
-  }
-
-  private void cmdDescribe(List<String> args) {
-    if (args.size() < 2 || !"table".equals(args.get(0))) {
-      out.println("usage: describe table <fq>");
-      return;
-    }
-    String fq = args.get(1);
-    var r =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
-    var t = tables.getTable(GetTableRequest.newBuilder().setTableId(r.getResourceId()).build());
-    printTable(t.getTable());
-  }
-
   private void cmdSnapshots(List<String> args) {
-    SnapshotCliSupport.handle("snapshots", args, out, snapshots, this::resolveTableIdFlexible);
+    SnapshotCliSupport.handle(
+        "snapshots",
+        args,
+        out,
+        snapshots,
+        tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
   }
 
   private void cmdSnapshotCrud(List<String> args) {
-    SnapshotCliSupport.handle("snapshot", args, out, snapshots, this::resolveTableIdFlexible);
+    SnapshotCliSupport.handle(
+        "snapshot",
+        args,
+        out,
+        snapshots,
+        tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
   }
 
   private void cmdStats(List<String> args) {
@@ -1837,7 +1383,7 @@ public class Shell implements Runnable {
         tables,
         namespaces,
         reconcileControl,
-        this::resolveTableIdFlexible);
+        tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
   }
 
   /** Dispatches `constraints` command verbs to {@link ConstraintsCliSupport}. */
@@ -1847,7 +1393,7 @@ public class Shell implements Runnable {
         out,
         constraintsService,
         snapshots,
-        this::resolveTableIdFlexible,
+        tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId),
         this::parseStringFlag,
         this::parseIntFlag,
         this::hasFlag,
@@ -1863,7 +1409,7 @@ public class Shell implements Runnable {
         tables,
         namespaces,
         reconcileControl,
-        this::resolveTableIdFlexible);
+        tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
   }
 
   private void cmdQuery(List<String> args) {
@@ -2579,63 +2125,6 @@ public class Shell implements Runnable {
     return sb.toString();
   }
 
-  private void printResolvedTables(List<ResolveFQTablesResponse.Entry> entries) {
-    out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
-    for (var e : entries) {
-      String catalog = e.getName().getCatalog();
-      List<String> path = e.getName().getPathList();
-      String table = e.getName().getName();
-      String fq = joinFqQuoted(catalog, path, table);
-      out.printf("%-40s  %s%n", rid(e.getResourceId()), fq);
-    }
-  }
-
-  private void printViews(List<View> views) {
-    out.printf("%-40s  %-24s  %s%n", "VIEW_ID", "CREATED_AT", "DISPLAY_NAME");
-    for (var view : views) {
-      out.printf(
-          "%-40s  %-24s  %s%n",
-          rid(view.getResourceId()),
-          ts(view.getCreatedAt()),
-          Quotes.quoteIfNeeded(view.getDisplayName()));
-    }
-  }
-
-  private void printTable(Table t) {
-    UpstreamRef upstream = t.hasUpstream() ? t.getUpstream() : UpstreamRef.getDefaultInstance();
-    out.println("Table:");
-    out.printf("  id:           %s%n", rid(t.getResourceId()));
-    out.printf("  name:         %s%n", t.getDisplayName());
-    out.printf("  description:  %s%n", t.hasDescription() ? t.getDescription() : "");
-    out.printf("  schema:       %s%n", t.getSchemaJson());
-    out.printf("  format:       %s%n", upstream.getFormat().name());
-    out.printf("  root_uri:     %s%n", upstream.getUri());
-    out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
-    out.printf(
-        "  connector_id: %s%n",
-        upstream.hasConnectorId() ? upstream.getConnectorId().getId() : "-");
-    if (!upstream.getPartitionKeysList().isEmpty()) {
-      out.printf("  partitions:   %s%n", String.join(", ", upstream.getPartitionKeysList()));
-    }
-    if (!t.getPropertiesMap().isEmpty()) {
-      out.println("  properties:");
-      t.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
-    }
-  }
-
-  private void printView(View view) {
-    out.println("View:");
-    out.printf("  id:           %s%n", rid(view.getResourceId()));
-    out.printf("  name:         %s%n", view.getDisplayName());
-    out.printf("  description:  %s%n", view.hasDescription() ? view.getDescription() : "");
-    out.printf("  sql:          %s%n", view.getSql());
-    out.printf("  created_at:   %s%n", ts(view.getCreatedAt()));
-    if (!view.getPropertiesMap().isEmpty()) {
-      out.println("  properties:");
-      view.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
-    }
-  }
-
   private void printJson(com.google.protobuf.MessageOrBuilder message) {
     try {
       out.println(jsonPrinter().print(message));
@@ -2936,38 +2425,6 @@ public class Shell implements Runnable {
     return b.build();
   }
 
-  private static NameRef nameRefForTablePrefix(String s) {
-    if (s == null) {
-      throw new IllegalArgumentException("Fully qualified name is required");
-    }
-
-    s = s.trim();
-    if (s.isEmpty()) {
-      throw new IllegalArgumentException("Namespace path is empty");
-    }
-
-    List<String> segs = splitPathRespectingQuotesAndEscapes(s);
-    if (segs.size() < 2) {
-      throw new IllegalArgumentException(
-          "Invalid namespace path: at least a catalog and one namespace are required "
-              + "(e.g. catalog.namespace)");
-    }
-
-    String catalog = Quotes.unquote(segs.get(0));
-    List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
-
-    NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
-
-    if (rest.size() >= 2) {
-      b.addAllPath(rest.subList(0, rest.size() - 1));
-      b.setName(rest.get(rest.size() - 1));
-    } else {
-      b.addAllPath(rest);
-    }
-
-    return b.build();
-  }
-
   private Precondition preconditionFromEtag(List<String> args) {
     String etag = parseStringFlag(args, "--etag", "");
     if (etag == null || etag.isBlank()) {
@@ -3193,29 +2650,6 @@ public class Shell implements Runnable {
     NameRef ref = nameRefForNamespace(tok, false);
     return directory
         .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
-  }
-
-  private ResourceId resolveTableIdFlexible(String tok) {
-    String u = Quotes.unquote(nvl(tok, ""));
-    if (looksLikeUuid(u)) {
-      return tableRid(u);
-    }
-
-    NameRef ref = nameRefForTable(tok);
-    return directory
-        .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
-  }
-
-  private ResourceId resolveViewIdFlexible(String tok) {
-    String u = Quotes.unquote(nvl(tok, ""));
-    if (looksLikeUuid(u)) {
-      return viewRid(u);
-    }
-    NameRef ref = nameRefForTable(tok);
-    return directory
-        .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
         .getResourceId();
   }
 

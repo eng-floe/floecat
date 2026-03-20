@@ -357,7 +357,7 @@ final class NamespaceCliSupport {
         .build();
   }
 
-  private static NameRef nameRefForNamespace(String fqNs, boolean includeLeafInPath) {
+  static NameRef nameRefForNamespace(String fqNs, boolean includeLeafInPath) {
     if (fqNs == null) throw new IllegalArgumentException("Fully qualified name is required");
     fqNs = fqNs.trim();
     if (fqNs.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");

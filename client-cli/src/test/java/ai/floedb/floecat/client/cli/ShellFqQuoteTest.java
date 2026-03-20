@@ -181,9 +181,9 @@ class ShellFqQuoteTest {
 
   @Test
   void nameRefForTablePrefixIncludesOptionalPrefixName() throws Exception {
-    Method m = Shell.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
+    Method m = TableCliSupport.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
     m.setAccessible(true);
-    NameRef nr = (NameRef) m.invoke(shell, "cat.ns1.ns2.orders_");
+    NameRef nr = (NameRef) m.invoke(null, "cat.ns1.ns2.orders_");
 
     assertEquals("cat", nr.getCatalog());
     assertEquals(List.of("ns1", "ns2"), nr.getPathList());
@@ -329,15 +329,15 @@ class ShellFqQuoteTest {
 
   @Test
   void nameRefForTablePrefixCapturesNameWhenPresentOrOmitsWhenMissing() throws Exception {
-    var m = Shell.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
+    var m = TableCliSupport.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
     m.setAccessible(true);
 
-    NameRef withPrefix = (NameRef) m.invoke(shell, "cat.ns.orders_");
+    NameRef withPrefix = (NameRef) m.invoke(null, "cat.ns.orders_");
     assertEquals("cat", withPrefix.getCatalog());
     assertEquals(List.of("ns"), withPrefix.getPathList());
     assertEquals("orders_", withPrefix.getName());
 
-    NameRef withoutPrefix = (NameRef) m.invoke(shell, "cat.ns");
+    NameRef withoutPrefix = (NameRef) m.invoke(null, "cat.ns");
     assertEquals("cat", withoutPrefix.getCatalog());
     assertEquals(List.of("ns"), withoutPrefix.getPathList());
     assertEquals("", withoutPrefix.getName());
