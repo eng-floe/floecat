@@ -293,11 +293,11 @@ quit")
   echo "$gateway_resp"
   echo "==> [SMOKE][DIAG] $label gateway delta compat snapshot summary"
   if command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' "$gateway_resp" | python3 - <<'PY' || true
+    GATEWAY_RESP="$gateway_resp" python3 -c '
 import json
-import sys
+import os
 
-raw = sys.stdin.read().strip()
+raw = os.environ.get("GATEWAY_RESP", "").strip()
 if not raw:
     raise SystemExit(0)
 lines = raw.splitlines()
@@ -319,17 +319,15 @@ for snap in snapshots:
     if sid == main:
         flags.append("main")
     flag_text = ",".join(flags) if flags else "-"
-    print(
-        f"compat_snapshot id={sid} flags={flag_text} total_records={total_records} manifest={manifest}"
-    )
-PY
+    print(f"compat_snapshot id={sid} flags={flag_text} total_records={total_records} manifest={manifest}")
+' || true
   else
     echo "[WARN] python3 unavailable; skipping compact gateway snapshot summary"
   fi
 
   echo "==> [SMOKE][DIAG] $label duckdb dv_demo_delta focused query"
   if duckdb_debug_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
-    duckdb -c "$duckdb_bootstrap SELECT 'dv_debug_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_debug_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta;" 2>&1); then
+    duckdb -c "$duckdb_bootstrap SELECT 'dv_debug_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_debug_content=' || COALESCE(CAST(MIN(id) AS VARCHAR), 'NULL') || ',' || COALESCE(CAST(MAX(id) AS VARCHAR), 'NULL') || ',' || COALESCE(MIN(v), 'NULL') || ',' || COALESCE(MAX(v), 'NULL') AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT id, v FROM iceberg_floecat.delta.dv_demo_delta ORDER BY id;" 2>&1); then
     echo "$duckdb_debug_out"
   else
     echo "$duckdb_debug_out"

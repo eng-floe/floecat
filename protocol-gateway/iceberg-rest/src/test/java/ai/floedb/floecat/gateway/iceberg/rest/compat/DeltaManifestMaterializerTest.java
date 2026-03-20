@@ -101,7 +101,7 @@ class DeltaManifestMaterializerTest {
   }
 
   @Test
-  void materializeRefreshesCompatManifestListWhenSnapshotUnchanged() {
+  void materializeReusesCompatManifestListWhenSnapshotUnchanged() {
     Table table = deltaTable("reuse");
     Snapshot snapshot = snapshot(7L, 7L);
 
@@ -113,10 +113,10 @@ class DeltaManifestMaterializerTest {
     List<Snapshot> second = materializer.materialize(table, List.of(snapshot));
     String secondManifestList = firstManifestList(second.get(0));
     assertFalse(secondManifestList.isBlank());
-    assertNotEquals(firstManifestList, secondManifestList);
+    assertEquals(firstManifestList, secondManifestList);
     assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
 
-    verify(grpcClient, times(2)).fetchScanBundle(any());
+    verify(grpcClient, times(1)).fetchScanBundle(any());
   }
 
   @Test
@@ -139,7 +139,7 @@ class DeltaManifestMaterializerTest {
   }
 
   @Test
-  void materializeRefreshesManifestListForAllReturnedSnapshots() {
+  void materializeReusesManifestListForAllReturnedSnapshots() {
     Table table = deltaTable("all-snapshots");
     Snapshot firstSnapshot = snapshot(7L, 7L);
     Snapshot secondSnapshot = snapshot(8L, 8L);
@@ -153,14 +153,14 @@ class DeltaManifestMaterializerTest {
     assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
 
     List<Snapshot> second = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    assertNotEquals(firstManifestList, firstManifestList(second.get(0)));
-    assertNotEquals(secondManifestList, firstManifestList(second.get(1)));
+    assertEquals(firstManifestList, firstManifestList(second.get(0)));
+    assertEquals(secondManifestList, firstManifestList(second.get(1)));
 
-    verify(grpcClient, times(4)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanBundle(any());
   }
 
   @Test
-  void materializeReplacesStaleCompatManifestWhenSameSnapshotRematerialized() throws Exception {
+  void materializeRematerializesWhenCompatManifestListIsMissing() throws Exception {
     ScanFile staleFile =
         ScanFile.newBuilder()
             .setFilePath("s3://floecat-delta/dv_demo_delta/part-stale.parquet")
@@ -194,6 +194,8 @@ class DeltaManifestMaterializerTest {
         readSingleDataFileFromManifestList(materializer.fileIo(), firstManifestList);
     assertEquals("s3://floecat-delta/dv_demo_delta/part-stale.parquet", firstDataFile.location());
     assertEquals(3L, firstDataFile.recordCount());
+
+    materializer.fileIo().deleteFile(firstManifestList);
 
     String secondManifestList =
         firstManifestList(materializer.materialize(table, List.of(snapshot)).get(0));

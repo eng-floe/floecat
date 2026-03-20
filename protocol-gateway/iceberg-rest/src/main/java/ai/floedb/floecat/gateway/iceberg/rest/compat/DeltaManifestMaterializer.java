@@ -487,6 +487,13 @@ public class DeltaManifestMaterializer {
 
   private String ensureCompatArtifacts(
       FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
+    TableMetadata existing = readCompatMetadata(fileIo, metadataRoot, snapshot.getSnapshotId());
+    if (existing != null && existing.currentSnapshot() != null) {
+      String manifestList = existing.currentSnapshot().manifestListLocation();
+      if (manifestList != null && !manifestList.isBlank() && inputExists(fileIo, manifestList)) {
+        return manifestList;
+      }
+    }
     return writeManifestArtifacts(fileIo, table, snapshot, metadataRoot);
   }
 
