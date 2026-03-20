@@ -183,7 +183,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -943,7 +942,7 @@ public class Shell implements Runnable {
   }
 
   private List<String> tail(List<String> list) {
-    return list.size() <= 1 ? List.of() : list.subList(1, list.size());
+    return CliArgs.tail(list);
   }
 
   private void cmdCatalogs() {
@@ -3995,60 +3994,7 @@ public class Shell implements Runnable {
   }
 
   private List<String> tokenize(String line) {
-    List<String> out = new ArrayList<>();
-    StringBuilder cur = new StringBuilder();
-    boolean inSingle = false;
-    boolean inDouble = false;
-    boolean escaping = false;
-
-    for (int i = 0; i < line.length(); i++) {
-      char ch = line.charAt(i);
-
-      if (escaping) {
-        cur.append('\\').append(ch);
-        escaping = false;
-        continue;
-      }
-
-      if (ch == '\\') {
-        escaping = true;
-        continue;
-      }
-
-      if (ch == '\'' && !inDouble) {
-        inSingle = !inSingle;
-        cur.append(ch);
-        continue;
-      }
-
-      if (ch == '"' && !inSingle) {
-        inDouble = !inDouble;
-        cur.append(ch);
-        continue;
-      }
-
-      if (!inSingle && !inDouble && Character.isWhitespace(ch)) {
-        if (cur.length() > 0) {
-          out.add(cur.toString());
-          cur.setLength(0);
-        }
-        continue;
-      }
-
-      cur.append(ch);
-    }
-
-    if (inSingle || inDouble) {
-      throw new IllegalArgumentException("Unclosed quote in command");
-    }
-
-    if (escaping) {
-      cur.append('\\');
-    }
-    if (cur.length() > 0) {
-      out.add(cur.toString());
-    }
-    return out;
+    return CliArgs.tokenize(line);
   }
 
   private void ensureAccountSet() {
@@ -4068,30 +4014,23 @@ public class Shell implements Runnable {
   }
 
   private <T> T parseFlag(List<String> args, String flag, T dflt, Function<String, T> fn) {
-    int i = args.indexOf(flag);
-    if (i >= 0 && i + 1 < args.size()) {
-      try {
-        return fn.apply(args.get(i + 1));
-      } catch (Exception ignore) {
-      }
-    }
-    return dflt;
+    return CliArgs.parseFlag(args, flag, dflt, fn);
   }
 
   private String parseStringFlag(List<String> a, String f, String d) {
-    return parseFlag(a, f, d, s -> s);
+    return CliArgs.parseStringFlag(a, f, d);
   }
 
   private int parseIntFlag(List<String> a, String f, int d) {
-    return parseFlag(a, f, d, Integer::parseInt);
+    return CliArgs.parseIntFlag(a, f, d);
   }
 
   private long parseLongFlag(List<String> a, String f, long d) {
-    return parseFlag(a, f, d, Long::parseLong);
+    return CliArgs.parseLongFlag(a, f, d);
   }
 
   private boolean hasFlag(List<String> args, String flag) {
-    return args.contains(flag);
+    return CliArgs.hasFlag(args, flag);
   }
 
   private List<Long> parseSnapshotIds(String s) {
@@ -4110,16 +4049,7 @@ public class Shell implements Runnable {
       Function<PageRequest, R> fetch,
       Function<R, List<T>> items,
       Function<R, String> next) {
-
-    List<T> all = new ArrayList<>();
-    String token = "";
-    do {
-      R resp =
-          fetch.apply(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token).build());
-      all.addAll(items.apply(resp));
-      token = Optional.ofNullable(next.apply(resp)).orElse("");
-    } while (!token.isBlank());
-    return all;
+    return CliArgs.collectPages(pageSize, fetch, items, next);
   }
 
   private boolean looksLikeQuotedOrRawUuid(String s) {
