@@ -21,18 +21,17 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
-import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.JsonFormat;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.List;
 import java.util.function.Function;
 
@@ -136,7 +135,7 @@ final class SnapshotCliSupport {
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = Long.parseLong(args.get(1));
     var builder = DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
-    Precondition precondition = preconditionFromEtag(args);
+    Precondition precondition = CliArgs.preconditionFromEtag(args);
     if (precondition != null) {
       builder.setPrecondition(precondition);
     }
@@ -159,7 +158,7 @@ final class SnapshotCliSupport {
     for (var s : snaps) {
       out.printf(
           "%-20d  %-24s  %-20d%n",
-          s.getSnapshotId(), ts(s.getUpstreamCreatedAt()), s.getParentSnapshotId());
+          s.getSnapshotId(), CliUtils.ts(s.getUpstreamCreatedAt()), s.getParentSnapshotId());
     }
   }
 
@@ -189,20 +188,5 @@ final class SnapshotCliSupport {
     } catch (InvalidProtocolBufferException e) {
       out.println("  iceberg: <failed to parse: " + e.getMessage() + ">");
     }
-  }
-
-  private static Precondition preconditionFromEtag(List<String> args) {
-    String etag = CliArgs.parseStringFlag(args, "--etag", "");
-    if (etag == null || etag.isBlank()) {
-      return null;
-    }
-    return Precondition.newBuilder().setExpectedEtag(etag).build();
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) {
-      return "-";
-    }
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
   }
 }

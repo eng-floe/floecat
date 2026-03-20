@@ -20,6 +20,8 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
+import ai.floedb.floecat.client.cli.util.CliUtils;
+import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -57,9 +59,7 @@ import com.google.protobuf.Duration;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -165,7 +165,7 @@ final class ConnectorCliSupport {
 
         String sourceTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--source-table", ""));
         List<String> sourceCols =
-            csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
         String destNamespace = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
         if (sourceTable.isBlank() && !destTable.isBlank()) {
@@ -176,11 +176,11 @@ final class ConnectorCliSupport {
 
         String description = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
         String authScheme = Quotes.unquote(CliArgs.parseStringFlag(args, "--auth-scheme", ""));
-        Map<String, String> authProps = parseKeyValueList(args, "--auth");
-        Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        Map<String, String> authProps = CliUtils.parseKeyValueList(args, "--auth");
+        Map<String, String> headerHints = CliUtils.parseKeyValueList(args, "--head");
         String credType = Quotes.unquote(CliArgs.parseStringFlag(args, "--cred-type", ""));
-        Map<String, String> credProps = parseKeyValueList(args, "--cred");
-        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
+        Map<String, String> credProps = CliUtils.parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = CliUtils.parseKeyValueList(args, "--cred-head");
 
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = CliArgs.parseLongFlag(args, "--policy-interval-sec", 0L);
@@ -188,7 +188,7 @@ final class ConnectorCliSupport {
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
 
         var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
         var auth = buildAuth(authScheme, authProps, headerHints, credentials);
@@ -247,7 +247,7 @@ final class ConnectorCliSupport {
         String sourceNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--source-ns", ""));
         String sourceTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--source-table", ""));
         List<String> sourceCols =
-            csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
 
         String destCatalog = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-catalog", ""));
         String destNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
@@ -259,18 +259,18 @@ final class ConnectorCliSupport {
         }
 
         String authScheme = Quotes.unquote(CliArgs.parseStringFlag(args, "--auth-scheme", ""));
-        Map<String, String> authProps = parseKeyValueList(args, "--auth");
-        Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        Map<String, String> authProps = CliUtils.parseKeyValueList(args, "--auth");
+        Map<String, String> headerHints = CliUtils.parseKeyValueList(args, "--head");
         String credType = Quotes.unquote(CliArgs.parseStringFlag(args, "--cred-type", ""));
-        Map<String, String> credProps = parseKeyValueList(args, "--cred");
-        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
+        Map<String, String> credProps = CliUtils.parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = CliUtils.parseKeyValueList(args, "--cred-head");
         String policyEnabledStr = CliArgs.parseStringFlag(args, "--policy-enabled", "");
         long intervalSec = CliArgs.parseLongFlag(args, "--policy-interval-sec", 0L);
         ReconcileMode policyMode =
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
 
         var spec = ConnectorSpec.newBuilder();
         var mask = new LinkedHashSet<String>();
@@ -359,7 +359,7 @@ final class ConnectorCliSupport {
                 .setConnectorId(connectorId)
                 .setSpec(spec.build())
                 .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
-        var connectorPrecondition = preconditionFromEtag(args);
+        var connectorPrecondition = CliArgs.preconditionFromEtag(args);
         if (connectorPrecondition != null) {
           updateConnectorBuilder.setPrecondition(connectorPrecondition);
         }
@@ -377,7 +377,7 @@ final class ConnectorCliSupport {
                 .setConnectorId(
                     resolveConnectorId(
                         Quotes.unquote(args.get(1)), connectors, getCurrentAccountId));
-        var deleteConnectorPrecondition = preconditionFromEtag(args);
+        var deleteConnectorPrecondition = CliArgs.preconditionFromEtag(args);
         if (deleteConnectorPrecondition != null) {
           deleteConnectorBuilder.setPrecondition(deleteConnectorPrecondition);
         }
@@ -404,25 +404,25 @@ final class ConnectorCliSupport {
         String sourceNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--source-ns", ""));
         String sourceTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--source-table", ""));
         List<String> sourceCols =
-            csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--source-cols", "")));
 
         String destCatalog = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-catalog", ""));
         String destNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
 
         String authScheme = Quotes.unquote(CliArgs.parseStringFlag(args, "--auth-scheme", ""));
-        Map<String, String> authProps = parseKeyValueList(args, "--auth");
-        Map<String, String> headerHints = parseKeyValueList(args, "--head");
+        Map<String, String> authProps = CliUtils.parseKeyValueList(args, "--auth");
+        Map<String, String> headerHints = CliUtils.parseKeyValueList(args, "--head");
         String credType = Quotes.unquote(CliArgs.parseStringFlag(args, "--cred-type", ""));
-        Map<String, String> credProps = parseKeyValueList(args, "--cred");
-        Map<String, String> credHeaders = parseKeyValueList(args, "--cred-head");
+        Map<String, String> credProps = CliUtils.parseKeyValueList(args, "--cred");
+        Map<String, String> credHeaders = CliUtils.parseKeyValueList(args, "--cred-head");
         boolean policyEnabled = args.contains("--policy-enabled");
         long intervalSec = CliArgs.parseLongFlag(args, "--policy-interval-sec", 0L);
         ReconcileMode policyMode =
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
 
         var credentials = AuthCredentialParser.buildCredentials(credType, credProps, credHeaders);
         var auth = buildAuth(authScheme, authProps, headerHints, credentials);
@@ -473,13 +473,14 @@ final class ConnectorCliSupport {
         }
         boolean full = args.contains("--full");
         CaptureMode mode =
-            parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
+            CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
         String destNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-ns", ""));
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
         List<String> destColumns =
-            csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-cols", "")));
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-cols", "")));
         List<Long> snapshotIds =
-            parseSnapshotIds(Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
+            CliUtils.parseSnapshotIds(
+                Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
@@ -523,9 +524,9 @@ final class ConnectorCliSupport {
             ai.floedb.floecat.common.rpc.PageRequest.newBuilder().setPageSize(pageSize).build());
         if (!connectorRef.isBlank()) {
           req.setConnectorId(
-              rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
+              CliUtils.rid(resolveConnectorId(connectorRef, connectors, getCurrentAccountId)));
         }
-        for (String token : csvList(stateArg)) {
+        for (String token : CliUtils.csvList(stateArg)) {
           JobState state = parseJobState(token);
           if (state != JobState.JS_UNSPECIFIED) {
             req.addStates(state);
@@ -629,7 +630,7 @@ final class ConnectorCliSupport {
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
       Supplier<String> getCurrentAccountId) {
     String t = Quotes.unquote(token);
-    if (looksLikeUuid(t)) {
+    if (CliUtils.looksLikeUuid(t)) {
       return rid(t, ResourceKind.RK_CONNECTOR, getCurrentAccountId);
     }
 
@@ -652,7 +653,7 @@ final class ConnectorCliSupport {
     String alts =
         (exact.isEmpty() ? ci : exact)
             .stream()
-                .map(c -> c.getDisplayName() + " (" + rid(c.getResourceId()) + ")")
+                .map(c -> c.getDisplayName() + " (" + CliUtils.rid(c.getResourceId()) + ")")
                 .collect(Collectors.joining(", "));
     throw new IllegalArgumentException(
         "Connector name is ambiguous: " + t + ". Candidates: " + alts);
@@ -676,17 +677,6 @@ final class ConnectorCliSupport {
       throw new IllegalStateException("No account set. Use: account <accountId>");
     }
     return ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(id).build();
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
   }
 
   // --- spec builders ---
@@ -763,11 +753,11 @@ final class ConnectorCliSupport {
         "URI");
 
     for (var c : list) {
-      String id = rid(c.getResourceId());
+      String id = CliUtils.rid(c.getResourceId());
       String kind = c.getKind().name().replaceFirst("^CK_", "");
       String display = c.getDisplayName();
-      String created = ts(c.getCreatedAt());
-      String updated = ts(c.getUpdatedAt());
+      String created = CliUtils.ts(c.getCreatedAt());
+      String updated = CliUtils.ts(c.getUpdatedAt());
 
       String destCat = "";
       if (c.hasDestination()) {
@@ -785,14 +775,14 @@ final class ConnectorCliSupport {
       out.printf(
           "%-" + W_ID + "s  %-" + W_KIND + "s  %-" + W_DISPLAY + "s  %-" + W_TS + "s  %-" + W_TS
               + "s  %-" + W_DESTCAT + "s  %-" + W_STATE + "s  %s%n",
-          trunc(id, W_ID),
-          trunc(kind, W_KIND),
-          trunc(display, W_DISPLAY),
-          trunc(created, W_TS),
-          trunc(updated, W_TS),
-          trunc(destCat, W_DESTCAT),
-          trunc(state, W_STATE),
-          (W_URI > 0 ? trunc(uri, W_URI) : uri));
+          CliUtils.trunc(id, W_ID),
+          CliUtils.trunc(kind, W_KIND),
+          CliUtils.trunc(display, W_DISPLAY),
+          CliUtils.trunc(created, W_TS),
+          CliUtils.trunc(updated, W_TS),
+          CliUtils.trunc(destCat, W_DESTCAT),
+          CliUtils.trunc(state, W_STATE),
+          (W_URI > 0 ? CliUtils.trunc(uri, W_URI) : uri));
 
       if (c.hasDestination()) {
         String destCatDisplay = "";
@@ -838,7 +828,7 @@ final class ConnectorCliSupport {
                 || !destNsParts.isEmpty()
                 || (destTableDisplay != null && !destTableDisplay.isBlank());
         if (anyDest) {
-          String fq = joinFqQuoted(destCatDisplay, destNsParts, destTableDisplay);
+          String fq = NameRefUtil.joinFqQuoted(destCatDisplay, destNsParts, destTableDisplay);
           out.println("  destination: " + fq);
         }
       }
@@ -864,7 +854,7 @@ final class ConnectorCliSupport {
             p.getEnabled() || p.getMaxParallel() > 0 || p.hasInterval() || p.hasNotBefore();
         if (anyP) {
           String interval = p.hasInterval() ? (p.getInterval().getSeconds() + "s") : "";
-          String notBefore = p.hasNotBefore() ? ts(p.getNotBefore()) : "";
+          String notBefore = p.hasNotBefore() ? CliUtils.ts(p.getNotBefore()) : "";
           out.println(
               "  policy:"
                   + " enabled="
@@ -928,8 +918,8 @@ final class ConnectorCliSupport {
         job.getConnectorId(),
         job.getState().name(),
         job.getFullRescan() ? "full" : "incremental",
-        ts(job.getStartedAt()),
-        ts(job.getFinishedAt()),
+        CliUtils.ts(job.getStartedAt()),
+        CliUtils.ts(job.getFinishedAt()),
         job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
@@ -993,16 +983,6 @@ final class ConnectorCliSupport {
     };
   }
 
-  private static CaptureMode parseCaptureMode(String s) {
-    if (s == null || s.isBlank()) return CaptureMode.CM_METADATA_AND_STATS;
-    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
-      case "METADATA_ONLY", "CM_METADATA_ONLY" -> CaptureMode.CM_METADATA_ONLY;
-      case "METADATA_AND_STATS", "CM_METADATA_AND_STATS" -> CaptureMode.CM_METADATA_AND_STATS;
-      case "STATS_ONLY", "CM_STATS_ONLY" -> CaptureMode.CM_STATS_ONLY;
-      default -> throw new IllegalArgumentException("invalid capture mode: " + s);
-    };
-  }
-
   private static JobState parseJobState(String s) {
     if (s == null || s.isBlank()) return JobState.JS_UNSPECIFIED;
     return switch (s.trim().toUpperCase(Locale.ROOT)) {
@@ -1016,68 +996,7 @@ final class ConnectorCliSupport {
     };
   }
 
-  private static ai.floedb.floecat.common.rpc.Precondition preconditionFromEtag(List<String> args) {
-    String etag = CliArgs.parseStringFlag(args, "--etag", "");
-    if (etag == null || etag.isBlank()) return null;
-    return ai.floedb.floecat.common.rpc.Precondition.newBuilder().setExpectedEtag(etag).build();
-  }
-
-  private static List<Long> parseSnapshotIds(String s) {
-    if (s == null || s.isBlank()) return List.of();
-    var result = new ArrayList<Long>();
-    for (String token : csvList(s)) {
-      result.add(Long.parseUnsignedLong(token));
-    }
-    return result;
-  }
-
-  private static List<String> csvList(String s) {
-    try {
-      return ai.floedb.floecat.client.cli.util.CsvListParserUtil.items(s).stream()
-          .map(Quotes::unquote)
-          .filter(t -> t != null && !t.isBlank())
-          .toList();
-    } catch (RuntimeException e) {
-      throw new IllegalArgumentException("invalid CSV list: " + s, e);
-    }
-  }
-
-  private static Map<String, String> parseKeyValueList(List<String> args, String flag) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (int i = 0; i < args.size(); i++) {
-      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
-        int j = i + 1;
-        while (j < args.size() && !args.get(j).startsWith("--")) {
-          String kv = args.get(j);
-          int eq = kv.indexOf('=');
-          if (eq > 0) {
-            out.put(kv.substring(0, eq), kv.substring(eq + 1));
-          }
-          j++;
-        }
-      }
-    }
-    return out;
-  }
-
   // --- misc helpers ---
-
-  private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
-    StringBuilder sb = new StringBuilder();
-    sb.append(Quotes.quoteIfNeeded(catalog));
-    for (String ns : nsParts) {
-      sb.append('.').append(Quotes.quoteIfNeeded(ns));
-    }
-    if (obj != null) {
-      sb.append('.').append(Quotes.quoteIfNeeded(obj));
-    }
-    return sb.toString();
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
 
   private static Duration durSeconds(long seconds) {
     return Duration.newBuilder().setSeconds(seconds).build();
@@ -1085,11 +1004,6 @@ final class ConnectorCliSupport {
 
   private static long durationSeconds(Duration d) {
     return d == null ? 0L : d.getSeconds();
-  }
-
-  private static String trunc(String s, int n) {
-    if (s == null) return "-";
-    return s.length() <= n ? s : (s.substring(0, n - 1) + "…");
   }
 
   private static List<String> splitErrorLines(String msg) {

@@ -26,29 +26,20 @@ import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStats;
-import ai.floedb.floecat.client.cli.util.CsvListParserUtil;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
-import com.google.protobuf.InvalidProtocolBufferException;
-import com.google.protobuf.Timestamp;
-import com.google.protobuf.util.JsonFormat;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.function.Function;
 
 /** CLI support for {@code stats} and {@code analyze} commands. */
@@ -122,11 +113,13 @@ final class StatsCliSupport {
     var req =
         GetTableStatsRequest.newBuilder()
             .setTableId(tableId)
-            .setSnapshot(parseSnapshotSelector(args))
+            .setSnapshot(
+                CliUtils.snapshotFromTokenOrCurrent(
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")))
             .build();
     GetTableStatsResponse resp = statistics.getTableStats(req);
     if (json) {
-      printJson(resp, out);
+      CliUtils.printJson(resp, out);
       return;
     }
     printTableStats(resp.getStats(), out);
@@ -152,7 +145,9 @@ final class StatsCliSupport {
     ListColumnStatsRequest.Builder rb =
         ListColumnStatsRequest.newBuilder()
             .setTableId(tableId)
-            .setSnapshot(parseSnapshotSelector(args));
+            .setSnapshot(
+                CliUtils.snapshotFromTokenOrCurrent(
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")));
 
     List<ColumnStats> all =
         CliArgs.collectPages(
@@ -162,7 +157,7 @@ final class StatsCliSupport {
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
     if (all.size() > limit) all = all.subList(0, limit);
     if (json) {
-      printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build(), out);
+      CliUtils.printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build(), out);
       return;
     }
     printColumnStats(all, out);
@@ -187,7 +182,9 @@ final class StatsCliSupport {
     ListFileColumnStatsRequest.Builder rb =
         ListFileColumnStatsRequest.newBuilder()
             .setTableId(tableId)
-            .setSnapshot(parseSnapshotSelector(args));
+            .setSnapshot(
+                CliUtils.snapshotFromTokenOrCurrent(
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")));
 
     List<FileColumnStats> all =
         CliArgs.collectPages(
@@ -219,11 +216,12 @@ final class StatsCliSupport {
 
     String fq = args.get(0);
     String columnsArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", ""));
-    List<String> columns = csvList(columnsArg);
+    List<String> columns = CliUtils.csvList(columnsArg);
     CaptureMode mode =
-        parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
+        CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
     List<Long> snapshotIds =
-        parseSnapshotIds(Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
+        CliUtils.parseSnapshotIds(
+            Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
     boolean full = CliArgs.hasFlag(args, "--full");
 
     ResourceId tableId = resolveTableId.apply(fq);
@@ -266,20 +264,20 @@ final class StatsCliSupport {
 
   private static void printTableStats(TableStats s, PrintStream out) {
     out.println("Table Stats:");
-    out.printf("  table_id:        %s%n", rid(s.getTableId()));
+    out.printf("  table_id:        %s%n", CliUtils.rid(s.getTableId()));
     out.printf("  snapshot_id:     %d%n", s.getSnapshotId());
     out.printf("  row_count:       %d%n", s.getRowCount());
     out.printf("  data_file_count: %d%n", s.getDataFileCount());
     out.printf("  total_size:      %d bytes%n", s.getTotalSizeBytes());
     if (s.hasNdv()) {
-      out.printf("  ndv:             %s%n", ndvToString(s.getNdv()));
+      out.printf("  ndv:             %s%n", CliUtils.ndvToString(s.getNdv()));
     }
     if (s.hasUpstream()) {
       out.printf(
           "  upstream:        system=%s commit=%s created=%s%n",
           s.getUpstream().getSystem().name(),
           s.getUpstream().getCommitRef(),
-          ts(s.getUpstream().getFetchedAt()));
+          CliUtils.ts(s.getUpstream().getFetchedAt()));
     }
   }
 
@@ -291,14 +289,14 @@ final class StatsCliSupport {
       out.printf(
           "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
           c.getColumnId(),
-          trunc(c.getColumnName(), 28),
-          trunc(c.getLogicalType(), 12),
+          CliUtils.trunc(c.getColumnName(), 28),
+          CliUtils.trunc(c.getLogicalType(), 12),
           Long.toString(c.getValueCount()),
           Long.toString(c.getNullCount()),
           Long.toString(c.getNanCount()),
-          trunc(c.getMin(), 24),
-          trunc(c.getMax(), 24),
-          c.hasNdv() ? ndvToString(c.getNdv()) : "-",
+          CliUtils.trunc(c.getMin(), 24),
+          CliUtils.trunc(c.getMax(), 24),
+          c.hasNdv() ? CliUtils.ndvToString(c.getNdv()) : "-",
           c.hasNdv() ? c.getNdv().getSketchesCount() : "-");
     }
   }
@@ -319,114 +317,21 @@ final class StatsCliSupport {
       if (!cols.isEmpty()) {
         out.println("    columns:");
         for (ColumnStats c : cols) {
-          String ndv = c.hasNdv() ? ndvToString(c.getNdv()) : "-";
+          String ndv = c.hasNdv() ? CliUtils.ndvToString(c.getNdv()) : "-";
           out.printf(
               "      %-8s %-24s %-10s values=%-8d nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
                   + " ndv=%s%n",
               c.getColumnId(),
-              trunc(c.getColumnName(), 24),
-              trunc(c.getLogicalType(), 10),
+              CliUtils.trunc(c.getColumnName(), 24),
+              CliUtils.trunc(c.getLogicalType(), 10),
               c.getValueCount(),
               c.getNullCount(),
               c.getNanCount(),
-              trunc(c.getMin(), 20),
-              trunc(c.getMax(), 20),
+              CliUtils.trunc(c.getMin(), 20),
+              CliUtils.trunc(c.getMax(), 20),
               ndv);
         }
       }
     }
-  }
-
-  private static void printJson(com.google.protobuf.MessageOrBuilder message, PrintStream out) {
-    try {
-      out.println(JsonFormat.printer().includingDefaultValueFields().print(message));
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("failed to render protobuf as json", e);
-    }
-  }
-
-  // --- local utilities ---
-
-  private static SnapshotRef parseSnapshotSelector(List<String> args) {
-    int idx = args.indexOf("--snapshot");
-    return snapshotFromTokenOrCurrent(
-        idx >= 0 && idx + 1 < args.size() ? args.get(idx + 1) : "current");
-  }
-
-  private static SnapshotRef snapshotFromTokenOrCurrent(String tokenOrNull) {
-    if (tokenOrNull == null || tokenOrNull.isBlank() || tokenOrNull.equalsIgnoreCase("current")) {
-      return SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
-    }
-    try {
-      return SnapshotRef.newBuilder().setSnapshotId(Long.parseLong(tokenOrNull.trim())).build();
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("invalid snapshot selector '" + tokenOrNull + "'");
-    }
-  }
-
-  private static List<String> csvList(String s) {
-    try {
-      return CsvListParserUtil.items(s).stream()
-          .map(Quotes::unquote)
-          .filter(t -> t != null && !t.isBlank())
-          .toList();
-    } catch (RuntimeException e) {
-      throw new IllegalArgumentException("invalid CSV list: " + s, e);
-    }
-  }
-
-  private static List<Long> parseSnapshotIds(String s) {
-    if (s == null || s.isBlank()) {
-      return List.of();
-    }
-    var result = new ArrayList<Long>();
-    for (String token : csvList(s)) {
-      result.add(Long.parseUnsignedLong(token));
-    }
-    return result;
-  }
-
-  private static CaptureMode parseCaptureMode(String s) {
-    if (s == null || s.isBlank()) {
-      return CaptureMode.CM_METADATA_AND_STATS;
-    }
-    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
-      case "METADATA_ONLY", "CM_METADATA_ONLY" -> CaptureMode.CM_METADATA_ONLY;
-      case "METADATA_AND_STATS", "CM_METADATA_AND_STATS" -> CaptureMode.CM_METADATA_AND_STATS;
-      case "STATS_ONLY", "CM_STATS_ONLY" -> CaptureMode.CM_STATS_ONLY;
-      default -> throw new IllegalArgumentException("invalid capture mode: " + s);
-    };
-  }
-
-  private static String ndvToString(Ndv n) {
-    if (n.hasExact()) {
-      return Long.toString(n.getExact());
-    }
-    if (n.hasApprox()) {
-      NdvApprox approx = n.getApprox();
-      return approx.getEstimate() == Math.rint(approx.getEstimate())
-          ? Long.toString(Math.round(approx.getEstimate()))
-          : String.format(Locale.ROOT, "%.3f", approx.getEstimate());
-    }
-    return "-";
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static String trunc(String s, int n) {
-    if (s == null) {
-      return "-";
-    }
-    return s.length() <= n ? s : (s.substring(0, n - 1) + "…");
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) {
-      return "-";
-    }
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
   }
 }

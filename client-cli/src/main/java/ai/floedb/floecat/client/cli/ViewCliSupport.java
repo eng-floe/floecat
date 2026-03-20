@@ -28,16 +28,14 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -135,14 +133,14 @@ final class ViewCliSupport {
                 .getResourceId();
         String sql = Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", ""));
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
+        Map<String, String> props = CliUtils.parseKeyValueList(args, "--props");
 
         ViewSpec.Builder spec =
             ViewSpec.newBuilder()
                 .setCatalogId(catalogId)
                 .setNamespaceId(namespaceId)
                 .setDisplayName(ref.getName())
-                .setSql(nvl(sql, ""));
+                .setSql(CliUtils.nvl(sql, ""));
         if (desc != null && !desc.isBlank()) {
           spec.setDescription(desc);
         }
@@ -173,7 +171,7 @@ final class ViewCliSupport {
         String ns = Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
         String sql = Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", null));
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
-        Map<String, String> props = parseKeyValueList(args, "--props");
+        Map<String, String> props = CliUtils.parseKeyValueList(args, "--props");
 
         ViewSpec.Builder spec = ViewSpec.newBuilder();
         FieldMask.Builder mask = FieldMask.newBuilder();
@@ -232,7 +230,7 @@ final class ViewCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
-    if (looksLikeUuid(u)) {
+    if (CliUtils.looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_OVERLAY, getCurrentAccountId);
     }
     NameRef ref = NameRefUtil.nameRefForTable(tok);
@@ -250,17 +248,6 @@ final class ViewCliSupport {
     return ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(id).build();
   }
 
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-  }
-
   // --- output helpers ---
 
   private static void printViews(List<View> views, PrintStream out) {
@@ -268,51 +255,22 @@ final class ViewCliSupport {
     for (var view : views) {
       out.printf(
           "%-40s  %-24s  %s%n",
-          rid(view.getResourceId()),
-          ts(view.getCreatedAt()),
+          CliUtils.rid(view.getResourceId()),
+          CliUtils.ts(view.getCreatedAt()),
           Quotes.quoteIfNeeded(view.getDisplayName()));
     }
   }
 
   static void printView(View view, PrintStream out) {
     out.println("View:");
-    out.printf("  id:           %s%n", rid(view.getResourceId()));
+    out.printf("  id:           %s%n", CliUtils.rid(view.getResourceId()));
     out.printf("  name:         %s%n", view.getDisplayName());
     out.printf("  description:  %s%n", view.hasDescription() ? view.getDescription() : "");
     out.printf("  sql:          %s%n", view.getSql());
-    out.printf("  created_at:   %s%n", ts(view.getCreatedAt()));
+    out.printf("  created_at:   %s%n", CliUtils.ts(view.getCreatedAt()));
     if (!view.getPropertiesMap().isEmpty()) {
       out.println("  properties:");
       view.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
     }
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
-
-  // --- misc helpers ---
-
-  private static Map<String, String> parseKeyValueList(List<String> args, String flag) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (int i = 0; i < args.size(); i++) {
-      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
-        int j = i + 1;
-        while (j < args.size() && !args.get(j).startsWith("--")) {
-          String kv = args.get(j);
-          int eq = kv.indexOf('=');
-          if (eq > 0) {
-            out.put(kv.substring(0, eq), kv.substring(eq + 1));
-          }
-          j++;
-        }
-      }
-    }
-    return out;
-  }
-
-  private static String nvl(String s, String d) {
-    return s == null ? d : s;
   }
 }

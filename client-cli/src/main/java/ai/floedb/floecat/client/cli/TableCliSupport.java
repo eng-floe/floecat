@@ -31,7 +31,7 @@ import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
-import ai.floedb.floecat.client.cli.util.CsvListParserUtil;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
 import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
@@ -41,11 +41,8 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -156,9 +153,10 @@ final class TableCliSupport {
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
         String root = Quotes.unquote(CliArgs.parseStringFlag(args, "--root", ""));
         String schema = Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", ""));
-        List<String> parts = csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
+        List<String> parts =
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
         String formatStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
+        Map<String, String> props = CliUtils.parseKeyValueList(args, "--props");
 
         String upConnector = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", ""));
         String upNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", ""));
@@ -222,9 +220,10 @@ final class TableCliSupport {
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
         String root = Quotes.unquote(CliArgs.parseStringFlag(args, "--root", null));
         String schema = Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", null));
-        List<String> parts = csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
+        List<String> parts =
+            CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
         String formatStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
-        Map<String, String> props = parseKeyValueList(args, "--props");
+        Map<String, String> props = CliUtils.parseKeyValueList(args, "--props");
 
         String upConnector = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", null));
         String upNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", null));
@@ -245,7 +244,7 @@ final class TableCliSupport {
 
         if (catalogStr != null && !catalogStr.isBlank()) {
           ResourceId cid =
-              looksLikeUuid(catalogStr)
+              CliUtils.looksLikeUuid(catalogStr)
                   ? rid(catalogStr, ResourceKind.RK_CATALOG, getCurrentAccountId)
                   : CatalogCliSupport.resolveCatalogId(catalogStr, directory, getCurrentAccountId);
           sb.setCatalogId(cid);
@@ -253,7 +252,7 @@ final class TableCliSupport {
         }
         if (nsStr != null && !nsStr.isBlank()) {
           ResourceId nid =
-              looksLikeUuid(nsStr)
+              CliUtils.looksLikeUuid(nsStr)
                   ? rid(nsStr, ResourceKind.RK_NAMESPACE, getCurrentAccountId)
                   : NamespaceCliSupport.resolveNamespaceIdFlexible(
                       nsStr, directory, getCurrentAccountId);
@@ -320,7 +319,7 @@ final class TableCliSupport {
                 .setTableId(tableId)
                 .setSpec(sb.build())
                 .setUpdateMask(FieldMask.newBuilder().addAllPaths(maskPaths).build());
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           updateBuilder.setPrecondition(precondition);
         }
@@ -334,7 +333,7 @@ final class TableCliSupport {
         }
         ResourceId tableId = resolveTableId(args.get(1), directory, getCurrentAccountId);
         var deleteBuilder = DeleteTableRequest.newBuilder().setTableId(tableId);
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);
         }
@@ -362,7 +361,7 @@ final class TableCliSupport {
       case "table" ->
           out.println(
               "table id: "
-                  + rid(
+                  + CliUtils.rid(
                       directory
                           .resolveTable(
                               ResolveTableRequest.newBuilder()
@@ -372,7 +371,7 @@ final class TableCliSupport {
       case "view" ->
           out.println(
               "view id: "
-                  + rid(
+                  + CliUtils.rid(
                       directory
                           .resolveView(
                               ai.floedb.floecat.catalog.rpc.ResolveViewRequest.newBuilder()
@@ -382,7 +381,7 @@ final class TableCliSupport {
       case "namespace" ->
           out.println(
               "namespace id: "
-                  + rid(
+                  + CliUtils.rid(
                       directory
                           .resolveNamespace(
                               ResolveNamespaceRequest.newBuilder()
@@ -392,7 +391,7 @@ final class TableCliSupport {
       case "catalog" ->
           out.println(
               "catalog id: "
-                  + rid(
+                  + CliUtils.rid(
                       directory
                           .resolveCatalog(
                               ResolveCatalogRequest.newBuilder()
@@ -430,7 +429,7 @@ final class TableCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
-    if (looksLikeUuid(u)) {
+    if (CliUtils.looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_TABLE, getCurrentAccountId);
     }
     NameRef ref = NameRefUtil.nameRefForTable(tok);
@@ -439,7 +438,7 @@ final class TableCliSupport {
         .getResourceId();
   }
 
-  private static NameRef nameRefForTablePrefix(String s) {
+  static NameRef nameRefForTablePrefix(String s) {
     if (s == null) throw new IllegalArgumentException("Fully qualified name is required");
     s = s.trim();
     if (s.isEmpty()) throw new IllegalArgumentException("Namespace path is empty");
@@ -473,17 +472,6 @@ final class TableCliSupport {
     return ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(id).build();
   }
 
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-  }
-
   // --- output helpers ---
 
   private static void printResolvedTables(
@@ -493,21 +481,21 @@ final class TableCliSupport {
       String catalog = e.getName().getCatalog();
       List<String> path = e.getName().getPathList();
       String table = e.getName().getName();
-      String fq = joinFqQuoted(catalog, path, table);
-      out.printf("%-40s  %s%n", rid(e.getResourceId()), fq);
+      String fq = NameRefUtil.joinFqQuoted(catalog, path, table);
+      out.printf("%-40s  %s%n", CliUtils.rid(e.getResourceId()), fq);
     }
   }
 
   static void printTable(Table t, PrintStream out) {
     UpstreamRef upstream = t.hasUpstream() ? t.getUpstream() : UpstreamRef.getDefaultInstance();
     out.println("Table:");
-    out.printf("  id:           %s%n", rid(t.getResourceId()));
+    out.printf("  id:           %s%n", CliUtils.rid(t.getResourceId()));
     out.printf("  name:         %s%n", t.getDisplayName());
     out.printf("  description:  %s%n", t.hasDescription() ? t.getDescription() : "");
     out.printf("  schema:       %s%n", t.getSchemaJson());
     out.printf("  format:       %s%n", upstream.getFormat().name());
     out.printf("  root_uri:     %s%n", upstream.getUri());
-    out.printf("  created_at:   %s%n", ts(t.getCreatedAt()));
+    out.printf("  created_at:   %s%n", CliUtils.ts(t.getCreatedAt()));
     out.printf(
         "  connector_id: %s%n",
         upstream.hasConnectorId() ? upstream.getConnectorId().getId() : "-");
@@ -520,63 +508,10 @@ final class TableCliSupport {
     }
   }
 
-  private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
-    StringBuilder sb = new StringBuilder();
-    sb.append(Quotes.quoteIfNeeded(catalog));
-    for (String ns : nsParts) {
-      sb.append('.').append(Quotes.quoteIfNeeded(ns));
-    }
-    if (obj != null) {
-      sb.append('.').append(Quotes.quoteIfNeeded(obj));
-    }
-    return sb.toString();
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
-
   // --- misc helpers ---
 
   private static List<String> splitPath(String input) {
     return FQNameParserUtil.segments(input);
-  }
-
-  private static List<String> csvList(String s) {
-    if (s == null || s.isBlank()) return List.of();
-    try {
-      return CsvListParserUtil.items(s).stream()
-          .map(Quotes::unquote)
-          .filter(t -> t != null && !t.isBlank())
-          .toList();
-    } catch (RuntimeException e) {
-      throw new IllegalArgumentException("invalid CSV list: " + s, e);
-    }
-  }
-
-  private static Map<String, String> parseKeyValueList(List<String> args, String flag) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (int i = 0; i < args.size(); i++) {
-      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
-        int j = i + 1;
-        while (j < args.size() && !args.get(j).startsWith("--")) {
-          String kv = args.get(j);
-          int eq = kv.indexOf('=');
-          if (eq > 0) {
-            out.put(kv.substring(0, eq), kv.substring(eq + 1));
-          }
-          j++;
-        }
-      }
-    }
-    return out;
-  }
-
-  private static Precondition preconditionFromEtag(List<String> args) {
-    String etag = CliArgs.parseStringFlag(args, "--etag", "");
-    if (etag == null || etag.isBlank()) return null;
-    return Precondition.newBuilder().setExpectedEtag(etag).build();
   }
 
   private static TableFormat parseFormat(String s) {

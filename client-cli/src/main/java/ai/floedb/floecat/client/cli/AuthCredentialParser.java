@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.client.cli;
 
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -27,7 +28,7 @@ final class AuthCredentialParser {
   static AuthCredentials buildCredentials(
       String credType, Map<String, String> credProps, Map<String, String> credHeaders) {
     boolean any =
-        !nvl(credType, "").isBlank()
+        !CliUtils.nvl(credType, "").isBlank()
             || (credProps != null && !credProps.isEmpty())
             || (credHeaders != null && !credHeaders.isEmpty());
     if (!any) {
@@ -152,10 +153,6 @@ final class AuthCredentialParser {
       b.putAllHeaders(headers);
     }
     return b.build();
-  }
-
-  private static String nvl(String value, String fallback) {
-    return value == null ? fallback : value;
   }
 
   private static AuthCredentials.TokenExchange buildTokenExchange(Map<String, String> props) {

@@ -17,15 +17,13 @@
 package ai.floedb.floecat.client.cli;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.catalog.rpc.NdvApprox;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.NameRefUtil;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.BeginQueryResponse;
@@ -49,7 +47,6 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -159,7 +156,7 @@ final class QueryCliSupport {
             return;
           }
           try {
-            asOfDefault = parseTimestampFlexible(args.get(i + 1));
+            asOfDefault = CliUtils.parseTimestampFlexible(args.get(i + 1));
           } catch (IllegalArgumentException e) {
             out.println("query begin: " + e.getMessage());
             return;
@@ -312,7 +309,7 @@ final class QueryCliSupport {
 
     RenewQueryResponse resp = queries.renewQuery(req.build());
     out.println("query id: " + resp.getQueryId());
-    out.println("expires: " + ts(resp.getExpiresAt()));
+    out.println("expires: " + CliUtils.ts(resp.getExpiresAt()));
   }
 
   private static void queryEnd(
@@ -400,7 +397,7 @@ final class QueryCliSupport {
     }
 
     out.println("query id: " + queryId);
-    out.println("table id: " + rid(tableId));
+    out.println("table id: " + CliUtils.rid(tableId));
     printQueryFiles("data_files", resp.getBundle().getDataFilesList(), out);
     printQueryFiles("delete_files", resp.getBundle().getDeleteFilesList(), out);
   }
@@ -437,7 +434,7 @@ final class QueryCliSupport {
             return -1;
           }
           try {
-            snapshotRef = snapshotFromTokenOrCurrent(args.get(i + 1));
+            snapshotRef = CliUtils.snapshotFromTokenOrCurrent(args.get(i + 1));
           } catch (IllegalArgumentException e) {
             out.println("query begin: " + e.getMessage());
             return -1;
@@ -459,7 +456,7 @@ final class QueryCliSupport {
             return -1;
           }
           try {
-            Timestamp ts = parseTimestampFlexible(args.get(i + 1));
+            Timestamp ts = CliUtils.parseTimestampFlexible(args.get(i + 1));
             snapshotRef = SnapshotRef.newBuilder().setAsOf(ts).build();
           } catch (IllegalArgumentException e) {
             out.println("query begin: " + e.getMessage());
@@ -508,8 +505,8 @@ final class QueryCliSupport {
       out.println("account: " + query.getAccountId());
     }
     out.println("status: " + query.getQueryStatus().name().toLowerCase(Locale.ROOT));
-    out.println("created: " + ts(query.getCreatedAt()));
-    out.println("expires: " + ts(query.getExpiresAt()));
+    out.println("created: " + CliUtils.ts(query.getCreatedAt()));
+    out.println("expires: " + CliUtils.ts(query.getExpiresAt()));
     printQuerySnapshots(query.getSnapshots(), out);
     printQueryExpansion(query.getExpansion(), out);
     printQueryObligations(query.getObligationsList(), out);
@@ -523,12 +520,12 @@ final class QueryCliSupport {
     out.println("snapshots:");
     for (SnapshotPin pin : snapshots.getPinsList()) {
       StringBuilder line = new StringBuilder("  - table=");
-      line.append(pin.hasTableId() ? rid(pin.getTableId()) : "<unknown>");
+      line.append(pin.hasTableId() ? CliUtils.rid(pin.getTableId()) : "<unknown>");
       if (pin.getSnapshotId() > 0) {
         line.append(" snapshot=").append(pin.getSnapshotId());
       }
       if (pin.hasAsOf()) {
-        line.append(" as_of=").append(ts(pin.getAsOf()));
+        line.append(" as_of=").append(CliUtils.ts(pin.getAsOf()));
       }
       out.println(line.toString());
     }
@@ -554,15 +551,15 @@ final class QueryCliSupport {
               view -> {
                 StringBuilder line =
                     new StringBuilder("    - view=")
-                        .append(view.hasViewId() ? rid(view.getViewId()) : "<unknown>");
+                        .append(view.hasViewId() ? CliUtils.rid(view.getViewId()) : "<unknown>");
                 if (!view.getCanonicalSql().isBlank()) {
-                  line.append(" sql=").append(trunc(view.getCanonicalSql(), 80));
+                  line.append(" sql=").append(CliUtils.trunc(view.getCanonicalSql(), 80));
                 }
                 out.println(line.toString());
                 if (!view.getBaseTableIdsList().isEmpty()) {
                   String bases =
                       view.getBaseTableIdsList().stream()
-                          .map(QueryCliSupport::rid)
+                          .map(CliUtils::rid)
                           .collect(Collectors.joining(", "));
                   out.println("      bases: " + bases);
                 }
@@ -571,7 +568,7 @@ final class QueryCliSupport {
     if (hasReadVia) {
       String via =
           expansion.getReadViaViewTablesList().stream()
-              .map(QueryCliSupport::rid)
+              .map(CliUtils::rid)
               .collect(Collectors.joining(", "));
       out.println("  read_via_view_tables: " + via);
     }
@@ -583,7 +580,7 @@ final class QueryCliSupport {
     }
     out.println("obligations:");
     for (TableObligations obligation : obligations) {
-      out.println("  - table=" + rid(obligation.getTableId()));
+      out.println("  - table=" + CliUtils.rid(obligation.getTableId()));
       if (!obligation.getRowFilterExpression().isBlank()) {
         out.println("    row_filter: " + obligation.getRowFilterExpression());
       }
@@ -594,7 +591,10 @@ final class QueryCliSupport {
             .forEach(
                 mask ->
                     out.println(
-                        "      " + mask.getColumn() + " => " + trunc(mask.getExpression(), 100)));
+                        "      "
+                            + mask.getColumn()
+                            + " => "
+                            + CliUtils.trunc(mask.getExpression(), 100)));
       }
     }
   }
@@ -627,7 +627,7 @@ final class QueryCliSupport {
         file.getColumnsList()
             .forEach(
                 col -> {
-                  String ndv = col.hasNdv() ? ndvToString(col.getNdv()) : "-";
+                  String ndv = col.hasNdv() ? CliUtils.ndvToString(col.getNdv()) : "-";
                   out.printf(
                       "      %s (%s) nulls=%d ndv=%s%n",
                       col.getColumnName(), col.getLogicalType(), col.getNullCount(), ndv);
@@ -684,79 +684,5 @@ final class QueryCliSupport {
         .setKind(ResourceKind.RK_OVERLAY)
         .setId(id)
         .build();
-  }
-
-  private static SnapshotRef snapshotFromTokenOrCurrent(String tokenOrNull) {
-    if (tokenOrNull == null || tokenOrNull.isBlank() || tokenOrNull.equalsIgnoreCase("current")) {
-      return SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
-    }
-    try {
-      return SnapshotRef.newBuilder().setSnapshotId(Long.parseLong(tokenOrNull.trim())).build();
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("invalid snapshot selector '" + tokenOrNull + "'");
-    }
-  }
-
-  private static Timestamp parseTimestampFlexible(String value) {
-    if (value == null || value.isBlank()) {
-      throw new IllegalArgumentException("timestamp value is blank");
-    }
-    String trimmed = value.trim();
-    try {
-      long numeric = Long.parseLong(trimmed);
-      if (Math.abs(numeric) >= 1_000_000_000_000L) {
-        long seconds = Math.floorDiv(numeric, 1000L);
-        long millisPart = Math.floorMod(numeric, 1000L);
-        int nanos = (int) (millisPart * 1_000_000L);
-        return Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos).build();
-      } else {
-        return Timestamp.newBuilder().setSeconds(numeric).build();
-      }
-    } catch (NumberFormatException ignored) {
-      try {
-        Instant instant = Instant.parse(trimmed);
-        return Timestamp.newBuilder()
-            .setSeconds(instant.getEpochSecond())
-            .setNanos(instant.getNano())
-            .build();
-      } catch (Exception e) {
-        throw new IllegalArgumentException(
-            "invalid timestamp '"
-                + value
-                + "' (expected epoch seconds/millis or ISO-8601 instant)");
-      }
-    }
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) {
-      return "-";
-    }
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
-
-  private static String trunc(String s, int n) {
-    if (s == null) {
-      return "-";
-    }
-    return s.length() <= n ? s : (s.substring(0, n - 1) + "\u2026");
-  }
-
-  private static String ndvToString(Ndv n) {
-    if (n.hasExact()) {
-      return Long.toString(n.getExact());
-    }
-    if (n.hasApprox()) {
-      NdvApprox approx = n.getApprox();
-      return approx.getEstimate() == Math.rint(approx.getEstimate())
-          ? Long.toString(Math.round(approx.getEstimate()))
-          : String.format(Locale.ROOT, "%.3f", approx.getEstimate());
-    }
-    return "-";
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
   }
 }

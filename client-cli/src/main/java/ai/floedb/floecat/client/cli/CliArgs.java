@@ -17,6 +17,7 @@
 package ai.floedb.floecat.client.cli;
 
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Precondition;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -122,6 +123,16 @@ final class CliArgs {
 
   static boolean hasFlag(List<String> args, String flag) {
     return args.contains(flag);
+  }
+
+  /**
+   * Parses an {@code --etag <value>} flag from {@code args} and returns a {@link Precondition} with
+   * {@code expectedEtag} set, or {@code null} if the flag is absent or blank.
+   */
+  static Precondition preconditionFromEtag(List<String> args) {
+    String etag = parseStringFlag(args, "--etag", "");
+    if (etag == null || etag.isBlank()) return null;
+    return Precondition.newBuilder().setExpectedEtag(etag).build();
   }
 
   /**

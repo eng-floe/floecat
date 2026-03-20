@@ -26,16 +26,14 @@ import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -145,14 +143,14 @@ final class CatalogCliSupport {
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
         String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
         var spec =
             CatalogSpec.newBuilder()
                 .setDisplayName(display)
-                .setDescription(nvl(desc, ""))
-                .setConnectorRef(nvl(connectorRef, ""))
+                .setDescription(CliUtils.nvl(desc, ""))
+                .setConnectorRef(CliUtils.nvl(connectorRef, ""))
                 .putAllProperties(properties)
-                .setPolicyRef(nvl(policyRef, ""))
+                .setPolicyRef(CliUtils.nvl(policyRef, ""))
                 .build();
         var resp = catalogs.createCatalog(CreateCatalogRequest.newBuilder().setSpec(spec).build());
         printCatalogs(List.of(resp.getCatalog()), out);
@@ -183,7 +181,7 @@ final class CatalogCliSupport {
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
         String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
 
         var sb = CatalogSpec.newBuilder();
         LinkedHashSet<String> mask = new LinkedHashSet<>();
@@ -214,7 +212,7 @@ final class CatalogCliSupport {
                 .setCatalogId(resolveCatalogId(id, directory, getCurrentAccountId))
                 .setSpec(sb.build())
                 .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           updateBuilder.setPrecondition(precondition);
         }
@@ -232,7 +230,7 @@ final class CatalogCliSupport {
                 .setCatalogId(
                     resolveCatalogId(Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
                 .setRequireEmpty(requireEmpty);
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);
         }
@@ -250,7 +248,7 @@ final class CatalogCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     String t = Quotes.unquote(token);
-    if (looksLikeUuid(t)) {
+    if (CliUtils.looksLikeUuid(t)) {
       return catalogRid(t, getCurrentAccountId);
     }
     return directory
@@ -274,12 +272,6 @@ final class CatalogCliSupport {
     return NameRef.newBuilder().setCatalog(Quotes.unquote(name)).build();
   }
 
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-  }
-
   // --- output helpers ---
 
   private static void printCatalogs(List<Catalog> cats, PrintStream out) {
@@ -288,50 +280,10 @@ final class CatalogCliSupport {
     for (var c : cats) {
       out.printf(
           "%-40s  %-24s  %-24s  %s%n",
-          rid(c.getResourceId()),
-          ts(c.getCreatedAt()),
+          CliUtils.rid(c.getResourceId()),
+          CliUtils.ts(c.getCreatedAt()),
           Quotes.quoteIfNeeded(c.getDisplayName()),
           c.hasDescription() ? c.getDescription() : "");
     }
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
-
-  // --- misc helpers ---
-
-  private static Map<String, String> parseKeyValueList(List<String> args, String flag) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (int i = 0; i < args.size(); i++) {
-      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
-        int j = i + 1;
-        while (j < args.size() && !args.get(j).startsWith("--")) {
-          String kv = args.get(j);
-          int eq = kv.indexOf('=');
-          if (eq > 0) {
-            out.put(kv.substring(0, eq), kv.substring(eq + 1));
-          }
-          j++;
-        }
-      }
-    }
-    return out;
-  }
-
-  private static Precondition preconditionFromEtag(List<String> args) {
-    String etag = CliArgs.parseStringFlag(args, "--etag", "");
-    if (etag == null || etag.isBlank()) return null;
-    return Precondition.newBuilder().setExpectedEtag(etag).build();
-  }
-
-  private static String nvl(String s, String d) {
-    return s == null ? d : s;
   }
 }

@@ -43,4 +43,16 @@ public final class NameRefUtil {
     List<String> ns = segs.subList(1, segs.size() - 1).stream().map(Quotes::unquote).toList();
     return NameRef.newBuilder().setCatalog(catalog).addAllPath(ns).setName(object).build();
   }
+
+  public static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
+    StringBuilder sb = new StringBuilder();
+    sb.append(Quotes.quoteIfNeeded(catalog));
+    for (String ns : nsParts) {
+      sb.append('.').append(Quotes.quoteIfNeeded(ns));
+    }
+    if (obj != null) {
+      sb.append('.').append(Quotes.quoteIfNeeded(obj));
+    }
+    return sb.toString();
+  }
 }

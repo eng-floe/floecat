@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -34,10 +35,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,12 +98,12 @@ final class NamespaceCliSupport {
         ListNamespacesRequest.newBuilder()
             .setChildrenOnly(childrenOnly)
             .setRecursive(recursive)
-            .setNamePrefix(nvl(namePrefix, ""))
+            .setNamePrefix(CliUtils.nvl(namePrefix, ""))
             .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
     if (explicitId != null && !explicitId.isBlank()) {
       rb.setNamespaceId(resolveNamespaceIdFlexible(explicitId, directory, getCurrentAccountId));
-    } else if (looksLikeQuotedOrRawUuid(raw)) {
+    } else if (CliUtils.looksLikeUuid(Quotes.unquote(raw))) {
       rb.setNamespaceId(resolveNamespaceIdFlexible(raw, directory, getCurrentAccountId));
     } else {
       try {
@@ -153,7 +151,7 @@ final class NamespaceCliSupport {
 
         String token = args.get(1).trim();
         String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
         String policy = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", ""));
 
         String leafOpt = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
@@ -193,9 +191,9 @@ final class NamespaceCliSupport {
                     CatalogCliSupport.resolveCatalogId(catalog, directory, getCurrentAccountId))
                 .addAllPath(parents)
                 .setDisplayName(leaf)
-                .setDescription(nvl(desc, ""))
+                .setDescription(CliUtils.nvl(desc, ""))
                 .putAllProperties(properties)
-                .setPolicyRef(nvl(policy, ""))
+                .setPolicyRef(CliUtils.nvl(policy, ""))
                 .build();
 
         var resp =
@@ -208,7 +206,7 @@ final class NamespaceCliSupport {
           return;
         }
         ResourceId nsId =
-            looksLikeQuotedOrRawUuid(args.get(1))
+            CliUtils.looksLikeUuid(Quotes.unquote(args.get(1)))
                 ? namespaceRid(Quotes.unquote(args.get(1)), getCurrentAccountId)
                 : resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var resp =
@@ -227,7 +225,7 @@ final class NamespaceCliSupport {
         }
 
         ResourceId namespaceId =
-            looksLikeQuotedOrRawUuid(args.get(1))
+            CliUtils.looksLikeUuid(Quotes.unquote(args.get(1)))
                 ? namespaceRid(Quotes.unquote(args.get(1)), getCurrentAccountId)
                 : directory
                     .resolveNamespace(
@@ -241,7 +239,7 @@ final class NamespaceCliSupport {
         String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
         String pathStr = CliArgs.parseStringFlag(args, "--path", null);
         String catalogStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
+        Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
 
         if (display != null && pathStr != null) {
           out.println("Error: cannot combine --path with --display in the same update.");
@@ -270,7 +268,7 @@ final class NamespaceCliSupport {
         }
         if (catalogStr != null) {
           ResourceId cid =
-              looksLikeUuid(catalogStr)
+              CliUtils.looksLikeUuid(catalogStr)
                   ? catalogRid(catalogStr, getCurrentAccountId)
                   : CatalogCliSupport.resolveCatalogId(catalogStr, directory, getCurrentAccountId);
           sb.setCatalogId(cid);
@@ -291,7 +289,7 @@ final class NamespaceCliSupport {
                 .setNamespaceId(namespaceId)
                 .setSpec(sb.build())
                 .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           updateBuilder.setPrecondition(precondition);
         }
@@ -307,7 +305,7 @@ final class NamespaceCliSupport {
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var deleteBuilder =
             DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
-        Precondition precondition = preconditionFromEtag(args);
+        Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);
         }
@@ -325,7 +323,7 @@ final class NamespaceCliSupport {
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
-    if (looksLikeUuid(u)) {
+    if (CliUtils.looksLikeUuid(u)) {
       return namespaceRid(u, getCurrentAccountId);
     }
     NameRef ref = nameRefForNamespace(tok, false);
@@ -386,16 +384,6 @@ final class NamespaceCliSupport {
     return FQNameParserUtil.segments(input);
   }
 
-  private static boolean looksLikeQuotedOrRawUuid(String s) {
-    return looksLikeUuid(Quotes.unquote(s == null ? "" : s));
-  }
-
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-  }
-
   // --- output helpers ---
 
   private static void printNamespaces(List<Namespace> rows, PrintStream out) {
@@ -407,8 +395,8 @@ final class NamespaceCliSupport {
       var leaf = ns.getDisplayName();
       out.printf(
           "%-36s  %-24s  %-26s  %-16s  %s%n",
-          rid(ns.getResourceId()),
-          ts(ns.getCreatedAt()),
+          CliUtils.rid(ns.getResourceId()),
+          CliUtils.ts(ns.getCreatedAt()),
           parentsAsList(parentsList),
           Quotes.quoteIfNeeded(leaf),
           ns.hasDescription() ? ns.getDescription() : "");
@@ -419,45 +407,5 @@ final class NamespaceCliSupport {
     return "["
         + parents.stream().map(Quotes::quoteIfNeeded).collect(Collectors.joining(", "))
         + "]";
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
-  }
-
-  // --- misc helpers ---
-
-  private static Map<String, String> parseKeyValueList(List<String> args, String flag) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (int i = 0; i < args.size(); i++) {
-      if (flag.equals(args.get(i)) && i + 1 < args.size()) {
-        int j = i + 1;
-        while (j < args.size() && !args.get(j).startsWith("--")) {
-          String kv = args.get(j);
-          int eq = kv.indexOf('=');
-          if (eq > 0) {
-            out.put(kv.substring(0, eq), kv.substring(eq + 1));
-          }
-          j++;
-        }
-      }
-    }
-    return out;
-  }
-
-  private static Precondition preconditionFromEtag(List<String> args) {
-    String etag = CliArgs.parseStringFlag(args, "--etag", "");
-    if (etag == null || etag.isBlank()) return null;
-    return Precondition.newBuilder().setExpectedEtag(etag).build();
-  }
-
-  private static String nvl(String s, String d) {
-    return s == null ? d : s;
   }
 }

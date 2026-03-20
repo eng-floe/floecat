@@ -23,12 +23,11 @@ import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
-import java.time.Instant;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -154,7 +153,7 @@ final class AccountCliSupport {
     if (value.isBlank()) {
       throw new IllegalArgumentException("account id/display name cannot be empty");
     }
-    if (looksLikeUuid(value)) {
+    if (CliUtils.looksLikeUuid(value)) {
       return value;
     }
     List<Account> all =
@@ -177,26 +176,10 @@ final class AccountCliSupport {
     for (var a : rows) {
       out.printf(
           "%-40s  %-24s  %-24s  %s%n",
-          rid(a.getResourceId()),
-          ts(a.getCreatedAt()),
+          CliUtils.rid(a.getResourceId()),
+          CliUtils.ts(a.getCreatedAt()),
           Quotes.quoteIfNeeded(a.getDisplayName()),
           a.hasDescription() ? a.getDescription() : "");
     }
-  }
-
-  private static boolean looksLikeUuid(String s) {
-    if (s == null) return false;
-    return s.trim()
-        .matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-  }
-
-  private static String rid(ResourceId id) {
-    String s = (id == null) ? null : id.getId();
-    return (s == null || s.isBlank()) ? "<no-id>" : s;
-  }
-
-  private static String ts(Timestamp t) {
-    if (t == null || (t.getSeconds() == 0 && t.getNanos() == 0)) return "-";
-    return Instant.ofEpochSecond(t.getSeconds(), t.getNanos()).toString();
   }
 }

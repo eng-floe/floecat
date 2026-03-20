@@ -28,14 +28,13 @@ import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.client.cli.util.AuthHeaderInterceptor;
+import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.OidcClientCredentialsTokenProvider;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
-import com.google.protobuf.InvalidProtocolBufferException;
-import com.google.protobuf.util.JsonFormat;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
@@ -406,7 +405,7 @@ public class Shell implements Runnable {
     return line;
   }
 
-  private void printHelp() {
+  void printHelp() {
     out.println(
 """
          Options:
@@ -643,7 +642,7 @@ public class Shell implements Runnable {
     accounts = accounts.withInterceptors(authInterceptor);
   }
 
-  private void dispatch(String inputLine) {
+  void dispatch(String inputLine) {
     var tokens = CliArgs.tokenize(inputLine);
     if (tokens.isEmpty()) {
       return;
@@ -775,14 +774,6 @@ public class Shell implements Runnable {
   }
 
   private void printJson(com.google.protobuf.MessageOrBuilder message) {
-    try {
-      out.println(jsonPrinter().print(message));
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("failed to render protobuf as json", e);
-    }
-  }
-
-  private JsonFormat.Printer jsonPrinter() {
-    return JsonFormat.printer().includingDefaultValueFields();
+    CliUtils.printJson(message, out);
   }
 }
