@@ -167,7 +167,9 @@ public class TableLifecycleService {
         if (tableUuid != null && !tableUuid.isBlank()) {
           String reservedMetadataLocation =
               icebergMetadataService.reserveCreateMetadataLocation(
-                  effectiveReq.location(), tableUuid, stageCreateFileIoProperties(effectiveReq, tableSupport));
+                  effectiveReq.location(),
+                  tableUuid,
+                  stageCreateFileIoProperties(effectiveReq, tableSupport));
           resolved =
               new IcebergMetadataService.ResolvedMetadata(
                   resolved.tableMetadata(),
@@ -221,7 +223,8 @@ public class TableLifecycleService {
                 effectiveReq)
             .build();
     String stageId =
-        firstNonBlank(idempotencyKey, created.getResourceId().getId(), UUID.randomUUID().toString());
+        firstNonBlank(
+            idempotencyKey, created.getResourceId().getId(), UUID.randomUUID().toString());
     stagedTableRepository.saveStage(
         new StagedTableEntry(
             new StagedTableKey(
@@ -487,8 +490,7 @@ public class TableLifecycleService {
       String reservedMetadataLocation =
           icebergMetadataService.reserveCreateMetadataLocation(
               tableLocation, tableUuid, stageCreateFileIoProperties(request, tableSupport));
-      MetadataLocationUtil.setMetadataLocation(
-          props, reservedMetadataLocation);
+      MetadataLocationUtil.setMetadataLocation(props, reservedMetadataLocation);
     }
     String metadataLocation = MetadataLocationUtil.metadataLocation(props);
     TableRequests.Create effectiveRequest =

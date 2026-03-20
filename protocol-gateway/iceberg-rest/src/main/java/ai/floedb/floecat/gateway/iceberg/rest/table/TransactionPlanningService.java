@@ -54,7 +54,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.apache.iceberg.TableMetadata;
@@ -535,6 +534,61 @@ public class TransactionPlanningService {
     return false;
   }
 
+  ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit normalizeFirstWriteCommit(
+      String accountId,
+      String catalogName,
+      List<String> namespacePath,
+      String tableName,
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      boolean tableExists,
+      ai.floedb.floecat.catalog.rpc.Table persistedTable,
+      ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit commit,
+      StagedTableEntry stagedEntry,
+      TableGatewaySupport tableSupport) {
+    if (commit == null || hasCommittedSnapshot(persistedTable)) {
+      return commit;
+    }
+    StagedTableEntry effectiveStage = stagedEntry;
+    if (effectiveStage == null
+        && stagedTableRepository != null
+        && accountId != null
+        && !accountId.isBlank()
+        && catalogName != null
+        && !catalogName.isBlank()
+        && tableName != null
+        && !tableName.isBlank()) {
+      effectiveStage =
+          stagedTableRepository
+              .findSingleStage(accountId, catalogName, namespacePath, tableName)
+              .orElse(null);
+    }
+    if (effectiveStage == null
+        || effectiveStage.request() == null
+        || effectiveStage.spec() == null) {
+      return commit;
+    }
+    String stagedMetadataLocation =
+        MetadataLocationUtil.metadataLocation(effectiveStage.request().properties());
+    if (callerProvidesCreateInitialization(commit)) {
+      return injectMetadataLocation(commit, stagedMetadataLocation);
+    }
+    List<Map<String, Object>> updates =
+        new ArrayList<>(buildCreateUpdates(effectiveStage.request(), effectiveStage.spec()));
+    if (commit.updates() != null && !commit.updates().isEmpty()) {
+      updates.addAll(commit.updates());
+    }
+    List<Map<String, Object>> requirements =
+        commit.requirements() == null ? new ArrayList<>() : new ArrayList<>(commit.requirements());
+    if (!tableExists) {
+      requirements.addAll(0, CommitUpdateInspector.assertCreateRequirements());
+    }
+    return injectMetadataLocation(
+        new ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit(
+            List.copyOf(requirements), List.copyOf(updates)),
+        stagedMetadataLocation);
+  }
+
   private ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit
       enrichPendingCreateBootstrap(
           String accountId,
@@ -546,37 +600,18 @@ public class TransactionPlanningService {
           ai.floedb.floecat.catalog.rpc.Table persistedTable,
           ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit commit,
           TableGatewaySupport tableSupport) {
-    if (commit == null
-        || stagedTableRepository == null
-        || accountId == null
-        || accountId.isBlank()
-        || catalogName == null
-        || catalogName.isBlank()
-        || tableName == null
-        || tableName.isBlank()
-        || hasCommittedSnapshot(persistedTable)) {
-      return commit;
-    }
-    Optional<StagedTableEntry> stagedEntry =
-        stagedTableRepository.findSingleStage(accountId, catalogName, namespacePath, tableName);
-    if (stagedEntry.isEmpty() || stagedEntry.get().request() == null || stagedEntry.get().spec() == null) {
-      return commit;
-    }
-    String stagedMetadataLocation =
-        MetadataLocationUtil.metadataLocation(stagedEntry.get().request().properties());
-    if (callerProvidesCreateInitialization(commit)) {
-      return injectMetadataLocation(commit, stagedMetadataLocation);
-    }
-    List<Map<String, Object>> updates =
-        new ArrayList<>(buildCreateUpdates(stagedEntry.get().request(), stagedEntry.get().spec()));
-    if (commit.updates() != null && !commit.updates().isEmpty()) {
-      updates.addAll(commit.updates());
-    }
-    return injectMetadataLocation(
-        new ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit(
-            commit.requirements() == null ? List.of() : List.copyOf(commit.requirements()),
-            List.copyOf(updates)),
-        stagedMetadataLocation);
+    return normalizeFirstWriteCommit(
+        accountId,
+        catalogName,
+        namespacePath,
+        tableName,
+        catalogId,
+        namespaceId,
+        true,
+        persistedTable,
+        commit,
+        null,
+        tableSupport);
   }
 
   private ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Commit
@@ -607,7 +642,8 @@ public class TransactionPlanningService {
       return false;
     }
     for (Map<String, Object> update : commit.updates()) {
-      if (CommitUpdateInspector.isCreateInitializationAction(CommitUpdateInspector.actionOf(update))) {
+      if (CommitUpdateInspector.isCreateInitializationAction(
+          CommitUpdateInspector.actionOf(update))) {
         return true;
       }
     }

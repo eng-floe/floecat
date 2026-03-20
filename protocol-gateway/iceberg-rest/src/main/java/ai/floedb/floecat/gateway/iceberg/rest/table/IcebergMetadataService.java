@@ -338,7 +338,8 @@ public class IcebergMetadataService {
 
   public MaterializeResult materializeAtExactLocation(
       String namespaceFq, String tableName, TableMetadata metadata, String metadataLocation) {
-    return materialize(namespaceFq, tableName, metadata, MaterializeMode.EXACT_LOCATION, metadataLocation);
+    return materialize(
+        namespaceFq, tableName, metadata, MaterializeMode.EXACT_LOCATION, metadataLocation);
   }
 
   public MaterializeResult materializeNextVersion(
@@ -359,9 +360,7 @@ public class IcebergMetadataService {
       return new MaterializeResult(metadataLocation, null);
     }
     String requestedLocation =
-        mode == MaterializeMode.EXACT_LOCATION
-            ? metadataLocation
-            : metadata.metadataFileLocation();
+        mode == MaterializeMode.EXACT_LOCATION ? metadataLocation : metadata.metadataFileLocation();
     if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because metadata-location was %s",
@@ -377,8 +376,7 @@ public class IcebergMetadataService {
       }
       props.putAll(sanitizeProperties(metadata.properties()));
       fileIO = FileIoFactory.createFileIo(props, config, true);
-      resolvedLocation =
-          resolveMaterializedLocation(fileIO, requestedLocation, metadata, mode);
+      resolvedLocation = resolveMaterializedLocation(fileIO, requestedLocation, metadata, mode);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
             "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
@@ -424,7 +422,10 @@ public class IcebergMetadataService {
       long nextVersion = nextMetadataVersion(fileIO, directory, null);
       return directory + metadataFileName(nextVersion, tableUuid);
     } catch (RuntimeException e) {
-      LOG.debugf(e, "Unable to reserve stage-create metadata location for tableLocation=%s", tableLocation);
+      LOG.debugf(
+          e,
+          "Unable to reserve stage-create metadata location for tableLocation=%s",
+          tableLocation);
       throw new IllegalStateException(
           "Unable to reserve stage-create metadata location for " + tableLocation, e);
     } finally {
@@ -501,10 +502,7 @@ public class IcebergMetadataService {
   }
 
   private String resolveMaterializedLocation(
-      FileIO fileIO,
-      String metadataLocation,
-      TableMetadata metadata,
-      MaterializeMode mode) {
+      FileIO fileIO, String metadataLocation, TableMetadata metadata, MaterializeMode mode) {
     if (mode == MaterializeMode.EXACT_LOCATION && isExactMetadataPath(metadataLocation)) {
       return metadataLocation;
     }

@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -180,11 +179,7 @@ class TransactionCommitServiceTest {
         .thenReturn(new TableUpdatePlanner.PlanResult(table, null));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(icebergMetadataService.resolveMetadata(anyString(), any(Table.class), any(), any(), any()))
-        .thenReturn(
-            new IcebergMetadataService.ResolvedMetadata(
-                committedMetadata,
-                null,
-                null));
+        .thenReturn(new IcebergMetadataService.ResolvedMetadata(committedMetadata, null, null));
     when(icebergMetadataService.applyCommitUpdates(any(), any(Table.class), any()))
         .thenAnswer(
             invocation ->
@@ -195,7 +190,8 @@ class TransactionCommitServiceTest {
                     .build());
     when(icebergMetadataService.bootstrapTableMetadataFromCommit(any(), any()))
         .thenCallRealMethod();
-    when(icebergMetadataService.materializeAtExactLocation(anyString(), anyString(), any(), anyString()))
+    when(icebergMetadataService.materializeAtExactLocation(
+            anyString(), anyString(), any(), anyString()))
         .thenReturn(
             new IcebergMetadataService.MaterializeResult(
                 "s3://meta/default/00001.metadata.json", null));
@@ -237,7 +233,8 @@ class TransactionCommitServiceTest {
                   List.copyOf(journal.getRemovedSnapshotIdsList()));
             });
     when(commitOutboxService.isPending(anyString())).thenReturn(false);
-    when(stagedTableRepository.findSingleStage(anyString(), anyString(), Mockito.<List<String>>any(), anyString()))
+    when(stagedTableRepository.findSingleStage(
+            anyString(), anyString(), Mockito.<List<String>>any(), anyString()))
         .thenReturn(Optional.empty());
     when(stagedTableRepository.getStage(any())).thenReturn(Optional.empty());
   }
@@ -533,7 +530,8 @@ class TransactionCommitServiceTest {
             .build();
     when(icebergMetadataService.bootstrapTableMetadataFromCommit(any(), any()))
         .thenReturn(bootstrappedMetadata);
-    when(icebergMetadataService.applyCommitUpdates(eq(bootstrappedMetadata), any(Table.class), any()))
+    when(icebergMetadataService.applyCommitUpdates(
+            eq(bootstrappedMetadata), any(Table.class), any()))
         .thenReturn(bootstrappedMetadata);
     when(icebergMetadataService.materializeAtExactLocation(
             eq("db"),
@@ -663,8 +661,10 @@ class TransactionCommitServiceTest {
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("MetadataResolutionException", error.error().type());
     assertEquals("failed to load committed table metadata", error.error().message());
-    verify(icebergMetadataService, never()).bootstrapTableMetadata(any(), any(), any(), any(), any());
-    verify(icebergMetadataService, never()).materializeAtExactLocation(anyString(), anyString(), any(), anyString());
+    verify(icebergMetadataService, never())
+        .bootstrapTableMetadata(any(), any(), any(), any(), any());
+    verify(icebergMetadataService, never())
+        .materializeAtExactLocation(anyString(), anyString(), any(), anyString());
     verify(icebergMetadataService, never()).materializeNextVersion(anyString(), anyString(), any());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
@@ -965,7 +965,8 @@ class TransactionCommitServiceTest {
         .thenReturn(new IcebergMetadataService.ResolvedMetadata(committedMetadata, null, null));
     when(icebergMetadataService.applyCommitUpdates(eq(committedMetadata), any(Table.class), any()))
         .thenReturn(committedMetadata);
-    when(icebergMetadataService.materializeNextVersion(eq("db"), eq("orders"), any(TableMetadata.class)))
+    when(icebergMetadataService.materializeNextVersion(
+            eq("db"), eq("orders"), any(TableMetadata.class)))
         .thenReturn(
             new IcebergMetadataService.MaterializeResult(
                 "s3://floecat/iceberg/orders/metadata/00001-next.metadata.json",
@@ -997,7 +998,8 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(icebergMetadataService).materializeNextVersion(eq("db"), eq("orders"), any(TableMetadata.class));
+    verify(icebergMetadataService)
+        .materializeNextVersion(eq("db"), eq("orders"), any(TableMetadata.class));
   }
 
   @Test
@@ -1061,7 +1063,9 @@ class TransactionCommitServiceTest {
                         null,
                         null,
                         false),
-                    TableSpec.newBuilder().putProperties("location", "s3://floecat/iceberg/orders").build(),
+                    TableSpec.newBuilder()
+                        .putProperties("location", "s3://floecat/iceberg/orders")
+                        .build(),
                     List.of(),
                     StageState.STAGED,
                     null,
@@ -1154,7 +1158,8 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithRegisterImportedSnapshot(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(icebergMetadataService, never()).materializeAtExactLocation(anyString(), anyString(), any(), anyString());
+    verify(icebergMetadataService, never())
+        .materializeAtExactLocation(anyString(), anyString(), any(), anyString());
     verify(icebergMetadataService, never()).materializeNextVersion(anyString(), anyString(), any());
     verify(grpcClient)
         .prepareTransaction(
@@ -1231,7 +1236,8 @@ class TransactionCommitServiceTest {
                 .build());
     when(icebergMetadataService.materializeNextVersion(anyString(), anyString(), any()))
         .thenReturn(
-            new IcebergMetadataService.MaterializeResult("s3://meta/new/00001.metadata.json", null));
+            new IcebergMetadataService.MaterializeResult(
+                "s3://meta/new/00001.metadata.json", null));
 
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
@@ -1483,7 +1489,8 @@ class TransactionCommitServiceTest {
                 .build());
     when(icebergMetadataService.materializeNextVersion(anyString(), anyString(), any()))
         .thenReturn(
-            new IcebergMetadataService.MaterializeResult("s3://meta/new/00001.metadata.json", null));
+            new IcebergMetadataService.MaterializeResult(
+                "s3://meta/new/00001.metadata.json", null));
 
     Response response = service.commit("pref", "idem", request(), tableSupport);
 
@@ -1731,7 +1738,8 @@ class TransactionCommitServiceTest {
     IcebergErrorResponse error = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
     assertEquals("MetadataResolutionException", error.error().type());
     assertEquals("failed to load committed table metadata", error.error().message());
-    verify(icebergMetadataService, never()).bootstrapTableMetadata(any(), any(), any(), any(), any());
+    verify(icebergMetadataService, never())
+        .bootstrapTableMetadata(any(), any(), any(), any(), any());
     verify(icebergMetadataService, never()).bootstrapTableMetadataFromCommit(any(), any());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());

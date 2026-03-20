@@ -18,17 +18,17 @@ package ai.floedb.floecat.gateway.iceberg.rest.table;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
-import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -310,9 +310,11 @@ class IcebergMetadataServiceTest {
               "s3://warehouse/db/orders",
               Map.of("table-uuid", "uuid-1"));
       TableMetadataParser.write(
-          metadata, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
+          metadata,
+          fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
       TableMetadataParser.write(
-          metadata, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00001-old.metadata.json"));
+          metadata,
+          fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00001-old.metadata.json"));
 
       String reserved =
           service.reserveCreateMetadataLocation("s3://warehouse/db/orders", "uuid-2", ioProps);
@@ -399,7 +401,8 @@ class IcebergMetadataServiceTest {
               "s3://warehouse/db/orders",
               Map.of("table-uuid", "uuid-1"));
       TableMetadataParser.write(
-          existing, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
+          existing,
+          fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
 
       TableMetadata next =
           TableMetadata.buildFrom(existing)
@@ -411,8 +414,7 @@ class IcebergMetadataServiceTest {
           service.materializeNextVersion("db", "orders", next);
 
       assertNotNull(result.metadataLocation());
-      assertTrue(
-          result.metadataLocation().startsWith("s3://warehouse/db/orders/metadata/00001-"));
+      assertTrue(result.metadataLocation().startsWith("s3://warehouse/db/orders/metadata/00001-"));
       assertTrue(result.metadataLocation().endsWith(".metadata.json"));
       assertEquals(result.metadataLocation(), result.tableMetadata().metadataFileLocation());
     } finally {

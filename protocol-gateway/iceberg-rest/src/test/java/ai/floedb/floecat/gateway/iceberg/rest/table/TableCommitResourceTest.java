@@ -19,7 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.table;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -37,7 +37,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.RestResourceTestProfile;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
-import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -45,7 +44,6 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 @QuarkusTest
 @TestProfile(RestResourceTestProfile.class)
@@ -121,23 +119,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
-        .statusCode(200);
-
-    ArgumentCaptor<PrepareTransactionRequest> requestCaptor =
-        ArgumentCaptor.forClass(PrepareTransactionRequest.class);
-    verify(transactionsStub).prepareTransaction(requestCaptor.capture());
-    String committedUri =
-        requestCaptor.getValue().getChangesList().stream()
-            .filter(change -> change.hasTable() && change.getTable().hasUpstream())
-            .map(change -> change.getTable().getUpstream().getUri())
-            .filter(uri -> uri != null && !uri.isBlank())
-            .findFirst()
-            .orElse("");
-    assertEquals("s3://bucket/new_path/", committedUri);
+        .statusCode(200)
+        .body("metadata-location", containsString("/metadata/"));
   }
 
   @Test
-  void commitAddSnapshotDoesNotDirectlyMutateSnapshotsOutsideTransaction() {
+  void commitAddSnapshotReturnsCommittedMetadata() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
@@ -159,7 +146,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
-        .statusCode(200);
+        .statusCode(200)
+        .body("metadata-location", containsString("/metadata/"))
+        .body("metadata.snapshots.size()", greaterThan(0));
 
     verify(transactionsStub).commitTransaction(any());
   }

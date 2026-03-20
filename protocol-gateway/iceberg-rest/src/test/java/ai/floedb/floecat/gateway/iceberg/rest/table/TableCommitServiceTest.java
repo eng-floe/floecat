@@ -321,10 +321,25 @@ class TableCommitServiceTest {
         ArgumentCaptor.forClass(TransactionCommitRequest.class);
     verify(service).commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
     var change = txRequestCaptor.getValue().tableChanges().get(0);
-    assertEquals(3, change.updates().size());
-    assertEquals("add-schema", change.updates().get(0).get("action"));
-    assertEquals("set-properties", change.updates().get(1).get("action"));
-    assertEquals("set-properties", change.updates().get(2).get("action"));
+    assertTrue(
+        change.updates().size() >= 3,
+        "staged bootstrap should prepend create initialization before caller updates");
+    assertTrue(
+        change.updates().stream().anyMatch(update -> "add-schema".equals(update.get("action"))),
+        "staged bootstrap should include schema initialization");
+    assertTrue(
+        change.updates().stream()
+            .anyMatch(
+                update ->
+                    "set-properties".equals(update.get("action"))
+                        && update.get("updates") instanceof Map<?, ?> updates
+                        && "s3://warehouse/db/orders/metadata/00000-abc.metadata.json"
+                            .equals(updates.get("metadata-location"))),
+        "staged bootstrap should inject the reserved metadata location");
+    assertEquals(
+        "set-properties",
+        change.updates().get(change.updates().size() - 1).get("action"),
+        "caller update should still be present after staged bootstrap normalization");
     verify(stagedTableRepository).deleteStage(staged.key());
   }
 
@@ -401,19 +416,24 @@ class TableCommitServiceTest {
         ArgumentCaptor.forClass(TransactionCommitRequest.class);
     verify(service).commit(eq("foo"), eq("idem"), txRequestCaptor.capture(), eq(tableSupport));
     var updates = txRequestCaptor.getValue().tableChanges().get(0).updates();
-    assertEquals(3, updates.size());
-    assertEquals("assign-uuid", updates.get(0).get("action"));
-    assertEquals("add-schema", updates.get(1).get("action"));
-    assertEquals("set-properties", updates.get(2).get("action"));
+    assertEquals(
+        duckdbStyleCommit.updates().size() + 1,
+        updates.size(),
+        "normalization should preserve caller create initialization and append metadata location");
+    assertEquals(
+        duckdbStyleCommit.updates(),
+        updates.subList(0, duckdbStyleCommit.updates().size()),
+        "caller create initialization should be preserved unchanged");
+    assertEquals("set-properties", updates.get(updates.size() - 1).get("action"));
     @SuppressWarnings("unchecked")
-    Map<String, String> propertyUpdates = (Map<String, String>) updates.get(2).get("updates");
+    Map<String, String> propertyUpdates =
+        (Map<String, String>) updates.get(updates.size() - 1).get("updates");
     assertEquals(
         "s3://warehouse/db/orders/metadata/00000-abc.metadata.json",
         propertyUpdates.get("metadata-location"));
     CommitTableResponseDto body =
         assertInstanceOf(CommitTableResponseDto.class, response.getEntity());
-    assertEquals(
-        "s3://warehouse/db/orders/metadata/00001.metadata.json", body.metadataLocation());
+    assertEquals("s3://warehouse/db/orders/metadata/00001.metadata.json", body.metadataLocation());
   }
 
   @Test

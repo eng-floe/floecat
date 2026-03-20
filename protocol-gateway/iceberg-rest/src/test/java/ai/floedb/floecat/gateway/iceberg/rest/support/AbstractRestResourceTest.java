@@ -458,8 +458,10 @@ public abstract class AbstractRestResourceTest {
     updates.add(Map.of("action", "set-location", "location", fixtureLocation()));
     updates.add(
         Map.of(
-            "action", "upgrade-format-version",
-            "format-version", FIXTURE.metadata().getFormatVersion()));
+            "action",
+            "upgrade-format-version",
+            "format-version",
+            FIXTURE.metadata().getFormatVersion()));
     updates.add(
         Map.of(
             "action", "add-schema",
@@ -467,18 +469,17 @@ public abstract class AbstractRestResourceTest {
             "last-column-id", FIXTURE_METADATA_VIEW.lastColumnId()));
     updates.add(
         Map.of(
-            "action", "set-current-schema",
-            "schema-id", FIXTURE_METADATA_VIEW.currentSchemaId()));
+            "action", "set-current-schema", "schema-id", FIXTURE_METADATA_VIEW.currentSchemaId()));
     updates.add(Map.of("action", "add-spec", "spec", fixturePartitionSpec()));
     updates.add(
-        Map.of(
-            "action", "set-default-spec",
-            "spec-id", FIXTURE_METADATA_VIEW.defaultSpecId()));
+        Map.of("action", "set-default-spec", "spec-id", FIXTURE_METADATA_VIEW.defaultSpecId()));
     updates.add(Map.of("action", "add-sort-order", "sort-order", fixtureSortOrder()));
     updates.add(
         Map.of(
-            "action", "set-default-sort-order",
-            "sort-order-id", FIXTURE_METADATA_VIEW.defaultSortOrderId()));
+            "action",
+            "set-default-sort-order",
+            "sort-order-id",
+            FIXTURE_METADATA_VIEW.defaultSortOrderId()));
     updates.add(Map.of("action", "set-properties", "updates", properties));
     return List.copyOf(updates);
   }

@@ -33,7 +33,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
@@ -132,7 +131,18 @@ public class TransactionCommitService {
           "stage " + stagedEntryOpt.get().key().stageId() + " was aborted");
     }
     TableRequests.Commit effectiveReq =
-        mergeStagedCreateIntoCommit(command, req, stagedEntryOpt.orElse(null), preCommitTable);
+        transactionPlanningService.normalizeFirstWriteCommit(
+            accountContext.getAccountId(),
+            command.catalogName(),
+            command.namespacePath(),
+            command.table(),
+            command.catalogId(),
+            command.namespaceId(),
+            preCommitTable != null,
+            preCommitTable,
+            req,
+            stagedEntryOpt.orElse(null),
+            command.tableSupport());
 
     TransactionCommitRequest txRequest =
         new TransactionCommitRequest(
@@ -415,95 +425,6 @@ public class TransactionCommitService {
         && tableFormatSupport.isDelta(table);
   }
 
-  private TableRequests.Commit mergeStagedCreateIntoCommit(
-      CommitCommand command,
-      TableRequests.Commit req,
-      StagedTableEntry stagedEntry,
-      ai.floedb.floecat.catalog.rpc.Table tableState) {
-    if (req == null || stagedEntry == null) {
-      return req;
-    }
-    String stagedMetadataLocation =
-        MetadataLocationUtil.metadataLocation(
-            stagedEntry.request() == null ? null : stagedEntry.request().properties());
-    if (tableState != null && hasCommittedSnapshot(tableState)) {
-      return req;
-    }
-    if (tableState != null) {
-      if (callerProvidesCreateInitialization(req)) {
-        return injectStagedMetadataLocation(req, stagedMetadataLocation);
-      }
-      TransactionCommitRequest stagedRequest =
-          buildCreateRequest(
-              command.namespacePath(),
-              command.table(),
-              stagedEntry.catalogId(),
-              stagedEntry.namespaceId(),
-              stagedEntry.request(),
-              command.tableSupport());
-      var stagedChange = stagedRequest.tableChanges().get(0);
-      List<Map<String, Object>> updates = new ArrayList<>(stagedChange.updates());
-      if (req.updates() != null && !req.updates().isEmpty()) {
-        updates.addAll(req.updates());
-      }
-      TableRequests.Commit merged =
-          new TableRequests.Commit(
-              req.requirements() == null ? List.of() : List.copyOf(req.requirements()),
-              List.copyOf(updates));
-      return injectStagedMetadataLocation(merged, stagedMetadataLocation);
-    }
-    if (callerProvidesCreateInitialization(req)) {
-      return injectStagedMetadataLocation(req, stagedMetadataLocation);
-    }
-    TransactionCommitRequest stagedRequest =
-        buildCreateRequest(
-            command.namespacePath(),
-            command.table(),
-            stagedEntry.catalogId(),
-            stagedEntry.namespaceId(),
-            stagedEntry.request(),
-            command.tableSupport());
-    var stagedChange = stagedRequest.tableChanges().get(0);
-    List<Map<String, Object>> requirements = new ArrayList<>(stagedChange.requirements());
-    if (req.requirements() != null && !req.requirements().isEmpty()) {
-      requirements.addAll(req.requirements());
-    }
-    List<Map<String, Object>> updates = new ArrayList<>(stagedChange.updates());
-    if (req.updates() != null && !req.updates().isEmpty()) {
-      updates.addAll(req.updates());
-    }
-    TableRequests.Commit merged =
-        new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
-    return injectStagedMetadataLocation(merged, stagedMetadataLocation);
-  }
-
-  private boolean hasCommittedSnapshot(ai.floedb.floecat.catalog.rpc.Table tableState) {
-    if (tableState == null || tableState.getPropertiesMap().isEmpty()) {
-      return false;
-    }
-    String currentSnapshotId = tableState.getPropertiesMap().get("current-snapshot-id");
-    return currentSnapshotId != null && !currentSnapshotId.isBlank();
-  }
-
-  private TableRequests.Commit injectStagedMetadataLocation(
-      TableRequests.Commit req, String stagedMetadataLocation) {
-    if (req == null
-        || stagedMetadataLocation == null
-        || stagedMetadataLocation.isBlank()
-        || CommitUpdateInspector.inspect(req).requestedMetadataLocation() != null) {
-      return req;
-    }
-    List<Map<String, Object>> updates =
-        req.updates() == null ? new ArrayList<>() : new ArrayList<>(req.updates());
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_SET_PROPERTIES,
-            "updates",
-            Map.of(MetadataLocationUtil.PRIMARY_KEY, stagedMetadataLocation)));
-    return new TableRequests.Commit(req.requirements(), List.copyOf(updates));
-  }
-
   private Optional<StagedTableEntry> resolveStagedEntry(CommitCommand command) {
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
@@ -518,19 +439,6 @@ public class TransactionCommitService {
     }
     return stagedTableRepository.findSingleStage(
         accountId, command.catalogName(), command.namespacePath(), command.table());
-  }
-
-  private boolean callerProvidesCreateInitialization(TableRequests.Commit req) {
-    if (req == null || req.updates() == null || req.updates().isEmpty()) {
-      return false;
-    }
-    for (Map<String, Object> update : req.updates()) {
-      String action = update == null ? null : update.get("action") instanceof String s ? s : null;
-      if (CommitUpdateInspector.isCreateInitializationAction(action)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private String firstDuplicateTableIdentifier(List<TransactionCommitRequest.TableChange> changes) {
