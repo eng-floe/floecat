@@ -1791,7 +1791,7 @@ class ConstraintsIT {
   }
 
   /** Shared setup for constraint IT tests: creates a catalog, namespace, table, and snapshot. */
-  record ConstraintTestContext(ResourceId tableId, long snapshotId) {}
+  record ConstraintTestContext(ResourceId tableId, long snapshotId, String catalogName) {}
 
   private ConstraintTestContext setupConstraintTable(String suffix, long snapshotId) {
     var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_constraints_" + suffix, "cat");
@@ -1809,7 +1809,7 @@ class ConstraintsIT {
             "none");
     TestSupport.createSnapshot(
         snapshot, tbl.getResourceId(), snapshotId, System.currentTimeMillis());
-    return new ConstraintTestContext(tbl.getResourceId(), snapshotId);
+    return new ConstraintTestContext(tbl.getResourceId(), snapshotId, cat.getDisplayName());
   }
 
   @Test
@@ -1943,6 +1943,7 @@ class ConstraintsIT {
     assertEquals("ref_a", c.getReferencedColumns(0).getColumnName());
     assertEquals("ref_b", c.getReferencedColumns(1).getColumnName());
     assertEquals("pk_ref", c.getReferencedConstraintName());
+    assertEquals(ctx.catalogName(), c.getReferencedTable().getCatalog());
     assertEquals(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL, c.getMatchOption());
     assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE, c.getDeleteRule());
     assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION, c.getUpdateRule());

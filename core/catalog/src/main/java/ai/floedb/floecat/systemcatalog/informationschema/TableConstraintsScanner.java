@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.informationschema;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
@@ -47,6 +48,7 @@ public final class TableConstraintsScanner implements SystemObjectScanner {
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
     return ConstraintScanIndex.build(ctx).entries().stream()
+        .filter(e -> e.type() != ConstraintType.CT_NOT_NULL)
         .map(
             e ->
                 new SystemObjectRow(

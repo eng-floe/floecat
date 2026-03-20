@@ -127,6 +127,15 @@ class ConstraintInformationSchemaScannersTest {
   }
 
   @Test
+  void tableConstraints_excludesNotNullConstraints() {
+    SystemObjectScanContext ctx = contextWithOnlyNotNullConstraint();
+
+    var rows = new TableConstraintsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows).isEmpty();
+  }
+
+  @Test
   void referentialConstraints_emitsReferencedConstraintAndRules() {
     SystemObjectScanContext ctx = contextWithConstraints();
 
