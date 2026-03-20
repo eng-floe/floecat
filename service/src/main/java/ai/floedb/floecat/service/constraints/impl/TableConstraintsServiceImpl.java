@@ -38,7 +38,10 @@ import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsService;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.CatalogOverlayGuards;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -168,15 +171,14 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   SnapshotConstraints incoming = canonicalizeAndValidate(request.getConstraints());
 
                   var tsNow = nowTs();
-
-                  ensureTableWritable(request.getTableId());
+                  String tableCatalog = writableTableCatalogName(request.getTableId());
 
                   // Constraints are strictly snapshot-scoped: the snapshot must exist.
                   ensureSnapshotExists(request.getTableId(), request.getSnapshotId());
 
                   var normalized =
                       normalizeConstraintsIdentity(
-                          incoming, request.getTableId(), request.getSnapshotId());
+                          incoming, request.getTableId(), request.getSnapshotId(), tableCatalog);
                   var fingerprint = canonicalFingerprint(normalized);
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -247,7 +249,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureTableWritable(tableId);
+                  String tableCatalog = writableTableCatalogName(tableId);
                   ensureSnapshotExists(tableId, snapshotId);
 
                   return MergeTableConstraintsResponse.newBuilder()
@@ -259,7 +261,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                               current ->
                                   mergeConstraintsByName(
                                       current,
-                                      normalizeConstraintsIdentity(incoming, tableId, snapshotId))))
+                                      normalizeConstraintsIdentity(
+                                          incoming, tableId, snapshotId, tableCatalog))))
                       .setMeta(constraints.metaFor(tableId, snapshotId))
                       .build();
                 }),
@@ -289,7 +292,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureTableWritable(tableId);
+                  String tableCatalog = writableTableCatalogName(tableId);
                   ensureSnapshotExists(tableId, snapshotId);
 
                   return AppendTableConstraintsResponse.newBuilder()
@@ -301,7 +304,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                               current ->
                                   appendConstraints(
                                       current,
-                                      normalizeConstraintsIdentity(incoming, tableId, snapshotId))))
+                                      normalizeConstraintsIdentity(
+                                          incoming, tableId, snapshotId, tableCatalog))))
                       .setMeta(constraints.metaFor(tableId, snapshotId))
                       .build();
                 }),
@@ -365,7 +369,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureTableWritable(tableId);
+                  String tableCatalog = writableTableCatalogName(tableId);
                   ensureSnapshotExists(tableId, snapshotId);
 
                   return AddTableConstraintResponse.newBuilder()
@@ -375,7 +379,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                               snapshotId,
                               request.getPrecondition(),
                               current ->
-                                  upsertConstraint(current, normalizeOneConstraint(constraint))))
+                                  upsertConstraint(
+                                      current, normalizeOneConstraint(constraint, tableCatalog))))
                       .setMeta(constraints.metaFor(tableId, snapshotId))
                       .build();
                 }),
@@ -434,17 +439,45 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
    * Normalizes payload identity so persisted constraints always match request table/snapshot IDs.
    */
   private static SnapshotConstraints normalizeConstraintsIdentity(
-      SnapshotConstraints source, ResourceId tableId, long snapshotId) {
+      SnapshotConstraints source, ResourceId tableId, long snapshotId, String localCatalog) {
+    SnapshotConstraints normalizedReferencedTables =
+        normalizeReferencedTableCatalogs(source, localCatalog);
     return ConstraintNormalizer.normalize(
-        source.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build());
+        normalizedReferencedTables.toBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .build());
   }
 
   /** Normalizes a single constraint payload into a canonical standalone entry. */
-  private static ConstraintDefinition normalizeOneConstraint(ConstraintDefinition source) {
+  private static ConstraintDefinition normalizeOneConstraint(
+      ConstraintDefinition source, String localCatalog) {
     SnapshotConstraints normalized =
         ConstraintNormalizer.normalize(
-            SnapshotConstraints.newBuilder().addConstraints(source).build());
+            normalizeReferencedTableCatalogs(
+                SnapshotConstraints.newBuilder().addConstraints(source).build(), localCatalog));
     return normalized.getConstraints(0);
+  }
+
+  private static SnapshotConstraints normalizeReferencedTableCatalogs(
+      SnapshotConstraints source, String localCatalog) {
+    if (localCatalog == null || localCatalog.isBlank() || source.getConstraintsCount() == 0) {
+      return source;
+    }
+    boolean changed = false;
+    SnapshotConstraints.Builder out = source.toBuilder().clearConstraints();
+    for (ConstraintDefinition definition : source.getConstraintsList()) {
+      if (!definition.hasReferencedTable()
+          || !definition.getReferencedTable().getCatalog().isBlank()) {
+        out.addConstraints(definition);
+        continue;
+      }
+      NameRef referenced =
+          NameRef.newBuilder(definition.getReferencedTable()).setCatalog(localCatalog).build();
+      out.addConstraints(definition.toBuilder().setReferencedTable(referenced).build());
+      changed = true;
+    }
+    return changed ? out.build() : source;
   }
 
   /**
@@ -695,6 +728,14 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   /** Ensures the request table is mutable; system tables are immutable and rejected. */
   private void ensureTableWritable(ResourceId tableId) {
     CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+  }
+
+  private String writableTableCatalogName(ResourceId tableId) {
+    var table = CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+    if (!(table instanceof UserTableNode userTable)) {
+      return "";
+    }
+    return overlay.catalog(userTable.catalogId()).map(CatalogNode::displayName).orElse("");
   }
 
   /** Ensures the target snapshot exists before strict snapshot-scoped writes proceed. */
