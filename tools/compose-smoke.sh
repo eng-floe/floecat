@@ -15,12 +15,11 @@
 
 set -euo pipefail
 
-DUCKDB_IMAGE=${DUCKDB_IMAGE:-local/duckdb-with-extensions:latest}
+DUCKDB_IMAGE=${DUCKDB_IMAGE:-duckdb/duckdb:latest}
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
 COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
-COMPOSE_SMOKE_OFFLINE=${COMPOSE_SMOKE_OFFLINE:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
@@ -76,11 +75,7 @@ should_run_client() {
 }
 
 docker_run() {
-  local pull_args=()
-  if is_truthy "${COMPOSE_SMOKE_OFFLINE}"; then
-    pull_args+=(--pull=never)
-  fi
-  docker run "${pull_args[@]}" "$@"
+  docker run "$@"
 }
 
 run_cli_script() {
@@ -1038,7 +1033,7 @@ quit")
 
     if should_run_client duckdb; then
       local duckdb_register_bootstrap
-      duckdb_register_bootstrap="LOAD httpfs; LOAD aws; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
+      duckdb_register_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
       local duckdb_register_out
       if ! duckdb_register_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
         duckdb -c "$duckdb_register_bootstrap SELECT 'registered_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.${register_table};" 2>&1); then
@@ -1111,8 +1106,7 @@ PY
     $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/call_center/ --recursive | sed -n '1,200p' || true
 
     echo "==> [SMOKE] duckdb federation check (localstack)"
-    #local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
-    local duckdb_bootstrap="LOAD httpfs; LOAD aws; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
+    local duckdb_bootstrap="INSTALL httpfs; LOAD httpfs; INSTALL aws; LOAD aws; INSTALL iceberg; LOAD iceberg; CREATE OR REPLACE SECRET smoke_localstack_s3 (TYPE S3, PROVIDER config, KEY_ID 'test', SECRET 'test', REGION 'us-east-1', ENDPOINT 'localstack:4566', URL_STYLE 'path', USE_SSL false); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test'; ATTACH 'examples' AS iceberg_floecat (TYPE iceberg, ENDPOINT 'http://iceberg-rest:9200/', AUTHORIZATION_TYPE none, ACCESS_DELEGATION_MODE 'none'); SET s3_endpoint='localstack:4566'; SET s3_use_ssl=false; SET s3_url_style='path'; SET s3_region='us-east-1'; SET s3_access_key_id='test'; SET s3_secret_access_key='test';"
 
     local duckdb_query
     duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
