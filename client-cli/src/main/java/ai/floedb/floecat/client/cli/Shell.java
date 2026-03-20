@@ -35,14 +35,12 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
@@ -52,7 +50,6 @@ import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
-import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -163,7 +160,6 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.picocli.runtime.annotations.TopCommand;
@@ -2336,78 +2332,11 @@ public class Shell implements Runnable {
   }
 
   private void cmdSnapshots(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: snapshots <tableFQ>");
-      return;
-    }
-    var tableId =
-        directory
-            .resolveTable(
-                ResolveTableRequest.newBuilder().setRef(nameRefForTable(args.get(0))).build())
-            .getResourceId();
-    var snaps =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr ->
-                snapshots.listSnapshots(
-                    ListSnapshotsRequest.newBuilder().setTableId(tableId).setPage(pr).build()),
-            r -> r.getSnapshotsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printSnapshots(snaps);
+    SnapshotCliSupport.handle("snapshots", args, out, snapshots, this::resolveTableIdFlexible);
   }
 
   private void cmdSnapshotCrud(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: snapshot <get|delete> ...");
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "get" -> {
-        if (args.size() < 3) {
-          out.println("usage: snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>");
-          return;
-        }
-        ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        long snapshotId = Long.parseLong(args.get(2));
-        var resp =
-            snapshots.getSnapshot(
-                GetSnapshotRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                    .build());
-        Snapshot snapshot = resp.getSnapshot();
-        printSnapshotDetail(snapshot);
-      }
-      case "delete" -> {
-        if (args.size() < 3) {
-          out.println("usage: snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id>");
-          return;
-        }
-        ResourceId tableId = resolveTableIdFlexible(args.get(1));
-        long snapshotId = Long.parseLong(args.get(2));
-        var deleteSnapshotBuilder =
-            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
-        var snapshotPrecondition = preconditionFromEtag(args);
-        if (snapshotPrecondition != null) {
-          deleteSnapshotBuilder.setPrecondition(snapshotPrecondition);
-        }
-        var req = deleteSnapshotBuilder.build();
-        try {
-          snapshots.deleteSnapshot(req);
-          out.println("ok");
-        } catch (StatusRuntimeException e) {
-          if (e.getStatus().getCode() == Status.Code.FAILED_PRECONDITION) {
-            out.println(
-                "! Precondition failed (etag/version mismatch). Retry with --etag from "
-                    + "`snapshot get`.");
-          } else {
-            throw e;
-          }
-        }
-      }
-      default -> out.println("unknown subcommand");
-    }
+    SnapshotCliSupport.handle("snapshot", args, out, snapshots, this::resolveTableIdFlexible);
   }
 
   private void cmdStats(List<String> args) {
@@ -3410,25 +3339,6 @@ public class Shell implements Runnable {
     if (!view.getPropertiesMap().isEmpty()) {
       out.println("  properties:");
       view.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
-    }
-  }
-
-  private void printSnapshots(List<Snapshot> snaps) {
-    out.printf("%-20s  %-24s  %-20s%n", "SNAPSHOT_ID", "UPSTREAM_CREATED_AT", "PARENT_ID");
-    for (var s : snaps) {
-      out.printf(
-          "%-20d  %-24s  %-20d%n",
-          s.getSnapshotId(), ts(s.getUpstreamCreatedAt()), s.getParentSnapshotId());
-    }
-  }
-
-  private void printSnapshotDetail(Snapshot snapshot) {
-    try {
-      JsonFormat.Printer printer = jsonPrinter();
-      out.println(printer.print(snapshot));
-      printDecodedFormatMetadata(snapshot, printer);
-    } catch (InvalidProtocolBufferException e) {
-      out.println(snapshot.toString());
     }
   }
 
