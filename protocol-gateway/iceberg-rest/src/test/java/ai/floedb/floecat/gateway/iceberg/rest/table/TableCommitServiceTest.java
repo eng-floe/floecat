@@ -413,7 +413,7 @@ class TableCommitServiceTest {
     CommitTableResponseDto body =
         assertInstanceOf(CommitTableResponseDto.class, response.getEntity());
     assertEquals(
-        "s3://warehouse/db/orders/metadata/00000-abc.metadata.json", body.metadataLocation());
+        "s3://warehouse/db/orders/metadata/00001.metadata.json", body.metadataLocation());
   }
 
   @Test

@@ -33,11 +33,13 @@ import ai.floedb.floecat.gateway.iceberg.rest.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.support.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedSnapshot;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -128,6 +130,15 @@ public class TableLifecycleService {
           "InternalServerError",
           Response.Status.INTERNAL_SERVER_ERROR);
     }
+    try {
+      storePendingCreateBootstrap(
+          namespaceContext, tableName, effectiveReq, created, idempotencyKey, tableSupport);
+    } catch (JsonProcessingException e) {
+      return IcebergErrorResponses.failure(
+          "Failed to persist pending create bootstrap",
+          "InternalServerError",
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
     List<StorageCredentialDto> credentials;
     try {
       credentials = tableSupport.credentialsForAccessDelegation(accessDelegationMode);
@@ -143,6 +154,29 @@ public class TableLifecycleService {
               () ->
                   SnapshotLister.fetchSnapshots(
                       grpcClient, created.getResourceId(), SnapshotLister.Mode.ALL, null));
+      String metadataLocation =
+          resolved.metadataView() == null ? null : resolved.metadataView().metadataLocation();
+      if ((metadataLocation == null || metadataLocation.isBlank())
+          && effectiveReq.location() != null
+          && !effectiveReq.location().isBlank()) {
+        String tableUuid =
+            firstNonBlank(
+                resolved.metadataView() == null ? null : resolved.metadataView().tableUuid(),
+                created.getPropertiesMap().get("table-uuid"),
+                created.hasResourceId() ? created.getResourceId().getId() : null);
+        if (tableUuid != null && !tableUuid.isBlank()) {
+          String reservedMetadataLocation =
+              icebergMetadataService.reserveCreateMetadataLocation(
+                  effectiveReq.location(), tableUuid, stageCreateFileIoProperties(effectiveReq, tableSupport));
+          resolved =
+              new IcebergMetadataService.ResolvedMetadata(
+                  resolved.tableMetadata(),
+                  resolved.metadataView() == null
+                      ? null
+                      : resolved.metadataView().withMetadataLocation(reservedMetadataLocation),
+                  resolved.icebergMetadata());
+        }
+      }
       LoadTableResultDto loadResult =
           TableResponseMapper.toLoadResult(
               resolved.metadataView(), tableSupport.defaultTableConfig(), credentials);
@@ -157,6 +191,62 @@ public class TableLifecycleService {
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
+  }
+
+  private void storePendingCreateBootstrap(
+      NamespaceRef namespaceContext,
+      String tableName,
+      TableRequests.Create effectiveReq,
+      ai.floedb.floecat.catalog.rpc.Table created,
+      String idempotencyKey,
+      TableGatewaySupport tableSupport)
+      throws JsonProcessingException {
+    if (namespaceContext == null
+        || effectiveReq == null
+        || created == null
+        || tableSupport == null
+        || hasCurrentSnapshot(created)) {
+      return;
+    }
+    String accountId = accountContext.getAccountId();
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    TableSpec spec =
+        tableSupport
+            .buildCreateSpec(
+                namespaceContext.catalogId(),
+                namespaceContext.namespaceId(),
+                tableName,
+                effectiveReq)
+            .build();
+    String stageId =
+        firstNonBlank(idempotencyKey, created.getResourceId().getId(), UUID.randomUUID().toString());
+    stagedTableRepository.saveStage(
+        new StagedTableEntry(
+            new StagedTableKey(
+                accountId,
+                namespaceContext.catalogName(),
+                namespaceContext.namespacePath(),
+                tableName,
+                stageId),
+            namespaceContext.catalogId(),
+            namespaceContext.namespaceId(),
+            effectiveReq,
+            spec,
+            STAGE_CREATE_REQUIREMENTS,
+            StageState.STAGED,
+            null,
+            null,
+            idempotencyKey));
+  }
+
+  private boolean hasCurrentSnapshot(ai.floedb.floecat.catalog.rpc.Table table) {
+    if (table == null || table.getPropertiesMap().isEmpty()) {
+      return false;
+    }
+    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
+    return currentSnapshotId != null && !currentSnapshotId.isBlank();
   }
 
   public Response registerTable(
@@ -274,7 +364,8 @@ public class TableLifecycleService {
               .setNamespaceId(namespaceContext.namespaceId())
               .setDisplayName(tableName)
               .build();
-      BootstrapResult bootstrap = bootstrapStageCreate(tableName, stubTable, effectiveReq);
+      BootstrapResult bootstrap =
+          bootstrapStageCreate(tableName, stubTable, effectiveReq, tableSupport);
       effectiveReq = bootstrap.request();
       TableSpec spec =
           tableSupport
@@ -320,7 +411,9 @@ public class TableLifecycleService {
       }
       LoadTableResultDto loadResult =
           TableResponseMapper.toLoadResult(
-              bootstrap.metadataView(), tableSupport.defaultTableConfig(), credentials);
+              bootstrap.metadataView().withMetadataLocation(bootstrap.metadataLocation()),
+              tableSupport.defaultTableConfig(),
+              credentials);
       LOG.infof(
           "Stage-create metadata resolved stageId=%s location=%s",
           stored.key().stageId(), loadResult.metadataLocation());
@@ -328,6 +421,8 @@ public class TableLifecycleService {
           "Stage-create response stageId=%s metadataLocation=%s configKeys=%s",
           stored.key().stageId(), loadResult.metadataLocation(), loadResult.config().keySet());
       return Response.ok(loadResult).build();
+    } catch (IllegalStateException e) {
+      return IcebergErrorResponses.conflict(e.getMessage());
     } catch (IllegalArgumentException | com.fasterxml.jackson.core.JsonProcessingException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -371,7 +466,10 @@ public class TableLifecycleService {
   }
 
   private BootstrapResult bootstrapStageCreate(
-      String tableName, ai.floedb.floecat.catalog.rpc.Table table, TableRequests.Create request) {
+      String tableName,
+      ai.floedb.floecat.catalog.rpc.Table table,
+      TableRequests.Create request,
+      TableGatewaySupport tableSupport) {
     if (request == null) {
       throw new IllegalArgumentException("create request is required");
     }
@@ -386,9 +484,13 @@ public class TableLifecycleService {
     props.putIfAbsent("table-uuid", UUID.randomUUID().toString());
     String tableUuid = props.get("table-uuid");
     if (!props.containsKey(MetadataLocationUtil.PRIMARY_KEY)) {
+      String reservedMetadataLocation =
+          icebergMetadataService.reserveCreateMetadataLocation(
+              tableLocation, tableUuid, stageCreateFileIoProperties(request, tableSupport));
       MetadataLocationUtil.setMetadataLocation(
-          props, MetadataLocationUtil.bootstrapMetadataLocation(tableLocation, tableUuid));
+          props, reservedMetadataLocation);
     }
+    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
     TableRequests.Create effectiveRequest =
         new TableRequests.Create(
             request.name(),
@@ -399,8 +501,21 @@ public class TableLifecycleService {
             request.writeOrder(),
             request.stageCreate());
     TableMetadataView metadataView =
-        TableMetadataBuilder.fromCreateRequest(tableName, table, effectiveRequest);
-    return new BootstrapResult(effectiveRequest, metadataView);
+        TableMetadataBuilder.fromCreateRequest(tableName, table, effectiveRequest)
+            .withMetadataLocation(metadataLocation);
+    return new BootstrapResult(effectiveRequest, metadataView, metadataLocation);
+  }
+
+  private Map<String, String> stageCreateFileIoProperties(
+      TableRequests.Create request, TableGatewaySupport tableSupport) {
+    Map<String, String> ioProps =
+        tableSupport == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(tableSupport.defaultFileIoProperties());
+    if (request != null && request.properties() != null && !request.properties().isEmpty()) {
+      ioProps.putAll(FileIoFactory.filterIoProperties(request.properties()));
+    }
+    return ioProps;
   }
 
   private Response commitRegisteredTable(
@@ -556,5 +671,6 @@ public class TableLifecycleService {
     return merged;
   }
 
-  private record BootstrapResult(TableRequests.Create request, TableMetadataView metadataView) {}
+  private record BootstrapResult(
+      TableRequests.Create request, TableMetadataView metadataView, String metadataLocation) {}
 }

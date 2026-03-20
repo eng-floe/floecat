@@ -98,20 +98,18 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
+    Table fixture = fixtureBackedTable(tableId);
     UpstreamRef upstream =
         UpstreamRef.newBuilder()
             .setFormat(TableFormat.TF_ICEBERG)
             .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-            .setUri("s3://bucket/path/")
+            .setUri(fixture.getPropertiesOrDefault("location", ""))
             .build();
     Table current =
-        Table.newBuilder()
-            .setResourceId(tableId)
+        fixture.toBuilder()
             .setCatalogId(ResourceId.newBuilder().setId("cat"))
             .setNamespaceId(nsId)
             .setUpstream(upstream)
-            .putProperties("location", "s3://bucket/path/")
-            .putProperties("metadata-location", "s3://bucket/path/metadata/00001.metadata.json")
             .build();
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(current).build());
@@ -143,13 +141,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
-    Table existing =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("location", "s3://warehouse/db/orders")
-            .putProperties(
-                "metadata-location", "s3://warehouse/db/orders/metadata/00001.metadata.json")
-            .build();
+    Table existing = fixtureBackedTable(tableId);
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(existing).build());
 

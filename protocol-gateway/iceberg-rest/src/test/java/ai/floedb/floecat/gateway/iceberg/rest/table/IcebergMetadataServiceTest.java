@@ -18,16 +18,22 @@ package ai.floedb.floecat.gateway.iceberg.rest.table;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
+import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.BlobMetadata;
@@ -35,7 +41,9 @@ import org.apache.iceberg.HistoryEntry;
 import org.apache.iceberg.PartitionStatisticsFile;
 import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.encryption.EncryptedKey;
+import org.apache.iceberg.io.FileIO;
 import org.junit.jupiter.api.Test;
 
 class IcebergMetadataServiceTest {
@@ -275,5 +283,140 @@ class IcebergMetadataServiceTest {
         "s3://warehouse/db/orders/metadata/00001-new.metadata.json",
         result.tableMetadata().properties().get("metadata-location"));
     assertEquals("alice", result.tableMetadata().properties().get("owner"));
+  }
+
+  @Test
+  void reserveCreateMetadataLocationUsesNextMetadataSequence() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    String root;
+    try {
+      root = Files.createTempDirectory("iceberg-meta-test").toString();
+    } catch (java.io.IOException e) {
+      throw new RuntimeException(e);
+    }
+    Map<String, String> ioProps =
+        Map.of("io-impl", InMemoryS3FileIO.class.getName(), "fs.floecat.test-root", root);
+    FileIO fileIO = FileIoFactory.createFileIo(ioProps, null, false);
+    try {
+      TableMetadata metadata =
+          TableMetadata.newTableMetadata(
+              new org.apache.iceberg.Schema(
+                  org.apache.iceberg.types.Types.NestedField.optional(
+                      1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+              org.apache.iceberg.PartitionSpec.unpartitioned(),
+              org.apache.iceberg.SortOrder.unsorted(),
+              "s3://warehouse/db/orders",
+              Map.of("table-uuid", "uuid-1"));
+      TableMetadataParser.write(
+          metadata, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
+      TableMetadataParser.write(
+          metadata, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00001-old.metadata.json"));
+
+      String reserved =
+          service.reserveCreateMetadataLocation("s3://warehouse/db/orders", "uuid-2", ioProps);
+
+      assertEquals("s3://warehouse/db/orders/metadata/00002-uuid-2.metadata.json", reserved);
+    } finally {
+      FileIoFactory.closeQuietly(fileIO);
+    }
+  }
+
+  @Test
+  void reserveCreateMetadataLocationRejectsMissingInputs() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> service.reserveCreateMetadataLocation(null, "uuid-1", Map.of()));
+
+    assertTrue(error.getMessage().contains("reserve metadata location"));
+  }
+
+  @Test
+  void materializeHonorsExactMetadataLocationOverride() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+    service.tableGatewaySupport = mock(TableGatewaySupport.class);
+    when(service.tableGatewaySupport.defaultFileIoProperties())
+        .thenReturn(Map.of("io-impl", "org.apache.iceberg.inmemory.InMemoryFileIO"));
+
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new org.apache.iceberg.Schema(
+                org.apache.iceberg.types.Types.NestedField.optional(
+                    1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+            org.apache.iceberg.PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of("table-uuid", "uuid-1"));
+
+    IcebergMetadataService.MaterializeResult result =
+        service.materializeAtExactLocation(
+            "db",
+            "orders",
+            metadata,
+            "s3://warehouse/db/orders/metadata/00003-reserved.metadata.json");
+
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00003-reserved.metadata.json",
+        result.metadataLocation());
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00003-reserved.metadata.json",
+        result.tableMetadata().metadataFileLocation());
+  }
+
+  @Test
+  void materializeWithoutExplicitOverrideCreatesNextMetadataFile() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    String root;
+    try {
+      root = Files.createTempDirectory("iceberg-meta-versioned-test").toString();
+    } catch (java.io.IOException e) {
+      throw new RuntimeException(e);
+    }
+    service.tableGatewaySupport = mock(TableGatewaySupport.class);
+    when(service.tableGatewaySupport.defaultFileIoProperties())
+        .thenReturn(
+            Map.of("io-impl", InMemoryS3FileIO.class.getName(), "fs.floecat.test-root", root));
+
+    Map<String, String> ioProps =
+        Map.of("io-impl", InMemoryS3FileIO.class.getName(), "fs.floecat.test-root", root);
+    FileIO fileIO = FileIoFactory.createFileIo(ioProps, null, false);
+    try {
+      TableMetadata existing =
+          TableMetadata.newTableMetadata(
+              new org.apache.iceberg.Schema(
+                  org.apache.iceberg.types.Types.NestedField.optional(
+                      1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+              org.apache.iceberg.PartitionSpec.unpartitioned(),
+              org.apache.iceberg.SortOrder.unsorted(),
+              "s3://warehouse/db/orders",
+              Map.of("table-uuid", "uuid-1"));
+      TableMetadataParser.write(
+          existing, fileIO.newOutputFile("s3://warehouse/db/orders/metadata/00000-old.metadata.json"));
+
+      TableMetadata next =
+          TableMetadata.buildFrom(existing)
+              .discardChanges()
+              .withMetadataLocation("s3://warehouse/db/orders/metadata/00000-old.metadata.json")
+              .build();
+
+      IcebergMetadataService.MaterializeResult result =
+          service.materializeNextVersion("db", "orders", next);
+
+      assertNotNull(result.metadataLocation());
+      assertTrue(
+          result.metadataLocation().startsWith("s3://warehouse/db/orders/metadata/00001-"));
+      assertTrue(result.metadataLocation().endsWith(".metadata.json"));
+      assertEquals(result.metadataLocation(), result.tableMetadata().metadataFileLocation());
+    } finally {
+      FileIoFactory.closeQuietly(fileIO);
+    }
   }
 }

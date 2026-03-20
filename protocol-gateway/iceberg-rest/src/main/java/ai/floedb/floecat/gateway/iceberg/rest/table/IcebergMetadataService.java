@@ -169,6 +169,11 @@ public class IcebergMetadataService {
     }
   }
 
+  public enum MaterializeMode {
+    EXACT_LOCATION,
+    NEXT_VERSION
+  }
+
   public ImportedMetadata importMetadata(
       String metadataLocation, Map<String, String> ioProperties) {
     if (metadataLocation == null || metadataLocation.isBlank()) {
@@ -331,19 +336,32 @@ public class IcebergMetadataService {
     return resolveCurrentIcebergMetadata(table, null, defaultFileIoProperties);
   }
 
-  public MaterializeResult materialize(
+  public MaterializeResult materializeAtExactLocation(
+      String namespaceFq, String tableName, TableMetadata metadata, String metadataLocation) {
+    return materialize(namespaceFq, tableName, metadata, MaterializeMode.EXACT_LOCATION, metadataLocation);
+  }
+
+  public MaterializeResult materializeNextVersion(
+      String namespaceFq, String tableName, TableMetadata metadata) {
+    return materialize(namespaceFq, tableName, metadata, MaterializeMode.NEXT_VERSION, null);
+  }
+
+  private MaterializeResult materialize(
       String namespaceFq,
       String tableName,
       TableMetadata metadata,
-      String metadataLocationOverride) {
+      MaterializeMode mode,
+      String metadataLocation) {
     if (metadata == null) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because commit metadata was empty",
           namespaceFq, tableName);
-      return new MaterializeResult(metadataLocationOverride, null);
+      return new MaterializeResult(metadataLocation, null);
     }
     String requestedLocation =
-        firstNonBlank(metadataLocationOverride, metadata.metadataFileLocation());
+        mode == MaterializeMode.EXACT_LOCATION
+            ? metadataLocation
+            : metadata.metadataFileLocation();
     if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because metadata-location was %s",
@@ -359,7 +377,8 @@ public class IcebergMetadataService {
       }
       props.putAll(sanitizeProperties(metadata.properties()));
       fileIO = FileIoFactory.createFileIo(props, config, true);
-      resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
+      resolvedLocation =
+          resolveMaterializedLocation(fileIO, requestedLocation, metadata, mode);
       if (resolvedLocation == null || resolvedLocation.isBlank()) {
         LOG.debugf(
             "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
@@ -381,6 +400,33 @@ public class IcebergMetadataService {
           resolvedLocation == null ? requestedLocation : resolvedLocation);
       throw new IllegalArgumentException(
           "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
+    } finally {
+      FileIoFactory.closeQuietly(fileIO);
+    }
+  }
+
+  public String reserveCreateMetadataLocation(
+      String tableLocation, String tableUuid, Map<String, String> fileIoProperties) {
+    if (!hasText(tableLocation) || !hasText(tableUuid)) {
+      throw new IllegalArgumentException(
+          "stage-create requires table location and table uuid to reserve metadata location");
+    }
+    String directory = normalizeMetadataDirectory(tableLocation + "/metadata/");
+    if (!hasText(directory)) {
+      throw new IllegalStateException(
+          "Unable to reserve stage-create metadata location for table location " + tableLocation);
+    }
+    FileIO fileIO = null;
+    try {
+      Map<String, String> props =
+          fileIoProperties == null ? new LinkedHashMap<>() : new LinkedHashMap<>(fileIoProperties);
+      fileIO = FileIoFactory.createFileIo(props, config, true);
+      long nextVersion = nextMetadataVersion(fileIO, directory, null);
+      return directory + metadataFileName(nextVersion, tableUuid);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "Unable to reserve stage-create metadata location for tableLocation=%s", tableLocation);
+      throw new IllegalStateException(
+          "Unable to reserve stage-create metadata location for " + tableLocation, e);
     } finally {
       FileIoFactory.closeQuietly(fileIO);
     }
@@ -452,6 +498,17 @@ public class IcebergMetadataService {
           });
     }
     return sanitized;
+  }
+
+  private String resolveMaterializedLocation(
+      FileIO fileIO,
+      String metadataLocation,
+      TableMetadata metadata,
+      MaterializeMode mode) {
+    if (mode == MaterializeMode.EXACT_LOCATION && isExactMetadataPath(metadataLocation)) {
+      return metadataLocation;
+    }
+    return resolveVersionedLocation(fileIO, metadataLocation, metadata);
   }
 
   private String resolveVersionedLocation(
@@ -562,7 +619,11 @@ public class IcebergMetadataService {
 
   private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadata metadata) {
     long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
-    return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
+    return metadataFileName(nextVersion, UUID.randomUUID().toString());
+  }
+
+  private String metadataFileName(long version, String suffix) {
+    return String.format("%05d-%s.metadata.json", version, suffix);
   }
 
   private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadata metadata) {
@@ -650,6 +711,12 @@ public class IcebergMetadataService {
       }
     }
     return normalized.endsWith("/") ? normalized : normalized + "/";
+  }
+
+  private boolean isExactMetadataPath(String metadataLocation) {
+    return hasText(metadataLocation)
+        && looksLikeMetadataPath(metadataLocation)
+        && !metadataLocation.endsWith("/");
   }
 
   public TableMetadata toTableMetadata(TableMetadataView metadata, String metadataLocation) {

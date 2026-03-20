@@ -46,11 +46,7 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
 
   @BeforeEach
   void setUpTableLookup() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("foo:db:orders"))
-            .putProperties("location", "s3://warehouse/db/orders")
-            .build();
+    Table table = fixtureBackedTable(ResourceId.newBuilder().setId("foo:db:orders").build());
     when(tableStub.getTable(any()))
         .thenReturn(GetTableResponse.newBuilder().setTable(table).build());
   }
@@ -235,7 +231,7 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
                         "requirements",
                         List.of(Map.of("type", "assert-create")),
                         "updates",
-                        List.of()))))
+                        fixtureCreateInitializationUpdates()))))
         .header("Content-Type", "application/json")
         .when()
         .post("/v1/foo/transactions/commit")

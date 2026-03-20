@@ -426,8 +426,31 @@ public class TransactionCommitService {
     String stagedMetadataLocation =
         MetadataLocationUtil.metadataLocation(
             stagedEntry.request() == null ? null : stagedEntry.request().properties());
-    if (tableState != null) {
+    if (tableState != null && hasCommittedSnapshot(tableState)) {
       return req;
+    }
+    if (tableState != null) {
+      if (callerProvidesCreateInitialization(req)) {
+        return injectStagedMetadataLocation(req, stagedMetadataLocation);
+      }
+      TransactionCommitRequest stagedRequest =
+          buildCreateRequest(
+              command.namespacePath(),
+              command.table(),
+              stagedEntry.catalogId(),
+              stagedEntry.namespaceId(),
+              stagedEntry.request(),
+              command.tableSupport());
+      var stagedChange = stagedRequest.tableChanges().get(0);
+      List<Map<String, Object>> updates = new ArrayList<>(stagedChange.updates());
+      if (req.updates() != null && !req.updates().isEmpty()) {
+        updates.addAll(req.updates());
+      }
+      TableRequests.Commit merged =
+          new TableRequests.Commit(
+              req.requirements() == null ? List.of() : List.copyOf(req.requirements()),
+              List.copyOf(updates));
+      return injectStagedMetadataLocation(merged, stagedMetadataLocation);
     }
     if (callerProvidesCreateInitialization(req)) {
       return injectStagedMetadataLocation(req, stagedMetadataLocation);
@@ -452,6 +475,14 @@ public class TransactionCommitService {
     TableRequests.Commit merged =
         new TableRequests.Commit(List.copyOf(requirements), List.copyOf(updates));
     return injectStagedMetadataLocation(merged, stagedMetadataLocation);
+  }
+
+  private boolean hasCommittedSnapshot(ai.floedb.floecat.catalog.rpc.Table tableState) {
+    if (tableState == null || tableState.getPropertiesMap().isEmpty()) {
+      return false;
+    }
+    String currentSnapshotId = tableState.getPropertiesMap().get("current-snapshot-id");
+    return currentSnapshotId != null && !currentSnapshotId.isBlank();
   }
 
   private TableRequests.Commit injectStagedMetadataLocation(

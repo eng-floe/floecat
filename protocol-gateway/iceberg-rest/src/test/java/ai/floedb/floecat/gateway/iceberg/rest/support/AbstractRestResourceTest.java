@@ -43,6 +43,7 @@ import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedSnapshot;
@@ -85,6 +86,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.io.FileIO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.Mockito;
@@ -93,6 +97,7 @@ public abstract class AbstractRestResourceTest {
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
   private static final ObjectMapper JSON = new ObjectMapper();
+  private static final IcebergMetadataService METADATA_SERVICE = new IcebergMetadataService();
   private static final TableMetadataView FIXTURE_METADATA_VIEW =
       TableMetadataBuilder.fromCatalog(
           FIXTURE.table().getDisplayName(),
@@ -245,6 +250,13 @@ public abstract class AbstractRestResourceTest {
                   List.copyOf(snapshots));
             });
     Mockito.when(
+            metadataImportService.reserveCreateMetadataLocation(
+                Mockito.anyString(), Mockito.anyString(), Mockito.any()))
+        .thenAnswer(
+            inv ->
+                MetadataLocationUtil.bootstrapMetadataLocation(
+                    inv.getArgument(0, String.class), inv.getArgument(1, String.class)));
+    Mockito.when(
             metadataImportService.resolveMetadata(
                 Mockito.anyString(),
                 Mockito.any(Table.class),
@@ -262,9 +274,20 @@ public abstract class AbstractRestResourceTest {
                   snapshotsSupplier == null ? List.of() : (List<Snapshot>) snapshotsSupplier.get();
               Map<String, String> props =
                   table == null ? Map.of() : new LinkedHashMap<>(table.getPropertiesMap());
+              String metadataLocation = props.get("metadata-location");
+              TableMetadata tableMetadata =
+                  loadTableMetadata(metadataLocation, inv.getArgument(3, Map.class));
+              IcebergMetadata resolvedMetadata =
+                  metadata != null
+                      ? metadata
+                      : METADATA_SERVICE.toIcebergMetadata(tableMetadata, metadataLocation);
               TableMetadataView metadataView =
-                  TableMetadataBuilder.fromCatalog(tableName, table, props, metadata, snapshots);
-              return new ResolvedMetadata(null, metadataView, metadata);
+                  tableMetadata != null
+                      ? TableMetadataBuilder.fromCatalog(
+                          tableName, table, props, resolvedMetadata, snapshots)
+                      : TableMetadataBuilder.fromCatalog(
+                          tableName, table, props, metadata, snapshots);
+              return new ResolvedMetadata(tableMetadata, metadataView, resolvedMetadata);
             });
     Mockito.when(
             metadataImportService.resolveMetadata(
@@ -417,6 +440,49 @@ public abstract class AbstractRestResourceTest {
     return createTableRequest(tableName, false);
   }
 
+  protected Table fixtureBackedTable(ResourceId tableId) {
+    Table.Builder builder = FIXTURE.table().toBuilder();
+    if (tableId != null) {
+      builder.setResourceId(tableId);
+    }
+    return builder.build();
+  }
+
+  protected List<Map<String, Object>> fixtureCreateInitializationUpdates() {
+    Map<String, String> properties = new LinkedHashMap<>();
+    properties.put("metadata-location", FIXTURE.metadataLocation());
+    properties.put("format-version", Integer.toString(FIXTURE.metadata().getFormatVersion()));
+    properties.put("last-updated-ms", Long.toString(FIXTURE.metadata().getLastUpdatedMs()));
+
+    List<Map<String, Object>> updates = new java.util.ArrayList<>();
+    updates.add(Map.of("action", "set-location", "location", fixtureLocation()));
+    updates.add(
+        Map.of(
+            "action", "upgrade-format-version",
+            "format-version", FIXTURE.metadata().getFormatVersion()));
+    updates.add(
+        Map.of(
+            "action", "add-schema",
+            "schema", fixtureSchema(),
+            "last-column-id", FIXTURE_METADATA_VIEW.lastColumnId()));
+    updates.add(
+        Map.of(
+            "action", "set-current-schema",
+            "schema-id", FIXTURE_METADATA_VIEW.currentSchemaId()));
+    updates.add(Map.of("action", "add-spec", "spec", fixturePartitionSpec()));
+    updates.add(
+        Map.of(
+            "action", "set-default-spec",
+            "spec-id", FIXTURE_METADATA_VIEW.defaultSpecId()));
+    updates.add(Map.of("action", "add-sort-order", "sort-order", fixtureSortOrder()));
+    updates.add(
+        Map.of(
+            "action", "set-default-sort-order",
+            "sort-order-id", FIXTURE_METADATA_VIEW.defaultSortOrderId()));
+    updates.add(Map.of("action", "set-properties", "updates", properties));
+    return List.copyOf(updates);
+  }
+
   private String createTableRequest(String tableName, boolean stageCreate) {
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", tableName);
@@ -558,5 +624,26 @@ public abstract class AbstractRestResourceTest {
         manifestLists,
         SnapshotMetadataUtil.snapshotSummary(snapshot),
         snapshot.getSchemaId() == 0 ? null : snapshot.getSchemaId());
+  }
+
+  private static TableMetadata loadTableMetadata(
+      String metadataLocation, Map<String, String> defaultFileIoProperties) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return null;
+    }
+    FileIO fileIO = null;
+    try {
+      Map<String, String> ioProps =
+          defaultFileIoProperties == null || defaultFileIoProperties.isEmpty()
+              ? TestS3Fixtures.fileIoProperties(
+                  TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString())
+              : defaultFileIoProperties;
+      fileIO = FileIoFactory.createFileIo(ioProps, null, false);
+      return TableMetadataParser.read(fileIO, metadataLocation);
+    } catch (RuntimeException e) {
+      return null;
+    } finally {
+      FileIoFactory.closeQuietly(fileIO);
+    }
   }
 }
