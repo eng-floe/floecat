@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.support;
 
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -69,7 +70,9 @@ public class RestResourceTestProfile implements QuarkusTestProfile {
           "floecat.fixture.aws.s3.path-style-access");
     } else {
       overrides.put("floecat.gateway.metadata-file-io", InMemoryS3FileIO.class.getName());
-      overrides.put("floecat.gateway.metadata-file-io-root", "target/test-fake-s3");
+      overrides.put(
+          "floecat.gateway.metadata-file-io-root",
+          TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString());
     }
 
     return Map.copyOf(overrides);
