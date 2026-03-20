@@ -18,13 +18,7 @@ package ai.floedb.floecat.client.cli;
 
 import static java.lang.System.out;
 
-import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
-import ai.floedb.floecat.account.rpc.AccountSpec;
-import ai.floedb.floecat.account.rpc.CreateAccountRequest;
-import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
-import ai.floedb.floecat.account.rpc.GetAccountRequest;
-import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
@@ -825,107 +819,8 @@ public class Shell implements Runnable {
   }
 
   private void cmdAccount(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          currentAccountId == null || currentAccountId.isBlank()
-              ? "account: <not set>"
-              : ("account: " + currentAccountId));
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "list" -> cmdAccountList();
-      case "get" -> cmdAccountGet(tail(args));
-      case "create" -> cmdAccountCreate(tail(args));
-      case "delete" -> cmdAccountDelete(tail(args));
-      default -> {
-        String t = sub.trim();
-        if (t.isEmpty()) {
-          out.println("usage: account <accountId|display_name>");
-          return;
-        }
-        currentAccountId = resolveAccountId(t);
-        out.println("account set: " + currentAccountId);
-      }
-    }
-  }
-
-  private void cmdAccountList() {
-    List<Account> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getAccountsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printAccounts(all);
-  }
-
-  private void cmdAccountGet(List<String> args) {
-    if (args.size() < 1) {
-      out.println("usage: account get <id|display_name>");
-      return;
-    }
-    String id = resolveAccountId(args.get(0));
-    var resp =
-        accounts.getAccount(
-            GetAccountRequest.newBuilder()
-                .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
-                .build());
-    printAccounts(List.of(resp.getAccount()));
-  }
-
-  private void cmdAccountCreate(List<String> args) {
-    if (args.size() < 1) {
-      out.println("usage: account create <display_name> [--desc <text>]");
-      return;
-    }
-    String display = Quotes.unquote(args.get(0));
-    String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-    var spec =
-        AccountSpec.newBuilder().setDisplayName(display).setDescription(nvl(desc, "")).build();
-    var resp = accounts.createAccount(CreateAccountRequest.newBuilder().setSpec(spec).build());
-    printAccounts(List.of(resp.getAccount()));
-  }
-
-  private void cmdAccountDelete(List<String> args) {
-    String token =
-        args.isEmpty() ? (currentAccountId == null ? "" : currentAccountId.trim()) : args.get(0);
-    token = Quotes.unquote(token);
-    if (token.isBlank()) {
-      out.println("usage: account delete <id|display_name>");
-      return;
-    }
-    String id = resolveAccountId(token);
-    accounts.deleteAccount(
-        DeleteAccountRequest.newBuilder()
-            .setAccountId(ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_ACCOUNT))
-            .build());
-    if (currentAccountId != null && currentAccountId.trim().equals(id)) {
-      currentAccountId = null;
-    }
-    out.println("account deleted: " + id);
-  }
-
-  private String resolveAccountId(String token) {
-    String value = Quotes.unquote(nvl(token, "")).trim();
-    if (value.isBlank()) {
-      throw new IllegalArgumentException("account id/display name cannot be empty");
-    }
-    if (looksLikeUuid(value)) {
-      return value;
-    }
-    List<Account> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> accounts.listAccounts(ListAccountsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getAccountsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    return all.stream()
-        .filter(a -> value.equals(a.getDisplayName()))
-        .map(a -> a.getResourceId().getId())
-        .findFirst()
-        .orElseThrow(
-            () -> new IllegalArgumentException("account not found by id/display name: " + value));
+    AccountCliSupport.handle(
+        args, out, accounts, () -> currentAccountId, id -> currentAccountId = id);
   }
 
   private List<String> tail(List<String> list) {
@@ -3079,19 +2974,6 @@ public class Shell implements Runnable {
           ts(c.getCreatedAt()),
           Quotes.quoteIfNeeded(c.getDisplayName()),
           c.hasDescription() ? c.getDescription() : "");
-    }
-  }
-
-  private void printAccounts(List<Account> rows) {
-    out.printf(
-        "%-40s  %-24s  %-24s  %s%n", "ACCOUNT_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
-    for (var a : rows) {
-      out.printf(
-          "%-40s  %-24s  %-24s  %s%n",
-          rid(a.getResourceId()),
-          ts(a.getCreatedAt()),
-          Quotes.quoteIfNeeded(a.getDisplayName()),
-          a.hasDescription() ? a.getDescription() : "");
     }
   }
 
