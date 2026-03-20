@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
@@ -492,5 +494,71 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     assertEquals(1, results.size());
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, results.get(0).getStatus());
     assertEquals("planner_stats.pin.missing", results.get(0).getFailure().getCode());
+  }
+
+  @Test
+  void streamConstraintsPreservesForeignKeyBehaviorMetadata() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx =
+        queryContextWithPins(
+            "query-constraints-only-fk-metadata", List.of(pin(TABLE, 870L), pin(TABLE_TWO, 871L)));
+    store.seed(ctx);
+
+    ConstraintDefinition fk =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_orders_users")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTableId(TABLE_TWO)
+            .setReferencedConstraintName("pk_orders")
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_SET_NULL)
+            .addColumns(columnRef(1L, "id", 1))
+            .addReferencedColumns(columnRef(2L, "order_id", 1))
+            .build();
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            if (relationId.equals(TABLE)
+                && snapshotId.isPresent()
+                && snapshotId.getAsLong() == 870L) {
+              return Optional.of(newConstraintSet(TABLE, List.of(fk)));
+            }
+            return Optional.empty();
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxColumns= */ 20);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .addTableIds(TABLE_TWO)
+            .build();
+
+    List<TableConstraintsBundleChunk> chunks =
+        service.streamConstraints("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> results = flattenConstraintChunks(chunks);
+    TableConstraintsResult found =
+        results.stream()
+            .filter(r -> r.getStatus() == BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
+            .findFirst()
+            .orElseThrow();
+    ConstraintDefinition emittedFk = found.getConstraints(0);
+    assertEquals("pk_orders", emittedFk.getReferencedConstraintName());
+    assertEquals(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL, emittedFk.getMatchOption());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE, emittedFk.getUpdateRule());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_SET_NULL, emittedFk.getDeleteRule());
   }
 }

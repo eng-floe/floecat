@@ -24,7 +24,10 @@ import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -184,27 +187,31 @@ class ConstraintRepositoryTest {
   }
 
   @Test
-  void upsertTreatsReferencedTableNameAsMaterialChange() {
+  void upsertTreatsReferencedTableAsMaterialChange() {
     SnapshotConstraints first =
         constraintsForSnapshot(
             tableId,
             220L,
             List.of(
-                definitionWithReferencedTableName(
-                    "fk_customer", ConstraintType.CT_FOREIGN_KEY, "customer_v1")));
+                definitionWithReferencedTable(
+                    "fk_customer",
+                    ConstraintType.CT_FOREIGN_KEY,
+                    NameRef.newBuilder().setName("customer_v1").build())));
     SnapshotConstraints changed =
         constraintsForSnapshot(
             tableId,
             220L,
             List.of(
-                definitionWithReferencedTableName(
-                    "fk_customer", ConstraintType.CT_FOREIGN_KEY, "customer_v2")));
+                definitionWithReferencedTable(
+                    "fk_customer",
+                    ConstraintType.CT_FOREIGN_KEY,
+                    NameRef.newBuilder().setName("customer_v2").build())));
 
     assertTrue(repo.putSnapshotConstraints(tableId, 220L, first));
     assertTrue(repo.putSnapshotConstraints(tableId, 220L, changed));
 
     SnapshotConstraints fetched = repo.getSnapshotConstraints(tableId, 220L).orElseThrow();
-    assertEquals("customer_v2", fetched.getConstraints(0).getReferencedTableName());
+    assertEquals("customer_v2", fetched.getConstraints(0).getReferencedTable().getName());
   }
 
   @Test
@@ -244,6 +251,76 @@ class ConstraintRepositoryTest {
     ConstraintDefinition fk = fetched.getConstraints(0);
     assertEquals("region_id", fk.getReferencedColumns(0).getColumnName());
     assertEquals("id", fk.getReferencedColumns(1).getColumnName());
+  }
+
+  @Test
+  void upsertTreatsForeignKeyBehaviorMetadataAsMaterialChange() {
+    ResourceId referencedTableId =
+        ResourceId.newBuilder()
+            .setAccountId(tableId.getAccountId())
+            .setId("customers")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    ConstraintDefinition firstFk =
+        foreignKeyDefinition(
+                "fk_customer", referencedTableId, List.of("customer_id"), List.of("id"))
+            .toBuilder()
+            .setReferencedConstraintName("pk_customers")
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_RESTRICT)
+            .build();
+    ConstraintDefinition changedFk =
+        firstFk.toBuilder()
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_SET_NULL)
+            .build();
+
+    assertTrue(
+        repo.putSnapshotConstraints(
+            tableId, 240L, constraintsForSnapshot(tableId, 240L, List.of(firstFk))));
+    assertTrue(
+        repo.putSnapshotConstraints(
+            tableId, 240L, constraintsForSnapshot(tableId, 240L, List.of(changedFk))));
+
+    ConstraintDefinition fetched =
+        repo.getSnapshotConstraints(tableId, 240L).orElseThrow().getConstraints(0);
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE, fetched.getUpdateRule());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_SET_NULL, fetched.getDeleteRule());
+  }
+
+  @Test
+  void upsertTreatsForeignKeyUnspecifiedAndExplicitDefaultBehaviorAsEquivalent() {
+    ResourceId referencedTableId =
+        ResourceId.newBuilder()
+            .setAccountId(tableId.getAccountId())
+            .setId("customers")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    ConstraintDefinition fkUnspecified =
+        foreignKeyDefinition(
+            "fk_customer", referencedTableId, List.of("customer_id"), List.of("id"));
+    ConstraintDefinition fkExplicitDefaults =
+        fkUnspecified.toBuilder()
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_NONE)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION)
+            .build();
+
+    assertTrue(
+        repo.putSnapshotConstraints(
+            tableId, 250L, constraintsForSnapshot(tableId, 250L, List.of(fkUnspecified))));
+    assertFalse(
+        repo.putSnapshotConstraints(
+            tableId, 250L, constraintsForSnapshot(tableId, 250L, List.of(fkExplicitDefaults))));
+
+    ConstraintDefinition fetched =
+        repo.getSnapshotConstraints(tableId, 250L).orElseThrow().getConstraints(0);
+    assertEquals(ForeignKeyMatchOption.FK_MATCH_OPTION_NONE, fetched.getMatchOption());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION, fetched.getUpdateRule());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION, fetched.getDeleteRule());
   }
 
   @Test
@@ -369,9 +446,9 @@ class ConstraintRepositoryTest {
     return builder.build();
   }
 
-  private static ConstraintDefinition definitionWithReferencedTableName(
-      String name, ConstraintType type, String referencedTableName) {
-    return definition(name, type).toBuilder().setReferencedTableName(referencedTableName).build();
+  private static ConstraintDefinition definitionWithReferencedTable(
+      String name, ConstraintType type, NameRef referencedTable) {
+    return definition(name, type).toBuilder().setReferencedTable(referencedTable).build();
   }
 
   private static ConstraintDefinition foreignKeyDefinition(

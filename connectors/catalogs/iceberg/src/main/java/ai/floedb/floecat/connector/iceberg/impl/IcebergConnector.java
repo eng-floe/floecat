@@ -383,10 +383,7 @@ public abstract class IcebergConnector implements FloecatConnector {
 
     int schemaId = snapshot.schemaId() == null ? table.schema().schemaId() : snapshot.schemaId();
     Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
-    List<ConstraintDefinition> constraints =
-        mergeConstraints(
-            mapIcebergConstraints(schema),
-            sourceSpecificConstraints(namespaceFq, tableName, table, snapshot));
+    List<ConstraintDefinition> constraints = mapIcebergConstraints(schema);
     if (constraints.isEmpty()) {
       return Optional.empty();
     }
@@ -397,16 +394,6 @@ public abstract class IcebergConnector implements FloecatConnector {
             .setSnapshotId(snapshotId)
             .addAllConstraints(constraints)
             .build());
-  }
-
-  /**
-   * Source-specific constraint extraction hook (for example, catalog metadata side channels).
-   *
-   * <p>Default implementation contributes no additional constraints.
-   */
-  protected List<ConstraintDefinition> sourceSpecificConstraints(
-      String namespaceFq, String tableName, Table table, Snapshot snapshot) {
-    return List.of();
   }
 
   static List<ConstraintDefinition> mapIcebergConstraints(Schema schema) {
@@ -454,6 +441,12 @@ public abstract class IcebergConnector implements FloecatConnector {
     return List.copyOf(out);
   }
 
+  /**
+   * Merges two constraint lists, deduplicating by full proto payload. Primary entries win on
+   * collision; secondary-only entries are appended in insertion order.
+   *
+   * <p>Package-private for testing; not currently called from production code.
+   */
   static List<ConstraintDefinition> mergeConstraints(
       List<ConstraintDefinition> primary, List<ConstraintDefinition> secondary) {
     if ((primary == null || primary.isEmpty()) && (secondary == null || secondary.isEmpty())) {
@@ -461,10 +454,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     // Deduplication uses full proto payload (toByteString()), not semantic identity.
     // Constraints with different names, ordinals, or enforcement for the same logical key
-    // will both be retained. Acceptable while sourceSpecificConstraints() is unused;
-    // revisit if that hook gains implementations that may duplicate schema-derived constraints.
-    // TODO: switch to semantic dedup (type + column signature) once sourceSpecificConstraints()
-    // has implementations that may produce logically equivalent constraints under different names.
+    // will both be retained. If future callers may produce logically equivalent constraints
+    // under different names, switch to semantic dedup (type + column signature).
     Map<ByteString, ConstraintDefinition> deduped = new LinkedHashMap<>();
     for (ConstraintDefinition constraint : primary) {
       deduped.put(constraint.toByteString(), constraint);

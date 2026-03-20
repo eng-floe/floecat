@@ -96,6 +96,11 @@ engine release.
   `failure.details.reason` preserving the distinction.
   For CHECK masking to work correctly, connector constraint payloads should populate
   `ConstraintDefinition.columns` with referenced local column IDs.
+- **FOREIGN KEY metadata model** – `ConstraintDefinition` now carries ANSI-style FK behavior
+  fields (`referenced_constraint_name`, `match_option`, `update_rule`, `delete_rule`) so
+  `information_schema.referential_constraints` can be populated without connector-specific
+  interpretation. Writers may omit these fields; scanners default unspecified rules to
+  `NONE` / `NO ACTION` / `NO ACTION`.
 - **Idempotency/Preconditions** – Mutating RPCs accept `IdempotencyKey` or `Precondition` (expected
   CAS version/ETag). Repository logic mirrors these fields, so clients should obey the same values
   when retrying.

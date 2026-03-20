@@ -69,6 +69,17 @@ class SchemataScannerTest {
   }
 
   @Test
+  void scan_dedupesLeafWhenPathAlreadyContainsDisplayName() {
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");
+    SystemObjectScanContext ctx = builder.build();
+
+    var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
+
+    assertThat(rows).containsExactly(List.of("main_catalog", "org.sales"));
+  }
+
+  @Test
   void scanArrow_matchesRowPath() {
     var builder = TestTableScanContextBuilder.builder("main_catalog");
     builder.addNamespace("public");

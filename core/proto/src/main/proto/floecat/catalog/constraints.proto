@@ -30,7 +30,7 @@ enum ConstraintType {
   // Encoding convention:
   // - exactly one local entry in `columns`
   // - `check_expression` unused
-  // - `referenced_table_id`, `referenced_table_name`, and `referenced_columns` unused
+  // - `referenced_table_id`, `referenced_table`, and `referenced_columns` unused
   CT_NOT_NULL = 5;
 }
 
@@ -38,6 +38,24 @@ enum ConstraintEnforcement {
   CE_UNSPECIFIED = 0;
   CE_ENFORCED = 1;
   CE_NOT_ENFORCED = 2;
+}
+
+// ANSI-style foreign key match option.
+enum ForeignKeyMatchOption {
+  FK_MATCH_OPTION_UNSPECIFIED = 0;
+  FK_MATCH_OPTION_NONE = 1;
+  FK_MATCH_OPTION_FULL = 2;
+  FK_MATCH_OPTION_PARTIAL = 3;
+}
+
+// ANSI-style foreign key action rule used for ON UPDATE / ON DELETE.
+enum ForeignKeyActionRule {
+  FK_ACTION_RULE_UNSPECIFIED = 0;
+  FK_ACTION_RULE_NO_ACTION = 1;
+  FK_ACTION_RULE_RESTRICT = 2;
+  FK_ACTION_RULE_CASCADE = 3;
+  FK_ACTION_RULE_SET_NULL = 4;
+  FK_ACTION_RULE_SET_DEFAULT = 5;
 }
 
 message ConstraintColumnRef {
@@ -61,7 +79,7 @@ message ConstraintDefinition {
   // Expected field usage by type (not proto-enforced):
   // - CT_PRIMARY_KEY / CT_UNIQUE: populate `columns`; leave `referenced_*` unset.
   // - CT_FOREIGN_KEY: populate `columns` and `referenced_columns`; usually set
-  //   `referenced_table_id` (and optionally `referenced_table_name`).
+  //   `referenced_table_id` and/or `referenced_table`.
   // - CT_CHECK: populate `check_expression`; leave `referenced_*` unset.
   // - CT_NOT_NULL: populate exactly one local `columns` entry; leave
   //   `check_expression` and `referenced_*` unset.
@@ -76,14 +94,29 @@ message ConstraintDefinition {
   // Referenced table identity for FOREIGN KEY constraints.
   ai.floedb.floecat.common.ResourceId referenced_table_id = 5;
 
-  // Human-readable referenced table name (optional).
-  string referenced_table_name = 6;
+  // Optional referenced table name reference for FOREIGN KEY constraints.
+  ai.floedb.floecat.common.NameRef referenced_table = 6;
 
   // Referenced columns for FOREIGN KEY constraints (ordered).
   repeated ConstraintColumnRef referenced_columns = 7;
 
+  // Whether this constraint is enforced by the source database engine.
   ConstraintEnforcement enforcement = 8;
 
+  // Name of the referenced UNIQUE/PRIMARY KEY constraint for FOREIGN KEY constraints.
+  // Optional: leave blank when unknown.
+  string referenced_constraint_name = 9;
+
+  // FOREIGN KEY match option. Defaults to NONE when unspecified by source metadata.
+  ForeignKeyMatchOption match_option = 10;
+
+  // FOREIGN KEY update rule. Defaults to NO ACTION when unspecified by source metadata.
+  ForeignKeyActionRule update_rule = 11;
+
+  // FOREIGN KEY delete rule. Defaults to NO ACTION when unspecified by source metadata.
+  ForeignKeyActionRule delete_rule = 12;
+
+  // Reserved for future extensibility; no keys are currently defined or read by any component.
   map<string, string> properties = 99;
 }
 
@@ -95,5 +128,6 @@ message SnapshotConstraints {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
   repeated ConstraintDefinition constraints = 3;
+  // Reserved for future extensibility; no keys are currently defined or read by any component.
   map<string, string> properties = 99;
 }

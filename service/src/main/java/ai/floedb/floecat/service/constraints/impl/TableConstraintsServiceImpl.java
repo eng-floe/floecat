@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.AddTableConstraintResponse;
 import ai.floedb.floecat.catalog.rpc.AppendTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.AppendTableConstraintsResponse;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.DeleteTableConstraintRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableConstraintResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteTableConstraintsRequest;
@@ -56,8 +57,11 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -454,7 +458,14 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
       long snapshotId,
       ai.floedb.floecat.common.rpc.Precondition precondition,
       java.util.function.Function<SnapshotConstraints, SnapshotConstraints> mutator) {
+    int attempts = 0;
     while (true) {
+      if (++attempts > 32) {
+        LOG.warnf(
+            "mutateSnapshotConstraints: %d CAS attempts for table=%s snapshot=%d;"
+                + " possible storage contention",
+            attempts - 1, tableId.getId(), snapshotId);
+      }
       var currentOpt = constraints.getSnapshotConstraints(tableId, snapshotId);
       if (currentOpt.isEmpty()) {
         if (hasMeaningfulPrecondition(precondition)) {
@@ -513,7 +524,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   private SnapshotConstraints mergeConstraintsByName(
       SnapshotConstraints source, SnapshotConstraints incoming) {
     SnapshotConstraints canonicalSource = canonicalizeConstraintNames(source);
-    Map<String, ConstraintDefinition> merged = new java.util.LinkedHashMap<>();
+    Map<String, ConstraintDefinition> merged = new HashMap<>();
     for (ConstraintDefinition current : canonicalSource.getConstraintsList()) {
       merged.put(current.getName().trim(), canonicalizeConstraintName(current));
     }
@@ -533,7 +544,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
       SnapshotConstraints source, SnapshotConstraints incoming) {
     SnapshotConstraints canonicalSource = canonicalizeConstraintNames(source);
 
-    java.util.Set<String> existingNames = new java.util.LinkedHashSet<>();
+    Set<String> existingNames = new HashSet<>();
     for (ConstraintDefinition current : canonicalSource.getConstraintsList()) {
       existingNames.add(current.getName().trim());
     }
@@ -559,9 +570,10 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   }
 
   /**
-   * Canonicalizes constraint names (trims whitespace), then validates that no name is blank and
-   * that no two constraints share the same name within this payload. Returns the canonicalized
-   * payload.
+   * Canonicalizes constraint names (trims whitespace), then validates that no name is blank, that
+   * no two constraints share the same name within this payload, and that each constraint definition
+   * is internally consistent (e.g. FK local/referenced column counts match). Returns the
+   * canonicalized payload.
    */
   private SnapshotConstraints canonicalizeAndValidate(SnapshotConstraints payload) {
     SnapshotConstraints canonical = canonicalizeConstraintNames(payload);
@@ -573,11 +585,51 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
           FIELD,
           Map.of("field", "constraints.constraints.name", "duplicate", dups.get(0)));
     }
+    for (int i = 0; i < canonical.getConstraintsCount(); i++) {
+      validateConstraintDefinition(canonical.getConstraints(i), i);
+    }
     return canonical;
   }
 
+  /**
+   * Validates internal consistency of a single {@link ConstraintDefinition}. Currently checks:
+   *
+   * <ul>
+   *   <li>FK: {@code columns} and {@code referenced_columns} must both be absent (unbound FK) or
+   *       both be present with equal counts. A one-sided definition is always rejected.
+   * </ul>
+   */
+  private void validateConstraintDefinition(ConstraintDefinition c, int index) {
+    if (c.getType() != ConstraintType.CT_FOREIGN_KEY) {
+      return;
+    }
+    boolean hasLocal = !c.getColumnsList().isEmpty();
+    boolean hasReferenced = !c.getReferencedColumnsList().isEmpty();
+    String field = "constraints.constraints[" + index + "].referenced_columns";
+    if (hasLocal != hasReferenced) {
+      throw GrpcErrors.invalidArgument(
+          correlationId(),
+          FIELD,
+          Map.of(
+              "field",
+              field,
+              "reason",
+              "foreign key must have both local and referenced columns, or neither"));
+    }
+    if (hasLocal && c.getColumnsCount() != c.getReferencedColumnsCount()) {
+      throw GrpcErrors.invalidArgument(
+          correlationId(),
+          FIELD,
+          Map.of(
+              "field",
+              field,
+              "reason",
+              "column count must match local columns (" + c.getColumnsCount() + ")"));
+    }
+  }
+
   private static List<String> duplicateNamesInPayload(List<ConstraintDefinition> incoming) {
-    java.util.Set<String> names = new java.util.LinkedHashSet<>();
+    Set<String> names = new HashSet<>();
     List<String> duplicates = new ArrayList<>();
     for (ConstraintDefinition definition : incoming) {
       String name = definition.getName().trim();

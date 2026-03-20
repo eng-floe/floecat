@@ -29,6 +29,9 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Supplier;
 
 /**
  * Immutable context during a system object scan.
@@ -41,7 +44,9 @@ public record SystemObjectScanContext(
     NameRef name,
     ResourceId queryDefaultCatalogId,
     EngineContext engineContext,
-    StatsProvider statsProvider)
+    StatsProvider statsProvider,
+    ConstraintProvider constraintProvider,
+    ConcurrentMap<Object, Object> memoizedValues)
     implements MetadataResolutionContext {
 
   public SystemObjectScanContext {
@@ -49,6 +54,8 @@ public record SystemObjectScanContext(
     Objects.requireNonNull(queryDefaultCatalogId, "queryDefaultCatalogId");
     engineContext = engineContext == null ? EngineContext.empty() : engineContext;
     statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
+    constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
+    memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
   }
 
   public SystemObjectScanContext(
@@ -56,7 +63,47 @@ public record SystemObjectScanContext(
       NameRef name,
       ResourceId queryDefaultCatalogId,
       EngineContext engineContext) {
-    this(graph, name, queryDefaultCatalogId, engineContext, StatsProvider.NONE);
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        engineContext,
+        StatsProvider.NONE,
+        ConstraintProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogOverlay graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      EngineContext engineContext,
+      StatsProvider statsProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        engineContext,
+        statsProvider,
+        ConstraintProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogOverlay graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      EngineContext engineContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        engineContext,
+        statsProvider,
+        constraintProvider,
+        new ConcurrentHashMap<>());
   }
 
   public GraphNode resolve(ResourceId id) {
@@ -113,5 +160,21 @@ public record SystemObjectScanContext(
   @Override
   public StatsProvider statsProvider() {
     return statsProvider;
+  }
+
+  @SuppressWarnings("unchecked")
+  public <T> T memoized(Object key, Supplier<T> supplier) {
+    Objects.requireNonNull(key, "key");
+    Objects.requireNonNull(supplier, "supplier");
+    return (T)
+        memoizedValues.computeIfAbsent(
+            key,
+            ignored -> {
+              T computed = supplier.get();
+              if (computed == null) {
+                throw new IllegalStateException("memoized value cannot be null for key: " + key);
+              }
+              return computed;
+            });
   }
 }

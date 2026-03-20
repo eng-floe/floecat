@@ -19,8 +19,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import org.junit.jupiter.api.Test;
@@ -123,5 +126,63 @@ class GrpcReconcilerBackendTest {
     assertThat(request.getConstraints()).isEqualTo(snapshotConstraints);
     assertThat(request.getIdempotency().getKey()).isNotBlank();
     assertThat(request2.getIdempotency().getKey()).isEqualTo(request.getIdempotency().getKey());
+  }
+
+  @Test
+  void buildPutTableConstraintsRequestPreservesForeignKeyMetadataFields() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("orders")
+            .build();
+    ConstraintDefinition fk =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_orders_customers")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTable(NameRef.newBuilder().addPath("sales").setName("customers").build())
+            .setReferencedConstraintName("pk_customers")
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_RESTRICT)
+            .build();
+    SnapshotConstraints snapshotConstraints =
+        SnapshotConstraints.newBuilder().addConstraints(fk).build();
+
+    PutTableConstraintsRequest request =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 77L, snapshotConstraints);
+    ConstraintDefinition emitted = request.getConstraints().getConstraints(0);
+
+    assertThat(emitted.getReferencedConstraintName()).isEqualTo("pk_customers");
+    assertThat(emitted.getMatchOption()).isEqualTo(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL);
+    assertThat(emitted.getUpdateRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE);
+    assertThat(emitted.getDeleteRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_RESTRICT);
+  }
+
+  @Test
+  void buildPutTableConstraintsRequestLeavesForeignKeyRulesUnspecifiedWhenNotProvided() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("orders")
+            .build();
+    ConstraintDefinition fk =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_orders_customers_default")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTable(NameRef.newBuilder().addPath("sales").setName("customers").build())
+            .build();
+    SnapshotConstraints snapshotConstraints =
+        SnapshotConstraints.newBuilder().addConstraints(fk).build();
+
+    PutTableConstraintsRequest request =
+        GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 78L, snapshotConstraints);
+    ConstraintDefinition emitted = request.getConstraints().getConstraints(0);
+
+    assertThat(emitted.getMatchOption())
+        .isEqualTo(ForeignKeyMatchOption.FK_MATCH_OPTION_UNSPECIFIED);
+    assertThat(emitted.getUpdateRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
+    assertThat(emitted.getDeleteRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
   }
 }

@@ -36,7 +36,13 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
       Map.of(
           "schemata_scanner", new SchemataScanner(),
           "tables_scanner", new TablesScanner(),
-          "columns_scanner", new ColumnsScanner());
+          "columns_scanner", new ColumnsScanner(),
+          "table_constraints_scanner", new TableConstraintsScanner(),
+          "key_column_usage_scanner", new KeyColumnUsageScanner(),
+          "referential_constraints_scanner", new ReferentialConstraintsScanner(),
+          "check_constraints_scanner", new CheckConstraintsScanner(),
+          "constraint_column_usage_scanner", new ConstraintColumnUsageScanner(),
+          "constraint_table_usage_scanner", new ConstraintTableUsageScanner());
 
   @Override
   public List<SystemObjectDef> definitions() {

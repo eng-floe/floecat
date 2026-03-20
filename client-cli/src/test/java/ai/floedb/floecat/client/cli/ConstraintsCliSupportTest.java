@@ -79,6 +79,36 @@ class ConstraintsCliSupportTest {
   }
 
   @Test
+  void resolveSnapshotIdRejectsMissingSnapshotFlagValue() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ConstraintsCliSupport.resolveSnapshotId(
+                    List.of("demo.sales.users", "--snapshot"),
+                    tableId(),
+                    null,
+                    ConstraintsCliSupportTest::parseStringFlag));
+
+    assertEquals("snapshot_id must be provided after --snapshot", error.getMessage());
+  }
+
+  @Test
+  void resolveSnapshotIdRejectsSnapshotFlagFollowedByAnotherFlag() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                ConstraintsCliSupport.resolveSnapshotId(
+                    List.of("demo.sales.users", "--snapshot", "--json"),
+                    tableId(),
+                    null,
+                    ConstraintsCliSupportTest::parseStringFlag));
+
+    assertEquals("snapshot_id must be provided after --snapshot", error.getMessage());
+  }
+
+  @Test
   void handleUpdateUsesMergeRequestAndDoesNotResolveCurrentSnapshotWhenExplicit() throws Exception {
     Path payload = writeConstraintsPayload(List.of("pk_users"));
     try (Harness harness = new Harness(99L)) {

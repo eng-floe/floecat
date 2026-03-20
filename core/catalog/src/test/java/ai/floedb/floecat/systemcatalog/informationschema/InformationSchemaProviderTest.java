@@ -103,6 +103,16 @@ class InformationSchemaProviderTest {
   }
 
   @Test
+  void provide_returnsConstraintScanners() {
+    assertThat(provider.provide("table_constraints_scanner", "spark", "3.5.0")).isPresent();
+    assertThat(provider.provide("key_column_usage_scanner", "spark", "3.5.0")).isPresent();
+    assertThat(provider.provide("referential_constraints_scanner", "spark", "3.5.0")).isPresent();
+    assertThat(provider.provide("check_constraints_scanner", "spark", "3.5.0")).isPresent();
+    assertThat(provider.provide("constraint_column_usage_scanner", "spark", "3.5.0")).isPresent();
+    assertThat(provider.provide("constraint_table_usage_scanner", "spark", "3.5.0")).isPresent();
+  }
+
+  @Test
   void provide_returnsEmptyForUnknownObject() {
     Optional<SystemObjectScanner> scanner = provider.provide("nope_scanner", "spark", "3.5.0");
 

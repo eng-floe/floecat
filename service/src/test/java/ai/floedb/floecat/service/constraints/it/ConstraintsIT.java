@@ -21,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -1786,6 +1788,249 @@ class ConstraintsIT {
     assertEquals(0, response.getConstraintsCount());
     assertEquals(0, response.getPage().getTotalSize());
     assertTrue(response.getPage().getNextPageToken().isBlank());
+  }
+
+  /** Shared setup for constraint IT tests: creates a catalog, namespace, table, and snapshot. */
+  record ConstraintTestContext(ResourceId tableId, long snapshotId) {}
+
+  private ConstraintTestContext setupConstraintTable(String suffix, long snapshotId) {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_constraints_" + suffix, "cat");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "it_ns_constraints_" + suffix, List.of(), "ns");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "fact_constraints_" + suffix,
+            "s3://bucket/fact_constraints_" + suffix,
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"bigint\"}]}",
+            "none");
+    TestSupport.createSnapshot(
+        snapshot, tbl.getResourceId(), snapshotId, System.currentTimeMillis());
+    return new ConstraintTestContext(tbl.getResourceId(), snapshotId);
+  }
+
+  @Test
+  void putTableConstraintsWithNotNullConstraint() throws Exception {
+    var ctx = setupConstraintTable("nn", 7012L);
+    var tableId = ctx.tableId();
+    long snapshotId = ctx.snapshotId();
+
+    constraintsService.putTableConstraints(
+        PutTableConstraintsRequest.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setConstraints(
+                SnapshotConstraints.newBuilder()
+                    .addConstraints(
+                        ConstraintDefinition.newBuilder()
+                            .setName("nn_email")
+                            .setType(ConstraintType.CT_NOT_NULL)
+                            .addColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(1)
+                                    .setColumnName("email")
+                                    .setOrdinal(1)
+                                    .build())
+                            .build())
+                    .build())
+            .build());
+
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
+    assertEquals(1, stored.getConstraintsCount());
+    var c = stored.getConstraints(0);
+    assertEquals("nn_email", c.getName());
+    assertEquals(ConstraintType.CT_NOT_NULL, c.getType());
+    assertEquals(1, c.getColumnsCount());
+    assertEquals("email", c.getColumns(0).getColumnName());
+  }
+
+  @Test
+  void putTableConstraintsWithCheckConstraint() throws Exception {
+    var ctx = setupConstraintTable("check", 7013L);
+    var tableId = ctx.tableId();
+    long snapshotId = ctx.snapshotId();
+
+    constraintsService.putTableConstraints(
+        PutTableConstraintsRequest.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setConstraints(
+                SnapshotConstraints.newBuilder()
+                    .addConstraints(
+                        ConstraintDefinition.newBuilder()
+                            .setName("chk_age_positive")
+                            .setType(ConstraintType.CT_CHECK)
+                            .setCheckExpression("age > 0")
+                            .addColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(1)
+                                    .setColumnName("age")
+                                    .setOrdinal(1)
+                                    .build())
+                            .build())
+                    .build())
+            .build());
+
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
+    assertEquals(1, stored.getConstraintsCount());
+    var c = stored.getConstraints(0);
+    assertEquals("chk_age_positive", c.getName());
+    assertEquals(ConstraintType.CT_CHECK, c.getType());
+    assertEquals("age > 0", c.getCheckExpression());
+    assertEquals(1, c.getColumnsCount());
+    assertEquals("age", c.getColumns(0).getColumnName());
+  }
+
+  @Test
+  void putTableConstraintsWithMultiColumnFkAndReferentialActions() throws Exception {
+    var ctx = setupConstraintTable("fk_multi", 7014L);
+    var tableId = ctx.tableId();
+    long snapshotId = ctx.snapshotId();
+
+    constraintsService.putTableConstraints(
+        PutTableConstraintsRequest.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setConstraints(
+                SnapshotConstraints.newBuilder()
+                    .addConstraints(
+                        ConstraintDefinition.newBuilder()
+                            .setName("fk_multi_col")
+                            .setType(ConstraintType.CT_FOREIGN_KEY)
+                            .addColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(1)
+                                    .setColumnName("a")
+                                    .setOrdinal(1)
+                                    .build())
+                            .addColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(2)
+                                    .setColumnName("b")
+                                    .setOrdinal(2)
+                                    .build())
+                            .addReferencedColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(10)
+                                    .setColumnName("ref_a")
+                                    .setOrdinal(1)
+                                    .build())
+                            .addReferencedColumns(
+                                ConstraintColumnRef.newBuilder()
+                                    .setColumnId(11)
+                                    .setColumnName("ref_b")
+                                    .setOrdinal(2)
+                                    .build())
+                            .setReferencedTable(NameRef.newBuilder().setName("ref_table").build())
+                            .setReferencedConstraintName("pk_ref")
+                            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)
+                            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+                            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION)
+                            .build())
+                    .build())
+            .build());
+
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
+    assertEquals(1, stored.getConstraintsCount());
+    var c = stored.getConstraints(0);
+    assertEquals("fk_multi_col", c.getName());
+    assertEquals(ConstraintType.CT_FOREIGN_KEY, c.getType());
+    assertEquals(2, c.getColumnsCount());
+    assertEquals(2, c.getReferencedColumnsCount());
+    assertEquals("ref_a", c.getReferencedColumns(0).getColumnName());
+    assertEquals("ref_b", c.getReferencedColumns(1).getColumnName());
+    assertEquals("pk_ref", c.getReferencedConstraintName());
+    assertEquals(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL, c.getMatchOption());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE, c.getDeleteRule());
+    assertEquals(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION, c.getUpdateRule());
+  }
+
+  @Test
+  void putTableConstraintsRejectsFkColumnCountMismatch() throws Exception {
+    var ctx = setupConstraintTable("fk_mismatch", 7015L);
+    var tableId = ctx.tableId();
+    long snapshotId = ctx.snapshotId();
+
+    // FK with 2 local columns but only 1 referenced column — invalid.
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                constraintsService.putTableConstraints(
+                    PutTableConstraintsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(snapshotId)
+                        .setConstraints(
+                            SnapshotConstraints.newBuilder()
+                                .addConstraints(
+                                    ConstraintDefinition.newBuilder()
+                                        .setName("fk_mismatch")
+                                        .setType(ConstraintType.CT_FOREIGN_KEY)
+                                        .addColumns(
+                                            ConstraintColumnRef.newBuilder()
+                                                .setColumnId(1)
+                                                .setColumnName("a")
+                                                .setOrdinal(1)
+                                                .build())
+                                        .addColumns(
+                                            ConstraintColumnRef.newBuilder()
+                                                .setColumnId(2)
+                                                .setColumnName("b")
+                                                .setOrdinal(2)
+                                                .build())
+                                        .addReferencedColumns(
+                                            ConstraintColumnRef.newBuilder()
+                                                .setColumnId(10)
+                                                .setColumnName("ref_a")
+                                                .setOrdinal(1)
+                                                .build())
+                                        .setReferencedTable(
+                                            NameRef.newBuilder().setName("ref_table").build())
+                                        .build())
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "referenced_columns");
+    assertTrue(constraintRepository.getSnapshotConstraints(tableId, snapshotId).isEmpty());
+  }
+
+  @Test
+  void putTableConstraintsRejectsFkOneSidedColumns() throws Exception {
+    var ctx = setupConstraintTable("fk_onesided", 7016L);
+    var tableId = ctx.tableId();
+    long snapshotId = ctx.snapshotId();
+
+    // FK with local columns only (referenced_columns absent) — one-sided, always invalid.
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                constraintsService.putTableConstraints(
+                    PutTableConstraintsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(snapshotId)
+                        .setConstraints(
+                            SnapshotConstraints.newBuilder()
+                                .addConstraints(
+                                    ConstraintDefinition.newBuilder()
+                                        .setName("fk_onesided")
+                                        .setType(ConstraintType.CT_FOREIGN_KEY)
+                                        .addColumns(
+                                            ConstraintColumnRef.newBuilder()
+                                                .setColumnId(1)
+                                                .setColumnName("a")
+                                                .setOrdinal(1)
+                                                .build())
+                                        // referenced_columns intentionally absent
+                                        .build())
+                                .build())
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "referenced_columns");
+    assertTrue(constraintRepository.getSnapshotConstraints(tableId, snapshotId).isEmpty());
   }
 
   @Test
