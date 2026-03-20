@@ -28,7 +28,6 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -38,17 +37,11 @@ import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
@@ -74,7 +67,6 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
@@ -134,7 +126,6 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
@@ -2340,17 +2331,15 @@ public class Shell implements Runnable {
   }
 
   private void cmdStats(List<String> args) {
-    if (args.isEmpty()) {
-      printHelp();
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "table" -> statsTable(args.subList(1, args.size()));
-      case "columns" -> statsColumns(args.subList(1, args.size()));
-      case "files" -> statsFiles(args.subList(1, args.size()));
-      default -> out.println("unknown stats subcommand: " + sub);
-    }
+    StatsCliSupport.handle(
+        "stats",
+        args,
+        out,
+        statistics,
+        tables,
+        namespaces,
+        reconcileControl,
+        this::resolveTableIdFlexible);
   }
 
   /** Dispatches `constraints` command verbs to {@link ConstraintsCliSupport}. */
@@ -2367,159 +2356,16 @@ public class Shell implements Runnable {
         this::printJson);
   }
 
-  // analyze runs a synchronous table-scoped CaptureNow call for metadata and table stats.
   private void cmdAnalyze(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          "usage: analyze <tableFQ> [--columns c1,c2,...]"
-              + " [--mode metadata-only|metadata-and-stats|stats-only]"
-              + " [--snapshot-ids id1,id2,...] [--full]");
-      return;
-    }
-
-    String fq = args.get(0);
-    String columnsArg = Quotes.unquote(parseStringFlag(args, "--columns", ""));
-    List<String> columns = csvList(columnsArg);
-    CaptureMode mode = parseCaptureMode(Quotes.unquote(parseStringFlag(args, "--mode", "")));
-    List<Long> snapshotIds =
-        parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
-    boolean full = args.contains("--full");
-
-    var resolved =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
-
-    var table =
-        tables
-            .getTable(GetTableRequest.newBuilder().setTableId(resolved.getResourceId()).build())
-            .getTable();
-    if (!table.hasUpstream() || !table.getUpstream().hasConnectorId()) {
-      throw new IllegalArgumentException("table has no upstream connector");
-    }
-    var namespace =
-        namespaces
-            .getNamespace(
-                GetNamespaceRequest.newBuilder().setNamespaceId(table.getNamespaceId()).build())
-            .getNamespace();
-    var scopePath = new ArrayList<>(namespace.getParentsList());
-    if (!namespace.getDisplayName().isBlank()) {
-      scopePath.add(namespace.getDisplayName());
-    }
-
-    var response =
-        reconcileControl.captureNow(
-            CaptureNowRequest.newBuilder()
-                .setScope(
-                    CaptureScope.newBuilder()
-                        .setConnectorId(table.getUpstream().getConnectorId())
-                        .addDestinationNamespacePaths(
-                            NamespacePath.newBuilder().addAllSegments(scopePath).build())
-                        .setDestinationTableDisplayName(table.getDisplayName())
-                        .addAllDestinationTableColumns(columns)
-                        .addAllDestinationSnapshotIds(snapshotIds)
-                        .build())
-                .setMode(mode)
-                .setFullRescan(full)
-                .build());
-    out.printf(
-        "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
-        fq, response.getTablesScanned(), response.getTablesChanged(), response.getErrors());
-  }
-
-  private void statsTable(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          "usage: stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to"
-              + " --current)");
-      return;
-    }
-    boolean json = hasFlag(args, "--json");
-    String fq = args.get(0);
-    var r =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
-    var req =
-        GetTableStatsRequest.newBuilder()
-            .setTableId(r.getResourceId())
-            .setSnapshot(parseSnapshotSelector(args))
-            .build();
-    GetTableStatsResponse resp = statistics.getTableStats(req);
-    if (json) {
-      printJson(resp);
-      return;
-    }
-    printTableStats(resp.getStats());
-  }
-
-  private void statsColumns(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
-              + " [--limit N] [--json]");
-      return;
-    }
-
-    boolean json = hasFlag(args, "--json");
-    String fq = args.get(0);
-    int limit = parseIntFlag(args, "--limit", 2000);
-    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
-
-    var resp =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
-
-    ListColumnStatsRequest.Builder rb =
-        ListColumnStatsRequest.newBuilder()
-            .setTableId(resp.getResourceId())
-            .setSnapshot(parseSnapshotSelector(args));
-
-    List<ColumnStats> all =
-        collectPages(
-            pageSize,
-            pr -> statistics.listColumnStats(rb.setPage(pr).build()),
-            r -> r.getColumnsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    if (all.size() > limit) all = all.subList(0, limit);
-    if (json) {
-      printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build());
-      return;
-    }
-    printColumnStats(all);
-  }
-
-  private void statsFiles(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          "usage: stats files <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
-              + " [--limit N]");
-      return;
-    }
-
-    String fq = args.get(0);
-    int limit = parseIntFlag(args, "--limit", 1000);
-    int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
-
-    var resolved =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(nameRefForTable(fq)).build());
-
-    ListFileColumnStatsRequest.Builder rb =
-        ListFileColumnStatsRequest.newBuilder()
-            .setTableId(resolved.getResourceId())
-            .setSnapshot(parseSnapshotSelector(args));
-
-    List<FileColumnStats> all =
-        collectPages(
-            pageSize,
-            pr -> statistics.listFileColumnStats(rb.setPage(pr).build()),
-            r -> r.getFileColumnsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-
-    if (all.size() > limit) {
-      all = all.subList(0, limit);
-    }
-
-    printFileColumnStats(all);
+    StatsCliSupport.handle(
+        "analyze",
+        args,
+        out,
+        statistics,
+        tables,
+        namespaces,
+        reconcileControl,
+        this::resolveTableIdFlexible);
   }
 
   private void cmdQuery(List<String> args) {
@@ -3371,82 +3217,6 @@ public class Shell implements Runnable {
     }
   }
 
-  private void printTableStats(TableStats s) {
-    out.println("Table Stats:");
-    out.printf("  table_id:        %s%n", rid(s.getTableId()));
-    out.printf("  snapshot_id:     %d%n", s.getSnapshotId());
-    out.printf("  row_count:       %d%n", s.getRowCount());
-    out.printf("  data_file_count: %d%n", s.getDataFileCount());
-    out.printf("  total_size:      %d bytes%n", s.getTotalSizeBytes());
-    if (s.hasNdv()) {
-      out.printf("  ndv:             %s%n", ndvToString(s.getNdv()));
-    }
-    if (s.hasUpstream()) {
-      out.printf(
-          "  upstream:        system=%s commit=%s created=%s%n",
-          s.getUpstream().getSystem().name(),
-          s.getUpstream().getCommitRef(),
-          ts(s.getUpstream().getFetchedAt()));
-    }
-  }
-
-  private void printColumnStats(List<ColumnStats> cols) {
-    out.printf(
-        "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
-        "CID", "NAME", "TYPE", "VALUES", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
-
-    for (var c : cols) {
-      out.printf(
-          "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
-          c.getColumnId(),
-          trunc(c.getColumnName(), 28),
-          trunc(c.getLogicalType(), 12),
-          Long.toString(c.getValueCount()),
-          Long.toString(c.getNullCount()),
-          Long.toString(c.getNanCount()),
-          trunc(c.getMin(), 24),
-          trunc(c.getMax(), 24),
-          c.hasNdv() ? ndvToString(c.getNdv()) : "-",
-          c.hasNdv() ? c.getNdv().getSketchesCount() : "-");
-    }
-  }
-
-  private void printFileColumnStats(List<FileColumnStats> files) {
-    if (files == null || files.isEmpty()) {
-      out.println("No file stats found.");
-      return;
-    }
-
-    out.printf("%-4s %-10s %-12s %-20s %s%n", "IDX", "ROWS", "BYTES", "CONTENT", "PATH");
-    for (int i = 0; i < files.size(); i++) {
-      FileColumnStats fs = files.get(i);
-      String content = fs.getFileContent().name().replaceFirst("^FC_", "");
-      out.printf(
-          "%-4d %-10d %-12d %-20s %s%n",
-          i, fs.getRowCount(), fs.getSizeBytes(), content, fs.getFilePath());
-
-      var cols = fs.getColumnsList();
-      if (!cols.isEmpty()) {
-        out.println("    columns:");
-        for (ColumnStats c : cols) {
-          String ndv = c.hasNdv() ? ndvToString(c.getNdv()) : "-";
-          out.printf(
-              "      %-8s %-24s %-10s values=%-8d nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
-                  + " ndv=%s%n",
-              c.getColumnId(),
-              trunc(c.getColumnName(), 24),
-              trunc(c.getLogicalType(), 10),
-              c.getValueCount(),
-              c.getNullCount(),
-              c.getNanCount(),
-              trunc(c.getMin(), 20),
-              trunc(c.getMax(), 20),
-              ndv);
-        }
-      }
-    }
-  }
-
   private void printConnectors(List<Connector> list) {
     final int W_ID = 36;
     final int W_KIND = 10;
@@ -3666,7 +3436,7 @@ public class Shell implements Runnable {
     return "-";
   }
 
-  private static NameRef nameRefForTable(String fq) {
+  static NameRef nameRefForTable(String fq) {
     if (fq == null) throw new IllegalArgumentException("Fully qualified name is required");
     fq = fq.trim();
     if (fq.isEmpty()) {
