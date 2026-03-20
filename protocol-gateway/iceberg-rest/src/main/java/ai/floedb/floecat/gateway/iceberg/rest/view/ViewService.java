@@ -43,7 +43,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.catalog.ViewRef;
 import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.support.PageRequestHelper;
 import ai.floedb.floecat.gateway.iceberg.rest.view.ViewMetadataService.MetadataContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.FieldMask;
@@ -74,7 +73,7 @@ public class ViewService {
   public Response list(NamespaceRef namespaceContext, String pageToken, Integer pageSize) {
     ListViewsRequest.Builder req =
         ListViewsRequest.newBuilder().setNamespaceId(namespaceContext.namespaceId());
-    PageRequest.Builder page = PageRequestHelper.builder(pageToken, pageSize);
+    PageRequest.Builder page = buildPageRequest(pageToken, pageSize);
     if (page != null) {
       req.setPage(page);
     }
@@ -85,7 +84,7 @@ public class ViewService {
             .map(v -> new TableIdentifierDto(namespaceContext.namespacePath(), v.getDisplayName()))
             .collect(Collectors.toList());
     return Response.ok(
-            new ViewListResponse(identifiers, PageRequestHelper.nextToken(resp.getPage())))
+            new ViewListResponse(identifiers, nextPageToken(resp.getPage().getNextPageToken())))
         .build();
   }
 
@@ -381,5 +380,23 @@ public class ViewService {
         List.of(history),
         List.of(schema),
         props);
+  }
+
+  private static PageRequest.Builder buildPageRequest(String pageToken, Integer pageSize) {
+    if (pageToken == null && pageSize == null) {
+      return null;
+    }
+    PageRequest.Builder builder = PageRequest.newBuilder();
+    if (pageToken != null) {
+      builder.setPageToken(pageToken);
+    }
+    if (pageSize != null) {
+      builder.setPageSize(pageSize);
+    }
+    return builder;
+  }
+
+  private static String nextPageToken(String pageToken) {
+    return pageToken == null || pageToken.isBlank() ? null : pageToken;
   }
 }

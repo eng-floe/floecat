@@ -78,6 +78,7 @@ class TableGatewaySupportTest {
   private final Config mpConfig = mock(Config.class);
   private final GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
   private final ObjectMapper mapper = new ObjectMapper();
+  private StorageAccessService storageAccessService;
 
   private TableGatewaySupport support;
 
@@ -97,7 +98,8 @@ class TableGatewaySupportTest {
     when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
     when(grpc.withHeaders(directoryStub)).thenReturn(directoryStub);
 
-    support = new TableGatewaySupport(grpc, config, mapper, mpConfig, grpcClient);
+    storageAccessService = new StorageAccessService(config, mpConfig);
+    support = new TableGatewaySupport(grpc, config, mapper, grpcClient, storageAccessService);
   }
 
   @Test

@@ -65,36 +65,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
-import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableGatewaySupport {
   private static final Logger LOG = Logger.getLogger(TableGatewaySupport.class);
-  private static final List<StorageCredentialDto> STATIC_STORAGE_CREDENTIALS =
-      List.of(new StorageCredentialDto("*", Map.of("type", "static")));
 
   private final GrpcWithHeaders grpc;
   private final IcebergGatewayConfig config;
   private final ObjectMapper mapper;
-  private final Config mpConfig;
   private final GrpcServiceFacade grpcClient;
-
-  private volatile Map<String, String> tableConfigCache;
-  private volatile List<StorageCredentialDto> storageCredentialCache;
+  private final StorageAccessService storageAccessService;
 
   @Inject
   public TableGatewaySupport(
       GrpcWithHeaders grpc,
       IcebergGatewayConfig config,
       ObjectMapper mapper,
-      Config mpConfig,
-      GrpcServiceFacade grpcClient) {
+      GrpcServiceFacade grpcClient,
+      StorageAccessService storageAccessService) {
     this.grpc = grpc;
     this.config = config;
     this.mapper = mapper;
-    this.mpConfig = mpConfig;
     this.grpcClient = grpcClient;
+    this.storageAccessService = storageAccessService;
   }
 
   public record ListTablesResult(List<TableIdentifierDto> identifiers, String nextPageToken) {}
@@ -258,25 +252,11 @@ public class TableGatewaySupport {
   }
 
   public String metadataLocationFromCreate(TableRequests.Create req) {
-    return MetadataLocationUtil.metadataLocation(req == null ? null : req.properties());
+    return storageAccessService.metadataLocationFromCreate(req);
   }
 
   public String resolveTableLocation(String requestedLocation, String metadataLocation) {
-    if (requestedLocation != null && !requestedLocation.isBlank()) {
-      return requestedLocation;
-    }
-    if (metadataLocation == null || metadataLocation.isBlank()) {
-      return null;
-    }
-    int idx = metadataLocation.indexOf("/metadata/");
-    String base;
-    if (idx > 0) {
-      base = metadataLocation.substring(0, idx);
-    } else {
-      int slash = metadataLocation.lastIndexOf('/');
-      base = slash > 0 ? metadataLocation.substring(0, slash) : metadataLocation;
-    }
-    return base;
+    return storageAccessService.resolveTableLocation(requestedLocation, metadataLocation);
   }
 
   public boolean connectorIntegrationEnabled() {
@@ -296,165 +276,24 @@ public class TableGatewaySupport {
   }
 
   public Map<String, String> defaultTableConfig() {
-    Map<String, String> cached = tableConfigCache;
-    if (cached != null) {
-      return cached;
-    }
-    Map<String, String> computed = new LinkedHashMap<>();
-    config.metadataFileIo().ifPresent(ioImpl -> computed.putIfAbsent("io-impl", ioImpl));
-    config
-        .metadataFileIoRoot()
-        .ifPresent(root -> computed.putIfAbsent("fs.floecat.test-root", root));
-    // Expose non-secret S3 endpoint/path-style settings so clients (e.g. DuckDB) can
-    // consistently resolve object storage during both read and write paths.
-    config
-        .storageCredential()
-        .ifPresent(cfg -> cfg.properties().forEach((k, v) -> addClientSafeConfig(computed, k, v)));
-    readPrefixedConfig("floecat.gateway.storage-credential.properties.")
-        .forEach((k, v) -> addClientSafeConfig(computed, k, v));
-    config
-        .defaultRegion()
-        .filter(region -> region != null && !region.isBlank())
-        .ifPresent(
-            region -> {
-              computed.putIfAbsent("s3.region", region);
-              computed.putIfAbsent("region", region);
-              computed.putIfAbsent("client.region", region);
-            });
-    Map<String, String> normalized = computed.isEmpty() ? Map.of() : Map.copyOf(computed);
-    tableConfigCache = normalized;
-    return normalized;
-  }
-
-  private void addClientSafeConfig(Map<String, String> target, String key, String value) {
-    if (!isUsableIoValue(value) || key == null || key.isBlank()) {
-      return;
-    }
-    String normalized = key.toLowerCase();
-    if (normalized.contains("secret")
-        || normalized.contains("access-key")
-        || normalized.contains("session-token")
-        || normalized.contains("token")) {
-      return;
-    }
-    if ("s3.endpoint".equals(normalized)
-        || "s3.path-style-access".equals(normalized)
-        || "s3.region".equals(normalized)
-        || "region".equals(normalized)
-        || "client.region".equals(normalized)) {
-      target.putIfAbsent(key, value.trim());
-    }
+    return storageAccessService.defaultTableConfig();
   }
 
   public Map<String, String> resolveRegisterFileIoProperties(
       Map<String, String> requestProperties) {
-    Map<String, String> resolved = new LinkedHashMap<>(defaultFileIoProperties());
-    if (requestProperties != null && !requestProperties.isEmpty()) {
-      requestProperties.forEach(
-          (k, v) -> {
-            if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
-              resolved.put(k, v.trim());
-            }
-          });
-    }
-    return resolved.isEmpty() ? Map.of() : Map.copyOf(resolved);
+    return storageAccessService.resolveRegisterFileIoProperties(requestProperties);
   }
 
   public Map<String, String> defaultFileIoProperties() {
-    Map<String, String> merged = new LinkedHashMap<>();
-    defaultCredentials().stream()
-        .findFirst()
-        .map(StorageCredentialDto::config)
-        .ifPresent(
-            credentialProps ->
-                credentialProps.forEach(
-                    (k, v) -> {
-                      if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
-                        merged.put(k, v.trim());
-                      }
-                    }));
-    defaultTableConfig()
-        .forEach(
-            (k, v) -> {
-              if (FileIoFactory.isFileIoProperty(k) && isUsableIoValue(v)) {
-                merged.put(k, v.trim());
-              }
-            });
-    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+    return storageAccessService.defaultFileIoProperties();
   }
 
   public List<StorageCredentialDto> defaultCredentials() {
-    List<StorageCredentialDto> cached = storageCredentialCache;
-    if (cached != null) {
-      return cached;
-    }
-    Map<String, String> props = new LinkedHashMap<>();
-    config.storageCredential().ifPresent(cfg -> props.putAll(cfg.properties()));
-    readPrefixedConfig("floecat.gateway.storage-credential.properties.")
-        .forEach(
-            (k, v) -> {
-              if (v != null && !v.isBlank()) {
-                props.put(k, v);
-              }
-            });
-    if (props.isEmpty()) {
-      storageCredentialCache = STATIC_STORAGE_CREDENTIALS;
-      return STATIC_STORAGE_CREDENTIALS;
-    }
-    String scope =
-        config
-            .storageCredential()
-            .flatMap(IcebergGatewayConfig.StorageCredentialConfig::scope)
-            .filter(s -> !s.isBlank())
-            .orElseGet(
-                () ->
-                    mpConfig
-                        .getOptionalValue("floecat.gateway.storage-credential.scope", String.class)
-                        .filter(s -> s != null && !s.isBlank())
-                        .orElse("*"));
-    List<StorageCredentialDto> computed =
-        List.of(new StorageCredentialDto(scope, Map.copyOf(props)));
-    storageCredentialCache = computed;
-    return computed;
+    return storageAccessService.defaultCredentials();
   }
 
   public List<StorageCredentialDto> credentialsForAccessDelegation(String accessDelegationMode) {
-    if (accessDelegationMode == null || accessDelegationMode.isBlank()) {
-      return null;
-    }
-    boolean vended = false;
-    for (String raw : accessDelegationMode.split(",")) {
-      String mode = raw == null ? "" : raw.trim();
-      if (mode.isEmpty()) {
-        continue;
-      }
-      if ("vended-credentials".equalsIgnoreCase(mode)) {
-        vended = true;
-        continue;
-      }
-      throw new IllegalArgumentException("Unsupported access delegation mode: " + mode);
-    }
-    if (!vended) {
-      return null;
-    }
-    if (!hasConfiguredCredentials()) {
-      throw new IllegalArgumentException(
-          "Credential vending was requested but no credentials are available");
-    }
-    return defaultCredentials();
-  }
-
-  private boolean hasConfiguredCredentials() {
-    Map<String, String> props = new LinkedHashMap<>();
-    config.storageCredential().ifPresent(cfg -> props.putAll(cfg.properties()));
-    readPrefixedConfig("floecat.gateway.storage-credential.properties.")
-        .forEach(
-            (k, v) -> {
-              if (v != null && !v.isBlank()) {
-                props.put(k, v);
-              }
-            });
-    return !props.isEmpty();
+    return storageAccessService.credentialsForAccessDelegation(accessDelegationMode);
   }
 
   public IcebergMetadata loadCurrentMetadata(Table table) {
@@ -621,18 +460,6 @@ public class TableGatewaySupport {
     return builder.build();
   }
 
-  private Map<String, String> readPrefixedConfig(String prefix) {
-    Map<String, String> out = new LinkedHashMap<>();
-    for (String name : mpConfig.getPropertyNames()) {
-      if (name.startsWith(prefix)) {
-        mpConfig
-            .getOptionalValue(name, String.class)
-            .ifPresent(value -> out.put(name.substring(prefix.length()), value));
-      }
-    }
-    return out;
-  }
-
   private static Long propertyLong(Map<String, String> props, String key) {
     String value = props.get(key);
     if (value == null || value.isBlank()) {
@@ -643,17 +470,6 @@ public class TableGatewaySupport {
     } catch (NumberFormatException e) {
       return null;
     }
-  }
-
-  private static boolean isUsableIoValue(String value) {
-    if (value == null) {
-      return false;
-    }
-    String trimmed = value.trim();
-    if (trimmed.isEmpty()) {
-      return false;
-    }
-    return !(trimmed.startsWith("<") && trimmed.endsWith(">"));
   }
 
   private String namespaceLocation(NamespaceRef namespaceContext) {

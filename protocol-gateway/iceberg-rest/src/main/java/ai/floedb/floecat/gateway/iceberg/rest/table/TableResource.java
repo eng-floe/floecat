@@ -87,7 +87,6 @@ public class TableResource {
   @Inject ConnectorProvisioningService connectorProvisioningService;
   @Inject TransactionCommitService transactionCommitService;
   @Inject TablePlanService tablePlanService;
-  @Inject PlanTaskManager planTaskManager;
   @Inject ResourceResolver resourceResolver;
   @Inject CommitTrafficLogger commitTrafficLogger;
   @Inject TableGatewaySupport tableSupport;
@@ -270,12 +269,12 @@ public class TableResource {
               useSnapshotSchema,
               request.minRowsRequested());
       planId = handle.queryId();
-      planTaskManager.registerSubmittedPlan(
+      tablePlanService.registerSubmittedPlan(
           planId, tableContext.namespaceName(), tableContext.table());
       TablePlanResponseDto planned =
           tablePlanService.fetchPlan(planId, tableSupport.defaultCredentials());
-      PlanTaskManager.PlanDescriptor descriptor =
-          planTaskManager.registerCompletedPlan(
+      TablePlanService.PlanDescriptor descriptor =
+          tablePlanService.registerCompletedPlan(
               planId,
               tableContext.namespaceName(),
               tableContext.table(),
@@ -288,7 +287,6 @@ public class TableResource {
     } catch (RuntimeException ex) {
       if (planId != null) {
         try {
-          planTaskManager.cancelPlan(planId);
           tablePlanService.cancelPlan(planId);
         } catch (RuntimeException ignored) {
           // Cancellation is best-effort; errors are surfaced via the original failure.
@@ -310,7 +308,7 @@ public class TableResource {
       @PathParam("table") String table,
       @PathParam("plan-id") String planId) {
     resourceResolver.table(prefix, namespace, table);
-    return planTaskManager
+    return tablePlanService
         .findPlan(planId)
         .map(
             descriptor -> {
@@ -332,11 +330,10 @@ public class TableResource {
       @HeaderParam("Idempotency-Key") String idempotencyKey,
       @PathParam("plan-id") String planId) {
     resourceResolver.table(prefix, namespace, table);
-    var plan = planTaskManager.findPlan(planId);
+    var plan = tablePlanService.findPlan(planId);
     if (plan.isEmpty()) {
       return IcebergErrorResponses.noSuchPlanId("plan " + planId + " not found");
     }
-    planTaskManager.cancelPlan(planId);
     tablePlanService.cancelPlan(planId);
     return Response.noContent().build();
   }
@@ -353,7 +350,7 @@ public class TableResource {
       return IcebergErrorResponses.validation("plan-task is required");
     }
     TableRef tableContext = resourceResolver.table(prefix, namespace, table);
-    return planTaskManager
+    return tablePlanService
         .consumeTask(tableContext.namespaceName(), tableContext.table(), request.planTask().trim())
         .map(response -> Response.ok(response).build())
         .orElseGet(() -> IcebergErrorResponses.noSuchPlanTask("plan-task not found"));
@@ -443,7 +440,7 @@ public class TableResource {
   }
 
   private TablePlanResponseDto toPlanResponse(
-      PlanTaskManager.PlanDescriptor descriptor, boolean includePlanId) {
+      TablePlanService.PlanDescriptor descriptor, boolean includePlanId) {
     String status = descriptor.status().value();
     if ("cancelled".equals(status)) {
       return new TablePlanResponseDto(status, null, null, null, null, null);
@@ -643,19 +640,7 @@ public class TableResource {
   }
 
   private String metadataLocation(IcebergMetadata metadata, Table tableRecord) {
-    if (tableRecord != null && tableRecord.getPropertiesCount() > 0) {
-      String propertyLocation =
-          MetadataLocationUtil.metadataLocation(tableRecord.getPropertiesMap());
-      if (propertyLocation != null && !propertyLocation.isBlank()) {
-        return propertyLocation;
-      }
-    }
-    if (metadata != null
-        && metadata.getMetadataLocation() != null
-        && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
-    }
-    return null;
+    return MetadataLocationUtil.resolveCurrentMetadataLocation(tableRecord, metadata);
   }
 
   private String etagSource(

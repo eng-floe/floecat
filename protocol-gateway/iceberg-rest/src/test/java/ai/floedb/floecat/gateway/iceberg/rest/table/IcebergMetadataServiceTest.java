@@ -242,4 +242,38 @@ class IcebergMetadataServiceTest {
 
     assertNull(metadata);
   }
+
+  @Test
+  void canonicalizeMaterializeResultUpdatesEmbeddedMetadataLocationProperty() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new org.apache.iceberg.Schema(
+                org.apache.iceberg.types.Types.NestedField.optional(
+                    1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+            org.apache.iceberg.PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of(
+                "metadata-location",
+                "s3://warehouse/db/orders/metadata/00000-old.metadata.json",
+                "owner",
+                "alice"));
+
+    IcebergMetadataService.MaterializeResult result =
+        service.canonicalizeMaterializeResult(
+            "s3://warehouse/db/orders/metadata/00001-new.metadata.json", metadata);
+
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00001-new.metadata.json", result.metadataLocation());
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00001-new.metadata.json",
+        result.tableMetadata().metadataFileLocation());
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/00001-new.metadata.json",
+        result.tableMetadata().properties().get("metadata-location"));
+    assertEquals("alice", result.tableMetadata().properties().get("owner"));
+  }
 }

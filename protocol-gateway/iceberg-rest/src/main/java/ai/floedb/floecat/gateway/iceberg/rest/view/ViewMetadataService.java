@@ -21,7 +21,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.ViewMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewRepresentation;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.ViewRequests.ViewVersion;
-import ai.floedb.floecat.gateway.iceberg.rest.support.ReservedPropertyUtil;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -45,6 +44,7 @@ import java.util.regex.Pattern;
 public class ViewMetadataService {
   public static final String METADATA_PROPERTY_KEY = "view.metadata.json";
   public static final String METADATA_LOCATION_PROPERTY_KEY = "metadata-location";
+  private static final List<String> RESERVED_PROPERTY_PREFIXES = List.of("polaris.");
   private static final Set<String> RESERVED_PROPERTY_KEYS =
       Set.of(METADATA_PROPERTY_KEY, METADATA_LOCATION_PROPERTY_KEY);
 
@@ -583,7 +583,7 @@ public class ViewMetadataService {
     if (props == null) {
       return sanitized;
     }
-    ReservedPropertyUtil.validateAndFilter(props);
+    validateReservedProperties(props);
     props.forEach(
         (key, value) -> {
           if (key == null || value == null || RESERVED_PROPERTY_KEYS.contains(key)) {
@@ -672,5 +672,23 @@ public class ViewMetadataService {
 
   private String nonBlank(String value, String fallback) {
     return value != null && !value.isBlank() ? value : fallback;
+  }
+
+  private static void validateReservedProperties(Map<String, String> properties) {
+    if (properties == null || properties.isEmpty()) {
+      return;
+    }
+    for (var entry : properties.entrySet()) {
+      String key = entry.getKey();
+      if (key == null) {
+        continue;
+      }
+      for (String prefix : RESERVED_PROPERTY_PREFIXES) {
+        if (key.startsWith(prefix)) {
+          throw new IllegalArgumentException(
+              "Property '" + key + "' matches reserved prefix '" + prefix + "'");
+        }
+      }
+    }
   }
 }

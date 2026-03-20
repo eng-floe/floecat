@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.support;
 
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
@@ -31,6 +33,45 @@ public final class MetadataLocationUtil {
     }
     String location = props.get(PRIMARY_KEY);
     return (location == null || location.isBlank()) ? null : location;
+  }
+
+  public static String resolveCurrentMetadataLocation(
+      Map<String, String> props, String fallbackMetadataLocation) {
+    String propertyLocation = metadataLocation(props);
+    if (propertyLocation != null && !propertyLocation.isBlank()) {
+      return propertyLocation;
+    }
+    return (fallbackMetadataLocation == null || fallbackMetadataLocation.isBlank())
+        ? null
+        : fallbackMetadataLocation;
+  }
+
+  public static String resolveCurrentMetadataLocation(Table table, IcebergMetadata metadata) {
+    String fallback =
+        metadata == null
+                || metadata.getMetadataLocation() == null
+                || metadata.getMetadataLocation().isBlank()
+            ? null
+            : metadata.getMetadataLocation();
+    return resolveCurrentMetadataLocation(
+        table == null ? null : table.getPropertiesMap(), fallback);
+  }
+
+  public static String resolveOrBootstrapMetadataLocation(
+      Map<String, String> props,
+      String fallbackMetadataLocation,
+      String tableLocation,
+      String tableUuid) {
+    String metadataLocation = resolveCurrentMetadataLocation(props, fallbackMetadataLocation);
+    if ((metadataLocation == null || metadataLocation.isBlank())
+        && tableLocation != null
+        && !tableLocation.isBlank()
+        && tableUuid != null
+        && !tableUuid.isBlank()) {
+      metadataLocation = bootstrapMetadataLocation(tableLocation, tableUuid);
+      setMetadataLocation(props, metadataLocation);
+    }
+    return metadataLocation;
   }
 
   public static void setMetadataLocation(Map<String, String> props, String metadataLocation) {

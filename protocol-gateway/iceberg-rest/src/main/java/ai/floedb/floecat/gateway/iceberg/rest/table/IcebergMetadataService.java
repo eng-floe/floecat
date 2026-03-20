@@ -22,6 +22,7 @@ import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.fi
 import ai.floedb.floecat.catalog.rpc.PartitionField;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.support.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.support.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergBlobMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergEncryptedKey;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -46,12 +48,15 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.Supplier;
 import org.apache.iceberg.BlobMetadata;
 import org.apache.iceberg.HistoryEntry;
@@ -72,12 +77,17 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.encryption.EncryptedKey;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.FileInfo;
+import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class IcebergMetadataService {
   private static final Logger LOG = Logger.getLogger(IcebergMetadataService.class);
+  private static final Set<String> SKIPPED_MATERIALIZE_SCHEMES = Set.of("floecat");
+  @Inject IcebergGatewayConfig config;
   @Inject ObjectMapper mapper;
+  @Inject TableGatewaySupport tableGatewaySupport;
 
   public void setMapper(ObjectMapper mapper) {
     this.mapper = mapper;
@@ -100,12 +110,64 @@ public class IcebergMetadataService {
       Long timestampMs,
       List<String> manifestLists,
       Map<String, String> summary,
-      Integer schemaId) {}
+      Integer schemaId) {
+    public Map<String, Object> toSnapshotUpdate(String schemaJson) {
+      Map<String, Object> snapshotMap = new LinkedHashMap<>();
+      if (snapshotId != null) {
+        snapshotMap.put("snapshot-id", snapshotId);
+      }
+      if (parentSnapshotId != null) {
+        snapshotMap.put("parent-snapshot-id", parentSnapshotId);
+      }
+      if (sequenceNumber != null) {
+        snapshotMap.put("sequence-number", sequenceNumber);
+      }
+      if (timestampMs != null) {
+        snapshotMap.put("timestamp-ms", timestampMs);
+      }
+      String manifestList = SnapshotMetadataUtil.firstManifestList(manifestLists);
+      if (manifestList != null) {
+        snapshotMap.put("manifest-list", manifestList);
+      }
+      if (summary != null && !summary.isEmpty()) {
+        snapshotMap.put("summary", summary);
+      }
+      if (schemaId != null) {
+        snapshotMap.put("schema-id", schemaId);
+      }
+      if (schemaJson != null && !schemaJson.isBlank()) {
+        snapshotMap.put("schema-json", schemaJson);
+      }
+      return snapshotMap;
+    }
+  }
 
   public record ResolvedMetadata(
       TableMetadata tableMetadata,
       TableMetadataView metadataView,
       IcebergMetadata icebergMetadata) {}
+
+  public static final class MaterializeResult {
+    private final String metadataLocation;
+    private final TableMetadata tableMetadata;
+
+    public MaterializeResult(String metadataLocation) {
+      this(metadataLocation, null);
+    }
+
+    public MaterializeResult(String metadataLocation, TableMetadata tableMetadata) {
+      this.metadataLocation = metadataLocation;
+      this.tableMetadata = tableMetadata;
+    }
+
+    public String metadataLocation() {
+      return metadataLocation;
+    }
+
+    public TableMetadata tableMetadata() {
+      return tableMetadata;
+    }
+  }
 
   public ImportedMetadata importMetadata(
       String metadataLocation, Map<String, String> ioProperties) {
@@ -269,19 +331,72 @@ public class IcebergMetadataService {
     return resolveCurrentIcebergMetadata(table, null, defaultFileIoProperties);
   }
 
-  private String resolveMetadataLocation(Table table, IcebergMetadata metadata) {
-    if (table != null && table.getPropertiesCount() > 0) {
-      String propertyLocation = MetadataLocationUtil.metadataLocation(table.getPropertiesMap());
-      if (propertyLocation != null && !propertyLocation.isBlank()) {
-        return propertyLocation;
+  public MaterializeResult materialize(
+      String namespaceFq,
+      String tableName,
+      TableMetadata metadata,
+      String metadataLocationOverride) {
+    if (metadata == null) {
+      LOG.debugf(
+          "Skipping metadata materialization for %s.%s because commit metadata was empty",
+          namespaceFq, tableName);
+      return new MaterializeResult(metadataLocationOverride, null);
+    }
+    String requestedLocation =
+        firstNonBlank(metadataLocationOverride, metadata.metadataFileLocation());
+    if (requestedLocation != null && !shouldMaterialize(requestedLocation)) {
+      LOG.debugf(
+          "Skipping metadata materialization for %s.%s because metadata-location was %s",
+          namespaceFq, tableName, requestedLocation);
+      return canonicalizeMaterializeResult(requestedLocation, metadata);
+    }
+    String resolvedLocation = null;
+    FileIO fileIO = null;
+    try {
+      Map<String, String> props = new LinkedHashMap<>();
+      if (tableGatewaySupport != null) {
+        props.putAll(tableGatewaySupport.defaultFileIoProperties());
       }
+      props.putAll(sanitizeProperties(metadata.properties()));
+      fileIO = FileIoFactory.createFileIo(props, config, true);
+      resolvedLocation = resolveVersionedLocation(fileIO, requestedLocation, metadata);
+      if (resolvedLocation == null || resolvedLocation.isBlank()) {
+        LOG.debugf(
+            "Skipping metadata materialization for %s.%s because metadata-location was unavailable",
+            namespaceFq, tableName);
+        return canonicalizeMaterializeResult(requestedLocation, metadata);
+      }
+      TableMetadata parsed = withMetadataLocation(metadata, resolvedLocation);
+      writeMetadata(fileIO, resolvedLocation, parsed);
+      LOG.infof(
+          "Materialized Iceberg metadata files for %s.%s to %s",
+          namespaceFq, tableName, resolvedLocation);
+      return new MaterializeResult(resolvedLocation, parsed);
+    } catch (Exception e) {
+      LOG.warnf(
+          e,
+          "Materialize metadata failure namespace=%s table=%s target=%s",
+          namespaceFq,
+          tableName,
+          resolvedLocation == null ? requestedLocation : resolvedLocation);
+      throw new IllegalArgumentException(
+          "Failed to materialize Iceberg metadata files to " + resolvedLocation, e);
+    } finally {
+      FileIoFactory.closeQuietly(fileIO);
     }
-    if (metadata != null
-        && metadata.getMetadataLocation() != null
-        && !metadata.getMetadataLocation().isBlank()) {
-      return metadata.getMetadataLocation();
+  }
+
+  MaterializeResult canonicalizeMaterializeResult(String metadataLocation, TableMetadata metadata) {
+    if (metadata == null) {
+      return new MaterializeResult(metadataLocation, null);
     }
-    return null;
+    TableMetadata canonical =
+        hasText(metadataLocation) ? withMetadataLocation(metadata, metadataLocation) : metadata;
+    return new MaterializeResult(metadataLocation, canonical);
+  }
+
+  private String resolveMetadataLocation(Table table, IcebergMetadata metadata) {
+    return MetadataLocationUtil.resolveCurrentMetadataLocation(table, metadata);
   }
 
   private Map<String, String> mergeIoProperties(
@@ -294,6 +409,247 @@ public class IcebergMetadataService {
       ioProps.putAll(FileIoFactory.filterIoProperties(table.getPropertiesMap()));
     }
     return ioProps;
+  }
+
+  private boolean shouldMaterialize(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return false;
+    }
+    try {
+      URI uri = URI.create(metadataLocation);
+      String scheme = uri.getScheme();
+      if (scheme == null) {
+        return false;
+      }
+      return !SKIPPED_MATERIALIZE_SCHEMES.contains(scheme.toLowerCase(Locale.ROOT));
+    } catch (IllegalArgumentException e) {
+      LOG.infof(
+          "Skipping metadata materialization because metadata-location %s is invalid",
+          metadataLocation);
+      return false;
+    }
+  }
+
+  private void writeMetadata(FileIO fileIO, String location, TableMetadata metadata) {
+    LOG.infof("Writing Iceberg metadata file %s", location == null ? "<null>" : location);
+    TableMetadataParser.write(metadata, fileIO.newOutputFile(location));
+    LOG.infof(
+        "Successfully wrote Iceberg metadata file %s", location == null ? "<null>" : location);
+  }
+
+  private static boolean hasText(String value) {
+    return value != null && !value.isBlank();
+  }
+
+  private Map<String, String> sanitizeProperties(Map<String, String> props) {
+    Map<String, String> sanitized = new LinkedHashMap<>();
+    if (props != null && !props.isEmpty()) {
+      props.forEach(
+          (key, value) -> {
+            if (key != null && value != null) {
+              sanitized.put(key, value);
+            }
+          });
+    }
+    return sanitized;
+  }
+
+  private String resolveVersionedLocation(
+      FileIO fileIO, String metadataLocation, TableMetadata metadata) {
+    String directory = null;
+    if (metadataLocation != null) {
+      if (metadataLocation.endsWith("/")) {
+        directory = metadataLocation;
+      } else {
+        directory = directoryOf(metadataLocation);
+      }
+    }
+    if (directory == null) {
+      directory = metadataDirectory(metadata);
+    }
+    directory = normalizeMetadataDirectory(directory);
+    if (directory == null || directory.isBlank()) {
+      return null;
+    }
+    if (!directory.endsWith("/")) {
+      directory = directory + "/";
+    }
+    return directory + nextMetadataFileName(fileIO, directory, metadata);
+  }
+
+  private String directoryOf(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return null;
+    }
+    String trimmed = metadataLocation;
+    while (trimmed.endsWith("/") && trimmed.length() > 1) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1);
+    }
+    int slash = trimmed.lastIndexOf('/');
+    if (slash < 0) {
+      return null;
+    }
+    return trimmed.substring(0, slash + 1);
+  }
+
+  private String metadataDirectory(TableMetadata metadata) {
+    if (metadata == null) {
+      return null;
+    }
+    String location = firstNonBlank(metadata.metadataFileLocation(), metadata.location());
+    String directory = metadataDirectoryFromLocation(location);
+    if (directory != null) {
+      return directory;
+    }
+
+    Map<String, String> props = metadata.properties();
+    if (props != null && !props.isEmpty()) {
+      String candidate = firstNonBlank(props.get("metadata-location"), props.get("location"));
+      directory = metadataDirectoryFromLocation(candidate);
+      if (directory != null) {
+        return directory;
+      }
+    }
+
+    directory = directoryFromMetadataLog(metadata);
+    if (directory != null) {
+      return directory;
+    }
+
+    location = firstNonBlank(location, props == null ? null : props.get("location"));
+    if (location == null || location.isBlank()) {
+      return null;
+    }
+    String base = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
+    return base + "/metadata/";
+  }
+
+  private String metadataDirectoryFromLocation(String location) {
+    if (location == null || location.isBlank()) {
+      return null;
+    }
+    if (looksLikeMetadataPath(location)) {
+      return directoryOf(location);
+    }
+    return null;
+  }
+
+  private boolean looksLikeMetadataPath(String location) {
+    if (location == null || location.isBlank()) {
+      return false;
+    }
+    if (location.contains("/metadata/")) {
+      return true;
+    }
+    return location.endsWith(".metadata.json");
+  }
+
+  private String directoryFromMetadataLog(TableMetadata metadata) {
+    if (metadata == null || metadata.previousFiles() == null) {
+      return null;
+    }
+    for (TableMetadata.MetadataLogEntry entry : metadata.previousFiles()) {
+      String file = entry == null ? null : entry.file();
+      if (file != null && !file.isBlank()) {
+        String directory = directoryOf(file);
+        if (directory != null) {
+          return directory;
+        }
+      }
+    }
+    return null;
+  }
+
+  private String nextMetadataFileName(FileIO fileIO, String directory, TableMetadata metadata) {
+    long nextVersion = nextMetadataVersion(fileIO, directory, metadata);
+    return String.format("%05d-%s.metadata.json", nextVersion, UUID.randomUUID());
+  }
+
+  private long nextMetadataVersion(FileIO fileIO, String directory, TableMetadata metadata) {
+    long max = parseExistingFiles(fileIO, directory);
+    if (metadata != null && metadata.previousFiles() != null) {
+      for (TableMetadata.MetadataLogEntry entry : metadata.previousFiles()) {
+        String file = entry == null ? null : entry.file();
+        long parsed = parseVersion(file);
+        if (parsed > max) {
+          max = parsed;
+        }
+      }
+    }
+    return max < 0 ? 0 : max + 1;
+  }
+
+  private TableMetadata withMetadataLocation(TableMetadata metadata, String metadataLocation) {
+    if (metadata == null || !hasText(metadataLocation)) {
+      return metadata;
+    }
+    Map<String, String> props = new LinkedHashMap<>();
+    if (metadata.properties() != null && !metadata.properties().isEmpty()) {
+      props.putAll(metadata.properties());
+    }
+    props.put("metadata-location", metadataLocation);
+    return TableMetadata.buildFrom(metadata)
+        .discardChanges()
+        .setProperties(props)
+        .withMetadataLocation(metadataLocation)
+        .build();
+  }
+
+  private long parseExistingFiles(FileIO fileIO, String directory) {
+    if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
+      return -1;
+    }
+    long max = -1;
+    try {
+      for (FileInfo info : prefixOps.listPrefix(directory)) {
+        String location = info.location();
+        if (location != null && location.endsWith(".metadata.json")) {
+          long parsed = parseVersion(location);
+          if (parsed > max) {
+            max = parsed;
+          }
+        }
+      }
+    } catch (UnsupportedOperationException e) {
+      return -1;
+    }
+    return max;
+  }
+
+  private long parseVersion(String file) {
+    if (file == null || file.isBlank()) {
+      return -1;
+    }
+    int slash = file.lastIndexOf('/');
+    String name = slash >= 0 ? file.substring(slash + 1) : file;
+    int dash = name.indexOf('-');
+    if (dash <= 0) {
+      return -1;
+    }
+    try {
+      return Long.parseLong(name.substring(0, dash));
+    } catch (NumberFormatException e) {
+      return -1;
+    }
+  }
+
+  private String normalizeMetadataDirectory(String directory) {
+    if (directory == null || directory.isBlank()) {
+      return null;
+    }
+    String normalized = directory;
+    while (normalized.endsWith("/") && normalized.length() > 1) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    if (normalized.endsWith(".metadata.json")) {
+      int slash = normalized.lastIndexOf('/');
+      if (slash >= 0) {
+        normalized = normalized.substring(0, slash);
+      } else {
+        return null;
+      }
+    }
+    return normalized.endsWith("/") ? normalized : normalized + "/";
   }
 
   public TableMetadata toTableMetadata(TableMetadataView metadata, String metadataLocation) {
@@ -333,16 +689,6 @@ public class IcebergMetadataService {
       List<ai.floedb.floecat.catalog.rpc.Snapshot> snapshots) {
     Map<String, String> effectiveProps =
         props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
-    String metadataLocation =
-        metadata == null || metadata.getMetadataLocation().isBlank()
-            ? null
-            : metadata.getMetadataLocation();
-    if (!effectiveProps.isEmpty()) {
-      String propertyLocation = effectiveProps.get("metadata-location");
-      if (propertyLocation != null && !propertyLocation.isBlank()) {
-        metadataLocation = propertyLocation;
-      }
-    }
     String tableUuid =
         firstNonBlank(
             effectiveProps.get("table-uuid"),
@@ -353,14 +699,14 @@ public class IcebergMetadataService {
             metadata == null ? null : metadata.getLocation(),
             table != null && table.hasUpstream() ? table.getUpstream().getUri() : null,
             effectiveProps.get("location"));
-    if ((metadataLocation == null || metadataLocation.isBlank())
-        && tableLocation != null
-        && !tableLocation.isBlank()
-        && tableUuid != null
-        && !tableUuid.isBlank()) {
-      metadataLocation = MetadataLocationUtil.bootstrapMetadataLocation(tableLocation, tableUuid);
-      MetadataLocationUtil.setMetadataLocation(effectiveProps, metadataLocation);
-    }
+    String metadataLocation =
+        MetadataLocationUtil.resolveOrBootstrapMetadataLocation(
+            effectiveProps,
+            metadata == null || metadata.getMetadataLocation().isBlank()
+                ? null
+                : metadata.getMetadataLocation(),
+            tableLocation,
+            tableUuid);
     if (tableLocation != null && !tableLocation.isBlank()) {
       effectiveProps.putIfAbsent("location", tableLocation);
     }

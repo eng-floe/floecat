@@ -51,13 +51,18 @@ import org.mockito.ArgumentCaptor;
 class TableCommitServiceTest {
   private final TransactionCommitService service =
       org.mockito.Mockito.spy(new TransactionCommitService());
+  private final TransactionApplyService transactionApplyService = new TransactionApplyService();
+  private final TransactionPlanningService transactionPlanningService =
+      new TransactionPlanningService();
+  private final TableCommitResponseService tableCommitResponseService =
+      new TableCommitResponseService();
   private final IcebergGatewayConfig config = org.mockito.Mockito.mock(IcebergGatewayConfig.class);
   private final IcebergGatewayConfig.DeltaCompatConfig deltaCompatConfig =
       org.mockito.Mockito.mock(IcebergGatewayConfig.DeltaCompatConfig.class);
   private final TableGatewaySupport tableSupport =
       org.mockito.Mockito.mock(TableGatewaySupport.class);
-  private final StagedTableService stagedTableService =
-      org.mockito.Mockito.mock(StagedTableService.class);
+  private final StagedTableRepository stagedTableRepository =
+      org.mockito.Mockito.mock(StagedTableRepository.class);
   private final AccountContext accountContext = org.mockito.Mockito.mock(AccountContext.class);
   private final IcebergMetadataService icebergMetadataService =
       org.mockito.Mockito.mock(IcebergMetadataService.class);
@@ -66,19 +71,27 @@ class TableCommitServiceTest {
 
   @BeforeEach
   void setUp() {
+    transactionApplyService.grpcClient = snapshotClient;
+    tableCommitResponseService.tableGatewaySupport = tableSupport;
+    tableCommitResponseService.icebergMetadataService = icebergMetadataService;
+    tableCommitResponseService.grpcClient = snapshotClient;
+
     service.config = config;
     service.tableGatewaySupport = tableSupport;
     service.tableFormatSupport = new TableFormatSupport();
-    service.stagedTableService = stagedTableService;
+    service.stagedTableRepository = stagedTableRepository;
     service.accountContext = accountContext;
     service.icebergMetadataService = icebergMetadataService;
     service.grpcClient = snapshotClient;
+    service.transactionApplyService = transactionApplyService;
+    service.transactionPlanningService = transactionPlanningService;
+    service.tableCommitResponseService = tableCommitResponseService;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompatConfig));
     when(deltaCompatConfig.enabled()).thenReturn(false);
     when(deltaCompatConfig.readOnly()).thenReturn(true);
     when(accountContext.getAccountId()).thenReturn("account-1");
-    when(stagedTableService.findSingleStage(any(), any(), any(), any()))
+    when(stagedTableRepository.findSingleStage(any(), any(), any(), any()))
         .thenReturn(Optional.empty());
     when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
   }
@@ -123,7 +136,7 @@ class TableCommitServiceTest {
             Instant.now(),
             Instant.now(),
             "idem");
-    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+    when(stagedTableRepository.getStage(staged.key())).thenReturn(Optional.of(staged));
 
     Response response = service.commitTable(commandWithStage(emptyCommitRequest(), "stage-1"));
 
@@ -257,7 +270,7 @@ class TableCommitServiceTest {
             Instant.now(),
             Instant.now(),
             "idem");
-    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+    when(stagedTableRepository.getStage(staged.key())).thenReturn(Optional.of(staged));
 
     TransactionCommitRequest stagedCreateTx =
         new TransactionCommitRequest(
@@ -312,7 +325,7 @@ class TableCommitServiceTest {
     assertEquals("add-schema", change.updates().get(0).get("action"));
     assertEquals("set-properties", change.updates().get(1).get("action"));
     assertEquals("set-properties", change.updates().get(2).get("action"));
-    verify(stagedTableService).deleteStage(staged.key());
+    verify(stagedTableRepository).deleteStage(staged.key());
   }
 
   @Test
@@ -337,7 +350,7 @@ class TableCommitServiceTest {
             Instant.now(),
             Instant.now(),
             "idem");
-    when(stagedTableService.getStage(staged.key())).thenReturn(Optional.of(staged));
+    when(stagedTableRepository.getStage(staged.key())).thenReturn(Optional.of(staged));
 
     TableRequests.Commit duckdbStyleCommit =
         new TableRequests.Commit(

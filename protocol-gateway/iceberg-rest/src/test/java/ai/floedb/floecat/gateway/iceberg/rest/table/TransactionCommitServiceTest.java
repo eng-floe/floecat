@@ -63,7 +63,6 @@ import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -89,6 +88,11 @@ import org.mockito.Mockito;
 
 class TransactionCommitServiceTest {
   private final TransactionCommitService service = new TransactionCommitService();
+  private final TransactionApplyService transactionApplyService = new TransactionApplyService();
+  private final TransactionPlanningService transactionPlanningService =
+      new TransactionPlanningService();
+  private final TableCommitResponseService tableCommitResponseService =
+      new TableCommitResponseService();
   private final TablePropertyService tablePropertyService = new TablePropertyService();
   private final ConnectorProvisioningService connectorProvisioningService =
       new ConnectorProvisioningService();
@@ -101,25 +105,33 @@ class TransactionCommitServiceTest {
       Mockito.mock(TableCommitOutboxService.class);
   private final IcebergMetadataService icebergMetadataService =
       Mockito.mock(IcebergMetadataService.class);
-  private final MaterializeMetadataService materializeMetadataService =
-      Mockito.mock(MaterializeMetadataService.class);
   private final GrpcServiceFacade grpcClient = Mockito.mock(GrpcServiceFacade.class);
   private final TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
 
   @BeforeEach
   void setUp() {
+    transactionApplyService.grpcClient = grpcClient;
+    transactionApplyService.commitOutboxService = commitOutboxService;
+    transactionPlanningService.tableUpdatePlanner = tableUpdatePlanner;
+    transactionPlanningService.tablePropertyService = tablePropertyService;
+    transactionPlanningService.connectorProvisioningService = connectorProvisioningService;
+    transactionPlanningService.icebergMetadataService = icebergMetadataService;
+    transactionPlanningService.commitJournalService = commitJournalService;
+    transactionPlanningService.commitOutboxService = commitOutboxService;
+    transactionPlanningService.transactionApplyService = transactionApplyService;
+    transactionPlanningService.grpcClient = grpcClient;
+    tableCommitResponseService.tableGatewaySupport = tableSupport;
+    tableCommitResponseService.icebergMetadataService = icebergMetadataService;
+    tableCommitResponseService.grpcClient = grpcClient;
+
     service.accountContext = accountContext;
-    service.mapper = new ObjectMapper();
     service.resourceResolver = resourceResolver;
     service.tableGatewaySupport = tableSupport;
-    service.tableUpdatePlanner = tableUpdatePlanner;
-    service.commitJournalService = commitJournalService;
-    service.commitOutboxService = commitOutboxService;
     service.grpcClient = grpcClient;
-    service.tablePropertyService = tablePropertyService;
-    service.connectorProvisioningService = connectorProvisioningService;
     service.icebergMetadataService = icebergMetadataService;
-    service.materializeMetadataService = materializeMetadataService;
+    service.transactionApplyService = transactionApplyService;
+    service.transactionPlanningService = transactionPlanningService;
+    service.tableCommitResponseService = tableCommitResponseService;
 
     when(accountContext.getAccountId()).thenReturn("acct-1");
     when(resourceResolver.catalog(any()))
@@ -155,9 +167,9 @@ class TransactionCommitServiceTest {
         .thenReturn(new IcebergMetadataService.ResolvedMetadata(null, null, null));
     when(icebergMetadataService.applyCommitUpdates(any(), any(Table.class), any()))
         .thenAnswer(invocation -> invocation.getArgument(0));
-    when(materializeMetadataService.materialize(anyString(), anyString(), any(), any()))
+    when(icebergMetadataService.materialize(anyString(), anyString(), any(), any()))
         .thenReturn(
-            new MaterializeMetadataService.MaterializeResult(
+            new IcebergMetadataService.MaterializeResult(
                 "s3://meta/default/00001.metadata.json", null));
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
     when(tableSupport.getConnector(any()))
@@ -429,20 +441,20 @@ class TransactionCommitServiceTest {
         .thenReturn(new IcebergMetadataService.ResolvedMetadata(baseMetadata, null, null));
     when(icebergMetadataService.applyCommitUpdates(eq(baseMetadata), any(Table.class), any()))
         .thenReturn(baseMetadata);
-    when(materializeMetadataService.materialize(
+    when(icebergMetadataService.materialize(
             eq("db"),
             eq("orders"),
             any(TableMetadata.class),
             eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")))
         .thenReturn(
-            new MaterializeMetadataService.MaterializeResult(
+            new IcebergMetadataService.MaterializeResult(
                 "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json", baseMetadata));
 
     Response response =
-        service.commit("pref", "idem", requestWithAssertCreateSnapshot(), tableSupport);
+        service.commit("pref", "idem", requestWithAssertCreateInitializedSnapshot(), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(materializeMetadataService)
+    verify(icebergMetadataService)
         .materialize(
             eq("db"),
             eq("orders"),
@@ -518,13 +530,13 @@ class TransactionCommitServiceTest {
         .thenReturn(baseMetadata);
     when(icebergMetadataService.applyCommitUpdates(eq(baseMetadata), eq(table), any()))
         .thenReturn(baseMetadata);
-    when(materializeMetadataService.materialize(
+    when(icebergMetadataService.materialize(
             eq("db"),
             eq("orders"),
             any(TableMetadata.class),
             eq("s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json")))
         .thenReturn(
-            new MaterializeMetadataService.MaterializeResult(
+            new IcebergMetadataService.MaterializeResult(
                 "s3://floecat/iceberg/orders/metadata/00001-real.metadata.json", baseMetadata));
     when(grpcClient.beginTransaction(any()))
         .thenReturn(
@@ -555,7 +567,7 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(icebergMetadataService)
         .bootstrapTableMetadata(eq("orders"), eq(table), anyMap(), eq(null), eq(List.of()));
-    verify(materializeMetadataService)
+    verify(icebergMetadataService)
         .materialize(
             eq("db"),
             eq("orders"),
@@ -809,6 +821,72 @@ class TransactionCommitServiceTest {
                               try {
                                 Connector connector = Connector.parseFrom(change.getPayload());
                                 return "s3://floecat/iceberg/orders/metadata/00002.metadata.json"
+                                    .equals(
+                                        connector
+                                            .getPropertiesMap()
+                                            .get("external.metadata-location"));
+                              } catch (InvalidProtocolBufferException e) {
+                                return false;
+                              }
+                            })
+                        .orElse(false)));
+  }
+
+  @Test
+  void registerStyleAssertCreatePreservesRequestedMetadataLocationWithoutMaterializing() {
+    when(tableSupport.getTableResponse(any())).thenThrow(Status.NOT_FOUND.asRuntimeException());
+    Table plannedTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
+            .putProperties("metadata-location", "s3://meta/imported/00002.metadata.json")
+            .putProperties("location", "s3://floecat/iceberg/orders")
+            .build();
+    when(tableUpdatePlanner.planTransaction(any(), any(), any(), any()))
+        .thenReturn(new TableUpdatePlanner.PlanResult(plannedTable, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", requestWithRegisterImportedSnapshot(), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(icebergMetadataService, never()).materialize(anyString(), anyString(), any(), any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .filter(
+                            change ->
+                                change.hasTargetPointerKey()
+                                    && change.getTargetPointerKey().contains("/connectors/by-id/"))
+                        .findFirst()
+                        .map(
+                            change -> {
+                              try {
+                                Connector connector = Connector.parseFrom(change.getPayload());
+                                return "s3://meta/imported/00002.metadata.json"
                                     .equals(
                                         connector
                                             .getPropertiesMap()
@@ -2720,6 +2798,52 @@ class TransactionCommitServiceTest {
             "metadata-location", "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json"));
     Map<String, Object> snapshot = new LinkedHashMap<>();
     snapshot.put("snapshot-id", 123L);
+    snapshot.put("schema-id", 1);
+    snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
+    Map<String, Object> addSnapshot = new LinkedHashMap<>();
+    addSnapshot.put("action", "add-snapshot");
+    addSnapshot.put("snapshot", snapshot);
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"),
+                List.of(Map.of("type", "assert-create")),
+                List.of(setProperties, addSnapshot))));
+  }
+
+  private TransactionCommitRequest requestWithAssertCreateInitializedSnapshot() {
+    Map<String, Object> setProperties = new LinkedHashMap<>();
+    setProperties.put("action", "set-properties");
+    setProperties.put(
+        "updates",
+        Map.of(
+            "metadata-location", "s3://floecat/iceberg/orders/metadata/00000-stage.metadata.json"));
+    Map<String, Object> addSchema = new LinkedHashMap<>();
+    addSchema.put("action", "add-schema");
+    addSchema.put("schema", Map.of("schema-id", 1));
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", 123L);
+    snapshot.put("schema-id", 1);
+    snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
+    Map<String, Object> addSnapshot = new LinkedHashMap<>();
+    addSnapshot.put("action", "add-snapshot");
+    addSnapshot.put("snapshot", snapshot);
+    return new TransactionCommitRequest(
+        List.of(
+            new TransactionCommitRequest.TableChange(
+                new TableIdentifierDto(List.of("db"), "orders"),
+                List.of(Map.of("type", "assert-create")),
+                List.of(setProperties, addSchema, addSnapshot))));
+  }
+
+  private TransactionCommitRequest requestWithRegisterImportedSnapshot() {
+    Map<String, Object> setProperties = new LinkedHashMap<>();
+    setProperties.put("action", "set-properties");
+    setProperties.put(
+        "updates", Map.of("metadata-location", "s3://meta/imported/00002.metadata.json"));
+    Map<String, Object> snapshot = new LinkedHashMap<>();
+    snapshot.put("snapshot-id", 123L);
+    snapshot.put("sequence-number", 3L);
     snapshot.put("schema-id", 1);
     snapshot.put("schema-json", "{\"type\":\"struct\",\"fields\":[]}");
     Map<String, Object> addSnapshot = new LinkedHashMap<>();

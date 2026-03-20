@@ -30,8 +30,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
@@ -46,6 +49,7 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +58,7 @@ import org.mockito.ArgumentCaptor;
 
 class TablePlanServiceTest {
   private final TablePlanService service = new TablePlanService();
+  private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
   private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
   private final GrpcClients clients = mock(GrpcClients.class);
   private final QueryServiceGrpc.QueryServiceBlockingStub queryStub =
@@ -65,8 +70,11 @@ class TablePlanServiceTest {
 
   @BeforeEach
   void setUp() {
+    service.config = config;
     service.mapper = new ObjectMapper();
     service.grpcClient = new GrpcServiceFacade(grpc);
+    when(config.planTaskTtl()).thenReturn(Duration.ofMinutes(5));
+    when(config.planTaskFilesPerTask()).thenReturn(10);
     when(grpc.raw()).thenReturn(clients);
     when(clients.query()).thenReturn(queryStub);
     when(clients.queryScan()).thenReturn(scanStub);
@@ -325,5 +333,48 @@ class TablePlanServiceTest {
         false,
         null);
     verify(queryStub, times(1)).beginQuery(any());
+  }
+
+  @Test
+  void registerCompletedPlanRetainsFilesAndDeletes() {
+    ContentFileDto dataFile =
+        new ContentFileDto(
+            "data",
+            "s3://bucket/data.parquet",
+            "PARQUET",
+            1,
+            List.of(),
+            1L,
+            1L,
+            null,
+            List.of(),
+            null,
+            null);
+    ContentFileDto deleteFile =
+        new ContentFileDto(
+            "position-deletes",
+            "s3://bucket/delete.parquet",
+            "PARQUET",
+            1,
+            List.of(),
+            1L,
+            1L,
+            null,
+            List.of(),
+            null,
+            null);
+    List<FileScanTaskDto> tasks = List.of(new FileScanTaskDto(dataFile, List.of(), null));
+    List<ContentFileDto> deletes = List.of(deleteFile);
+
+    TablePlanService.PlanDescriptor descriptor =
+        service.registerCompletedPlan("plan-1", "ns", "tbl", tasks, deletes, List.of());
+
+    assertEquals(tasks, descriptor.fileScanTasks());
+    assertEquals(deletes, descriptor.deleteFiles());
+
+    TablePlanService.PlanDescriptor fetched =
+        service.findPlan("plan-1").orElseThrow(() -> new AssertionError("plan missing"));
+    assertEquals(tasks, fetched.fileScanTasks());
+    assertEquals(deletes, fetched.deleteFiles());
   }
 }

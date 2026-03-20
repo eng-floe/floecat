@@ -21,6 +21,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class SnapshotMetadataUtil {
@@ -58,5 +59,21 @@ public final class SnapshotMetadataUtil {
       return null;
     }
     return metadata.getOperation();
+  }
+
+  public static String firstManifestList(Snapshot snapshot) {
+    return snapshot == null ? null : firstManifestList(snapshot.getManifestListList());
+  }
+
+  public static String firstManifestList(List<String> manifestLists) {
+    if (manifestLists == null || manifestLists.isEmpty()) {
+      return null;
+    }
+    for (String manifestList : manifestLists) {
+      if (manifestList != null && !manifestList.isBlank()) {
+        return manifestList;
+      }
+    }
+    return null;
   }
 }

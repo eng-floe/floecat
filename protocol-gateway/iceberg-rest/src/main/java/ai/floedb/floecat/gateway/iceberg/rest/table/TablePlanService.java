@@ -27,6 +27,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -43,18 +44,29 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @ApplicationScoped
 public class TablePlanService {
+  private static final long MIN_TTL_SECONDS = 60L;
+  private static final int DEFAULT_FILES_PER_TASK = 128;
   private final ConcurrentMap<String, PlanContext> planContexts = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, PlanEntry> plans = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, PlanTaskPayload> planTasks = new ConcurrentHashMap<>();
 
+  @Inject IcebergGatewayConfig config;
   @Inject GrpcServiceFacade grpcClient;
   @Inject ObjectMapper mapper;
 
@@ -122,6 +134,96 @@ public class TablePlanService {
   public void cancelPlan(String planId) {
     grpcClient.endQuery(EndQueryRequest.newBuilder().setQueryId(planId).setCommit(false).build());
     planContexts.remove(planId);
+    expire();
+    PlanEntry entry = plans.get(planId);
+    if (entry == null) {
+      return;
+    }
+    for (String taskId : entry.planTaskIds()) {
+      planTasks.remove(taskId);
+    }
+    entry.clearTasks();
+    entry.markCancelled();
+  }
+
+  public PlanDescriptor registerCompletedPlan(
+      String planId,
+      String namespace,
+      String table,
+      List<FileScanTaskDto> fileScanTasks,
+      List<ContentFileDto> deleteFiles,
+      List<StorageCredentialDto> credentials) {
+    expire();
+    Objects.requireNonNull(planId, "planId is required");
+    List<FileScanTaskDto> files =
+        fileScanTasks == null
+            ? List.of()
+            : Collections.unmodifiableList(new ArrayList<>(fileScanTasks));
+    List<ContentFileDto> deletes =
+        deleteFiles == null
+            ? List.of()
+            : Collections.unmodifiableList(new ArrayList<>(deleteFiles));
+    PlanEntry entry =
+        new PlanEntry(
+            planId,
+            namespace,
+            table,
+            credentials == null ? List.of() : List.copyOf(credentials),
+            files,
+            deletes,
+            PlanStatus.COMPLETED);
+    if (!files.isEmpty()) {
+      int chunkSize = Math.max(1, filesPerTask());
+      for (int offset = 0; offset < files.size(); offset += chunkSize) {
+        int end = Math.min(files.size(), offset + chunkSize);
+        List<FileScanTaskDto> chunk = files.subList(offset, end);
+        TablePlanTasksResponseDto payload =
+            new TablePlanTasksResponseDto(null, List.copyOf(chunk), deletes);
+        String taskId = planId + "-task-" + offset / chunkSize;
+        entry.addTask(taskId);
+        planTasks.put(taskId, new PlanTaskPayload(taskId, planId, namespace, table, payload));
+      }
+    }
+    plans.put(planId, entry);
+    return entry.toDescriptor();
+  }
+
+  public PlanDescriptor registerSubmittedPlan(String planId, String namespace, String table) {
+    expire();
+    Objects.requireNonNull(planId, "planId is required");
+    PlanEntry entry =
+        new PlanEntry(
+            planId, namespace, table, List.of(), List.of(), List.of(), PlanStatus.SUBMITTED);
+    plans.put(planId, entry);
+    return entry.toDescriptor();
+  }
+
+  public Optional<PlanDescriptor> findPlan(String planId) {
+    expire();
+    PlanEntry entry = plans.get(planId);
+    return entry == null ? Optional.empty() : Optional.of(entry.toDescriptor());
+  }
+
+  public Optional<TablePlanTasksResponseDto> consumeTask(
+      String namespace, String table, String planTaskId) {
+    expire();
+    PlanTaskPayload payload = planTasks.remove(planTaskId);
+    if (payload == null) {
+      return Optional.empty();
+    }
+    if (!Objects.equals(namespace, payload.namespace())
+        || !Objects.equals(table, payload.table())) {
+      planTasks.put(payload.planTaskId(), payload);
+      return Optional.empty();
+    }
+    PlanEntry entry = plans.get(payload.planId());
+    if (entry != null) {
+      entry.removeTask(planTaskId);
+      if (entry.planTaskIds().isEmpty()) {
+        plans.remove(entry.planId(), entry);
+      }
+    }
+    return Optional.of(payload.payload());
   }
 
   private ScanBundle fetchScanBundle(PlanContext ctx, String queryId) {
@@ -502,6 +604,40 @@ public class TablePlanService {
     return out;
   }
 
+  private void expire() {
+    Instant cutoff = Instant.now().minus(planTtl());
+    for (var entry : plans.values()) {
+      if (entry.isExpired(cutoff)) {
+        cancelPlan(entry.planId());
+        plans.remove(entry.planId(), entry);
+      }
+    }
+    for (var task : planTasks.values()) {
+      if (task.createdAt().isBefore(cutoff)) {
+        planTasks.remove(task.planTaskId(), task);
+      }
+    }
+  }
+
+  private Duration planTtl() {
+    Duration configuredTtl = config == null ? null : config.planTaskTtl();
+    if (configuredTtl == null || configuredTtl.isNegative() || configuredTtl.isZero()) {
+      configuredTtl = Duration.ofSeconds(MIN_TTL_SECONDS);
+    }
+    if (configuredTtl.getSeconds() < MIN_TTL_SECONDS) {
+      configuredTtl = Duration.ofSeconds(MIN_TTL_SECONDS);
+    }
+    return configuredTtl;
+  }
+
+  private int filesPerTask() {
+    int configuredChunk = config == null ? 0 : config.planTaskFilesPerTask();
+    if (configuredChunk <= 0) {
+      configuredChunk = DEFAULT_FILES_PER_TASK;
+    }
+    return configuredChunk;
+  }
+
   // TableMappingUtil provides asString.
 
   private record PlanContext(
@@ -516,4 +652,121 @@ public class TablePlanService {
       Long minRowsRequested) {}
 
   public record PlanHandle(String queryId, Long snapshotId, Long startSnapshotId) {}
+
+  public enum PlanStatus {
+    SUBMITTED("submitted"),
+    COMPLETED("completed"),
+    FAILED("failed"),
+    CANCELLED("cancelled");
+
+    private final String value;
+
+    PlanStatus(String value) {
+      this.value = value;
+    }
+
+    public String value() {
+      return value;
+    }
+  }
+
+  public record PlanDescriptor(
+      String planId,
+      String namespace,
+      String table,
+      PlanStatus status,
+      List<String> planTasks,
+      List<StorageCredentialDto> credentials,
+      List<FileScanTaskDto> fileScanTasks,
+      List<ContentFileDto> deleteFiles) {}
+
+  private static final class PlanEntry {
+    private final String planId;
+    private final String namespace;
+    private final String table;
+    private final List<StorageCredentialDto> credentials;
+    private final List<FileScanTaskDto> fileScanTasks;
+    private final List<ContentFileDto> deleteFiles;
+    private final CopyOnWriteArrayList<String> taskIds = new CopyOnWriteArrayList<>();
+    private volatile PlanStatus status;
+    private volatile Instant updatedAt = Instant.now();
+
+    PlanEntry(
+        String planId,
+        String namespace,
+        String table,
+        List<StorageCredentialDto> credentials,
+        List<FileScanTaskDto> fileScanTasks,
+        List<ContentFileDto> deleteFiles,
+        PlanStatus status) {
+      this.planId = planId;
+      this.namespace = namespace;
+      this.table = table;
+      this.credentials = credentials;
+      this.fileScanTasks = fileScanTasks;
+      this.deleteFiles = deleteFiles;
+      this.status = status;
+    }
+
+    String planId() {
+      return planId;
+    }
+
+    List<String> planTaskIds() {
+      return taskIds;
+    }
+
+    void addTask(String taskId) {
+      taskIds.addIfAbsent(taskId);
+      updatedAt = Instant.now();
+    }
+
+    void removeTask(String taskId) {
+      taskIds.remove(taskId);
+      updatedAt = Instant.now();
+    }
+
+    void clearTasks() {
+      taskIds.clear();
+      updatedAt = Instant.now();
+    }
+
+    void markCancelled() {
+      status = PlanStatus.CANCELLED;
+      updatedAt = Instant.now();
+    }
+
+    boolean isExpired(Instant cutoff) {
+      return updatedAt.isBefore(cutoff);
+    }
+
+    PlanDescriptor toDescriptor() {
+      return new PlanDescriptor(
+          planId,
+          namespace,
+          table,
+          status,
+          List.copyOf(taskIds),
+          credentials,
+          fileScanTasks,
+          deleteFiles);
+    }
+  }
+
+  private record PlanTaskPayload(
+      String planTaskId,
+      String planId,
+      String namespace,
+      String table,
+      TablePlanTasksResponseDto payload,
+      Instant createdAt) {
+    private PlanTaskPayload(
+        String planTaskId,
+        String planId,
+        String namespace,
+        String table,
+        TablePlanTasksResponseDto payload) {
+      this(planTaskId, planId, namespace, table, payload, Instant.now());
+    }
+  }
 }

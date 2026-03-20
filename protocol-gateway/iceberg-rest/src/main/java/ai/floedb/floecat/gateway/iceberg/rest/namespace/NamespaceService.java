@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
+import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.NamespaceInfoDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.NamespaceListResponse;
@@ -33,8 +34,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.catalog.CatalogRef;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.NamespaceRef;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.support.PageRequestHelper;
-import ai.floedb.floecat.gateway.iceberg.rest.support.ReservedPropertyUtil;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -50,6 +49,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class NamespaceService {
+  private static final List<String> RESERVED_PROPERTY_PREFIXES = List.of("polaris.");
+
   @Inject GrpcServiceFacade namespaceClient;
 
   public Response list(ListCommand command) {
@@ -60,7 +61,7 @@ public class NamespaceService {
     } else {
       req.setCatalogId(command.catalogContext().catalogId());
     }
-    var page = PageRequestHelper.builder(command.pageToken(), command.pageSize());
+    var page = buildPageRequest(command.pageToken(), command.pageSize());
     if (page != null) {
       req.setPage(page);
     }
@@ -70,7 +71,7 @@ public class NamespaceService {
         resp.getNamespacesList().stream()
             .map(NamespaceService::toPath)
             .collect(Collectors.toList());
-    String nextToken = resp.hasPage() ? PageRequestHelper.nextToken(resp.getPage()) : null;
+    String nextToken = resp.hasPage() ? nextPageToken(resp.getPage().getNextPageToken()) : null;
     return Response.ok(new NamespaceListResponse(namespaces, nextToken)).build();
   }
 
@@ -106,7 +107,7 @@ public class NamespaceService {
 
     if (req.properties() != null) {
       try {
-        spec.putAllProperties(ReservedPropertyUtil.validateAndFilter(req.properties()));
+        spec.putAllProperties(validateProperties(req.properties()));
       } catch (IllegalArgumentException e) {
         return IcebergErrorResponses.validation(e.getMessage());
       }
@@ -135,12 +136,12 @@ public class NamespaceService {
     List<String> removals = req == null || req.removals() == null ? List.of() : req.removals();
     Map<String, String> updates = req == null || req.updates() == null ? Map.of() : req.updates();
     try {
-      ReservedPropertyUtil.validateAndFilter(updates);
+      validateProperties(updates);
       Map<String, String> removalKeys = new LinkedHashMap<>();
       for (String key : removals) {
         removalKeys.put(key, "");
       }
-      ReservedPropertyUtil.validateAndFilter(removalKeys);
+      validateProperties(removalKeys);
     } catch (IllegalArgumentException e) {
       return IcebergErrorResponses.validation(e.getMessage());
     }
@@ -218,5 +219,44 @@ public class NamespaceService {
     List<String> path = new ArrayList<>(namespace.getParentsList());
     path.add(namespace.getDisplayName());
     return path;
+  }
+
+  private static PageRequest.Builder buildPageRequest(String pageToken, Integer pageSize) {
+    if (pageToken == null && pageSize == null) {
+      return null;
+    }
+    PageRequest.Builder builder = PageRequest.newBuilder();
+    if (pageToken != null) {
+      builder.setPageToken(pageToken);
+    }
+    if (pageSize != null) {
+      builder.setPageSize(pageSize);
+    }
+    return builder;
+  }
+
+  private static String nextPageToken(String pageToken) {
+    return pageToken == null || pageToken.isBlank() ? null : pageToken;
+  }
+
+  private static Map<String, String> validateProperties(Map<String, String> properties) {
+    if (properties == null || properties.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> filtered = new LinkedHashMap<>();
+    for (var entry : properties.entrySet()) {
+      String key = entry.getKey();
+      if (key == null) {
+        continue;
+      }
+      for (String prefix : RESERVED_PROPERTY_PREFIXES) {
+        if (key.startsWith(prefix)) {
+          throw new IllegalArgumentException(
+              "Property '" + key + "' matches reserved prefix '" + prefix + "'");
+        }
+      }
+      filtered.put(key, entry.getValue());
+    }
+    return filtered;
   }
 }

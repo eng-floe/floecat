@@ -194,6 +194,7 @@ public final class CommitUpdateInspector {
       Set<Long> removedSnapshotIdsSet,
       List<SnapshotRefMutation> snapshotRefMutations,
       boolean containsSnapshotUpdates,
+      boolean containsCreateInitializationActions,
       String requestedMetadataLocation,
       Long requestedSequenceNumber,
       Long maxSnapshotSequenceNumber,
@@ -215,6 +216,7 @@ public final class CommitUpdateInspector {
     Set<Long> removedSnapshotIdsSet = new LinkedHashSet<>();
     List<SnapshotRefMutation> snapshotRefMutations = new ArrayList<>();
     boolean containsSnapshotUpdates = false;
+    boolean containsCreateInitializationActions = false;
     String requestedMetadataLocation = null;
     Long requestedSequenceNumber = null;
     Long maxSnapshotSequenceNumber = null;
@@ -227,6 +229,9 @@ public final class CommitUpdateInspector {
       UpdateAction action = actionTypeOf(update);
       if (action == null) {
         continue;
+      }
+      if (action.isCreateInitializationAction()) {
+        containsCreateInitializationActions = true;
       }
       switch (action) {
         case ADD_SNAPSHOT -> {
@@ -344,6 +349,7 @@ public final class CommitUpdateInspector {
         removedSnapshotIdsSet.isEmpty() ? Set.of() : Set.copyOf(removedSnapshotIdsSet),
         snapshotRefMutations.isEmpty() ? List.of() : List.copyOf(snapshotRefMutations),
         containsSnapshotUpdates,
+        containsCreateInitializationActions,
         requestedMetadataLocation,
         requestedSequenceNumber,
         maxSnapshotSequenceNumber,
@@ -352,6 +358,7 @@ public final class CommitUpdateInspector {
 
   private static Parsed empty() {
     return new Parsed(
-        List.of(), List.of(), null, List.of(), Set.of(), List.of(), false, null, null, null, null);
+        List.of(), List.of(), null, List.of(), Set.of(), List.of(), false, false, null, null, null,
+        null);
   }
 }
