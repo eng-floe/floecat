@@ -487,28 +487,7 @@ public class DeltaManifestMaterializer {
 
   private String ensureCompatArtifacts(
       FileIO fileIo, Table table, Snapshot snapshot, String metadataRoot) throws Exception {
-    String manifestListPath =
-        readManifestListFromCompatMetadata(fileIo, metadataRoot, snapshot.getSnapshotId());
-    if (manifestListPath != null) {
-      return manifestListPath;
-    }
     return writeManifestArtifacts(fileIo, table, snapshot, metadataRoot);
-  }
-
-  private String readManifestListFromCompatMetadata(
-      FileIO fileIo, String metadataRoot, long snapshotId) {
-    TableMetadata metadata = readCompatMetadata(fileIo, metadataRoot, snapshotId);
-    if (metadata == null || metadata.currentSnapshot() == null) {
-      return null;
-    }
-    String manifestList = metadata.currentSnapshot().manifestListLocation();
-    if (manifestList == null || manifestList.isBlank()) {
-      return null;
-    }
-    if (!inputExists(fileIo, manifestList)) {
-      return null;
-    }
-    return manifestList;
   }
 
   private static boolean hasManifestList(Snapshot snapshot) {

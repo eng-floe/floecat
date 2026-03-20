@@ -242,6 +242,101 @@ maybe_assert_table_stats_available() {
   assert_table_stats_available "$compose_cmd" "$label" "$table_fqn" "$retries" "$sleep_seconds"
 }
 
+dump_dv_demo_delta_debug() {
+  local compose_cmd="$1"
+  local compose_project="$2"
+  local label="$3"
+  local duckdb_bootstrap="$4"
+  local aws_cli="docker_run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+  local out=""
+  local snapshot_out=""
+  local snapshot_ids=""
+  local snapshot_id=""
+  local gateway_resp=""
+  local duckdb_debug_out=""
+
+  echo "==> [SMOKE][DIAG] $label dv_demo_delta table get"
+  out=$(run_cli_script "$compose_cmd" "account t-0001
+table get examples.delta.dv_demo_delta
+quit")
+  echo "$out"
+
+  echo "==> [SMOKE][DIAG] $label dv_demo_delta snapshots"
+  snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
+snapshots examples.delta.dv_demo_delta
+quit")
+  echo "$snapshot_out"
+
+  echo "==> [SMOKE][DIAG] $label dv_demo_delta current file stats"
+  out=$(run_cli_script "$compose_cmd" "account t-0001
+stats files examples.delta.dv_demo_delta --current --limit 20
+quit")
+  echo "$out"
+
+  echo "==> [SMOKE][DIAG] $label localstack dv_demo_delta S3 contents"
+  $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/dv_demo_delta/ --recursive | sed -n '1,400p' || true
+
+  echo "==> [SMOKE][DIAG] $label localstack dv_demo_delta compat metadata contents"
+  $aws_cli --endpoint-url http://localstack:4566 s3 ls s3://floecat-delta/dv_demo_delta/metadata/ --recursive | sed -n '1,400p' || true
+
+  snapshot_ids=$(printf "%s\n" "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
+  for snapshot_id in $snapshot_ids; do
+    echo "==> [SMOKE][DIAG] $label dv_demo_delta file stats snapshot=$snapshot_id"
+    out=$(run_cli_script "$compose_cmd" "account t-0001
+stats files examples.delta.dv_demo_delta --snapshot $snapshot_id --limit 20
+quit")
+    echo "$out"
+  done
+
+  echo "==> [SMOKE][DIAG] $label gateway delta table response"
+  gateway_resp=$(gateway_json_request "$compose_project" GET "/v1/examples/namespaces/delta/tables/dv_demo_delta")
+  echo "$gateway_resp"
+  echo "==> [SMOKE][DIAG] $label gateway delta compat snapshot summary"
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$gateway_resp" | python3 - <<'PY' || true
+import json
+import sys
+
+raw = sys.stdin.read().strip()
+if not raw:
+    raise SystemExit(0)
+lines = raw.splitlines()
+payload = lines[0]
+doc = json.loads(payload)
+metadata = doc.get("metadata") or {}
+current = metadata.get("current-snapshot-id")
+refs = metadata.get("refs") or {}
+main = ((refs.get("main") or {}).get("snapshot-id"))
+snapshots = metadata.get("snapshots") or []
+for snap in snapshots:
+    sid = snap.get("snapshot-id")
+    summary = snap.get("summary") or {}
+    total_records = summary.get("total-records", "?")
+    manifest = snap.get("manifest-list", "")
+    flags = []
+    if sid == current:
+        flags.append("current")
+    if sid == main:
+        flags.append("main")
+    flag_text = ",".join(flags) if flags else "-"
+    print(
+        f"compat_snapshot id={sid} flags={flag_text} total_records={total_records} manifest={manifest}"
+    )
+PY
+  else
+    echo "[WARN] python3 unavailable; skipping compact gateway snapshot summary"
+  fi
+
+  echo "==> [SMOKE][DIAG] $label duckdb dv_demo_delta focused query"
+  if duckdb_debug_out=$(docker_run --rm --network "${compose_project}_floecat" "$DUCKDB_IMAGE" \
+    duckdb -c "$duckdb_bootstrap SELECT 'dv_debug_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_debug_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta;" 2>&1); then
+    echo "$duckdb_debug_out"
+  else
+    echo "$duckdb_debug_out"
+    echo "[WARN] $label duckdb focused dv_demo_delta query failed"
+  fi
+}
+
 cleanup_mode() {
   local compose_cmd="$1"
   eval "$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true
@@ -1120,6 +1215,7 @@ PY
     fi
 
     echo "$duckdb_out"
+    dump_dv_demo_delta_debug "$compose_cmd" "$compose_project" "$label" "$duckdb_bootstrap"
     assert_contains "$label duckdb smoke marker" "$duckdb_out" "duckdb_smoke_ok"
     assert_contains "$label duckdb call_center count" "$duckdb_out" "call_center=42"
     assert_contains "$label duckdb my_local_delta_table count" "$duckdb_out" "my_local_delta_table=4"

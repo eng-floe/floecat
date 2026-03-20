@@ -101,7 +101,7 @@ class DeltaManifestMaterializerTest {
   }
 
   @Test
-  void materializeReusesCompatManifestListWhenSnapshotUnchanged() {
+  void materializeRefreshesCompatManifestListWhenSnapshotUnchanged() {
     Table table = deltaTable("reuse");
     Snapshot snapshot = snapshot(7L, 7L);
 
@@ -112,9 +112,11 @@ class DeltaManifestMaterializerTest {
 
     List<Snapshot> second = materializer.materialize(table, List.of(snapshot));
     String secondManifestList = firstManifestList(second.get(0));
-    assertEquals(firstManifestList, secondManifestList);
+    assertFalse(secondManifestList.isBlank());
+    assertNotEquals(firstManifestList, secondManifestList);
+    assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
 
-    verify(grpcClient, times(1)).fetchScanBundle(any());
+    verify(grpcClient, times(2)).fetchScanBundle(any());
   }
 
   @Test
@@ -137,7 +139,7 @@ class DeltaManifestMaterializerTest {
   }
 
   @Test
-  void materializePopulatesManifestListForAllReturnedSnapshots() {
+  void materializeRefreshesManifestListForAllReturnedSnapshots() {
     Table table = deltaTable("all-snapshots");
     Snapshot firstSnapshot = snapshot(7L, 7L);
     Snapshot secondSnapshot = snapshot(8L, 8L);
@@ -151,8 +153,55 @@ class DeltaManifestMaterializerTest {
     assertTrue(materializer.fileIo().newInputFile(secondManifestList).exists());
 
     List<Snapshot> second = materializer.materialize(table, List.of(firstSnapshot, secondSnapshot));
-    assertEquals(firstManifestList, firstManifestList(second.get(0)));
-    assertEquals(secondManifestList, firstManifestList(second.get(1)));
+    assertNotEquals(firstManifestList, firstManifestList(second.get(0)));
+    assertNotEquals(secondManifestList, firstManifestList(second.get(1)));
+
+    verify(grpcClient, times(4)).fetchScanBundle(any());
+  }
+
+  @Test
+  void materializeReplacesStaleCompatManifestWhenSameSnapshotRematerialized() throws Exception {
+    ScanFile staleFile =
+        ScanFile.newBuilder()
+            .setFilePath("s3://floecat-delta/dv_demo_delta/part-stale.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(100)
+            .setRecordCount(3)
+            .build();
+    ScanFile freshFile =
+        ScanFile.newBuilder()
+            .setFilePath("s3://floecat-delta/dv_demo_delta/part-fresh.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(100)
+            .setRecordCount(2)
+            .build();
+    when(grpcClient.fetchScanBundle(any()))
+        .thenReturn(
+            FetchScanBundleResponse.newBuilder()
+                .setBundle(ScanBundle.newBuilder().addDataFiles(staleFile).build())
+                .build())
+        .thenReturn(
+            FetchScanBundleResponse.newBuilder()
+                .setBundle(ScanBundle.newBuilder().addDataFiles(freshFile).build())
+                .build());
+
+    Table table = deltaTable("stale-refresh");
+    Snapshot snapshot = snapshot(19L, 19L);
+
+    String firstManifestList =
+        firstManifestList(materializer.materialize(table, List.of(snapshot)).get(0));
+    DataFile firstDataFile =
+        readSingleDataFileFromManifestList(materializer.fileIo(), firstManifestList);
+    assertEquals("s3://floecat-delta/dv_demo_delta/part-stale.parquet", firstDataFile.location());
+    assertEquals(3L, firstDataFile.recordCount());
+
+    String secondManifestList =
+        firstManifestList(materializer.materialize(table, List.of(snapshot)).get(0));
+    DataFile secondDataFile =
+        readSingleDataFileFromManifestList(materializer.fileIo(), secondManifestList);
+    assertEquals("s3://floecat-delta/dv_demo_delta/part-fresh.parquet", secondDataFile.location());
+    assertEquals(2L, secondDataFile.recordCount());
+    assertNotEquals(firstManifestList, secondManifestList);
 
     verify(grpcClient, times(2)).fetchScanBundle(any());
   }
