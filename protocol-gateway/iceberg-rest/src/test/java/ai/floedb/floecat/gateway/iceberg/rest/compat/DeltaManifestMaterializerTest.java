@@ -38,6 +38,7 @@ import ai.floedb.floecat.query.rpc.BeginQueryResponse;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
 import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import com.google.protobuf.Timestamp;
 import io.delta.kernel.engine.Engine;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -206,6 +207,26 @@ class DeltaManifestMaterializerTest {
     assertNotEquals(firstManifestList, secondManifestList);
 
     verify(grpcClient, times(2)).fetchScanBundle(any());
+  }
+
+  @Test
+  void materializePreservesOriginalSnapshotIdentityAndLineage() {
+    Table table = deltaTable("identity");
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(3L)
+            .setParentSnapshotId(2L)
+            .setSequenceNumber(3L)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123).build())
+            .build();
+
+    Snapshot out = materializer.materialize(table, List.of(snapshot)).get(0);
+
+    assertEquals(3L, out.getSnapshotId());
+    assertEquals(2L, out.getParentSnapshotId());
+    assertEquals(3L, out.getSequenceNumber());
+    assertEquals(snapshot.getUpstreamCreatedAt(), out.getUpstreamCreatedAt());
+    assertFalse(firstManifestList(out).isBlank());
   }
 
   @Test

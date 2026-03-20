@@ -449,16 +449,11 @@ public class DeltaManifestMaterializer {
       return snapshot;
     }
     org.apache.iceberg.Snapshot compatSnapshot = compatMetadata.currentSnapshot();
-    Snapshot.Builder builder = snapshot.toBuilder().setSnapshotId(compatSnapshot.snapshotId());
+    Snapshot.Builder builder = snapshot.toBuilder();
     if (!snapshot.hasUpstreamCreatedAt()) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(compatSnapshot.timestampMillis()));
     }
-    if (compatSnapshot.parentId() != null) {
-      builder.setParentSnapshotId(compatSnapshot.parentId());
-    } else if (snapshot.hasParentSnapshotId()) {
-      builder.clearParentSnapshotId();
-    }
-    if (compatSnapshot.sequenceNumber() > 0) {
+    if (snapshot.getSequenceNumber() <= 0 && compatSnapshot.sequenceNumber() > 0) {
       builder.setSequenceNumber(compatSnapshot.sequenceNumber());
     }
     String resolvedManifestList =
