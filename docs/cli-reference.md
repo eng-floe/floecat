@@ -34,6 +34,19 @@ snapshot delete <table> <snapshot_id>
 stats table <catalog.ns[.ns...].table> [--snapshot <id|current>]
 stats columns <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
 stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json]
+constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
+constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]
+constraints update <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--etag <etag>|--version <n>] [--json]
+constraints add <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--etag <etag>|--version <n>] [--json]
+constraints delete <id|catalog.ns[.ns...].table> [--snapshot <id>]
+constraints add-one <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <constraint_definition_json> [--etag <etag>|--version <n>] [--json]
+constraints delete-one <id|catalog.ns[.ns...].table> <constraint_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+constraints add-pk <id|catalog.ns[.ns...].table> <constraint_name> <columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+constraints add-unique <id|catalog.ns[.ns...].table> <constraint_name> <columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table_name> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
 
 resolve table <catalog.ns[.ns...].table>
 resolve view <catalog.ns[.ns...].view>
@@ -126,3 +139,55 @@ Auth credential types explained (end-user view):
 help
 quit
 ```
+
+Constraints payload example (`--file`):
+
+```json
+{
+  "constraints": [
+    {
+      "name": "pk_users",
+      "type": "CT_PRIMARY_KEY",
+      "columns": [{"columnName": "id", "ordinal": 1}]
+    }
+  ]
+}
+```
+
+Identity normalization note:
+- The command target (`constraints ... <table> [--snapshot <id>]`) is authoritative for `table_id` and
+  `snapshot_id`.
+- If those identity fields are present in the JSON payload, the service normalizes them to the
+  command target before persisting.
+
+Constraints command examples:
+
+```text
+constraints put demo.sales.users --snapshot 42 --file /tmp/users_constraints.json
+constraints add demo.sales.users --snapshot 42 --file /tmp/users_constraints.json
+constraints add-one demo.sales.users --snapshot 42 --file /tmp/users_constraint_pk.json
+constraints add-pk demo.sales.users pk_users id --snapshot 42
+constraints add-unique demo.sales.users uq_users_email email --snapshot 42
+constraints add-not-null demo.sales.users nn_users_email email --snapshot 42
+constraints add-check demo.sales.users chk_users_age "age > 0" --snapshot 42
+constraints add-fk demo.sales.users fk_users_org org_id demo.sales.orgs id --snapshot 42
+constraints get demo.sales.users --snapshot 42 --json
+constraints list demo.sales.users --limit 50
+constraints delete demo.sales.users --snapshot 42
+constraints delete-one demo.sales.users pk_users --snapshot 42
+```
+
+Bundle mutation semantics:
+- `constraints put`: replace the full snapshot bundle with the payload (upsert).
+- `constraints update`: server-side atomic merge by `constraint.name` (incoming definitions
+  overwrite same-name definitions; other constraints are preserved) and shallow-merge of bundle
+  `properties` (incoming keys override existing keys).
+- `constraints add`: server-side atomic append-only mutation; fails if any payload
+  `constraint.name` already exists.
+- `constraints update` / `constraints add` create the snapshot bundle when missing unless an
+  explicit `--etag`/`--version` precondition is provided.
+For atomic single-constraint mutations under concurrency, prefer
+`constraints add-one` / `constraints delete-one`.
+Use `constraints add-one` (JSON payload) or typed single-constraint commands
+(`add-pk`, `add-unique`, `add-not-null`, `add-check`, `add-fk`) for partial mutations.
+When `--snapshot` is omitted, commands default to the table's current snapshot.

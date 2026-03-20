@@ -56,20 +56,22 @@ public final class ConstraintNormalizer {
     return b.build();
   }
 
+  // Keep this comparator aligned with all persisted ConstraintDefinition fields so normalization
+  // is stable across replay/input ordering differences. Properties are compared via toString()
+  // directly: normalize() already sorts each constraint's properties map before this sort runs.
+  private static final Comparator<ConstraintDefinition> CONSTRAINT_ORDER =
+      Comparator.comparingInt(ConstraintDefinition::getTypeValue)
+          .thenComparing(ConstraintDefinition::getName)
+          .thenComparingInt(ConstraintDefinition::getEnforcementValue)
+          .thenComparing(ConstraintNormalizer::columnSignature)
+          .thenComparing(ConstraintDefinition::getCheckExpression)
+          .thenComparing(ConstraintNormalizer::referencedTableSignature)
+          .thenComparing(ConstraintDefinition::getReferencedTableName)
+          .thenComparing(ConstraintNormalizer::referencedColumnsSignature)
+          .thenComparing(c -> c.getPropertiesMap().toString());
+
   private static int compareConstraint(ConstraintDefinition left, ConstraintDefinition right) {
-    // Keep this comparator aligned with all persisted ConstraintDefinition fields so normalization
-    // is stable across replay/input ordering differences.
-    Comparator<ConstraintDefinition> comparator =
-        Comparator.comparingInt(ConstraintDefinition::getTypeValue)
-            .thenComparing(ConstraintDefinition::getName)
-            .thenComparingInt(ConstraintDefinition::getEnforcementValue)
-            .thenComparing(ConstraintNormalizer::columnSignature)
-            .thenComparing(ConstraintDefinition::getCheckExpression)
-            .thenComparing(ConstraintNormalizer::referencedTableSignature)
-            .thenComparing(ConstraintDefinition::getReferencedTableName)
-            .thenComparing(ConstraintNormalizer::referencedColumnsSignature)
-            .thenComparing(c -> new TreeMap<>(c.getPropertiesMap()).toString());
-    return comparator.compare(left, right);
+    return CONSTRAINT_ORDER.compare(left, right);
   }
 
   private static String referencedTableSignature(ConstraintDefinition definition) {

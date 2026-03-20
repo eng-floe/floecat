@@ -751,7 +751,7 @@ public class PlannerStatsBundleService {
     }
 
     try {
-      OptionalLong pinnedSnapshotId = OptionalLong.of(snapshotId.getAsLong());
+      OptionalLong pinnedSnapshotId = snapshotId;
       // Deliberate client-contract choice: constraints "absence" states are intentionally
       // collapsed to NOT_FOUND for planner simplicity, while callers can distinguish the cause via
       // failure.details["reason"]. This is not a statement that these storage states are

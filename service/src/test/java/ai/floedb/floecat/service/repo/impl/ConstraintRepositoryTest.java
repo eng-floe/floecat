@@ -32,6 +32,11 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -239,6 +244,84 @@ class ConstraintRepositoryTest {
     ConstraintDefinition fk = fetched.getConstraints(0);
     assertEquals("region_id", fk.getReferencedColumns(0).getColumnName());
     assertEquals("id", fk.getReferencedColumns(1).getColumnName());
+  }
+
+  @Test
+  void createIfAbsentCreatesOnceAndReturnsFalseAfterward() {
+    SnapshotConstraints payload =
+        constraintsForSnapshot(
+            tableId, 300L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
+
+    assertTrue(repo.createSnapshotConstraintsIfAbsent(tableId, 300L, payload));
+    assertFalse(repo.createSnapshotConstraintsIfAbsent(tableId, 300L, payload));
+
+    SnapshotConstraints fetched = repo.getSnapshotConstraints(tableId, 300L).orElseThrow();
+    assertEquals(1, fetched.getConstraintsCount());
+    assertEquals("pk_orders", fetched.getConstraints(0).getName());
+  }
+
+  @Test
+  void createIfAbsentReturnsFalseWhenBundleAlreadyExistsWithDifferentPayload() {
+    SnapshotConstraints first =
+        constraintsForSnapshot(
+            tableId, 310L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
+    SnapshotConstraints different =
+        constraintsForSnapshot(
+            tableId,
+            310L,
+            List.of(
+                definition("pk_orders", ConstraintType.CT_PRIMARY_KEY),
+                definition("uq_orders_customer", ConstraintType.CT_UNIQUE)));
+
+    assertTrue(repo.createSnapshotConstraintsIfAbsent(tableId, 310L, first));
+    assertFalse(repo.createSnapshotConstraintsIfAbsent(tableId, 310L, different));
+
+    SnapshotConstraints fetched = repo.getSnapshotConstraints(tableId, 310L).orElseThrow();
+    assertEquals(1, fetched.getConstraintsCount());
+    assertEquals("pk_orders", fetched.getConstraints(0).getName());
+  }
+
+  @Test
+  void createIfAbsentConcurrentWritersOnlyOneCreateSucceeds() throws Exception {
+    SnapshotConstraints payload =
+        constraintsForSnapshot(
+            tableId, 320L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
+    int writers = 8;
+    CountDownLatch ready = new CountDownLatch(writers);
+    CountDownLatch start = new CountDownLatch(1);
+    AtomicInteger created = new AtomicInteger();
+    AtomicInteger existing = new AtomicInteger();
+    ExecutorService pool = Executors.newFixedThreadPool(writers);
+    try {
+      for (int i = 0; i < writers; i++) {
+        pool.submit(
+            () -> {
+              ready.countDown();
+              try {
+                assertTrue(start.await(5, TimeUnit.SECONDS));
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+              }
+              if (repo.createSnapshotConstraintsIfAbsent(tableId, 320L, payload)) {
+                created.incrementAndGet();
+              } else {
+                existing.incrementAndGet();
+              }
+            });
+      }
+      assertTrue(ready.await(5, TimeUnit.SECONDS));
+      start.countDown();
+    } finally {
+      pool.shutdown();
+      assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+    }
+
+    assertEquals(1, created.get());
+    assertEquals(writers - 1, existing.get());
+    SnapshotConstraints fetched = repo.getSnapshotConstraints(tableId, 320L).orElseThrow();
+    assertEquals(1, fetched.getConstraintsCount());
+    assertEquals("pk_orders", fetched.getConstraints(0).getName());
   }
 
   private static SnapshotConstraints constraintsForSnapshot(
