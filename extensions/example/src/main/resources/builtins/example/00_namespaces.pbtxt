@@ -23,6 +23,8 @@
 # the path field in every other .pbtxt file to match.
 
 system_namespaces {
-  name { name: "example" }
+  name {
+    name: "example"
+  }
   display_name: "example"
 }

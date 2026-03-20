@@ -37,14 +37,30 @@ Run these checks before opening or updating a PR:
 
 ```bash
 make fmt
+make fmt-pbtxt
 make verify
 ```
 
 Notes:
 
-- `make fmt` applies Google Java Format.
+- `make fmt` applies Google Java Format to all Java sources.
+- `make fmt-pbtxt` reformats `.pbtxt` catalog files into canonical protobuf text format.
+  Run this whenever you add or edit pbtxt files.
 - `make verify` runs build plus unit/integration checks.
-- CI enforces formatting and verification checks.
+- CI enforces formatting and verification checks on both Java and pbtxt files.
+
+## PBtxt catalogs
+
+Catalog metadata is stored in protobuf text format (`.pbtxt`) files under
+`src/main/resources/builtins/<engine>/` in each module.  Two CI gates apply:
+
+| Gate | Makefile target | What it does |
+|---|---|---|
+| Semantic validation | `make validate-pbtxt` | Parses each fragment against the `SystemObjectsRegistry` proto schema; fails on unknown fields, bad type refs, etc. |
+| Format check | `make check-pbtxt-format` | Ensures files are in canonical proto text format with stable block ordering |
+
+See [`extensions/example/README.md`](extensions/example/README.md) for the file layout convention
+and how to add pbtxt tooling to a new extension.
 
 ## Commit and PR Guidelines
 
