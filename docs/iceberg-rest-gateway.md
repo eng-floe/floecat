@@ -44,34 +44,29 @@ Non-goals for the current release:
 ```
 protocol-gateway/iceberg-rest/
 ├── src/main/java/ai/floedb/floecat/gateway/iceberg/rest
-│   ├── api/              # Request/response DTOs & serializers
-│   ├── common/           # Cross-cutting helpers (context factory, filters, error mappers, metadata utils)
-│   ├── resources/        # JAX-RS controllers (config, namespace, table, view, system)
-│   └── services/         # Adapters and workflows (accounts, catalog, table, metadata, planning, staging, clients)
+│   ├── api/              # Iceberg REST DTOs, request models, metadata views, error payloads
+│   ├── catalog/          # Catalog/name resolution and shared table gateway helpers
+│   ├── compat/           # Delta-to-Iceberg compatibility translation/materialization
+│   ├── namespace/        # Namespace resources and namespace service logic
+│   ├── support/          # Filters, error mappers, commit logging, metadata/location helpers, gRPC facade
+│   ├── system/           # Config and OAuth endpoints
+│   ├── table/            # Table resources, lifecycle, commit planning/apply, metadata mapping, staging
+│   └── view/             # View resources and view metadata/service logic
 └── src/test/java/...     # RestAssured tests, unit tests mirroring the same package structure
 ```
 
-Key packages under `services`:
-
-- `services.catalog` – low-level helpers (table lifecycle, connector wiring, requirement enforcement, metadata sync).
-- `services.table` / `services.view` / `services.namespace` – high-level use cases (create, commit, register, delete, property updates, rename).
-- `services.metadata` – metadata import/materialization (Iceberg metadata files, snapshot transforms).
-- `services.planning` – scan planning orchestration plus `PlanTaskManager`.
-- `services.staging` – staged payload repository and TTL management.
-- `services.client` – typed gRPC clients (TableClient, NamespaceClient, ViewClient, SnapshotClient, QueryClient, ConnectorClient, etc.).
-
-Tests mirror this layout so package-private collaborators (e.g., staged table repositories, planners) are still accessible without widening visibility.
+Tests mirror this structure. Most unit tests live beside the concrete package they exercise, which keeps package-private collaborators such as planners, staged repositories, metadata builders, and mappers testable without widening visibility.
 
 ---
 
 ## Runtime Architecture Overview
 
 1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
-2. **Context resolution:** `RequestContextFactory` resolves catalog prefixes, namespace paths, and table IDs by calling Floecat’s `DirectoryService` and `TableLifecycleService`. Context records travel with each request.
-3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
-4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
-5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` resolves connector IDs and runs best-effort post-commit sync calls (stats capture, reconcile trigger, snapshot pruning where applicable). These side effects happen after backend apply and do not change commit success/failure once core apply is complete.
+2. **Context resolution:** `CatalogResolver`, `ResourceResolver`, `NameResolution`, and `TableGatewaySupport` resolve prefixes, namespaces, table IDs, view IDs, storage defaults, and current table state by calling Floecat directory/table gRPC services.
+3. **Workflow orchestration:** Resource classes under `namespace/`, `table/`, and `view/` delegate into concrete services such as `TableLifecycleService`, `TransactionCommitService`, `TransactionPlanningService`, `TransactionApplyService`, `ViewService`, and `NamespaceService`.
+4. **gRPC translation:** `GrpcWithHeaders` and `GrpcServiceFacade` ensure backend RPC calls inherit Floecat auth headers and request context while keeping the REST surface decoupled from individual stubs.
+5. **Response mapping:** `TableResponseMapper`, `TableMetadataBuilder`, `ViewMetadataService`, and namespace/view DTO mappers synthesize the Iceberg contract from Floecat table state plus resolved Iceberg metadata. They also inject config overrides such as `write.metadata.path` and vended credentials.
+6. **Commit orchestration:** table commits are normalized into transaction commits, planned into catalog + snapshot pointer changes, optionally pre-materialized into canonical Iceberg metadata files, and then applied atomically through backend `begin/prepare/commitTransaction`.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -92,17 +87,30 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
 1. Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.
-2. Compute metadata location, connector configuration, and default storage credentials.
-3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (provided via `Iceberg-Transaction-Id`/`Idempotency-Key` or generated). `StagedTableService` enforces TTL and idempotency.
-4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
+2. Apply a default table location when the caller omitted one, reserve the exact bootstrap metadata path (`00000-...metadata.json`), and inject `table-uuid` plus `metadata-location` into the staged create properties.
+3. Build a `TableSpec` and persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id. The stage-id comes from `Iceberg-Transaction-Id`, then `Idempotency-Key`, else a generated UUID. Staged entries are kept in `StagedTableRepository`.
+4. Return a load-table-style `LoadTableResultDto` carrying the reserved metadata location, config overrides, and storage credentials. No catalog mutation occurs yet.
 
 ### Commit (`POST /tables/{table}`)
 1. Resolve catalog/namespace/table context and reject unsupported commit modes (for example Delta read-only tables).
-2. Wrap the table commit payload into a single-entry `TransactionCommitRequest` and delegate to `TransactionCommitService`.
-3. `TransactionCommitService` begins/loads a backend transaction, validates idempotency + request-hash replay semantics, validates requirements/updates, and plans table/snapshot pointer changes with optimistic preconditions.
-4. Metadata materialization and `metadata-location` update are prepared before backend apply so pointer updates commit atomically with table state.
-5. Backend `prepareTransaction` + `commitTransaction` apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.
-6. The table endpoint then builds and returns `CommitTableResponseDto` (HTTP 200) from committed state.
+2. Normalize the request into the correct first-write shape before planning:
+   - if this is a staged create commit and the table still has no committed snapshot, prepend staged create initialization and inject the reserved metadata location when needed
+   - if this is a non-staged first write after create and the table still has no committed snapshot, rebuild the same bootstrap from the cached pending create state
+   - once a committed snapshot already exists, no bootstrap is injected and the commit is treated as a normal existing-table update
+3. Wrap the effective table commit into a single-entry `TransactionCommitRequest` and delegate to `TransactionCommitService`.
+4. `TransactionCommitService` begins/loads a backend transaction, validates idempotency + request-hash replay semantics, validates requirements/updates, and asks `TransactionPlanningService` to plan catalog changes plus snapshot pointer updates.
+5. Before backend apply, `TransactionPlanningService` resolves the base Iceberg metadata:
+   - for normal commits, it loads the current committed `metadata.json` from the table pointer
+   - for first-write create commits, it bootstraps base metadata from create initialization when no committed snapshot exists yet
+6. The gateway then applies commit updates to canonical metadata and materializes the next `metadata.json`. For first-write create commits it writes the reserved exact metadata location; for later commits it writes the next versioned metadata file.
+7. Backend `prepareTransaction` + `commitTransaction` apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.
+8. The table endpoint reloads committed table state and returns `CommitTableResponseDto` (HTTP 200) built from committed metadata.
+
+### What the client writes vs what the gateway writes
+
+- Engines such as Trino write data files, manifests, manifest lists, delete files, and statistics files referenced by their commit payloads.
+- The gateway writes the canonical Iceberg `metadata.json` file and advances the catalog pointer to that metadata location.
+- DuckDB commonly uses the staged-create path; Trino commonly uses the non-staged create followed by a first snapshot commit. Both flows are supported by the current implementation.
 
 Idempotency behavior:
 - `Idempotency-Key` is the request replay key used by commit orchestration.
@@ -216,9 +224,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
-- **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
-- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
-  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
+- **Unit tests:** live under `src/test/java/.../rest/*` mirroring the main packages so collaborators such as planners, staged repositories, metadata builders, mappers, and property services can be verified with Mockito.
+- **Compose smoke:** `make compose-smoke` exercises real engine behavior against the gateway. In LocalStack mode it covers DuckDB staged commits, Trino non-staged commits, and Delta fixture reads, including `examples.delta.dv_demo_delta = 2` after a delete.
 
 ---
 
