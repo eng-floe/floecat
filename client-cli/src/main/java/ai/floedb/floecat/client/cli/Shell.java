@@ -19,32 +19,20 @@ package ai.floedb.floecat.client.cli;
 import static java.lang.System.out;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.CatalogSpec;
-import ai.floedb.floecat.catalog.rpc.CreateCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
-import ai.floedb.floecat.catalog.rpc.DeleteCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.DeleteNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
-import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
-import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
-import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
@@ -61,8 +49,6 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -772,16 +758,18 @@ public class Shell implements Runnable {
 
     switch (command) {
       case "account" -> cmdAccount(tail(tokens));
-      case "catalogs" -> cmdCatalogs();
-      case "catalog" -> {
-        if (tokens.size() >= 3 && "use".equals(tokens.get(1))) {
-          cmdUseCatalog(tokens.subList(2, tokens.size()));
-        } else {
-          cmdCatalogCrud(tail(tokens));
-        }
-      }
-      case "namespaces" -> cmdNamespaces(tail(tokens));
-      case "namespace" -> cmdNamespaceCrud(tail(tokens));
+      case "catalogs", "catalog" ->
+          CatalogCliSupport.handle(
+              command,
+              tail(tokens),
+              out,
+              catalogs,
+              directory,
+              () -> currentAccountId,
+              name -> currentCatalog = name);
+      case "namespaces", "namespace" ->
+          NamespaceCliSupport.handle(
+              command, tail(tokens), out, namespaces, directory, () -> currentAccountId);
       case "tables" -> cmdTables(tail(tokens));
       case "table" -> cmdTableCrud(tail(tokens));
       case "views" -> cmdViews(tail(tokens));
@@ -800,24 +788,6 @@ public class Shell implements Runnable {
     }
   }
 
-  private void cmdUseCatalog(List<String> args) {
-    if (args.size() != 1) {
-      out.println("usage: catalog use <catalog-name>");
-      return;
-    }
-    String name = Quotes.unquote(args.get(0));
-    if (name.isBlank()) {
-      out.println("catalog name cannot be empty");
-      return;
-    }
-
-    // Validate catalog eagerly
-    ResourceId cid = resolveCatalogId(name);
-
-    currentCatalog = name;
-    out.println("catalog set: " + name + " (" + cid.getId() + ")");
-  }
-
   private void cmdAccount(List<String> args) {
     AccountCliSupport.handle(
         args, out, accounts, () -> currentAccountId, id -> currentAccountId = id);
@@ -825,373 +795,6 @@ public class Shell implements Runnable {
 
   private List<String> tail(List<String> list) {
     return CliArgs.tail(list);
-  }
-
-  private void cmdCatalogs() {
-    List<Catalog> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> catalogs.listCatalogs(ListCatalogsRequest.newBuilder().setPage(pr).build()),
-            r -> r.getCatalogsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printCatalogs(all);
-  }
-
-  private void cmdCatalogCrud(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: catalog <create|get|update|delete> ...");
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "create" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: catalog create <display_name> [--desc <text>] [--connector <id>] [--policy"
-                  + " <id>] [--props k=v ...]");
-          return;
-        }
-        String display = Quotes.unquote(args.get(1));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-        String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", null));
-        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
-        var spec =
-            CatalogSpec.newBuilder()
-                .setDisplayName(display)
-                .setDescription(nvl(desc, ""))
-                .setConnectorRef(nvl(connectorRef, ""))
-                .putAllProperties(properties)
-                .setPolicyRef(nvl(policyRef, ""))
-                .build();
-        var resp = catalogs.createCatalog(CreateCatalogRequest.newBuilder().setSpec(spec).build());
-        printCatalogs(List.of(resp.getCatalog()));
-      }
-      case "get" -> {
-        if (args.size() < 2) {
-          out.println("usage: catalog get <display_name|id>");
-          return;
-        }
-        var resp =
-            catalogs.getCatalog(
-                GetCatalogRequest.newBuilder()
-                    .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
-                    .build());
-        printCatalogs(List.of(resp.getCatalog()));
-      }
-      case "update" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: catalog update <display_name|id> [--display <name>] [--desc <text>]"
-                  + " [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]");
-          return;
-        }
-        String id = Quotes.unquote(args.get(1));
-        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-        String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", null));
-        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
-
-        var sb = CatalogSpec.newBuilder();
-        LinkedHashSet<String> mask = new LinkedHashSet<>();
-
-        if (display != null) {
-          sb.setDisplayName(Quotes.unquote(display));
-          mask.add("display_name");
-        }
-
-        if (desc != null) {
-          sb.setDescription(desc);
-          mask.add("description");
-        }
-
-        if (connectorRef != null) {
-          sb.setConnectorRef(connectorRef);
-          mask.add("connector_ref");
-        }
-
-        if (policyRef != null) {
-          sb.setPolicyRef(policyRef);
-          mask.add("policy_ref");
-        }
-
-        if (!properties.isEmpty()) {
-          sb.putAllProperties(properties);
-          mask.add("properties");
-        }
-
-        var updateCatalogBuilder =
-            UpdateCatalogRequest.newBuilder()
-                .setCatalogId(resolveCatalogId(id))
-                .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
-        var catalogPrecondition = preconditionFromEtag(args);
-        if (catalogPrecondition != null) {
-          updateCatalogBuilder.setPrecondition(catalogPrecondition);
-        }
-        var req = updateCatalogBuilder.build();
-
-        var resp = catalogs.updateCatalog(req);
-        printCatalogs(List.of(resp.getCatalog()));
-      }
-      case "delete" -> {
-        if (args.size() < 2) {
-          out.println("usage: catalog delete <display_name|id> [--require-empty] [--etag <etag>]");
-          return;
-        }
-        boolean requireEmpty = args.contains("--require-empty");
-        var deleteCatalogBuilder =
-            DeleteCatalogRequest.newBuilder()
-                .setCatalogId(resolveCatalogId(Quotes.unquote(args.get(1))))
-                .setRequireEmpty(requireEmpty);
-        var deleteCatalogPrecondition = preconditionFromEtag(args);
-        if (deleteCatalogPrecondition != null) {
-          deleteCatalogBuilder.setPrecondition(deleteCatalogPrecondition);
-        }
-        var req = deleteCatalogBuilder.build();
-        catalogs.deleteCatalog(req);
-        out.println("ok");
-      }
-      default -> out.println("unknown subcommand");
-    }
-  }
-
-  private void cmdNamespaces(List<String> args) {
-    if (args.isEmpty()) {
-      out.println(
-          "usage: namespaces (<catalog | catalog.ns[.ns...]> | <UUID>) [--id <UUID>] [--prefix P]"
-              + " [--recursive]");
-      return;
-    }
-
-    String raw = args.get(0).trim();
-    String explicitId = Quotes.unquote(parseStringFlag(args, "--id", ""));
-    String namePrefix = Quotes.unquote(parseStringFlag(args, "--prefix", ""));
-    boolean recursive = args.contains("--recursive");
-    boolean childrenOnly = !recursive;
-
-    ListNamespacesRequest.Builder rb =
-        ListNamespacesRequest.newBuilder()
-            .setChildrenOnly(childrenOnly)
-            .setRecursive(recursive)
-            .setNamePrefix(nvl(namePrefix, ""))
-            .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
-
-    if (!explicitId.isBlank()) {
-      rb.setNamespaceId(resolveNamespaceIdFlexible(explicitId));
-    } else if (looksLikeQuotedOrRawUuid(raw)) {
-      rb.setNamespaceId(resolveNamespaceIdFlexible(raw));
-    } else {
-      try {
-        NameRef ref = nameRefForNamespace(raw, true);
-        rb.setCatalogId(resolveCatalogId(ref.getCatalog())).addAllPath(ref.getPathList());
-      } catch (IllegalArgumentException ex) {
-        rb.setCatalogId(resolveCatalogId(raw));
-      }
-    }
-
-    List<Namespace> all =
-        collectPages(
-            DEFAULT_PAGE_SIZE,
-            pr -> namespaces.listNamespaces(rb.setPage(pr).build()),
-            r -> r.getNamespacesList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    printNamespaces(all);
-  }
-
-  private void cmdNamespaceCrud(List<String> args) {
-    if (args.isEmpty()) {
-      out.println("usage: namespace <create|get|update|delete> ...");
-      return;
-    }
-    String sub = args.get(0);
-    switch (sub) {
-      case "create" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: namespace create <catalog|catalog.ns[.ns...]> "
-                  + "[--display <leaf>] [--path a.b[.c]] "
-                  + "[--desc <text>] [--props k=v ...] [--policy <id>]");
-          return;
-        }
-
-        String token = args.get(1).trim();
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", ""));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
-        String policy = Quotes.unquote(parseStringFlag(args, "--policy", ""));
-
-        String leafOpt = Quotes.unquote(parseStringFlag(args, "--display", null));
-        String pathOpt = parseStringFlag(args, "--path", null);
-
-        String catalog;
-        List<String> parents;
-        String leaf;
-
-        if (leafOpt != null || pathOpt != null) {
-          int firstDot = token.indexOf('.');
-          catalog = Quotes.unquote((firstDot > 0) ? token.substring(0, firstDot) : token);
-          if (catalog.isBlank()) {
-            out.println("Error: catalog is required before --path/--display.");
-            return;
-          }
-          parents =
-              (pathOpt == null || pathOpt.isBlank())
-                  ? List.of()
-                  : splitPathRespectingQuotesAndEscapes(pathOpt);
-          if (leafOpt == null || leafOpt.isBlank()) {
-            out.println("Error: --display is required when using --path/explicit mode.");
-            return;
-          }
-          leaf = leafOpt;
-        } else {
-          NameRef nr = nameRefForNamespace(token, true);
-          catalog = nr.getCatalog();
-          if (nr.getPathList().isEmpty()) {
-            out.println("Namespace path is empty.");
-            return;
-          }
-          parents = nr.getPathList().subList(0, nr.getPathCount() - 1);
-          leaf = nr.getPathList().get(nr.getPathCount() - 1);
-        }
-
-        var spec =
-            NamespaceSpec.newBuilder()
-                .setCatalogId(resolveCatalogId(catalog))
-                .addAllPath(parents)
-                .setDisplayName(leaf)
-                .setDescription(desc)
-                .putAllProperties(properties)
-                .setPolicyRef(policy)
-                .build();
-
-        var resp =
-            namespaces.createNamespace(CreateNamespaceRequest.newBuilder().setSpec(spec).build());
-        printNamespaces(List.of(resp.getNamespace()));
-      }
-      case "get" -> {
-        if (args.size() < 2) {
-          out.println("usage: namespace get <id|fq>");
-          return;
-        }
-        ResourceId nsId =
-            looksLikeQuotedOrRawUuid(args.get(1))
-                ? namespaceRid(Quotes.unquote(args.get(1)))
-                : resolveNamespaceIdFlexible(args.get(1));
-        var resp =
-            namespaces.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
-        printNamespaces(List.of(resp.getNamespace()));
-      }
-      case "update" -> {
-        if (args.size() < 2) {
-          out.println(
-              "usage: namespace update <id|catalog.ns[.ns...]> "
-                  + "[--display <name>] [--desc <text>] "
-                  + "[--policy <ref>] [--props k=v ...] "
-                  + "[--path a.b[.c]] [--catalog <id|name>] "
-                  + "[--etag <etag>]");
-          return;
-        }
-
-        ResourceId namespaceId =
-            looksLikeQuotedOrRawUuid(args.get(1))
-                ? namespaceRid(Quotes.unquote(args.get(1)))
-                : directory
-                    .resolveNamespace(
-                        ResolveNamespaceRequest.newBuilder()
-                            .setRef(nameRefForNamespace(args.get(1), false))
-                            .build())
-                    .getResourceId();
-
-        String display = Quotes.unquote(parseStringFlag(args, "--display", null));
-        String desc = Quotes.unquote(parseStringFlag(args, "--desc", null));
-        String policyRef = Quotes.unquote(parseStringFlag(args, "--policy", null));
-        String pathStr = parseStringFlag(args, "--path", null);
-        String catalogStr = Quotes.unquote(parseStringFlag(args, "--catalog", null));
-        Map<String, String> properties = parseKeyValueList(args, "--props");
-
-        if (display != null && pathStr != null) {
-          out.println("Error: cannot combine --path with --display in the same update.");
-          return;
-        }
-
-        NamespaceSpec.Builder sb = NamespaceSpec.newBuilder();
-        LinkedHashSet<String> mask = new LinkedHashSet<>();
-
-        if (display != null) {
-          sb.setDisplayName(display);
-          mask.add("display_name");
-        }
-
-        if (desc != null) {
-          sb.setDescription(desc);
-          mask.add("description");
-        }
-
-        if (policyRef != null) {
-          sb.setPolicyRef(policyRef);
-          mask.add("policy_ref");
-        }
-
-        if (pathStr != null) {
-          var pathList =
-              pathStr.isBlank() ? List.<String>of() : splitPathRespectingQuotesAndEscapes(pathStr);
-          sb.clearPath().addAllPath(pathList);
-          mask.add("path");
-        }
-
-        if (catalogStr != null) {
-          ResourceId cid =
-              looksLikeUuid(catalogStr) ? catalogRid(catalogStr) : resolveCatalogId(catalogStr);
-          sb.setCatalogId(cid);
-          mask.add("catalog_id");
-        }
-
-        if (!properties.isEmpty()) {
-          sb.putAllProperties(properties);
-          mask.add("properties");
-        }
-
-        if (mask.isEmpty()) {
-          out.println("Nothing to update. Provide one or more flags to change.");
-          return;
-        }
-
-        var updateNamespaceBuilder =
-            UpdateNamespaceRequest.newBuilder()
-                .setNamespaceId(namespaceId)
-                .setSpec(sb.build())
-                .setUpdateMask(FieldMask.newBuilder().addAllPaths(mask).build());
-        var nsPrecondition = preconditionFromEtag(args);
-        if (nsPrecondition != null) {
-          updateNamespaceBuilder.setPrecondition(nsPrecondition);
-        }
-        var req = updateNamespaceBuilder.build();
-
-        var resp = namespaces.updateNamespace(req);
-        printNamespaces(List.of(resp.getNamespace()));
-      }
-      case "delete" -> {
-        if (args.size() < 2) {
-          out.println("usage: namespace delete <id|fq> [--require-empty] [--etag <etag>]");
-          return;
-        }
-        boolean requireEmpty = args.contains("--require-empty");
-
-        ResourceId nsId = resolveNamespaceIdFlexible(args.get(1));
-
-        var deleteNamespaceBuilder =
-            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
-        var deleteNamespacePrecondition = preconditionFromEtag(args);
-        if (deleteNamespacePrecondition != null) {
-          deleteNamespaceBuilder.setPrecondition(deleteNamespacePrecondition);
-        }
-        var req = deleteNamespaceBuilder.build();
-        namespaces.deleteNamespace(req);
-        out.println("ok");
-      }
-      default -> out.println("unknown subcommand");
-    }
   }
 
   private void cmdTables(List<String> args) {
@@ -2964,19 +2567,6 @@ public class Shell implements Runnable {
     return (s == null || s.isBlank()) ? "<no-id>" : s;
   }
 
-  private void printCatalogs(List<Catalog> cats) {
-    out.printf(
-        "%-40s  %-24s  %-24s  %s%n", "CATALOG_ID", "CREATED_AT", "DISPLAY_NAME", "DESCRIPTION");
-    for (var c : cats) {
-      out.printf(
-          "%-40s  %-24s  %-24s  %s%n",
-          rid(c.getResourceId()),
-          ts(c.getCreatedAt()),
-          Quotes.quoteIfNeeded(c.getDisplayName()),
-          c.hasDescription() ? c.getDescription() : "");
-    }
-  }
-
   private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
     StringBuilder sb = new StringBuilder();
     sb.append(Quotes.quoteIfNeeded(catalog));
@@ -2987,30 +2577,6 @@ public class Shell implements Runnable {
       sb.append('.').append(Quotes.quoteIfNeeded(obj));
     }
     return sb.toString();
-  }
-
-  private String parentsAsList(List<String> parents) {
-    return "["
-        + parents.stream().map(Quotes::quoteIfNeeded).collect(Collectors.joining(", "))
-        + "]";
-  }
-
-  private void printNamespaces(List<Namespace> rows) {
-    out.printf(
-        "%-36s  %-24s  %-26s  %-16s  %s%n",
-        "NAMESPACE_ID", "CREATED_AT", "PARENTS", "LEAF", "DESCRIPTION");
-
-    for (var ns : rows) {
-      var parentsList = ns.getParentsList();
-      var leaf = ns.getDisplayName();
-      out.printf(
-          "%-36s  %-24s  %-26s  %-16s  %s%n",
-          rid(ns.getResourceId()),
-          ts(ns.getCreatedAt()),
-          parentsAsList(parentsList),
-          Quotes.quoteIfNeeded(leaf),
-          ns.hasDescription() ? ns.getDescription() : "");
-    }
   }
 
   private void printResolvedTables(List<ResolveFQTablesResponse.Entry> entries) {
