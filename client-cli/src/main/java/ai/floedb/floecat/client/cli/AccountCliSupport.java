@@ -23,6 +23,7 @@ import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import com.google.protobuf.Timestamp;
@@ -112,8 +113,8 @@ final class AccountCliSupport {
       out.println("usage: account create <display_name> [--desc <text>]");
       return;
     }
-    String display = Shell.Quotes.unquote(args.get(0));
-    String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+    String display = Quotes.unquote(args.get(0));
+    String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
     var spec =
         AccountSpec.newBuilder()
             .setDisplayName(display)
@@ -131,7 +132,7 @@ final class AccountCliSupport {
       Consumer<String> setCurrentAccountId) {
     String current = getCurrentAccountId.get();
     String token = args.isEmpty() ? (current == null ? "" : current.trim()) : args.get(0);
-    token = Shell.Quotes.unquote(token);
+    token = Quotes.unquote(token);
     if (token.isBlank()) {
       out.println("usage: account delete <id|display_name>");
       return;
@@ -149,7 +150,7 @@ final class AccountCliSupport {
 
   static String resolveAccountId(
       String token, AccountServiceGrpc.AccountServiceBlockingStub accounts) {
-    String value = Shell.Quotes.unquote(token == null ? "" : token).trim();
+    String value = Quotes.unquote(token == null ? "" : token).trim();
     if (value.isBlank()) {
       throw new IllegalArgumentException("account id/display name cannot be empty");
     }
@@ -178,7 +179,7 @@ final class AccountCliSupport {
           "%-40s  %-24s  %-24s  %s%n",
           rid(a.getResourceId()),
           ts(a.getCreatedAt()),
-          Shell.Quotes.quoteIfNeeded(a.getDisplayName()),
+          Quotes.quoteIfNeeded(a.getDisplayName()),
           a.hasDescription() ? a.getDescription() : "");
     }
   }

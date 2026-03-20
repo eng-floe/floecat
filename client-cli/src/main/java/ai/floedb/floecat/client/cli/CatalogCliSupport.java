@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.GetCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -109,7 +110,7 @@ final class CatalogCliSupport {
       out.println("usage: catalog use <catalog-name>");
       return;
     }
-    String name = Shell.Quotes.unquote(args.get(0));
+    String name = Quotes.unquote(args.get(0));
     if (name.isBlank()) {
       out.println("catalog name cannot be empty");
       return;
@@ -140,11 +141,10 @@ final class CatalogCliSupport {
                   + " <id>] [--props k=v ...]");
           return;
         }
-        String display = Shell.Quotes.unquote(args.get(1));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
-        String connectorRef =
-            Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
-        String policyRef = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
+        String display = Quotes.unquote(args.get(1));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+        String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
+        String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
         var spec =
             CatalogSpec.newBuilder()
@@ -167,7 +167,7 @@ final class CatalogCliSupport {
                 GetCatalogRequest.newBuilder()
                     .setCatalogId(
                         resolveCatalogId(
-                            Shell.Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
+                            Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
                     .build());
         printCatalogs(List.of(resp.getCatalog()), out);
       }
@@ -178,19 +178,18 @@ final class CatalogCliSupport {
                   + " [--connector <id>] [--policy <id>] [--props k=v ...] [--etag <etag>]");
           return;
         }
-        String id = Shell.Quotes.unquote(args.get(1));
-        String display = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
-        String connectorRef =
-            Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
-        String policyRef = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
+        String id = Quotes.unquote(args.get(1));
+        String display = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+        String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", null));
+        String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         var sb = CatalogSpec.newBuilder();
         LinkedHashSet<String> mask = new LinkedHashSet<>();
 
         if (display != null) {
-          sb.setDisplayName(Shell.Quotes.unquote(display));
+          sb.setDisplayName(Quotes.unquote(display));
           mask.add("display_name");
         }
         if (desc != null) {
@@ -231,8 +230,7 @@ final class CatalogCliSupport {
         var deleteBuilder =
             DeleteCatalogRequest.newBuilder()
                 .setCatalogId(
-                    resolveCatalogId(
-                        Shell.Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
+                    resolveCatalogId(Quotes.unquote(args.get(1)), directory, getCurrentAccountId))
                 .setRequireEmpty(requireEmpty);
         Precondition precondition = preconditionFromEtag(args);
         if (precondition != null) {
@@ -251,7 +249,7 @@ final class CatalogCliSupport {
       String token,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    String t = Shell.Quotes.unquote(token);
+    String t = Quotes.unquote(token);
     if (looksLikeUuid(t)) {
       return catalogRid(t, getCurrentAccountId);
     }
@@ -273,7 +271,7 @@ final class CatalogCliSupport {
   }
 
   private static NameRef nameCatalog(String name) {
-    return NameRef.newBuilder().setCatalog(Shell.Quotes.unquote(name)).build();
+    return NameRef.newBuilder().setCatalog(Quotes.unquote(name)).build();
   }
 
   private static boolean looksLikeUuid(String s) {
@@ -292,7 +290,7 @@ final class CatalogCliSupport {
           "%-40s  %-24s  %-24s  %s%n",
           rid(c.getResourceId()),
           ts(c.getCreatedAt()),
-          Shell.Quotes.quoteIfNeeded(c.getDisplayName()),
+          Quotes.quoteIfNeeded(c.getDisplayName()),
           c.hasDescription() ? c.getDescription() : "");
     }
   }

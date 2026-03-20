@@ -33,6 +33,8 @@ import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.client.cli.util.CsvListParserUtil;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
+import ai.floedb.floecat.client.cli.util.NameRefUtil;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -139,7 +141,7 @@ final class TableCliSupport {
           return;
         }
 
-        var ref = Shell.nameRefForTable(args.get(1));
+        var ref = NameRefUtil.nameRefForTable(args.get(1));
         ResourceId catalogId =
             CatalogCliSupport.resolveCatalogId(ref.getCatalog(), directory, getCurrentAccountId);
 
@@ -151,18 +153,16 @@ final class TableCliSupport {
                 .getResourceId();
 
         String name = ref.getName();
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
-        String root = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--root", ""));
-        String schema = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", ""));
-        List<String> parts =
-            csvList(Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
-        String formatStr = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
+        String root = Quotes.unquote(CliArgs.parseStringFlag(args, "--root", ""));
+        String schema = Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", ""));
+        List<String> parts = csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
+        String formatStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
-        String upConnector =
-            Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", ""));
-        String upNs = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", ""));
-        String upTable = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-table", ""));
+        String upConnector = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", ""));
+        String upNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", ""));
+        String upTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-table", ""));
 
         var ub =
             UpstreamRef.newBuilder()
@@ -216,21 +216,19 @@ final class TableCliSupport {
 
         ResourceId tableId = resolveTableId(args.get(1), directory, getCurrentAccountId);
 
-        String catalogStr = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
-        String nsStr = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
-        String name = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--name", null));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
-        String root = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--root", null));
-        String schema = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", null));
-        List<String> parts =
-            csvList(Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
-        String formatStr = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
+        String catalogStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
+        String nsStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
+        String name = Quotes.unquote(CliArgs.parseStringFlag(args, "--name", null));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+        String root = Quotes.unquote(CliArgs.parseStringFlag(args, "--root", null));
+        String schema = Quotes.unquote(CliArgs.parseStringFlag(args, "--schema", null));
+        List<String> parts = csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--parts", "")));
+        String formatStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--format", ""));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
-        String upConnector =
-            Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", null));
-        String upNs = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", null));
-        String upTable = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--up-table", null));
+        String upConnector = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-connector", null));
+        String upNs = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-ns", null));
+        String upTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--up-table", null));
 
         boolean changingCatalog = catalogStr != null && !catalogStr.isBlank();
         boolean changingNs = nsStr != null && !nsStr.isBlank();
@@ -368,7 +366,7 @@ final class TableCliSupport {
                       directory
                           .resolveTable(
                               ResolveTableRequest.newBuilder()
-                                  .setRef(Shell.nameRefForTable(s))
+                                  .setRef(NameRefUtil.nameRefForTable(s))
                                   .build())
                           .getResourceId()));
       case "view" ->
@@ -378,7 +376,7 @@ final class TableCliSupport {
                       directory
                           .resolveView(
                               ai.floedb.floecat.catalog.rpc.ResolveViewRequest.newBuilder()
-                                  .setRef(Shell.nameRefForTable(s))
+                                  .setRef(NameRefUtil.nameRefForTable(s))
                                   .build())
                           .getResourceId()));
       case "namespace" ->
@@ -399,9 +397,7 @@ final class TableCliSupport {
                           .resolveCatalog(
                               ResolveCatalogRequest.newBuilder()
                                   .setRef(
-                                      NameRef.newBuilder()
-                                          .setCatalog(Shell.Quotes.unquote(s))
-                                          .build())
+                                      NameRef.newBuilder().setCatalog(Quotes.unquote(s)).build())
                                   .build())
                           .getResourceId()));
       default -> out.println("unknown kind: " + kind);
@@ -422,7 +418,7 @@ final class TableCliSupport {
     String fq = args.get(1);
     var r =
         directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(Shell.nameRefForTable(fq)).build());
+            ResolveTableRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build());
     var t = tables.getTable(GetTableRequest.newBuilder().setTableId(r.getResourceId()).build());
     printTable(t.getTable(), out);
   }
@@ -433,11 +429,11 @@ final class TableCliSupport {
       String tok,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    String u = Shell.Quotes.unquote(tok == null ? "" : tok);
+    String u = Quotes.unquote(tok == null ? "" : tok);
     if (looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_TABLE, getCurrentAccountId);
     }
-    NameRef ref = Shell.nameRefForTable(tok);
+    NameRef ref = NameRefUtil.nameRefForTable(tok);
     return directory
         .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
         .getResourceId();
@@ -455,8 +451,8 @@ final class TableCliSupport {
               + "(e.g. catalog.namespace)");
     }
 
-    String catalog = Shell.Quotes.unquote(segs.get(0));
-    List<String> rest = segs.subList(1, segs.size()).stream().map(Shell.Quotes::unquote).toList();
+    String catalog = Quotes.unquote(segs.get(0));
+    List<String> rest = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
 
     NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
     if (rest.size() >= 2) {
@@ -526,12 +522,12 @@ final class TableCliSupport {
 
   private static String joinFqQuoted(String catalog, List<String> nsParts, String obj) {
     StringBuilder sb = new StringBuilder();
-    sb.append(Shell.Quotes.quoteIfNeeded(catalog));
+    sb.append(Quotes.quoteIfNeeded(catalog));
     for (String ns : nsParts) {
-      sb.append('.').append(Shell.Quotes.quoteIfNeeded(ns));
+      sb.append('.').append(Quotes.quoteIfNeeded(ns));
     }
     if (obj != null) {
-      sb.append('.').append(Shell.Quotes.quoteIfNeeded(obj));
+      sb.append('.').append(Quotes.quoteIfNeeded(obj));
     }
     return sb.toString();
   }
@@ -551,7 +547,7 @@ final class TableCliSupport {
     if (s == null || s.isBlank()) return List.of();
     try {
       return CsvListParserUtil.items(s).stream()
-          .map(Shell.Quotes::unquote)
+          .map(Quotes::unquote)
           .filter(t -> t != null && !t.isBlank())
           .toList();
     } catch (RuntimeException e) {

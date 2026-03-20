@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -344,7 +345,7 @@ final class ConstraintsCliSupport {
 
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    SnapshotConstraints constraints = readSnapshotConstraints(Path.of(Shell.Quotes.unquote(file)));
+    SnapshotConstraints constraints = readSnapshotConstraints(Path.of(Quotes.unquote(file)));
     switch (mode) {
       case PUT_REPLACE -> {
         PutTableConstraintsRequest.Builder request =
@@ -354,8 +355,7 @@ final class ConstraintsCliSupport {
                 .setConstraints(constraints);
         String key = parseStringFlag.parse(args, "--idempotency", "").trim();
         if (!key.isBlank()) {
-          request.setIdempotency(
-              IdempotencyKey.newBuilder().setKey(Shell.Quotes.unquote(key)).build());
+          request.setIdempotency(IdempotencyKey.newBuilder().setKey(Quotes.unquote(key)).build());
         }
         var response = constraintsService.putTableConstraints(request.build());
         if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
@@ -455,7 +455,7 @@ final class ConstraintsCliSupport {
               + " [--etag <etag>|--version <n>] [--json]");
       return;
     }
-    ConstraintDefinition constraint = readConstraintDefinition(Path.of(Shell.Quotes.unquote(file)));
+    ConstraintDefinition constraint = readConstraintDefinition(Path.of(Quotes.unquote(file)));
 
     AddTableConstraintRequest.Builder request = addRequest(tableId, snapshotId, constraint);
     Precondition precondition = preconditionFromFlags(args, parseStringFlag);
@@ -498,7 +498,7 @@ final class ConstraintsCliSupport {
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
+    String name = Quotes.unquote(args.get(1)).trim();
     if (name.isEmpty()) {
       out.println("constraint_name cannot be blank");
       return;
@@ -549,8 +549,8 @@ final class ConstraintsCliSupport {
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
-    String expression = Shell.Quotes.unquote(args.get(2)).trim();
+    String name = Quotes.unquote(args.get(1)).trim();
+    String expression = Quotes.unquote(args.get(2)).trim();
     if (name.isEmpty() || expression.isEmpty()) {
       out.println("constraint_name and check_expression cannot be blank");
       return;
@@ -597,9 +597,9 @@ final class ConstraintsCliSupport {
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
+    String name = Quotes.unquote(args.get(1)).trim();
     List<String> localColumns = parseColumnNames(args.get(2));
-    String referencedTableRaw = Shell.Quotes.unquote(args.get(3)).trim();
+    String referencedTableRaw = Quotes.unquote(args.get(3)).trim();
     List<String> referencedColumns = parseColumnNames(args.get(4));
     if (name.isEmpty() || referencedTableRaw.isEmpty()) {
       out.println("constraint_name and referenced_table cannot be blank");
@@ -705,7 +705,7 @@ final class ConstraintsCliSupport {
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
     long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String constraintName = Shell.Quotes.unquote(args.get(1)).trim();
+    String constraintName = Quotes.unquote(args.get(1)).trim();
     if (constraintName.isEmpty()) {
       out.println("constraint_name cannot be blank");
       return;
@@ -780,8 +780,8 @@ final class ConstraintsCliSupport {
   /** Parses optional `--etag` / `--version` precondition flags for mutation commands. */
   private static Precondition preconditionFromFlags(
       List<String> args, StringFlagParser parseStringFlag) {
-    String etag = Shell.Quotes.unquote(parseStringFlag.parse(args, "--etag", "")).trim();
-    String versionRaw = Shell.Quotes.unquote(parseStringFlag.parse(args, "--version", "")).trim();
+    String etag = Quotes.unquote(parseStringFlag.parse(args, "--etag", "")).trim();
+    String versionRaw = Quotes.unquote(parseStringFlag.parse(args, "--version", "")).trim();
     if (etag.isEmpty() && versionRaw.isEmpty()) {
       return null;
     }
@@ -807,7 +807,7 @@ final class ConstraintsCliSupport {
     if (snapshotIndex + 1 >= args.size() || args.get(snapshotIndex + 1).startsWith("--")) {
       throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
     }
-    String snapshotRaw = Shell.Quotes.unquote(args.get(snapshotIndex + 1)).trim();
+    String snapshotRaw = Quotes.unquote(args.get(snapshotIndex + 1)).trim();
     if (snapshotRaw.isEmpty()) {
       throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
     }
@@ -831,10 +831,10 @@ final class ConstraintsCliSupport {
   }
 
   private static List<String> parseColumnNames(String rawColumns) {
-    String[] pieces = Shell.Quotes.unquote(rawColumns).split(",");
+    String[] pieces = Quotes.unquote(rawColumns).split(",");
     List<String> out = new ArrayList<>(pieces.length);
     for (String piece : pieces) {
-      String name = Shell.Quotes.unquote(piece.trim());
+      String name = Quotes.unquote(piece.trim());
       if (name.isEmpty()) {
         throw new IllegalArgumentException("column list contains an empty name");
       }

@@ -28,6 +28,8 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.client.cli.util.NameRefUtil;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -117,7 +119,7 @@ final class ViewCliSupport {
                   + " k=v ...]");
           return;
         }
-        NameRef ref = Shell.nameRefForTable(args.get(1));
+        NameRef ref = NameRefUtil.nameRefForTable(args.get(1));
         ResourceId catalogId =
             CatalogCliSupport.resolveCatalogId(ref.getCatalog(), directory, getCurrentAccountId);
         ResourceId namespaceId =
@@ -131,8 +133,8 @@ final class ViewCliSupport {
                                 .build())
                         .build())
                 .getResourceId();
-        String sql = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", ""));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
+        String sql = Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", ""));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
         ViewSpec.Builder spec =
@@ -167,10 +169,10 @@ final class ViewCliSupport {
           return;
         }
         ResourceId viewId = resolveViewId(args.get(1), directory, getCurrentAccountId);
-        String display = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
-        String ns = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
-        String sql = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", null));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+        String display = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
+        String ns = Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
+        String sql = Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", null));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
         Map<String, String> props = parseKeyValueList(args, "--props");
 
         ViewSpec.Builder spec = ViewSpec.newBuilder();
@@ -229,11 +231,11 @@ final class ViewCliSupport {
       String tok,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    String u = Shell.Quotes.unquote(tok == null ? "" : tok);
+    String u = Quotes.unquote(tok == null ? "" : tok);
     if (looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_OVERLAY, getCurrentAccountId);
     }
-    NameRef ref = Shell.nameRefForTable(tok);
+    NameRef ref = NameRefUtil.nameRefForTable(tok);
     return directory
         .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
         .getResourceId();
@@ -268,7 +270,7 @@ final class ViewCliSupport {
           "%-40s  %-24s  %s%n",
           rid(view.getResourceId()),
           ts(view.getCreatedAt()),
-          Shell.Quotes.quoteIfNeeded(view.getDisplayName()));
+          Quotes.quoteIfNeeded(view.getDisplayName()));
     }
   }
 

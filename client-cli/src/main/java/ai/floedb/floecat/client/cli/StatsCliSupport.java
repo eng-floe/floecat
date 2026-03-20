@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.client.cli.util.CsvListParserUtil;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -217,12 +218,12 @@ final class StatsCliSupport {
     }
 
     String fq = args.get(0);
-    String columnsArg = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", ""));
+    String columnsArg = Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", ""));
     List<String> columns = csvList(columnsArg);
     CaptureMode mode =
-        parseCaptureMode(Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
+        parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
     List<Long> snapshotIds =
-        parseSnapshotIds(Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
+        parseSnapshotIds(Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
     boolean full = CliArgs.hasFlag(args, "--full");
 
     ResourceId tableId = resolveTableId.apply(fq);
@@ -366,7 +367,7 @@ final class StatsCliSupport {
   private static List<String> csvList(String s) {
     try {
       return CsvListParserUtil.items(s).stream()
-          .map(Shell.Quotes::unquote)
+          .map(Quotes::unquote)
           .filter(t -> t != null && !t.isBlank())
           .toList();
     } catch (RuntimeException e) {

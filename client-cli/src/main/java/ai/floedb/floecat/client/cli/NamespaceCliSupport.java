@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -90,8 +91,8 @@ final class NamespaceCliSupport {
     }
 
     String raw = args.get(0).trim();
-    String explicitId = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--id", ""));
-    String namePrefix = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--prefix", ""));
+    String explicitId = Quotes.unquote(CliArgs.parseStringFlag(args, "--id", ""));
+    String namePrefix = Quotes.unquote(CliArgs.parseStringFlag(args, "--prefix", ""));
     boolean recursive = args.contains("--recursive");
     boolean childrenOnly = !recursive;
 
@@ -151,11 +152,11 @@ final class NamespaceCliSupport {
         }
 
         String token = args.get(1).trim();
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", ""));
         Map<String, String> properties = parseKeyValueList(args, "--props");
-        String policy = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", ""));
+        String policy = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", ""));
 
-        String leafOpt = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
+        String leafOpt = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
         String pathOpt = CliArgs.parseStringFlag(args, "--path", null);
 
         String catalog;
@@ -164,7 +165,7 @@ final class NamespaceCliSupport {
 
         if (leafOpt != null || pathOpt != null) {
           int firstDot = token.indexOf('.');
-          catalog = Shell.Quotes.unquote((firstDot > 0) ? token.substring(0, firstDot) : token);
+          catalog = Quotes.unquote((firstDot > 0) ? token.substring(0, firstDot) : token);
           if (catalog.isBlank()) {
             out.println("Error: catalog is required before --path/--display.");
             return;
@@ -208,7 +209,7 @@ final class NamespaceCliSupport {
         }
         ResourceId nsId =
             looksLikeQuotedOrRawUuid(args.get(1))
-                ? namespaceRid(Shell.Quotes.unquote(args.get(1)), getCurrentAccountId)
+                ? namespaceRid(Quotes.unquote(args.get(1)), getCurrentAccountId)
                 : resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var resp =
             namespaces.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
@@ -227,7 +228,7 @@ final class NamespaceCliSupport {
 
         ResourceId namespaceId =
             looksLikeQuotedOrRawUuid(args.get(1))
-                ? namespaceRid(Shell.Quotes.unquote(args.get(1)), getCurrentAccountId)
+                ? namespaceRid(Quotes.unquote(args.get(1)), getCurrentAccountId)
                 : directory
                     .resolveNamespace(
                         ResolveNamespaceRequest.newBuilder()
@@ -235,11 +236,11 @@ final class NamespaceCliSupport {
                             .build())
                     .getResourceId();
 
-        String display = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
-        String desc = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
-        String policyRef = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
+        String display = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
+        String desc = Quotes.unquote(CliArgs.parseStringFlag(args, "--desc", null));
+        String policyRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--policy", null));
         String pathStr = CliArgs.parseStringFlag(args, "--path", null);
-        String catalogStr = Shell.Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
+        String catalogStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
         Map<String, String> properties = parseKeyValueList(args, "--props");
 
         if (display != null && pathStr != null) {
@@ -323,7 +324,7 @@ final class NamespaceCliSupport {
       String tok,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    String u = Shell.Quotes.unquote(tok == null ? "" : tok);
+    String u = Quotes.unquote(tok == null ? "" : tok);
     if (looksLikeUuid(u)) {
       return namespaceRid(u, getCurrentAccountId);
     }
@@ -369,8 +370,8 @@ final class NamespaceCliSupport {
               + "(e.g. catalog.namespace)");
     }
 
-    String catalog = Shell.Quotes.unquote(segs.get(0));
-    List<String> path = segs.subList(1, segs.size()).stream().map(Shell.Quotes::unquote).toList();
+    String catalog = Quotes.unquote(segs.get(0));
+    List<String> path = segs.subList(1, segs.size()).stream().map(Quotes::unquote).toList();
 
     NameRef.Builder b = NameRef.newBuilder().setCatalog(catalog);
     if (includeLeafInPath) {
@@ -386,7 +387,7 @@ final class NamespaceCliSupport {
   }
 
   private static boolean looksLikeQuotedOrRawUuid(String s) {
-    return looksLikeUuid(Shell.Quotes.unquote(s == null ? "" : s));
+    return looksLikeUuid(Quotes.unquote(s == null ? "" : s));
   }
 
   private static boolean looksLikeUuid(String s) {
@@ -409,14 +410,14 @@ final class NamespaceCliSupport {
           rid(ns.getResourceId()),
           ts(ns.getCreatedAt()),
           parentsAsList(parentsList),
-          Shell.Quotes.quoteIfNeeded(leaf),
+          Quotes.quoteIfNeeded(leaf),
           ns.hasDescription() ? ns.getDescription() : "");
     }
   }
 
   private static String parentsAsList(List<String> parents) {
     return "["
-        + parents.stream().map(Shell.Quotes::quoteIfNeeded).collect(Collectors.joining(", "))
+        + parents.stream().map(Quotes::quoteIfNeeded).collect(Collectors.joining(", "))
         + "]";
   }
 
