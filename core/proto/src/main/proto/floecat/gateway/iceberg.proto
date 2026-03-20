@@ -107,6 +107,11 @@ message IcebergMetadata {
   repeated IcebergStatisticsFile statistics = 18;
   repeated IcebergPartitionStatisticsFile partition_statistics = 19;
   repeated IcebergEncryptedKey encryption_keys = 20;
+  string location = 21;
+  int64 next_row_id = 22;
+  optional string operation = 23;
+  map<string, string> summary = 24;
+  map<string, string> properties = 99;
 }
 
 message IcebergCommitJournalEntry {

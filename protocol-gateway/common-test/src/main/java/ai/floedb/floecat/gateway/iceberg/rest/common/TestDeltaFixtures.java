@@ -218,21 +218,42 @@ public final class TestDeltaFixtures {
       return;
     }
     try (var stream = Files.walk(sourceRoot)) {
-      stream
-          .filter(Files::isRegularFile)
-          .forEach(
-              source -> {
-                Path relative = sourceRoot.relativize(source);
-                String key =
-                    (prefix.isEmpty() ? "" : prefix)
-                        + relative.toString().replace(File.separatorChar, '/');
-                PutObjectRequest request =
-                    PutObjectRequest.builder().bucket(bucket).key(key).build();
-                s3.putObject(request, source);
-              });
+      List<Path> files =
+          stream
+              .filter(Files::isRegularFile)
+              .sorted(TestDeltaFixtures::compareFixtureUploadPaths)
+              .toList();
+      for (Path source : files) {
+        Path relative = sourceRoot.relativize(source);
+        String key =
+            (prefix.isEmpty() ? "" : prefix) + relative.toString().replace(File.separatorChar, '/');
+        PutObjectRequest request = PutObjectRequest.builder().bucket(bucket).key(key).build();
+        s3.putObject(request, source);
+      }
     } catch (UncheckedIOException e) {
       throw e.getCause();
     }
+  }
+
+  private static int compareFixtureUploadPaths(Path left, Path right) {
+    String leftRelative = left.toString().replace(File.separatorChar, '/');
+    String rightRelative = right.toString().replace(File.separatorChar, '/');
+    int leftGroup = uploadOrderGroup(leftRelative);
+    int rightGroup = uploadOrderGroup(rightRelative);
+    if (leftGroup != rightGroup) {
+      return Integer.compare(leftGroup, rightGroup);
+    }
+    return leftRelative.compareTo(rightRelative);
+  }
+
+  private static int uploadOrderGroup(String relativePath) {
+    if (!relativePath.startsWith("_delta_log/")) {
+      return 0;
+    }
+    if (relativePath.endsWith(".json")) {
+      return 1;
+    }
+    return 2;
   }
 
   private static void deletePrefix(S3Client s3, String bucket, String prefix) {
@@ -527,13 +548,12 @@ public final class TestDeltaFixtures {
   }
 
   private static void verifyS3FixtureTablesReady() {
-    List<String> expectedTables =
-        fixtureTableRoots().stream().map(path -> path.getFileName().toString()).toList();
-    Set<String> pending = new LinkedHashSet<>(expectedTables);
+    Map<String, String> expectedLatestLogKeys = expectedLatestDeltaLogKeys();
+    Set<String> pending = new LinkedHashSet<>(expectedLatestLogKeys.keySet());
     Instant deadline = Instant.now().plus(S3_VERIFY_TIMEOUT);
     try (S3Client s3 = buildS3Client()) {
       while (!pending.isEmpty() && Instant.now().isBefore(deadline)) {
-        pending.removeIf(table -> deltaLogExists(s3, table));
+        pending.removeIf(table -> objectExists(s3, expectedLatestLogKeys.get(table)));
         if (!pending.isEmpty()) {
           try {
             Thread.sleep(S3_VERIFY_POLL_INTERVAL.toMillis());
@@ -550,14 +570,34 @@ public final class TestDeltaFixtures {
     }
   }
 
-  private static boolean deltaLogExists(S3Client s3, String table) {
+  private static Map<String, String> expectedLatestDeltaLogKeys() {
+    Map<String, String> out = new LinkedHashMap<>();
+    for (Path sourceRoot : fixtureTableRoots()) {
+      String table = sourceRoot.getFileName().toString();
+      Path latestLog = latestDeltaLogJson(sourceRoot.resolve("_delta_log"));
+      Path relative = sourceRoot.relativize(latestLog);
+      out.put(table, normalizeKey(table) + relative.toString().replace(File.separatorChar, '/'));
+    }
+    return out;
+  }
+
+  private static Path latestDeltaLogJson(Path deltaLogDir) {
+    try (var stream = Files.list(deltaLogDir)) {
+      return stream
+          .filter(Files::isRegularFile)
+          .filter(path -> path.getFileName().toString().matches("\\d{20}\\.json"))
+          .max(Comparator.comparing(path -> path.getFileName().toString()))
+          .orElseThrow(
+              () -> new IllegalStateException("No Delta log JSON files found in " + deltaLogDir));
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to resolve latest Delta log in " + deltaLogDir, e);
+    }
+  }
+
+  private static boolean objectExists(S3Client s3, String key) {
     ListObjectsV2Response response =
         s3.listObjectsV2(
-            ListObjectsV2Request.builder()
-                .bucket(BUCKET)
-                .prefix(normalizeKey(table) + "_delta_log/")
-                .maxKeys(1)
-                .build());
-    return !response.contents().isEmpty();
+            ListObjectsV2Request.builder().bucket(BUCKET).prefix(key).maxKeys(1).build());
+    return response.contents().stream().anyMatch(object -> key.equals(object.key()));
   }
 }

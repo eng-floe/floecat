@@ -1,0 +1,380 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.gateway.iceberg.rest.table;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertIterableEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.execution.rpc.ScanBundle;
+import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
+import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.ContentFileDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.FileScanTaskDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TablePlanResponseDto;
+import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
+import ai.floedb.floecat.query.rpc.BeginQueryResponse;
+import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
+import ai.floedb.floecat.query.rpc.EndQueryRequest;
+import ai.floedb.floecat.query.rpc.FetchScanBundleRequest;
+import ai.floedb.floecat.query.rpc.FetchScanBundleResponse;
+import ai.floedb.floecat.query.rpc.GetQueryResponse;
+import ai.floedb.floecat.query.rpc.QueryDescriptor;
+import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
+import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
+import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class TablePlanServiceTest {
+  private final TablePlanService service = new TablePlanService();
+  private final IcebergGatewayConfig config = mock(IcebergGatewayConfig.class);
+  private final GrpcWithHeaders grpc = mock(GrpcWithHeaders.class);
+  private final GrpcClients clients = mock(GrpcClients.class);
+  private final QueryServiceGrpc.QueryServiceBlockingStub queryStub =
+      mock(QueryServiceGrpc.QueryServiceBlockingStub.class);
+  private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scanStub =
+      mock(QueryScanServiceGrpc.QueryScanServiceBlockingStub.class);
+  private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemaStub =
+      mock(QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub.class);
+
+  @BeforeEach
+  void setUp() {
+    service.config = config;
+    service.mapper = new ObjectMapper();
+    service.grpcClient = new GrpcServiceFacade(grpc);
+    when(config.planTaskTtl()).thenReturn(Duration.ofMinutes(5));
+    when(config.planTaskFilesPerTask()).thenReturn(10);
+    when(grpc.raw()).thenReturn(clients);
+    when(clients.query()).thenReturn(queryStub);
+    when(clients.queryScan()).thenReturn(scanStub);
+    when(clients.querySchema()).thenReturn(schemaStub);
+    when(grpc.withHeaders(queryStub)).thenReturn(queryStub);
+    when(grpc.withHeaders(scanStub)).thenReturn(scanStub);
+    when(grpc.withHeaders(schemaStub)).thenReturn(schemaStub);
+  }
+
+  @Test
+  void startPlanRegistersInputsAndReturnsHandle() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-1").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+
+    TablePlanService.PlanHandle handle =
+        service.startPlan(
+            ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+            tableId,
+            List.of("id", "total"),
+            null,
+            null,
+            7L,
+            List.of("rows"),
+            null,
+            true,
+            false,
+            null);
+
+    assertEquals("plan-1", handle.queryId());
+
+    ArgumentCaptor<DescribeInputsRequest> describe =
+        ArgumentCaptor.forClass(DescribeInputsRequest.class);
+    verify(schemaStub).describeInputs(describe.capture());
+    DescribeInputsRequest sent = describe.getValue();
+    assertEquals("plan-1", sent.getQueryId());
+    assertEquals(tableId, sent.getInputs(0).getTableId());
+    assertEquals(7L, sent.getInputs(0).getSnapshot().getSnapshotId());
+  }
+
+  @Test
+  void fetchPlanBuildsTasksAndPredicates() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-2").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Map<String, Object> filter =
+        Map.of(
+            "type",
+            "and",
+            "expressions",
+            List.of(
+                Map.of(
+                    "type",
+                    "equal",
+                    "term",
+                    Map.of("type", "reference", "name", "CustomerId"),
+                    "literal",
+                    Map.of("type", "long", "value", 5)),
+                Map.of("type", "is-null", "term", "DeletedFlag")));
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        List.of("id"),
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        false,
+        true,
+        10L);
+
+    ScanFile data =
+        ScanFile.newBuilder()
+            .setFilePath("s3://bucket/data.parquet")
+            .setFileFormat("PARQUET")
+            .setFileSizeInBytes(10)
+            .setRecordCount(5)
+            .setPartitionDataJson("{\"partitionValues\":[1,\"A\"]}")
+            .addDeleteFileIndices(0)
+            .build();
+    ScanFile deleteFile =
+        ScanFile.newBuilder()
+            .setFilePath("s3://bucket/delete.parquet")
+            .setFileFormat("PARQUET")
+            .build();
+    ScanBundle bundle =
+        ScanBundle.newBuilder().addDataFiles(data).addDeleteFiles(deleteFile).build();
+    when(scanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    List<StorageCredentialDto> credentials =
+        List.of(new StorageCredentialDto("s3", Map.of("role", "arn:aws:iam::123:role/Test")));
+    TablePlanResponseDto response = service.fetchPlan("plan-2", credentials);
+
+    assertEquals("completed", response.status());
+    assertEquals("plan-2", response.planId());
+    assertIterableEquals(List.of("plan-2"), response.planTasks());
+    assertEquals(credentials, response.storageCredentials());
+    assertEquals(1, response.fileScanTasks().size());
+    assertEquals(List.of(1, "A"), response.fileScanTasks().get(0).dataFile().partition());
+    assertEquals(List.of(0), response.fileScanTasks().get(0).deleteFileReferences());
+    assertEquals("s3://bucket/delete.parquet", response.deleteFiles().get(0).filePath());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(scanStub).fetchScanBundle(fetch.capture());
+    FetchScanBundleRequest sent = fetch.getValue();
+    assertEquals(tableId, sent.getTableId());
+    assertEquals(1, sent.getRequiredColumnsCount());
+    assertEquals("id", sent.getRequiredColumns(0));
+    assertEquals(2, sent.getPredicatesCount());
+    assertEquals("customerid", sent.getPredicates(0).getColumn());
+    assertEquals("DeletedFlag".toLowerCase(), sent.getPredicates(1).getColumn());
+  }
+
+  @Test
+  void fetchPlanSkipsUnsupportedLogicalFilters() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-4").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Map<String, Object> filter =
+        Map.of(
+            "type",
+            "or",
+            "left",
+            Map.of("type", "eq", "term", "id", "value", 7),
+            "right",
+            Map.of("type", "not", "child", Map.of("type", "eq", "term", "id", "value", 9)));
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        true,
+        false,
+        null);
+
+    ScanBundle bundle = ScanBundle.newBuilder().build();
+    when(scanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    service.fetchPlan("plan-4", List.of());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(scanStub).fetchScanBundle(fetch.capture());
+    assertEquals(0, fetch.getValue().getPredicatesCount());
+  }
+
+  @Test
+  void fetchPlanAcceptsTransformTerms() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-5").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    when(queryStub.getQuery(any()))
+        .thenReturn(GetQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Map<String, Object> filter =
+        Map.of(
+            "type",
+            "eq",
+            "term",
+            Map.of("type", "transform", "transform", "bucket[16]", "term", "OrderId"),
+            "value",
+            11);
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        3L,
+        null,
+        filter,
+        true,
+        false,
+        null);
+
+    ScanBundle bundle = ScanBundle.newBuilder().build();
+    when(scanStub.fetchScanBundle(any()))
+        .thenReturn(FetchScanBundleResponse.newBuilder().setBundle(bundle).build());
+
+    service.fetchPlan("plan-5", List.of());
+
+    ArgumentCaptor<FetchScanBundleRequest> fetch =
+        ArgumentCaptor.forClass(FetchScanBundleRequest.class);
+    verify(scanStub).fetchScanBundle(fetch.capture());
+    assertEquals(1, fetch.getValue().getPredicatesCount());
+    assertEquals("OrderId", fetch.getValue().getPredicates(0).getColumn());
+  }
+
+  @Test
+  void cancelPlanEndsQueryAndDropsContext() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-4").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        true,
+        false,
+        null);
+
+    service.cancelPlan("plan-4");
+
+    ArgumentCaptor<EndQueryRequest> endCaptor = ArgumentCaptor.forClass(EndQueryRequest.class);
+    verify(queryStub).endQuery(endCaptor.capture());
+    assertEquals("plan-4", endCaptor.getValue().getQueryId());
+    assertFalse(endCaptor.getValue().getCommit());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> service.fetchPlan("plan-4", List.of(new StorageCredentialDto("s3", Map.of()))));
+  }
+
+  @Test
+  void unsupportedLogicalFilterDoesNotFailPlanning() {
+    QueryDescriptor descriptor = QueryDescriptor.newBuilder().setQueryId("plan-5").build();
+    when(queryStub.beginQuery(any()))
+        .thenReturn(BeginQueryResponse.newBuilder().setQuery(descriptor).build());
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+
+    Map<String, Object> filter = Map.of("type", "or");
+
+    service.startPlan(
+        ResourceId.newBuilder().setId("cat").setKind(ResourceKind.RK_CATALOG).build(),
+        tableId,
+        null,
+        null,
+        null,
+        null,
+        null,
+        filter,
+        false,
+        false,
+        null);
+    verify(queryStub, times(1)).beginQuery(any());
+  }
+
+  @Test
+  void registerCompletedPlanRetainsFilesAndDeletes() {
+    ContentFileDto dataFile =
+        new ContentFileDto(
+            "data",
+            "s3://bucket/data.parquet",
+            "PARQUET",
+            1,
+            List.of(),
+            1L,
+            1L,
+            null,
+            List.of(),
+            null,
+            null);
+    ContentFileDto deleteFile =
+        new ContentFileDto(
+            "position-deletes",
+            "s3://bucket/delete.parquet",
+            "PARQUET",
+            1,
+            List.of(),
+            1L,
+            1L,
+            null,
+            List.of(),
+            null,
+            null);
+    List<FileScanTaskDto> tasks = List.of(new FileScanTaskDto(dataFile, List.of(), null));
+    List<ContentFileDto> deletes = List.of(deleteFile);
+
+    TablePlanService.PlanDescriptor descriptor =
+        service.registerCompletedPlan("plan-1", "ns", "tbl", tasks, deletes, List.of());
+
+    assertEquals(tasks, descriptor.fileScanTasks());
+    assertEquals(deletes, descriptor.deleteFiles());
+
+    TablePlanService.PlanDescriptor fetched =
+        service.findPlan("plan-1").orElseThrow(() -> new AssertionError("plan missing"));
+    assertEquals(tasks, fetched.fileScanTasks());
+    assertEquals(deletes, fetched.deleteFiles());
+  }
+}

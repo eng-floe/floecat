@@ -63,6 +63,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -70,7 +71,9 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import ai.floedb.floecat.types.Hashing;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -94,6 +97,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "remote")
 @ApplicationScoped
 public class GrpcReconcilerBackend implements ReconcilerBackend {
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -650,19 +654,51 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.getSequenceNumber() > 0) {
       builder.setSequenceNumber(snapshot.getSequenceNumber());
     }
-    if (!snapshot.getManifestList().isBlank()) {
-      builder.setManifestList(snapshot.getManifestList());
+    if (snapshot.getManifestListCount() > 0 && !snapshot.getManifestList(0).isBlank()) {
+      builder.addManifestList(snapshot.getManifestList(0));
     }
-    if (!snapshot.getSummaryMap().isEmpty()) {
-      builder.putAllSummary(snapshot.getSummaryMap());
+    Map<String, ByteString> formatMetadata = new LinkedHashMap<>(snapshot.getFormatMetadataMap());
+    Map<String, String> summary = snapshotSummary(snapshot);
+    if (!summary.isEmpty()) {
+      formatMetadata.put(
+          ICEBERG_METADATA_KEY, withSnapshotSummary(snapshot, summary).toByteString());
     }
     if (snapshot.getSchemaId() > 0) {
       builder.setSchemaId(snapshot.getSchemaId());
     }
-    if (!snapshot.getFormatMetadataMap().isEmpty()) {
-      builder.putAllFormatMetadata(snapshot.getFormatMetadataMap());
+    if (!formatMetadata.isEmpty()) {
+      builder.putAllFormatMetadata(formatMetadata);
     }
     return builder.build();
+  }
+
+  private Map<String, String> snapshotSummary(Snapshot snapshot) {
+    IcebergMetadata metadata = snapshotMetadata(snapshot);
+    if (metadata == null || metadata.getSummaryMap().isEmpty()) {
+      return Map.of();
+    }
+    return Map.copyOf(metadata.getSummaryMap());
+  }
+
+  private IcebergMetadata withSnapshotSummary(Snapshot snapshot, Map<String, String> summary) {
+    IcebergMetadata existing = snapshotMetadata(snapshot);
+    IcebergMetadata.Builder builder =
+        existing == null ? IcebergMetadata.newBuilder() : existing.toBuilder();
+    builder.clearSummary();
+    builder.putAllSummary(summary);
+    return builder.build();
+  }
+
+  private IcebergMetadata snapshotMetadata(Snapshot snapshot) {
+    if (snapshot == null || !snapshot.getFormatMetadataMap().containsKey(ICEBERG_METADATA_KEY)) {
+      return null;
+    }
+    try {
+      return IcebergMetadata.parseFrom(snapshot.getFormatMetadataOrThrow(ICEBERG_METADATA_KEY));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "Failed to parse Iceberg snapshot metadata for snapshot " + snapshot.getSnapshotId(), e);
+    }
   }
 
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {

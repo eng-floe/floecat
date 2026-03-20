@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.api.request;
 
-import ai.floedb.floecat.gateway.iceberg.rest.common.NamespaceListDeserializer;
+import ai.floedb.floecat.gateway.iceberg.rest.support.NamespaceListDeserializer;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import java.util.List;
@@ -31,4 +31,6 @@ public final class NamespaceRequests {
       Map<String, String> properties) {}
 
   public record Update(Map<String, String> properties) {}
+
+  public record Properties(List<String> removals, Map<String, String> updates) {}
 }

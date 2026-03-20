@@ -200,7 +200,6 @@ class IcebergRestFixtureIT {
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
                 Map.entry("parent-snapshot-id", parentSnapshotId),
-                Map.entry("sequence-number", System.currentTimeMillis()),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -353,7 +352,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", snapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -605,7 +603,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -708,7 +705,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", snapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -821,7 +817,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -957,7 +952,6 @@ class IcebergRestFixtureIT {
             Map.ofEntries(
                 Map.entry("snapshot-id", newSnapshotId),
                 Map.entry("timestamp-ms", System.currentTimeMillis()),
-                Map.entry("sequence-number", 1L),
                 Map.entry("manifest-list", manifestList),
                 Map.entry("schema-id", fixtureSchemaId),
                 Map.entry("schema-json", fixtureSchemaJson),
@@ -1446,171 +1440,46 @@ class IcebergRestFixtureIT {
     createNamespace(namespace);
 
     try {
-      given()
-          .spec(spec)
-          .when()
-          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
-          .then()
-          .statusCode(200);
-
-      given()
-          .spec(spec)
-          .when()
-          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
-          .then()
-          .statusCode(200);
-
-      Map<String, Object> createPayload = new LinkedHashMap<>();
-      createPayload.put("name", table);
-      createPayload.put("location", null);
-      createPayload.put(
-          "schema",
-          Map.of(
-              "type",
-              "struct",
-              "schema-id",
-              0,
-              "fields",
-              List.of(Map.of("id", 1, "name", "i", "required", false, "type", "int"))));
-      createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
-      createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
-      createPayload.put(
-          "properties",
-          Map.of(
-              "write.format.default",
-              "PARQUET",
-              "format-version",
-              "2",
-              "write.parquet.compression-codec",
-              ""));
-      createPayload.put("stage-create", false);
-
-      given()
-          .spec(spec)
-          .body(createPayload)
-          .when()
-          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
-          .then()
-          .statusCode(200);
-
-      String tableBody =
+      Map<String, Object> createPayload = trinoSmokeCreatePayload(table, 2);
+      String createBody =
           given()
               .spec(spec)
+              .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+              .body(createPayload)
               .when()
-              .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
               .then()
               .statusCode(200)
               .extract()
               .asString();
-      JsonNode tableNode = MAPPER.readTree(tableBody);
-      JsonNode metadataNode = tableNode.path("metadata");
-      String tableUuid = metadataNode.path("table-uuid").asText(null);
-      if (tableUuid == null || tableUuid.isBlank()) {
-        tableUuid = metadataNode.path("properties").path("table-uuid").asText(null);
-      }
-      Assertions.assertNotNull(tableUuid, "table-uuid should be available");
 
-      Map.Entry<Long, String> fixtureManifest =
-          fixtureManifestLists.entrySet().stream().findFirst().orElseThrow();
-      long snapshotId = fixtureManifest.getKey();
-      String manifestList = TestS3Fixtures.bucketUri(fixtureManifest.getValue());
-      Map<String, Object> metricsPayload =
-          Map.of(
-              "report-type",
-              "commit-report",
-              "table-name",
-              CATALOG + "_rest." + namespace + "." + table,
-              "snapshot-id",
-              snapshotId,
-              "sequence-number",
-              1,
-              "operation",
-              "append",
-              "metrics",
-              Map.of(
-                  "total-duration",
-                  Map.of("count", 1, "time-unit", "nanoseconds", "total-duration", 78018250),
-                  "attempts",
-                  Map.of("unit", "count", "value", 1),
-                  "total-data-files",
-                  Map.of("unit", "count", "value", 0),
-                  "total-delete-files",
-                  Map.of("unit", "count", "value", 0),
-                  "total-records",
-                  Map.of("unit", "count", "value", 0),
-                  "total-files-size-bytes",
-                  Map.of("unit", "bytes", "value", 0),
-                  "total-positional-deletes",
-                  Map.of("unit", "count", "value", 0),
-                  "total-equality-deletes",
-                  Map.of("unit", "count", "value", 0)),
-              "metadata",
-              Map.of("engine-version", "478", "engine-name", "trino", "iceberg-version", "1.10.0"));
+      JsonNode createNode = MAPPER.readTree(createBody);
+      String reservedMetadataLocation = createNode.path("metadata-location").asText("");
+      Assertions.assertTrue(
+          reservedMetadataLocation.contains("/metadata/00000-"),
+          "non-staged Trino create should reserve 00000 metadata");
+
+      JsonNode tableNode = fetchTableNode(namespace, table);
+      String tableUuid = tableUuid(tableNode);
+      Assertions.assertNotNull(tableUuid, "table-uuid should be present after create");
+
+      long snapshotId = System.currentTimeMillis();
+      String manifestList = fixtureManifestListLocation(0);
 
       given()
           .spec(spec)
-          .body(metricsPayload)
+          .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+          .body(trinoCommitReportPayload(namespace, table, snapshotId, 0, 0, 0, 0))
           .when()
           .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/metrics")
           .then()
           .statusCode(204);
 
-      given()
-          .spec(spec)
-          .when()
-          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
-          .then()
-          .statusCode(200);
-
-      Map<String, Object> commitPayload =
-          new LinkedHashMap<>();
-      Map<String, Object> assertTableUuid = new LinkedHashMap<>();
-      assertTableUuid.put("type", "assert-table-uuid");
-      assertTableUuid.put("uuid", tableUuid);
-      Map<String, Object> assertRefSnapshot = new LinkedHashMap<>();
-      assertRefSnapshot.put("type", "assert-ref-snapshot-id");
-      assertRefSnapshot.put("ref", "main");
-      assertRefSnapshot.put("snapshot-id", null);
-      commitPayload.put("requirements", List.of(assertTableUuid, assertRefSnapshot));
-      commitPayload.put(
-          "updates",
-          List.of(
-              Map.of(
-                  "action",
-                  "remove-properties",
-                  "removals",
-                  List.of("write.parquet.compression-codec", "format-version")),
-              Map.of(
-                  "action",
-                  "add-snapshot",
-                  "snapshot",
-                  Map.of(
-                      "sequence-number",
-                      1,
-                      "snapshot-id",
-                      snapshotId,
-                      "timestamp-ms",
-                      System.currentTimeMillis(),
-                      "summary",
-                      Map.of("operation", "append", "trino_user", "trino"),
-                      "manifest-list",
-                      manifestList,
-                      "schema-id",
-                      0)),
-              Map.of(
-                  "action",
-                  "set-snapshot-ref",
-                  "ref-name",
-                  "main",
-                  "snapshot-id",
-                  snapshotId,
-                  "type",
-                  "branch")));
-
       String commitBody =
           given()
               .spec(spec)
-              .body(commitPayload)
+              .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+              .body(trinoFirstAppendCommitPayload(tableUuid, snapshotId, manifestList))
               .when()
               .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
               .then()
@@ -1621,15 +1490,21 @@ class IcebergRestFixtureIT {
       JsonNode responseNode = MAPPER.readTree(commitBody);
       JsonNode commitNode = responseNode.path("metadata");
       Assertions.assertEquals(snapshotId, commitNode.path("current-snapshot-id").asLong());
-      Assertions.assertTrue(
-          commitNode.path("last-sequence-number").asLong() >= 1L,
-          "last-sequence-number should be >= 1");
       Assertions.assertEquals(
           snapshotId,
           commitNode.path("refs").path("main").path("snapshot-id").asLong());
       Assertions.assertTrue(
-          responseNode.path("metadata-location").asText("").contains("/metadata/"),
-          "metadata-location should be populated");
+          responseNode.path("metadata-location").asText("").contains("/metadata/00000-"),
+          "first Trino append should materialize the reserved 00000 metadata file");
+
+      given()
+          .spec(spec)
+          .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+          .body(trinoScanReportPayload(table, snapshotId, true))
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/metrics")
+          .then()
+          .statusCode(400);
     } finally {
       deleteTableResource(namespace, table);
       deleteNamespaceResource(namespace);
@@ -1643,111 +1518,168 @@ class IcebergRestFixtureIT {
     createNamespace(namespace);
 
     try {
-      given()
-          .spec(spec)
-          .when()
-          .get("/v1/" + CATALOG + "/namespaces/" + namespace)
-          .then()
-          .statusCode(200);
-
-      given()
-          .spec(spec)
-          .when()
-          .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
-          .then()
-          .statusCode(404);
-
-      Map<String, Object> createPayload = new LinkedHashMap<>();
-      createPayload.put("stage-create", false);
-      createPayload.put("name", table);
-      createPayload.put(
-          "schema",
-          Map.of(
-              "type",
-              "struct",
-              "fields",
-              List.of(Map.of("name", "event_id", "id", 1, "type", "int", "required", false)),
-              "schema-id",
-              0));
-      createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
-      createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
-      createPayload.put("properties", Map.of());
-
-      given()
-          .spec(spec)
-          .body(createPayload)
-          .when()
-          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
-          .then()
-          .statusCode(200);
-
-      Map<String, Object> commitPayload = new LinkedHashMap<>();
-      commitPayload.put("requirements", List.of());
-      commitPayload.put(
-          "updates",
-          List.of(
-              Map.of("action", "assign-uuid", "uuid", table),
-              Map.of("action", "upgrade-format-version", "format-version", 1),
-              Map.of(
-                  "action",
-                  "add-schema",
-                  "last-column-id",
-                  1,
-                  "schema",
-                  Map.of(
-                      "type",
-                      "struct",
-                      "fields",
-                      List.of(
-                          Map.of("name", "event_id", "id", 1, "type", "int", "required", false)),
-                      "schema-id",
-                      0,
-                      "identifier-field-ids",
-                      List.of())),
-              Map.of("action", "set-current-schema", "schema-id", 0),
-              Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
-              Map.of("action", "set-default-spec", "spec-id", 0),
-              Map.of(
-                  "action",
-                  "add-sort-order",
-                  "sort-order",
-                  Map.of("order-id", 0, "fields", List.of())),
-              Map.of("action", "set-default-sort-order", "sort-order-id", 0),
-              Map.of(
-                  "action",
-                  "set-location",
-                  "location",
-                  String.format("s3://floecat/%s/%s", namespace, table))));
-      io.restassured.response.Response commitResponse =
+      String stageBody =
           given()
               .spec(spec)
-              .body(commitPayload)
+              .header("User-Agent", "duckdb/v1.4.4(linux_arm64) cli 6ddac802ff")
+              .body(duckdbStageCreatePayload(table))
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+
+      JsonNode stageNode = MAPPER.readTree(stageBody);
+      String stagedMetadataLocation = stageNode.path("metadata-location").asText("");
+      Assertions.assertTrue(
+          stagedMetadataLocation.contains("/metadata/00000-"),
+          "DuckDB stage-create should reserve 00000 metadata");
+      String stagedUuid = parseUuidFromMetadataLocation(stagedMetadataLocation);
+
+      String createCommitBody =
+          given()
+              .spec(spec)
+              .header("User-Agent", "duckdb/v1.4.4(linux_arm64) cli 6ddac802ff")
+              .body(duckdbCreateCommitPayload(table, stagedUuid))
               .when()
               .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
               .then()
+              .statusCode(200)
               .extract()
-              .response();
-      String commitBody = commitResponse.asString();
-      Assertions.assertEquals(
-          200,
-          commitResponse.statusCode(),
-          () ->
-              "DuckDB commit failed: status="
-                  + commitResponse.statusCode()
-                  + " body="
-                  + commitBody);
+              .asString();
 
-      JsonNode responseNode = MAPPER.readTree(commitBody);
-      JsonNode commitNode = responseNode.path("metadata");
+      JsonNode createCommitNode = MAPPER.readTree(createCommitBody);
+      Assertions.assertEquals(
+          stagedMetadataLocation,
+          createCommitNode.path("metadata-location").asText(),
+          "DuckDB staged create commit should materialize the reserved metadata file");
+
+      JsonNode createdNode = fetchTableNode(namespace, table);
+      Assertions.assertEquals(
+          stagedMetadataLocation,
+          createdNode.path("metadata-location").asText(),
+          "DuckDB staged create should materialize the reserved metadata file");
       Assertions.assertTrue(
-          responseNode.path("metadata-location").asText("").contains("/metadata/"),
-          "metadata-location should be populated");
-      Assertions.assertEquals(1, commitNode.path("format-version").asInt());
+          createdNode.path("metadata").path("current-snapshot-id").isMissingNode()
+              || createdNode.path("metadata").path("current-snapshot-id").isNull()
+              || createdNode.path("metadata").path("current-snapshot-id").asLong() <= 0,
+          "current-snapshot-id should still be empty after the staged create commit");
+
+      long snapshotId = System.currentTimeMillis();
+      String appendBody =
+          given()
+              .spec(spec)
+              .header("User-Agent", "duckdb/v1.4.4(linux_arm64) cli 6ddac802ff")
+              .body(duckdbAppendCommitPayload(snapshotId))
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+
+      JsonNode appendedNode = fetchTableNode(namespace, table);
+      JsonNode appendNode = MAPPER.readTree(appendBody);
+      Assertions.assertEquals(
+          snapshotId,
+          appendedNode.path("metadata").path("current-snapshot-id").asLong());
+      Assertions.assertEquals(
+          snapshotId,
+          appendedNode.path("metadata").path("refs").path("main").path("snapshot-id").asLong());
       Assertions.assertTrue(
-          commitNode.path("current-snapshot-id").isMissingNode()
-              || commitNode.path("current-snapshot-id").isNull()
-              || commitNode.path("current-snapshot-id").asLong() <= 0,
-          "current-snapshot-id should be empty on create");
+          appendedNode.path("metadata-location").asText("").contains("/metadata/00001-"),
+          "DuckDB append transaction should materialize the next metadata version");
+      Assertions.assertTrue(
+          appendNode.path("metadata-location").asText("").contains("/metadata/00001-"),
+          "DuckDB append commit response should return the next metadata version");
+    } finally {
+      deleteTableResource(namespace, table);
+      deleteNamespaceResource(namespace);
+    }
+  }
+
+  @Test
+  void trinoAppendWithStatisticsMatchesSmokeContract() throws Exception {
+    String namespace = uniqueName("it_ns_");
+    String table = uniqueName("it_tbl_");
+    createNamespace(namespace);
+
+    try {
+      String createBody =
+          given()
+              .spec(spec)
+              .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+              .body(trinoSmokeCreatePayload(table, 2))
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables")
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+      Assertions.assertTrue(
+          MAPPER.readTree(createBody).path("metadata-location").asText("").contains("/metadata/00000-"));
+
+      String tableUuid = tableUuid(fetchTableNode(namespace, table));
+      Assertions.assertNotNull(tableUuid, "table-uuid should be present after create");
+
+      long firstSnapshotId = System.currentTimeMillis();
+      given()
+          .spec(spec)
+          .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+          .body(trinoCommitReportPayload(namespace, table, firstSnapshotId, 1, 0, 0, 0))
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/metrics")
+          .then()
+          .statusCode(204);
+
+      given()
+          .spec(spec)
+          .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+          .body(trinoFirstAppendCommitPayload(tableUuid, firstSnapshotId, fixtureManifestListLocation(0)))
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+          .then()
+          .statusCode(200);
+
+      long secondSnapshotId = firstSnapshotId + 1;
+      given()
+          .spec(spec)
+          .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+          .body(trinoCommitReportPayload(namespace, table, secondSnapshotId, 2, 1, 1, 339))
+          .when()
+          .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table + "/metrics")
+          .then()
+          .statusCode(204);
+
+      String refreshedTableUuid = tableUuid(fetchTableNode(namespace, table));
+      Assertions.assertNotNull(refreshedTableUuid, "table-uuid should be present before second append");
+
+      String secondCommitBody =
+          given()
+              .spec(spec)
+              .header("User-Agent", "Apache-HttpClient/5.5.1 (Java/25.0.1)")
+              .body(
+                  trinoAppendWithStatisticsCommitPayload(
+                      refreshedTableUuid,
+                      table,
+                      firstSnapshotId,
+                      secondSnapshotId,
+                      fixtureManifestListLocation(1)))
+              .when()
+              .post("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+              .then()
+              .statusCode(200)
+              .extract()
+              .asString();
+
+      JsonNode secondCommitNode = MAPPER.readTree(secondCommitBody);
+      Assertions.assertEquals(
+          secondSnapshotId,
+          secondCommitNode.path("metadata").path("current-snapshot-id").asLong());
+      Assertions.assertTrue(
+          secondCommitNode.path("metadata-location").asText("").contains("/metadata/00001-"),
+          "second Trino append should materialize the next metadata version");
     } finally {
       deleteTableResource(namespace, table);
       deleteNamespaceResource(namespace);
@@ -2290,6 +2222,444 @@ class IcebergRestFixtureIT {
       props.put("last-updated-ms", Long.toString(fixtureMetadata.lastUpdatedMillis()));
     }
     return props;
+  }
+
+  private JsonNode fetchTableNode(String namespace, String table) throws Exception {
+    String tableBody =
+        given()
+            .spec(spec)
+            .when()
+            .get("/v1/" + CATALOG + "/namespaces/" + namespace + "/tables/" + table)
+            .then()
+            .statusCode(200)
+            .extract()
+            .asString();
+    return MAPPER.readTree(tableBody);
+  }
+
+  private String tableUuid(JsonNode tableNode) {
+    JsonNode metadataNode = tableNode.path("metadata");
+    String tableUuid = metadataNode.path("table-uuid").asText(null);
+    if (tableUuid == null || tableUuid.isBlank()) {
+      tableUuid = metadataNode.path("properties").path("table-uuid").asText(null);
+    }
+    return tableUuid;
+  }
+
+  private Map<String, Object> trinoSmokeCreatePayload(String table, int formatVersion) {
+    Map<String, Object> createPayload = new LinkedHashMap<>();
+    createPayload.put("name", table);
+    createPayload.put("location", null);
+    createPayload.put(
+        "schema",
+        Map.of(
+            "type",
+            "struct",
+            "schema-id",
+            0,
+            "fields",
+            List.of(
+                Map.of("id", 1, "name", "id", "required", false, "type", "int"),
+                Map.of("id", 2, "name", "v", "required", false, "type", "string"))));
+    createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
+    createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
+    Map<String, Object> properties = new LinkedHashMap<>();
+    properties.put("write.format.default", "PARQUET");
+    properties.put("format-version", Integer.toString(formatVersion));
+    properties.put("write.parquet.compression-codec", "");
+    createPayload.put("properties", properties);
+    createPayload.put("stage-create", false);
+    return createPayload;
+  }
+
+  private Map<String, Object> trinoCommitReportPayload(
+      String namespace,
+      String table,
+      long snapshotId,
+      long sequenceNumber,
+      long addedDataFiles,
+      long addedRecords,
+      long addedFileSizeBytes) {
+    Map<String, Object> metrics = new LinkedHashMap<>();
+    metrics.put(
+        "total-duration",
+        Map.of("count", 1, "time-unit", "nanoseconds", "total-duration", 5309042));
+    metrics.put("attempts", Map.of("unit", "count", "value", 1));
+    if (addedDataFiles > 0) {
+      metrics.put("added-data-files", Map.of("unit", "count", "value", addedDataFiles));
+    }
+    metrics.put("total-data-files", Map.of("unit", "count", "value", Math.max(addedDataFiles, 0)));
+    metrics.put("total-delete-files", Map.of("unit", "count", "value", 0));
+    if (addedRecords > 0) {
+      metrics.put("added-records", Map.of("unit", "count", "value", addedRecords));
+    }
+    metrics.put("total-records", Map.of("unit", "count", "value", Math.max(addedRecords, 0)));
+    if (addedFileSizeBytes > 0) {
+      metrics.put("added-files-size-bytes", Map.of("unit", "bytes", "value", addedFileSizeBytes));
+    }
+    metrics.put(
+        "total-files-size-bytes", Map.of("unit", "bytes", "value", Math.max(addedFileSizeBytes, 0)));
+    metrics.put("total-positional-deletes", Map.of("unit", "count", "value", 0));
+    metrics.put("total-equality-deletes", Map.of("unit", "count", "value", 0));
+
+    return Map.of(
+        "report-type",
+        "commit-report",
+        "table-name",
+        "floecat." + namespace + "." + table,
+        "snapshot-id",
+        snapshotId,
+        "sequence-number",
+        sequenceNumber,
+        "operation",
+        "append",
+        "metrics",
+        metrics,
+        "metadata",
+        Map.of(
+            "engine-version",
+            "479",
+            "engine-name",
+            "trino",
+            "iceberg-version",
+            "Apache Iceberg 1.10.0 (commit 2114bf631e49af532d66e2ce148ee49dd1dd1f1f)"));
+  }
+
+  private Map<String, Object> trinoFirstAppendCommitPayload(
+      String tableUuid, long snapshotId, String manifestList) {
+    Map<String, Object> summary = new LinkedHashMap<>();
+    summary.put("operation", "append");
+    summary.put("trino_query_id", "20260320_144423_00056_jxb5m");
+    summary.put("trino_user", "smoke");
+    summary.put("added-data-files", "1");
+    summary.put("added-records", "1");
+    summary.put("added-files-size", "339");
+    summary.put("changed-partition-count", "1");
+    summary.put("total-records", "1");
+    summary.put("total-files-size", "339");
+    summary.put("total-data-files", "1");
+    summary.put("total-delete-files", "0");
+    summary.put("total-position-deletes", "0");
+    summary.put("total-equality-deletes", "0");
+    summary.put("engine-version", "479");
+    summary.put("engine-name", "trino");
+    summary.put(
+        "iceberg-version", "Apache Iceberg 1.10.0 (commit 2114bf631e49af532d66e2ce148ee49dd1dd1f1f)");
+    Map<String, Object> assertUuid = new LinkedHashMap<>();
+    assertUuid.put("type", "assert-table-uuid");
+    assertUuid.put("uuid", tableUuid);
+    Map<String, Object> assertMainRef = new LinkedHashMap<>();
+    assertMainRef.put("type", "assert-ref-snapshot-id");
+    assertMainRef.put("ref", "main");
+    assertMainRef.put("snapshot-id", null);
+    Map<String, Object> addSnapshot = new LinkedHashMap<>();
+    addSnapshot.put("action", "add-snapshot");
+    addSnapshot.put(
+        "snapshot",
+        Map.of(
+            "sequence-number",
+            1,
+            "snapshot-id",
+            snapshotId,
+            "timestamp-ms",
+            System.currentTimeMillis(),
+            "summary",
+            summary,
+            "manifest-list",
+            manifestList,
+            "schema-id",
+            0));
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("requirements", List.of(assertUuid, assertMainRef));
+    payload.put(
+        "updates",
+        List.of(
+            Map.of(
+                "action",
+                "remove-properties",
+                "removals",
+                List.of("write.parquet.compression-codec", "format-version")),
+            addSnapshot,
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "snapshot-id",
+                snapshotId,
+                "type",
+                "branch")));
+    return payload;
+  }
+
+  private Map<String, Object> trinoAppendWithStatisticsCommitPayload(
+      String tableUuid, String table, long parentSnapshotId, long snapshotId, String manifestList) {
+    Map<String, Object> summary = new LinkedHashMap<>();
+    summary.put("operation", "append");
+    summary.put("trino_query_id", "20260320_144427_00058_jxb5m");
+    summary.put("trino_user", "smoke");
+    summary.put("added-data-files", "1");
+    summary.put("added-records", "1");
+    summary.put("added-files-size", "339");
+    summary.put("changed-partition-count", "1");
+    summary.put("total-records", "1");
+    summary.put("total-files-size", "339");
+    summary.put("total-data-files", "1");
+    summary.put("total-delete-files", "0");
+    summary.put("total-position-deletes", "0");
+    summary.put("total-equality-deletes", "0");
+    summary.put("engine-version", "479");
+    summary.put("engine-name", "trino");
+    summary.put(
+        "iceberg-version", "Apache Iceberg 1.10.0 (commit 2114bf631e49af532d66e2ce148ee49dd1dd1f1f)");
+    return Map.of(
+        "requirements",
+        List.of(
+            Map.of("type", "assert-table-uuid", "uuid", tableUuid),
+            Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", parentSnapshotId)),
+        "updates",
+        List.of(
+            Map.of(
+                "action",
+                "add-snapshot",
+                "snapshot",
+                Map.of(
+                    "sequence-number",
+                    2,
+                    "snapshot-id",
+                    snapshotId,
+                    "parent-snapshot-id",
+                    parentSnapshotId,
+                    "timestamp-ms",
+                    System.currentTimeMillis(),
+                    "summary",
+                    summary,
+                    "manifest-list",
+                    manifestList,
+                    "schema-id",
+                    0)),
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "snapshot-id",
+                snapshotId,
+                "type",
+                "branch"),
+            Map.of(
+                "action",
+                "set-statistics",
+                "snapshot-id",
+                snapshotId,
+                "statistics",
+                Map.of(
+                    "snapshot-id",
+                    snapshotId,
+                    "statistics-path",
+                    trinoStatisticsPath(table, snapshotId),
+                    "file-size-in-bytes",
+                    502,
+                    "file-footer-size-in-bytes",
+                    440,
+                    "blob-metadata",
+                    List.of(
+                        Map.of(
+                            "type",
+                            "apache-datasketches-theta-v1",
+                            "snapshot-id",
+                            snapshotId,
+                            "sequence-number",
+                            2,
+                            "fields",
+                            List.of(1),
+                            "properties",
+                            Map.of("ndv", "1")),
+                        Map.of(
+                            "type",
+                            "apache-datasketches-theta-v1",
+                            "snapshot-id",
+                            snapshotId,
+                            "sequence-number",
+                            2,
+                            "fields",
+                            List.of(2),
+                            "properties",
+                            Map.of("ndv", "1")))))));
+  }
+
+  private Map<String, Object> trinoScanReportPayload(String table, long snapshotId, boolean allRows) {
+    Map<String, Object> metrics = new LinkedHashMap<>();
+    metrics.put(
+        "total-planning-duration",
+        Map.of("count", 1, "time-unit", "nanoseconds", "total-duration", 15471667));
+    metrics.put("result-data-files", Map.of("unit", "count", "value", 1));
+    metrics.put("result-delete-files", Map.of("unit", "count", "value", 0));
+    metrics.put("total-data-manifests", Map.of("unit", "count", "value", 1));
+    metrics.put("total-delete-manifests", Map.of("unit", "count", "value", 0));
+    metrics.put("scanned-data-manifests", Map.of("unit", "count", "value", 1));
+    metrics.put("skipped-data-manifests", Map.of("unit", "count", "value", 0));
+    metrics.put("total-file-size-in-bytes", Map.of("unit", "bytes", "value", 339));
+    metrics.put("total-delete-file-size-in-bytes", Map.of("unit", "bytes", "value", 0));
+    metrics.put("skipped-data-files", Map.of("unit", "count", "value", 0));
+    metrics.put("skipped-delete-files", Map.of("unit", "count", "value", 0));
+    metrics.put("scanned-delete-manifests", Map.of("unit", "count", "value", 0));
+    metrics.put("skipped-delete-manifests", Map.of("unit", "count", "value", 0));
+    metrics.put("indexed-delete-files", Map.of("unit", "count", "value", 0));
+    metrics.put("equality-delete-files", Map.of("unit", "count", "value", 0));
+    metrics.put("positional-delete-files", Map.of("unit", "count", "value", 0));
+    metrics.put("dvs", Map.of("unit", "count", "value", 0));
+    return Map.of(
+        "report-type",
+        "scan-report",
+        "table-name",
+        "iceberg.\"" + table + "\"",
+        "snapshot-id",
+        snapshotId,
+        "filter",
+        allRows,
+        "schema-id",
+        0,
+        "projected-field-ids",
+        List.of(1, 2),
+        "projected-field-names",
+        List.of("id", "v"),
+        "metrics",
+        metrics,
+        "metadata",
+        Map.of(
+            "engine-version",
+            "479",
+            "iceberg-version",
+            "Apache Iceberg 1.10.0 (commit 2114bf631e49af532d66e2ce148ee49dd1dd1f1f)",
+            "engine-name",
+            "trino"));
+  }
+
+  private String trinoManifestListLocation(String table, long snapshotId) {
+    return String.format(
+        "s3://floecat/iceberg/%s/metadata/snap-%d-1-fixture.avro", table, snapshotId);
+  }
+
+  private String fixtureManifestListLocation(int ordinal) {
+    if (fixtureManifestLists.isEmpty()) {
+      throw new IllegalStateException("Fixture manifest lists are required");
+    }
+    List<String> manifests = new ArrayList<>(fixtureManifestLists.values());
+    manifests.sort(String::compareTo);
+    int index = Math.min(Math.max(ordinal, 0), manifests.size() - 1);
+    return TestS3Fixtures.bucketUri(manifests.get(index));
+  }
+
+  private String trinoStatisticsPath(String table, long snapshotId) {
+    return String.format(
+        "s3://floecat/iceberg/%s/metadata/%d-fixture.stats", table, snapshotId);
+  }
+
+  private Map<String, Object> duckdbStageCreatePayload(String table) {
+    Map<String, Object> createPayload = new LinkedHashMap<>();
+    createPayload.put("stage-create", true);
+    createPayload.put("name", table);
+    createPayload.put(
+        "schema",
+        Map.of(
+            "type",
+            "struct",
+            "fields",
+            List.of(
+                Map.of("name", "id", "id", 1, "type", "int", "required", false),
+                Map.of("name", "v", "id", 2, "type", "string", "required", false)),
+            "schema-id",
+            0));
+    createPayload.put("partition-spec", Map.of("spec-id", 0, "fields", List.of()));
+    createPayload.put("write-order", Map.of("order-id", 0, "fields", List.of()));
+    createPayload.put("properties", Map.of());
+    return createPayload;
+  }
+
+  private Map<String, Object> duckdbCreateCommitPayload(String table, String tableUuid) {
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("requirements", List.of(Map.of("type", "assert-create")));
+    payload.put(
+        "updates",
+        List.of(
+            Map.of("action", "assign-uuid", "uuid", tableUuid),
+            Map.of("action", "upgrade-format-version", "format-version", 2),
+            Map.of(
+                "action",
+                "add-schema",
+                "last-column-id",
+                2,
+                "schema",
+                Map.of(
+                    "type",
+                    "struct",
+                    "fields",
+                    List.of(
+                        Map.of("name", "id", "id", 1, "type", "int", "required", false),
+                        Map.of("name", "v", "id", 2, "type", "string", "required", false)),
+                    "schema-id",
+                    0,
+                    "identifier-field-ids",
+                    List.of())),
+            Map.of("action", "set-current-schema", "schema-id", 0),
+            Map.of("action", "add-spec", "spec", Map.of("spec-id", 0, "fields", List.of())),
+            Map.of("action", "set-default-spec", "spec-id", 0),
+            Map.of(
+                "action",
+                "add-sort-order",
+                "sort-order",
+                Map.of("order-id", 0, "fields", List.of())),
+            Map.of("action", "set-default-sort-order", "sort-order-id", 0),
+            Map.of("action", "set-location", "location", String.format("s3://floecat/iceberg/%s", table))));
+    return payload;
+  }
+
+  private Map<String, Object> duckdbAppendCommitPayload(long snapshotId) {
+    Map<String, Object> assertMainRef = new LinkedHashMap<>();
+    assertMainRef.put("type", "assert-ref-snapshot-id");
+    assertMainRef.put("ref", "main");
+    assertMainRef.put("snapshot-id", null);
+    Map<String, Object> payload = new LinkedHashMap<>();
+    payload.put("requirements", List.of(assertMainRef));
+    payload.put(
+        "updates",
+        List.of(
+            Map.of(
+                "action",
+                "add-snapshot",
+                "snapshot",
+                Map.of(
+                    "snapshot-id",
+                    snapshotId,
+                    "sequence-number",
+                    1,
+                    "timestamp-ms",
+                    System.currentTimeMillis(),
+                    "manifest-list",
+                    fixtureManifestListLocation(0),
+                    "summary",
+                    Map.of("operation", "append"),
+                    "schema-id",
+                    0)),
+            Map.of(
+                "action",
+                "set-snapshot-ref",
+                "ref-name",
+                "main",
+                "type",
+                "branch",
+                "snapshot-id",
+                snapshotId)));
+    return payload;
+  }
+
+  private String parseUuidFromMetadataLocation(String metadataLocation) {
+    int slash = metadataLocation.lastIndexOf('/');
+    String fileName = slash >= 0 ? metadataLocation.substring(slash + 1) : metadataLocation;
+    int dash = fileName.indexOf('-');
+    String suffix = dash >= 0 ? fileName.substring(dash + 1) : fileName;
+    return suffix.replace(".metadata.json", "");
   }
 
   private void assertFixtureObjectExists(String location, String message) {
