@@ -27,7 +27,6 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.FlightDevProfile;
-import ai.floedb.floecat.service.query.flight.FlightServerLifecycle;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
@@ -54,6 +53,7 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,13 +68,14 @@ import org.junit.jupiter.api.Test;
 @TestProfile(FlightDevProfile.class)
 public class SystemTableFlightIT {
 
-  @Inject FlightServerLifecycle flightServer;
-
   @GrpcClient("floecat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+
+  @ConfigProperty(name = "quarkus.grpc.server.port")
+  int grpcPort;
 
   private BufferAllocator allocator;
   private FlightClient client;
@@ -92,9 +93,9 @@ public class SystemTableFlightIT {
     resetter.wipeAll();
     seeder.seedData();
     allocator = new RootAllocator(Long.MAX_VALUE);
-    int port = flightServer.port();
-    assertTrue(port > 0, "Flight server should be running on a valid port");
-    client = FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", port)).build();
+    assertTrue(grpcPort > 0, "gRPC server should be running on a valid port");
+    client =
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort)).build();
     queryId =
         queries
             .beginQuery(
