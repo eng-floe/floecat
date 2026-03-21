@@ -395,6 +395,59 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(12L, info.getValueCount());
   }
 
+  /**
+   * A ColumnStats row that exists in storage but has no metrics (no value_count, no null_count, no
+   * min/max) must still be returned as FOUND — not NOT_FOUND. This is exactly the shape that
+   * GenericStatsEngine.compute() emits for columns whose format (e.g. Iceberg) doesn't provide
+   * per-column metrics; the planner must receive a FOUND result and apply its own default estimates
+   * rather than treating the column as if stats were never ingested.
+   */
+  @Test
+  void columnWithNoMetricsIsFoundWithEmptyStats() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxColumns= */ 10);
+    long snapshotId = 420L;
+
+    // Simulate a row produced by compute() for a column with no Iceberg metrics:
+    // only column_id and column_name are set; all stat fields are absent.
+    ColumnStats emptyStats =
+        ColumnStats.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(snapshotId)
+            .setColumnId(99L)
+            .setColumnName("ts_col")
+            .build();
+    repository.putColumnStats(TABLE, snapshotId, emptyStats);
+
+    QueryContext ctx = queryContextWithPin("query-empty-metrics", snapshotId);
+    store.seed(ctx);
+    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(99L));
+    List<ColumnStatsBundleChunk> chunks =
+        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<ColumnStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size());
+    // Row exists → must be FOUND, not NOT_FOUND
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals(99L, results.get(0).getColumnId());
+
+    ColumnStatsInfo info = results.get(0).getStats();
+    // No metrics were stored — all optional fields must be absent
+    assertFalse(info.hasNullCount(), "null_count must not be set when no metrics");
+    assertFalse(info.hasNanCount(), "nan_count must not be set when no metrics");
+    assertFalse(info.hasMin(), "min must not be set when no metrics");
+    assertFalse(info.hasMax(), "max must not be set when no metrics");
+    assertFalse(info.hasNdv(), "ndv must not be set when no metrics");
+
+    ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedColumns());
+    assertEquals(0L, end.getNotFoundColumns());
+  }
+
   @Test
   void enforcesLimitsBeforeProcessing() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
