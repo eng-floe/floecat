@@ -136,7 +136,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     if (mw != null) {
       return mw.callContext();
     }
-    return ResolvedCallContext.unauthenticated();
+    return GrpcResolvedCallContexts.currentOrUnauthenticated();
   }
 
   @Override
