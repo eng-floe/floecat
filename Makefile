@@ -98,7 +98,6 @@ DOCKER_COMPOSE_LOCALSTACK ?= $(DOCKER_COMPOSE) -f $(LOCALSTACK_COMPOSE)
 DOCKER_COMPOSE_KEYCLOAK ?= $(DOCKER_COMPOSE) -f docker/docker-compose.yml --profile keycloak
 COMPOSE_ENV_FILE ?= ./env.inmem
 COMPOSE_PROFILES ?=
-LOCALSTACK_IMAGE ?= localstack/localstack:4.12
 KEYCLOAK_PORT ?= 12221
 KEYCLOAK_ENDPOINT ?= http://127.0.0.1:$(KEYCLOAK_PORT)
 KEYCLOAK_HEALTH := $(KEYCLOAK_ENDPOINT)/realms/floecat/.well-known/openid-configuration
@@ -636,8 +635,8 @@ localstack-up:
 	@if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then \
 	  echo "==> [LOCALSTACK] already running at $(LOCALSTACK_ENDPOINT)"; \
 	else \
-	  echo "==> [LOCALSTACK] starting docker compose ($(LOCALSTACK_COMPOSE)) with $(LOCALSTACK_IMAGE)"; \
-	  LOCALSTACK_IMAGE=$(LOCALSTACK_IMAGE) $(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) up -d; \
+	  echo "==> [LOCALSTACK] starting docker compose ($(LOCALSTACK_COMPOSE))"; \
+	  $(DOCKER_COMPOSE_LOCALSTACK) -p $(LOCALSTACK_PROJECT) up -d; \
 	  echo "==> [LOCALSTACK] waiting for health endpoint"; \
 	  bash -c 'set -euo pipefail; for i in $$(seq 1 30); do \
 	    if curl -fs $(LOCALSTACK_HEALTH) >/dev/null 2>&1; then exit 0; fi; \
@@ -862,7 +861,6 @@ compose-shell:
 
 compose-smoke: docker
 	@DOCKER_COMPOSE_MAIN='$(DOCKER_COMPOSE_MAIN)' \
-	  LOCALSTACK_IMAGE='$(LOCALSTACK_IMAGE)' \
 	  COMPOSE_SMOKE_MODES=$${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc} \
 	  COMPOSE_SMOKE_SAVE_LOG_DIR="$${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}" \
 	  ./tools/compose-smoke.sh

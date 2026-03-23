@@ -84,7 +84,7 @@ services:
       - floecat
 
   localstack:
-    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.1.2}
+    image: localstack/localstack:4.12
     pull_policy: if_not_present
     ports:
       - "${FLOECAT_LOCALSTACK_PORT:-4566}:4566"
