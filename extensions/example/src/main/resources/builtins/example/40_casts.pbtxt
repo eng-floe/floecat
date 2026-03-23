@@ -25,9 +25,19 @@
 
 # Example explicit cast between two types.
 # Replace name, source_type, target_type, and method with your actual cast rule.
+
 casts {
-  name { name: "my_explicit_cast" path: "example" }
-  source_type { name: "my_type" path: "example" }
-  target_type { name: "my_type" path: "example" }
+  name {
+    path: "example"
+    name: "my_explicit_cast"
+  }
+  source_type {
+    path: "example"
+    name: "my_type"
+  }
+  target_type {
+    path: "example"
+    name: "my_type"
+  }
   method: "explicit"
 }
