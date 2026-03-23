@@ -183,6 +183,7 @@ public class Shell implements Runnable {
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
   private ManagedChannel overrideChannel;
+  private CliCommandExecutor executor;
 
   private final boolean debugErrors =
       Boolean.getBoolean("floecat.shell.debug") || System.getenv("FLOECAT_SHELL_DEBUG") != null;
@@ -201,6 +202,28 @@ public class Shell implements Runnable {
     try {
       configureGrpcChannel();
       applyAuthInterceptors();
+      executor =
+          CliCommandExecutor.builder()
+              .out(out)
+              .accounts(accounts)
+              .catalogs(catalogs)
+              .directory(directory)
+              .namespaces(namespaces)
+              .tables(tables)
+              .viewService(viewService)
+              .connectors(connectors)
+              .reconcileControl(reconcileControl)
+              .snapshots(snapshots)
+              .statistics(statistics)
+              .constraintsService(constraintsService)
+              .queries(queries)
+              .queryScan(queryScan)
+              .querySchema(querySchema)
+              .getAccountId(() -> currentAccountId)
+              .setAccountId(id -> currentAccountId = id)
+              .getCatalog(() -> currentCatalog)
+              .setCatalog(name -> currentCatalog = name)
+              .build();
       Terminal terminal = TerminalBuilder.builder().system(true).build();
       Path historyPath = Paths.get(System.getProperty("user.home"), ".floecat_shell_history");
       var parser = new DefaultParser();
@@ -648,112 +671,11 @@ public class Shell implements Runnable {
       return;
     }
     String command = tokens.get(0);
-
     switch (command) {
       case "account", "help", "quit", "exit" -> {}
       default -> ensureAccountSet();
     }
-
-    switch (command) {
-      case "account" ->
-          AccountCliSupport.handle(
-              CliArgs.tail(tokens),
-              out,
-              accounts,
-              () -> currentAccountId,
-              id -> currentAccountId = id);
-      case "catalogs", "catalog" ->
-          CatalogCliSupport.handle(
-              command,
-              CliArgs.tail(tokens),
-              out,
-              catalogs,
-              directory,
-              () -> currentAccountId,
-              name -> currentCatalog = name);
-      case "namespaces", "namespace" ->
-          NamespaceCliSupport.handle(
-              command, CliArgs.tail(tokens), out, namespaces, directory, () -> currentAccountId);
-      case "tables", "table", "resolve", "describe" ->
-          TableCliSupport.handle(
-              command,
-              CliArgs.tail(tokens),
-              out,
-              tables,
-              directory,
-              () -> currentAccountId,
-              tok ->
-                  ConnectorCliSupport.resolveConnectorId(tok, connectors, () -> currentAccountId));
-      case "views", "view" ->
-          ViewCliSupport.handle(
-              command, CliArgs.tail(tokens), out, viewService, directory, () -> currentAccountId);
-      case "connectors", "connector" ->
-          ConnectorCliSupport.handle(
-              command,
-              CliArgs.tail(tokens),
-              out,
-              connectors,
-              reconcileControl,
-              directory,
-              () -> currentAccountId);
-      case "snapshots" ->
-          SnapshotCliSupport.handle(
-              "snapshots",
-              CliArgs.tail(tokens),
-              out,
-              snapshots,
-              tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
-      case "snapshot" ->
-          SnapshotCliSupport.handle(
-              "snapshot",
-              CliArgs.tail(tokens),
-              out,
-              snapshots,
-              tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
-      case "stats" ->
-          StatsCliSupport.handle(
-              "stats",
-              CliArgs.tail(tokens),
-              out,
-              statistics,
-              tables,
-              namespaces,
-              reconcileControl,
-              tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
-      case "constraints" ->
-          ConstraintsCliSupport.handle(
-              CliArgs.tail(tokens),
-              out,
-              constraintsService,
-              snapshots,
-              tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId),
-              CliArgs::parseStringFlag,
-              CliArgs::parseIntFlag,
-              CliArgs::hasFlag,
-              this::printJson);
-      case "analyze" ->
-          StatsCliSupport.handle(
-              "analyze",
-              CliArgs.tail(tokens),
-              out,
-              statistics,
-              tables,
-              namespaces,
-              reconcileControl,
-              tok -> TableCliSupport.resolveTableId(tok, directory, () -> currentAccountId));
-      case "query" ->
-          QueryCliSupport.handle(
-              command,
-              CliArgs.tail(tokens),
-              out,
-              queries,
-              queryScan,
-              querySchema,
-              directory,
-              () -> currentCatalog,
-              () -> currentAccountId);
-      default -> out.println("Unknown command. Type 'help'.");
-    }
+    executor.execute(inputLine);
   }
 
   private void ensureAccountSet() {
