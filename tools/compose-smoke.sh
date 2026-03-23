@@ -132,6 +132,31 @@ assert_contains() {
   fi
 }
 
+assert_contains_any() {
+  local check_name="$1"
+  local output="$2"
+  shift 2
+
+  local pattern
+  for pattern in "$@"; do
+    if echo "$output" | grep -q "$pattern"; then
+      echo "[PASS] $check_name"
+      return 0
+    fi
+  done
+
+  echo "[FAIL] $check_name (missing all expected patterns)"
+  echo "---- expected begin ----"
+  for pattern in "$@"; do
+    echo "$pattern"
+  done
+  echo "---- expected end ----"
+  echo "---- output begin ----"
+  echo "$output"
+  echo "---- output end ----"
+  return 1
+}
+
 assert_table_stats_available() {
   local compose_cmd="$1"
   local label="$2"
@@ -709,7 +734,9 @@ quit")
       assert_contains "$label duckdb rename row count" "$duckdb_rename_out" "rename_row_count=1"
     else
       echo "$duckdb_rename_out"
-      assert_contains "$label duckdb rename unsupported" "$duckdb_rename_out" "Not implemented Error: Alter Schema Entry"
+      assert_contains_any "$label duckdb rename unsupported" "$duckdb_rename_out" \
+        "Not implemented Error: Alter Schema Entry" \
+        "Not implemented Error: Alter table type not supported: RENAME_TABLE"
       docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke;" >/dev/null 2>&1 || true
     fi
@@ -770,7 +797,9 @@ quit")
       assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
     else
       echo "$alter_out"
-      assert_contains "$label duckdb mutation alter unsupported" "$alter_out" "Not implemented Error: Alter Schema Entry"
+      assert_contains_any "$label duckdb mutation alter unsupported" "$alter_out" \
+        "Not implemented Error: Alter Schema Entry" \
+        "Not implemented Error: Alter table type not supported:"
       docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true
     fi
