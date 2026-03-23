@@ -31,6 +31,7 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -122,7 +123,15 @@ public class ReconcilerScheduler {
     }
     try {
       while (reserveWorkerSlot()) {
-        var lease = jobs.leaseNext().orElse(null);
+        Optional<ReconcileJobStore.LeasedJob> leaseOpt;
+        try {
+          leaseOpt = jobs.leaseNext();
+        } catch (Exception e) {
+          inFlight.decrementAndGet();
+          LOG.errorf(e, "leaseNext() threw unexpectedly; releasing worker slot");
+          return;
+        }
+        var lease = leaseOpt.orElse(null);
         if (lease == null) {
           inFlight.decrementAndGet();
           return;

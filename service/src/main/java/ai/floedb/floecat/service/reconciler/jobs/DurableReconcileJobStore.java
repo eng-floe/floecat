@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -626,7 +627,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     String token = "";
     int pages = 0;
     LOG.warnf(
-        "Reconcile lookup fallback scan engaged for jobId=%s; scanning broad /accounts/ pointer prefix",
+        "Reconcile lookup fallback scan engaged for jobId=%s; scanning broad /accounts/ pointer"
+            + " prefix",
         jobId);
     while (true) {
       StringBuilder next = new StringBuilder();
@@ -649,7 +651,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       if (nextToken.equals(token)) {
         LOG.warnf(
-            "Reconcile lookup fallback pagination token did not advance; aborting fallback scan to avoid livelock jobId=%s",
+            "Reconcile lookup fallback pagination token did not advance; aborting fallback scan to"
+                + " avoid livelock jobId=%s",
             jobId);
         return Optional.empty();
       }
@@ -751,7 +754,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       if (expiry > 0L && now - expiry > leaseRenewGraceMs) {
         LOG.warnf(
-            "Skipping renewLease for reconcile job %s due to lease expiry beyond grace now=%d expiry=%d graceMs=%d",
+            "Skipping renewLease for reconcile job %s due to lease expiry beyond grace now=%d"
+                + " expiry=%d graceMs=%d",
             jobId, now, expiry, leaseRenewGraceMs);
         return false;
       }
@@ -984,7 +988,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         }
         if (nextToken.equals(token)) {
           LOG.warn(
-              "Reconcile lease reclaim pagination token did not advance; aborting reclaim scan to avoid livelock");
+              "Reconcile lease reclaim pagination token did not advance; aborting reclaim scan to"
+                  + " avoid livelock");
           return;
         }
         token = nextToken;
@@ -1037,7 +1042,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
       if (nextToken.equals(token)) {
         LOG.warn(
-            "Reconcile ready pagination token did not advance; aborting ready scan to avoid livelock");
+            "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
+                + " livelock");
         return Optional.empty();
       }
       token = nextToken;
@@ -1151,7 +1157,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private Optional<StoredReconcileJob> readRecordByBlobUri(String blobUri) {
-    byte[] payload = blobStore.get(blobUri);
+    byte[] payload;
+    try {
+      payload = blobStore.get(blobUri);
+    } catch (StorageNotFoundException e) {
+      LOG.warnf(
+          e, "Reconcile job blob missing during reclaim, treating as absent blob=%s", blobUri);
+      return Optional.empty();
+    }
     if (payload == null || payload.length == 0) {
       return Optional.empty();
     }
