@@ -85,6 +85,45 @@ class CliArgsTest {
     assertEquals(List.of("a", "b"), CliArgs.tokenize("  a   b  "));
   }
 
+  @Test
+  void tokenizePreservesSpacesInsideDoubleQuotes() {
+    // \fc catalog create "my catalog" → 3 tokens, quoted token includes the space
+    assertEquals(
+        List.of("catalog", "create", "\"my catalog\""),
+        CliArgs.tokenize("catalog create \"my catalog\""));
+  }
+
+  @Test
+  void tokenizePreservesSpacesInsideSingleQuotes() {
+    assertEquals(
+        List.of("catalog", "create", "'my catalog'"),
+        CliArgs.tokenize("catalog create 'my catalog'"));
+  }
+
+  @Test
+  void tokenizeMixedQuoteTypes() {
+    assertEquals(List.of("a", "'foo'", "\"bar\""), CliArgs.tokenize("a 'foo' \"bar\""));
+  }
+
+  @Test
+  void tokenizeFlagWithEqualsSign() {
+    // --desc=hello is a single unquoted token; = is not a separator
+    assertEquals(
+        List.of("catalog", "create", "--desc=hello"),
+        CliArgs.tokenize("catalog create --desc=hello"));
+  }
+
+  @Test
+  void tokenizeTabAndMultipleSpacesCollapsed() {
+    assertEquals(List.of("a", "b", "c"), CliArgs.tokenize("a  \t  b   c"));
+  }
+
+  @Test
+  void tokenizeEscapeInsideDoubleQuotes() {
+    // backslash escapes the following character even inside double quotes
+    assertEquals(List.of("\"hello\\\"world\""), CliArgs.tokenize("\"hello\\\"world\""));
+  }
+
   // --- parseFlag / parseStringFlag / parseIntFlag / parseLongFlag ---
 
   @Test
