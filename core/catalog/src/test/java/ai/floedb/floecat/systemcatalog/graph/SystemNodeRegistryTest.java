@@ -18,6 +18,8 @@ package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -187,6 +189,53 @@ class SystemNodeRegistryTest {
     var nodes = registry.nodesFor(PG_KIND, "");
     assertThat(nodes.tableNames()).doesNotContainKey("custom.legacy_table");
     assertThat(nodes.viewNames()).containsKey("custom.preview_view");
+  }
+
+  @Test
+  void foreignKeyReferencedTableCatalogDefaultsToEffectiveEngineKind() {
+    ConstraintDefinition fkWithoutCatalog =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_t_ref")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .setReferencedTable(NameRef.newBuilder().addPath("custom").setName("ref").build())
+            .build();
+    SystemTableDef table =
+        new SystemTableDef(
+            NameRefUtil.name("custom", "t"),
+            "t",
+            List.of(column("id")),
+            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null,
+            List.of(fkWithoutCatalog));
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(new SystemNamespaceDef(NameRefUtil.name("custom"), "custom", List.of())),
+            List.of(table),
+            List.of(),
+            List.of());
+    SystemDefinitionRegistry defs =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
+    var registry = registryWith(defs);
+
+    var nodes = registry.nodesFor(PG_KIND, "16.0").toCatalogData();
+    ConstraintDefinition normalized =
+        nodes.tables().stream()
+            .filter(t -> "custom.t".equals(NameRefUtil.canonical(t.name())))
+            .findFirst()
+            .orElseThrow()
+            .constraints()
+            .get(0);
+    assertThat(normalized.getReferencedTable().getCatalog()).isEqualTo(PG_KIND);
   }
 
   @Test

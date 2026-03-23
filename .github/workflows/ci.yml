@@ -76,6 +76,12 @@ jobs:
       - name: Check formatting
         run: mvn -q fmt:check
 
+      - name: Validate pbtxt catalogs
+        run: make validate-pbtxt
+
+      - name: Check pbtxt formatting
+        run: make check-pbtxt-format
+
   ci-localstack:
     name: ci-localstack
     runs-on: ubuntu-latest

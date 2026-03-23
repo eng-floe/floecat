@@ -21,6 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
@@ -760,7 +762,11 @@ final class SystemCatalogValidatorTest {
             .setName("pk_bad")
             .setType(ConstraintType.CT_PRIMARY_KEY)
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
-            .setReferencedTableName("other")
+            .setReferencedTable(name("other"))
+            .setReferencedConstraintName("pk_other")
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_FULL)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_RESTRICT)
             .build();
 
     SystemCatalogData catalog =
@@ -788,7 +794,68 @@ final class SystemCatalogValidatorTest {
             List.of());
 
     List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
-    assertThat(codes(issues)).contains("table.constraint.fk_only.field.not_allowed");
+    assertThat(codes(issues))
+        .contains(
+            "table.constraint.fk_only.field.not_allowed",
+            "table.constraint.fk_only.behavior.not_allowed");
+  }
+
+  @Test
+  void validate_fkAllowsBehaviorMetadata() {
+    ConstraintDefinition fkWithBehavior =
+        ConstraintDefinition.newBuilder()
+            .setName("fk_ok")
+            .setType(ConstraintType.CT_FOREIGN_KEY)
+            .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
+            .setReferencedTable(name("information_schema", "ref_table"))
+            .setReferencedConstraintName("pk_ref_table")
+            .addReferencedColumns(
+                ConstraintColumnRef.newBuilder().setColumnName("r1").setOrdinal(1).build())
+            .setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_NONE)
+            .setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION)
+            .setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_CASCADE)
+            .build();
+
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace("information_schema")),
+            List.of(
+                new SystemTableDef(
+                    name("information_schema", "tables"),
+                    "tables",
+                    List.of(new SystemColumnDef("c1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "tables_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of(fkWithBehavior)),
+                new SystemTableDef(
+                    name("information_schema", "ref_table"),
+                    "ref_table",
+                    List.of(new SystemColumnDef("r1", name("VARCHAR"), false, 1, null, List.of())),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "ref_scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null,
+                    List.of())),
+            List.of(),
+            List.of());
+
+    List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
+    assertThat(codes(issues))
+        .doesNotContain(
+            "table.constraint.fk_only.field.not_allowed",
+            "table.constraint.fk_only.behavior.not_allowed");
   }
 
   @Test
@@ -883,7 +950,7 @@ final class SystemCatalogValidatorTest {
         ConstraintDefinition.newBuilder()
             .setName("fk_composite")
             .setType(ConstraintType.CT_FOREIGN_KEY)
-            .setReferencedTableName("information_schema.other_table")
+            .setReferencedTable(name("information_schema", "other_table"))
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c2").setOrdinal(2).build())
             .addReferencedColumns(
@@ -941,7 +1008,7 @@ final class SystemCatalogValidatorTest {
         ConstraintDefinition.newBuilder()
             .setName("fk_self")
             .setType(ConstraintType.CT_FOREIGN_KEY)
-            .setReferencedTableName("tables")
+            .setReferencedTable(name("tables"))
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
             .addReferencedColumns(
                 ConstraintColumnRef.newBuilder().setColumnName("missing_ref").setOrdinal(1).build())
@@ -981,7 +1048,7 @@ final class SystemCatalogValidatorTest {
         ConstraintDefinition.newBuilder()
             .setName("fk_known_ref")
             .setType(ConstraintType.CT_FOREIGN_KEY)
-            .setReferencedTableName("information_schema.ref_table")
+            .setReferencedTable(name("information_schema", "ref_table"))
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
             .addReferencedColumns(
                 ConstraintColumnRef.newBuilder().setColumnName("missing_ref").setOrdinal(1).build())
@@ -1033,7 +1100,7 @@ final class SystemCatalogValidatorTest {
         ConstraintDefinition.newBuilder()
             .setName("fk_ref_mismatch")
             .setType(ConstraintType.CT_FOREIGN_KEY)
-            .setReferencedTableName("information_schema.ref_table")
+            .setReferencedTable(name("information_schema", "ref_table"))
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
             .addReferencedColumns(
                 ConstraintColumnRef.newBuilder()
@@ -1090,7 +1157,7 @@ final class SystemCatalogValidatorTest {
         ConstraintDefinition.newBuilder()
             .setName("fk_unknown_table")
             .setType(ConstraintType.CT_FOREIGN_KEY)
-            .setReferencedTableName("information_schema.missing_table")
+            .setReferencedTable(name("information_schema", "missing_table"))
             .addColumns(ConstraintColumnRef.newBuilder().setColumnName("c1").setOrdinal(1).build())
             .addReferencedColumns(
                 ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())

@@ -37,6 +37,8 @@ The CLI exposes commands documented at runtime via `help`. Highlights:
   connectors, and properties.
 - `snapshots` / `stats` – Query snapshot lineage and table/column/file statistics (`stats files`
   lists per-file row/byte counts and per-column metrics).
+- `constraints` – Manage snapshot-scoped table constraints (`get`, `list`, `put`/`update`/`add`,
+  `delete`) using either table FQNs or table IDs.
 - `resolve` / `describe` – Exercise DirectoryService for name→ID lookups.
 - `query` – Execute the query lease lifecycle: `query begin`, `query renew`, `query end`, `query get`,
   and `query fetch-scan`. `query get` surfaces lease metadata (snapshots, expansions, obligations)
@@ -107,6 +109,41 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
   ```
   connector trigger glue-iceberg
   ```
+
+- **Managing snapshot constraints**
+
+  ```
+  constraints put demo.sales.users --snapshot 42 --file /tmp/users_constraints.json
+  constraints put demo.sales.users --snapshot 42 --file /tmp/users_constraints.json --idempotency my-op-123
+  constraints update demo.sales.users --snapshot 42 --file /tmp/users_constraints_patch.json
+  constraints update demo.sales.users --snapshot 42 --file /tmp/users_constraints_patch.json --version 3
+  constraints add demo.sales.users --snapshot 42 --file /tmp/users_constraints.json
+  constraints add-one demo.sales.users --snapshot 42 --file /tmp/users_constraint_pk.json
+  constraints add-pk demo.sales.users pk_users id --snapshot 42
+  constraints add-unique demo.sales.users uq_users_email email --snapshot 42
+  constraints add-not-null demo.sales.users nn_users_email email --snapshot 42
+  constraints add-check demo.sales.users chk_users_age "age > 0" --snapshot 42
+  constraints add-fk demo.sales.users fk_users_org org_id demo.sales.orgs id --snapshot 42
+  constraints get demo.sales.users --snapshot 42 --json
+  constraints list demo.sales.users --limit 50
+  constraints delete demo.sales.users --snapshot 42
+  constraints delete-one demo.sales.users pk_users --snapshot 42
+  ```
+
+  If `--snapshot` is omitted in constraints commands, the CLI resolves and uses the current
+  snapshot.
+  For `constraints put`/`add`/`update`, the command target table + snapshot is authoritative; any
+  payload identity fields are normalized to match that target before write.
+  Semantics:
+  `put` replaces the full bundle, `update` does a server-side merge by constraint name and
+  shallow-merges bundle `properties` (incoming keys override existing keys), and `add` does a
+  server-side append-only mutation (errors on duplicates). `update`/`add` support optional
+  `--etag` / `--version` preconditions.
+  Without a precondition, `update` and `add` create the snapshot bundle if it does not exist.
+  For atomic single-constraint mutations under concurrency, prefer `add-one` / `delete-one`.
+  `put` uses `--idempotency <key>` for safe-to-retry full replaces (same key guarantees the same
+  outcome); `update` and `add` use `--etag`/`--version` for conditional mutations that prevent
+  lost updates when multiple writers race on the same snapshot.
 
 ## Cross-References
 

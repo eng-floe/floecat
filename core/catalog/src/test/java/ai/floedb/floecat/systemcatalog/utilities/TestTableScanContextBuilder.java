@@ -59,25 +59,28 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
 
     String display = segments.get(segments.size() - 1);
 
+    return addNamespace(path, display, dottedPath);
+  }
+
+  public NamespaceNode addNamespace(
+      List<String> pathSegments, String displayName, String namespaceId) {
     ResourceId id =
         ResourceId.newBuilder()
             .setAccountId(catalogId.getAccountId())
             .setKind(ResourceKind.RK_NAMESPACE)
-            .setId(dottedPath)
+            .setId(namespaceId)
             .build();
-
     NamespaceNode ns =
         new NamespaceNode(
             id,
             1,
             Instant.EPOCH,
             catalogId,
-            path,
-            display,
+            List.copyOf(pathSegments),
+            displayName == null ? "" : displayName,
             GraphNodeOrigin.USER,
             Map.of(),
             Map.of());
-
     overlay.addNode(ns);
     return ns;
   }

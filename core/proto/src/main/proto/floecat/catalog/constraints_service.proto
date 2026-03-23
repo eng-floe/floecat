@@ -39,7 +39,112 @@ message PutTableConstraintsResponse {
   ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
+message MergeTableConstraintsRequest {
+  // Authoritative relation identity for this mutation.
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  // Constraints are snapshot-scoped and require a materialized snapshot row.
+  // Requests fail with NOT_FOUND when snapshot_id does not exist for table_id.
+  int64 snapshot_id = 2;
+  // Incoming constraints merged by constraint.name into current bundle.
+  // Existing constraints with matching names are replaced; others are preserved.
+  SnapshotConstraints constraints = 3;
+  // Optional optimistic concurrency precondition over current bundle metadata.
+  ai.floedb.floecat.common.Precondition precondition = 4;
+}
+
+message MergeTableConstraintsResponse {
+  SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message AppendTableConstraintsRequest {
+  // Authoritative relation identity for this mutation.
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  // Constraints are snapshot-scoped and require a materialized snapshot row.
+  // Requests fail with NOT_FOUND when snapshot_id does not exist for table_id.
+  int64 snapshot_id = 2;
+  // Incoming constraints appended to current bundle.
+  // Fails with ALREADY_EXISTS when any incoming constraint name already exists.
+  SnapshotConstraints constraints = 3;
+  // Optional optimistic concurrency precondition over current bundle metadata.
+  ai.floedb.floecat.common.Precondition precondition = 4;
+}
+
+message AppendTableConstraintsResponse {
+  SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message GetTableConstraintsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+}
+
+message GetTableConstraintsResponse {
+  SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message ListTableConstraintsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.PageRequest page = 2;
+}
+
+message ListTableConstraintsResponse {
+  repeated SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+}
+
+message DeleteTableConstraintsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+}
+
+message DeleteTableConstraintsResponse {
+  ai.floedb.floecat.common.MutationMeta meta = 1;
+}
+
+message AddTableConstraintRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  // One constraint to upsert by name within the snapshot bundle.
+  ConstraintDefinition constraint = 3;
+  ai.floedb.floecat.common.Precondition precondition = 4;
+}
+
+message AddTableConstraintResponse {
+  SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
+message DeleteTableConstraintRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  // Constraint name to remove from the snapshot bundle.
+  string constraint_name = 3;
+  ai.floedb.floecat.common.Precondition precondition = 4;
+}
+
+message DeleteTableConstraintResponse {
+  SnapshotConstraints constraints = 1;
+  ai.floedb.floecat.common.MutationMeta meta = 2;
+}
+
 service TableConstraintsService {
+  rpc GetTableConstraints(GetTableConstraintsRequest)
+      returns (GetTableConstraintsResponse);
+  rpc ListTableConstraints(ListTableConstraintsRequest)
+      returns (ListTableConstraintsResponse);
   rpc PutTableConstraints(PutTableConstraintsRequest)
       returns (PutTableConstraintsResponse);
+  rpc MergeTableConstraints(MergeTableConstraintsRequest)
+      returns (MergeTableConstraintsResponse);
+  rpc AppendTableConstraints(AppendTableConstraintsRequest)
+      returns (AppendTableConstraintsResponse);
+  rpc DeleteTableConstraints(DeleteTableConstraintsRequest)
+      returns (DeleteTableConstraintsResponse);
+  rpc AddTableConstraint(AddTableConstraintRequest)
+      returns (AddTableConstraintResponse);
+  rpc DeleteTableConstraint(DeleteTableConstraintRequest)
+      returns (DeleteTableConstraintResponse);
 }

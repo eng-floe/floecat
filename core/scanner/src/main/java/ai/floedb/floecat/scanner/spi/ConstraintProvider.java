@@ -30,6 +30,16 @@ public interface ConstraintProvider {
     return Optional.empty();
   }
 
+  /**
+   * Returns the latest available constraints for a relation.
+   *
+   * <p>Used by metadata scanners that should expose current catalog state independent of query
+   * snapshot pins.
+   */
+  default Optional<ConstraintSetView> latestConstraints(ResourceId relationId) {
+    return constraints(relationId, OptionalLong.empty());
+  }
+
   ConstraintProvider NONE = new ConstraintProvider() {};
 
   interface ConstraintSetView {

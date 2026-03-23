@@ -80,7 +80,8 @@ The core pieces:
 - **`ServiceLoaderSystemCatalogProvider`** – Discovers `EngineSystemCatalogExtension`s (which already extend `SystemObjectScannerProvider`), loads the catalog for each normalized engine kind, fingerprints it, and hands it to `SystemDefinitionRegistry`. It exposes `internalProvider()` for the shared `floecat_internal` layer and `providers()` for the extension-only overlays; provider merges happen later in `SystemNodeRegistry`.
 - **`SystemNodeRegistry` + `SystemGraph`** – The registry filters the snapshot for the requested engine/version, materialises `GraphNode`s (functions, types, aggregates) and `SystemTableNode`s (with their `scannerId`s), and caches the result, seeding each merge with the shared `information_schema` definitions provided by `FloecatInternalProvider`. Overlays are only applied when `EngineContext.enginePluginOverlaysEnabled()` returns true. Unknown or missing headers fall back to the base view while still exposing `information_schema`. `SystemGraph` builds `GraphSnapshot`s from those nodes and keeps them in an LRU `LinkedHashMap` keyed by `(engineKind, engineVersion)`. Each snapshot stores namespace buckets, table relations, and a `nodesById` map for constant-time resolution.
 - **System constraint catalog** – Planner/system constraint lookups are backed by an immutable cache keyed by `(engineKind, engineVersion, systemRelationId)` and built from the pbtxt-backed builtin table definitions loaded by `FloecatInternalProvider`/`SystemNodeRegistry` (not from `information_schema` scans). Constraints are explicit metadata (`SystemTable.constraints`) and are validated during builtin catalog load. The runtime currently de-duplicates only `CT_NOT_NULL` between explicit and nullable-derived implicit entries (and keeps other constraint kinds as declared), so semantic de-duplication of PK/UNIQUE/FK/CHECK is intentionally out of scope here.
-  - Validator note: FK referenced-column target validation is currently name-based. `referenced_table_id` satisfies FK presence requirements, but column-target lookup for validation uses `referenced_table_name`.
+  - Validator note: FK referenced-column target validation resolves through `referenced_table` when provided.
+  - Column reference note: use `column_id` only when the corresponding `SystemColumn.id` is defined. If a column has no `id`, use `column_name` (and constraint-local `ordinal`) and omit `column_id`.
   - pbtxt authoring example (common constraint types):
 ```pbtxt
 system_tables {
@@ -113,7 +114,7 @@ system_tables {
     name: "fk_orders_customers"
     type: CT_FOREIGN_KEY
     columns { column_id: 2 column_name: "customer_id" ordinal: 1 }
-    referenced_table_name: "information_schema.customers"
+    referenced_table { path: "information_schema" name: "customers" }
     referenced_columns { column_id: 1 column_name: "id" ordinal: 1 }
   }
   constraints {
@@ -133,14 +134,28 @@ system_tables {
 `InformationSchemaProvider` is the default `SystemObjectScannerProvider`. It unconditionally registers:
 
 1. The `information_schema` namespace (`SystemNamespaceDef`).
-2. Tables `information_schema.tables`, `information_schema.columns`, and `information_schema.schemata` (`SystemTableDef`s) with identifiers like `tables_scanner`.
+2. Tables `information_schema.tables`, `information_schema.columns`, `information_schema.schemata`, `information_schema.table_constraints`, `information_schema.key_column_usage`, `information_schema.referential_constraints`, `information_schema.check_constraints`, `information_schema.constraint_column_usage`, and `information_schema.constraint_table_usage` (`SystemTableDef`s) with scanner identifiers.
 
 `FloecatInternalProvider` wraps `InformationSchemaProvider` and is the first layer merged into every catalog; because `SystemNodeRegistry` seeds every merge with the floecat_internal definitions, `information_schema` is always available even when headers, plugins, or overlays are missing. Plugin/provider overlays run afterward and can override the same canonical names deterministically.
 
-Each table wires to a lightweight scanner (`TablesScanner`, `ColumnsScanner`, `SchemataScanner`). These scanners rely on `SystemObjectScanContext` for cached lookups:
+Each table wires to a lightweight scanner (`TablesScanner`, `ColumnsScanner`, `SchemataScanner`, plus constraint scanners). These scanners rely on `SystemObjectScanContext` for cached lookups:
 
 1. `ctx.listNamespaces()`/`ctx.listTables()` reuse the overlay, so the catalog’s graph snapshot is only enumerated once per scan.
-2. `columns` calls `ctx.columnTypes(table.id())`, which delegates to `CatalogOverlay.tableColumnTypes` → `MetadataGraph.table(...)` → `LogicalSchemaMapper`, ensuring schema JSON is parsed once per table.
+2. `columns` resolves schemas via `ctx.graph().tableSchema(table.id())`, which delegates through the overlay/metadata graph caches so repeated scans avoid redundant schema materialization work.
+
+Constraint view semantics are ANSI-oriented:
+- `key_column_usage` includes PK/UNIQUE/FK key columns (not `NOT NULL`).
+- `constraint_column_usage` includes columns referenced by each constraint definition:
+  PK/UNIQUE/NOT NULL/CHECK use local referenced columns, while FK uses referenced-target columns (not FK local key columns).
+  - For `CHECK`, rows are emitted only when `ConstraintDefinition.columns` is populated.
+    The scanner does not parse `check_expression` to infer referenced columns.
+- `referential_constraints` maps FK metadata from `ConstraintDefinition`:
+  `unique_constraint_*` uses FK target table/catalog/schema plus `referenced_constraint_name`
+  when available, and `match_option`/`update_rule`/`delete_rule` default to `NONE`/`NO ACTION`/`NO ACTION`
+  when source metadata omits them.
+  - If `referenced_constraint_name` is omitted, the scanner infers it only when there is exactly one
+    matching PK/UNIQUE on the referenced columns in the current constraint index scope; otherwise
+    `unique_constraint_*` remains `NULL`.
 
 ### Writing your own provider
 

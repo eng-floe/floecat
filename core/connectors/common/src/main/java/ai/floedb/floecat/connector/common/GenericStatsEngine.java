@@ -389,6 +389,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     Map<K, Object> uppers = file.upperBounds();
 
     Set<K> keys = new LinkedHashSet<>();
+    keys.addAll(planner.columns()); // ensure ALL schema columns present, even without metrics
     if (valueCounts != null) keys.addAll(valueCounts.keySet());
     if (nullCounts != null) keys.addAll(nullCounts.keySet());
     if (nanCounts != null) keys.addAll(nanCounts.keySet());

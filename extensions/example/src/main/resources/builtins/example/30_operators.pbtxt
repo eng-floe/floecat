@@ -26,11 +26,23 @@
 
 # Example commutative and associative operator (e.g., addition).
 # Replace name, operand types, and flags with your actual operator.
+
 operators {
-  name { name: "+" }
-  left_type  { name: "my_type" path: "example" }
-  right_type { name: "my_type" path: "example" }
-  return_type { name: "my_type" path: "example" }
+  name {
+    name: "+"
+  }
+  left_type {
+    path: "example"
+    name: "my_type"
+  }
+  right_type {
+    path: "example"
+    name: "my_type"
+  }
+  return_type {
+    path: "example"
+    name: "my_type"
+  }
   is_commutative: true
   is_associative: true
 }

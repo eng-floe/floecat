@@ -355,4 +355,47 @@ public class StatsProtoEmitterTest {
     assertEquals(1, icebergProto.getColumnsCount());
     assertEquals(1L, icebergProto.getColumns(0).getColumnId());
   }
+
+  /**
+   * Verifies that a column with all-null stats (no valueCount, no min/max) is still emitted as a
+   * valid ColumnStats entry with column_id and column_name set. This is the new code path exercised
+   * when GenericStatsEngine densifies per-file stats with planner.columns() — columns without
+   * Iceberg metrics produce all-null ColumnStatsView entries that must not be silently dropped.
+   */
+  @Test
+  public void toColumnStats_fieldId_emitsEntryForColumnWithNullStats() {
+    var schema = schemaWithColumns(schemaCol("ts_col", "ts_col", 1, 42, true));
+
+    var in =
+        List.of(
+            // All stats are null — simulates a date/timestamp column with no Iceberg metrics
+            new FloecatConnector.ColumnStatsView(
+                ref("ts_col", "ts_col", 1, 42),
+                "timestamp",
+                null, // valueCount
+                null, // nullCount
+                null, // nanCount
+                null, // min
+                null, // max
+                null, // ndv
+                Map.of()));
+
+    List<ColumnStats> out =
+        StatsProtoEmitter.toColumnStats(
+            rid("t1"),
+            1L,
+            1700000000000L,
+            ConnectorFormat.CF_ICEBERG,
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            schema,
+            in);
+
+    assertEquals(1, out.size(), "column with null stats must not be dropped");
+    ColumnStats cs = out.get(0);
+    assertEquals(42L, cs.getColumnId(), "column_id must be resolved from fieldId");
+    assertEquals("ts_col", cs.getColumnName(), "column_name must be preserved");
+    assertFalse(cs.hasNullCount(), "null nullCount must not produce a set proto field");
+    assertFalse(cs.hasMin(), "null min must not produce a set proto field");
+    assertFalse(cs.hasMax(), "null max must not produce a set proto field");
+  }
 }

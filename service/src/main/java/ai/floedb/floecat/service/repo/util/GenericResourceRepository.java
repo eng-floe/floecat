@@ -70,6 +70,84 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     reserveAllOrRollback(kvPairs.toArray(String[]::new));
   }
 
+  /**
+   * Creates a resource only when the canonical pointer is currently absent.
+   *
+   * <p>Returns {@code true} only when this call won the canonical pointer CAS from version 0 to 1.
+   * This provides distributed create-if-absent semantics across repository instances.
+   *
+   * <p><b>Visibility ordering:</b> the canonical pointer is published atomically via CAS before
+   * secondary pointers are created. During secondary creation a concurrent reader may find the
+   * resource via the canonical key but not yet via secondary keys. This is an inherent trade-off of
+   * the non-transactional storage model; the canonical pointer is the authoritative source of
+   * truth.
+   *
+   * <p><b>Blob cleanup:</b> the blob is written before the canonical CAS attempt. On any failure
+   * (CAS miss or secondary creation error), a best-effort cleanup is attempted. For {@code
+   * casBlobs} schemas the blob URI is content-addressed (SHA256), so a cleanup failure only wastes
+   * space; it has no correctness impact.
+   */
+  public boolean createIfAbsent(T value) {
+    K key = schema.keyFromValue.apply(value);
+    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+    String blobUri = schema.blobUriForKey.apply(key);
+    boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+
+    putBlob(blobUri, value);
+
+    Pointer reserveCanonical =
+        Pointer.newBuilder().setKey(canonicalPointer).setBlobUri(blobUri).setVersion(1L).build();
+    if (!pointerStore.compareAndSet(canonicalPointer, 0L, reserveCanonical)) {
+      cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+      return false;
+    }
+
+    Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
+    final var createdSecondary = new ArrayList<String>(secondaries.size());
+    try {
+      for (String secondaryPtr : secondaries.values()) {
+        var reserve =
+            Pointer.newBuilder().setKey(secondaryPtr).setBlobUri(blobUri).setVersion(1L).build();
+        if (pointerStore.compareAndSet(secondaryPtr, 0L, reserve)) {
+          createdSecondary.add(secondaryPtr);
+          continue;
+        }
+        var pointer = pointerStore.get(secondaryPtr).orElse(null);
+        if (pointer == null) {
+          throw new AbortRetryableException("pointer suddenly vanished: " + secondaryPtr);
+        }
+        if (!blobUri.equals(pointer.getBlobUri())) {
+          throw new NameConflictException("pointer bound to different blob: " + secondaryPtr);
+        }
+      }
+      return true;
+    } catch (Throwable e) {
+      for (int i = createdSecondary.size() - 1; i >= 0; i--) {
+        compareAndDeleteOrFalse(createdSecondary.get(i), 1L);
+      }
+      compareAndDeleteOrFalse(canonicalPointer, 1L);
+      // Blob was written before the try block; attempt cleanup now that all pointers are gone.
+      cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+      throw e;
+    }
+  }
+
+  private void cleanupCreateIfAbsentBlobOnCasMiss(
+      String canonicalPointer, String blobUri, boolean blobExistedBefore) {
+    // For casBlobs schemas the URI is content-addressed (SHA256): concurrent writers with
+    // identical content share a URI and no cleanup is needed. For distinct content, deleteQuietly
+    // is best-effort — a silent failure leaves an orphaned blob (space cost, no correctness
+    // impact).
+    if (blobExistedBefore || !schema.casBlobs || blobUri.isBlank()) {
+      return;
+    }
+    Pointer pointer = pointerStore.get(canonicalPointer).orElse(null);
+    if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
+      return;
+    }
+    deleteQuietly(() -> blobStore.delete(blobUri));
+  }
+
   public boolean update(T updatedValue, long expectedCanonicalVersion) {
     K key = schema.keyFromValue.apply(updatedValue);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
@@ -151,6 +229,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   public boolean delete(K key) {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+    var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
+    if (canonicalPtr == null) {
+      return false;
+    }
     String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
     Optional<T> currentValue;
@@ -165,9 +247,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             .map(m -> new HashSet<>(m.values()))
             .orElseGet(HashSet::new);
 
-    pointerStore
-        .get(canonicalPointer)
-        .ifPresent(ptr -> compareAndDeleteOrFalse(canonicalPointer, ptr.getVersion()));
+    if (!compareAndDeleteOrFalse(canonicalPointer, canonicalPtr.getVersion())) {
+      return false;
+    }
     for (String p : currentSecondary) {
       pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
     }

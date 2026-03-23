@@ -30,7 +30,7 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import java.util.ArrayList;
+import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -214,11 +214,7 @@ public final class TablesScanner implements SystemObjectScanner {
   }
 
   private static String schemaName(NamespaceNode namespace) {
-    List<String> segments = new ArrayList<>(namespace.pathSegments());
-    if (!namespace.displayName().isBlank()) {
-      segments.add(namespace.displayName());
-    }
-    return String.join(".", segments);
+    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   private static final class TablesBatchBuilder extends AbstractArrowBatchBuilder {
