@@ -302,36 +302,27 @@ class CliCommandExecutorTest {
 
   private static final class MinimalNamespaceService
       extends NamespaceServiceGrpc.NamespaceServiceImplBase {
-    final AtomicInteger listNamespacesCalls = new AtomicInteger();
-
     @Override
     public void listNamespaces(
         ListNamespacesRequest request, StreamObserver<ListNamespacesResponse> responseObserver) {
-      listNamespacesCalls.incrementAndGet();
       responseObserver.onNext(ListNamespacesResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }
 
   private static final class MinimalTableService extends TableServiceGrpc.TableServiceImplBase {
-    final AtomicInteger listTablesCalls = new AtomicInteger();
-
     @Override
     public void listTables(
         ListTablesRequest request, StreamObserver<ListTablesResponse> responseObserver) {
-      listTablesCalls.incrementAndGet();
       responseObserver.onNext(ListTablesResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }
 
   private static final class MinimalViewService extends ViewServiceGrpc.ViewServiceImplBase {
-    final AtomicInteger listViewsCalls = new AtomicInteger();
-
     @Override
     public void listViews(
         ListViewsRequest request, StreamObserver<ListViewsResponse> responseObserver) {
-      listViewsCalls.incrementAndGet();
       responseObserver.onNext(ListViewsResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }

@@ -394,9 +394,6 @@ public final class CliCommandExecutor {
               constraintsService,
               snapshots,
               tok -> TableCliSupport.resolveTableId(tok, directory, getAccountId),
-              CliArgs::parseStringFlag,
-              CliArgs::parseIntFlag,
-              CliArgs::hasFlag,
               msg -> CliUtils.printJson(msg, out));
       case "analyze" ->
           StatsCliSupport.handle(
