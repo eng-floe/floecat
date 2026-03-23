@@ -84,7 +84,7 @@
     <version.plugin.os>1.7.1</version.plugin.os>
     <version.plugin.protobuf>0.6.1</version.plugin.protobuf>
     <version.plugin.rat>0.17</version.plugin.rat>
-    <version.plugin.resources>3.3.1</version.plugin.resources>
+    <version.plugin.resources>3.5.0</version.plugin.resources>
     <version.plugin.shade>3.6.1</version.plugin.shade>
     <version.plugin.source>3.4.0</version.plugin.source>
     <version.plugin.surefire>3.5.4</version.plugin.surefire>
