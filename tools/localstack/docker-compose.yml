@@ -14,7 +14,7 @@
 
 services:
   localstack:
-    image: localstack/localstack:latest
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.1.2}
     ports:
       - "4566:4566"
     environment:
