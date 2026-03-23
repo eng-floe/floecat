@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.StatusRuntimeException;
@@ -182,6 +183,10 @@ public class Shell implements Runnable {
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
 
+  @Inject
+  @GrpcClient("floecat")
+  io.grpc.Channel floecatChannel;
+
   private ManagedChannel overrideChannel;
   private CliCommandExecutor executor;
 
@@ -202,6 +207,7 @@ public class Shell implements Runnable {
     try {
       configureGrpcChannel();
       applyAuthInterceptors();
+      maybeWarmUpConnection();
       executor =
           CliCommandExecutor.builder()
               .out(out)
@@ -543,6 +549,59 @@ public class Shell implements Runnable {
          help
          quit
 """);
+  }
+
+  private void maybeWarmUpConnection() {
+    if (!isInteractiveSession()) {
+      return;
+    }
+    warmUpConnectionAsync();
+  }
+
+  private boolean isInteractiveSession() {
+    return System.console() != null;
+  }
+
+  private void warmUpConnectionAsync() {
+    ManagedChannel ch = managedChannelForWarmUp();
+    if (ch == null) {
+      return;
+    }
+
+    // Connect in background so the prompt appears immediately, but the connection is ready
+    // by the time the user types their first command.
+    Thread warmUp =
+        new Thread(
+            () -> {
+              ch.getState(true);
+              long deadline = System.nanoTime() + 2_000_000_000L;
+              while (System.nanoTime() < deadline) {
+                ConnectivityState state = ch.getState(false);
+                if (state == ConnectivityState.READY
+                    || state == ConnectivityState.TRANSIENT_FAILURE) {
+                  break;
+                }
+                try {
+                  Thread.sleep(10);
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  break;
+                }
+              }
+            },
+            "grpc-warmup");
+    warmUp.setDaemon(true);
+    warmUp.start();
+  }
+
+  private ManagedChannel managedChannelForWarmUp() {
+    if (overrideChannel != null) {
+      return overrideChannel;
+    }
+    if (floecatChannel instanceof ManagedChannel managed) {
+      return managed;
+    }
+    return null;
   }
 
   private void configureGrpcChannel() {
