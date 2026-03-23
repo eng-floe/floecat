@@ -21,11 +21,8 @@ import io.grpc.BindableService;
 import io.grpc.ServerServiceDefinition;
 import io.quarkus.grpc.GrpcService;
 import jakarta.inject.Inject;
-import java.lang.reflect.Constructor;
-import java.util.concurrent.ExecutorService;
-import org.apache.arrow.flight.FlightProducer;
+import org.apache.arrow.flight.FlightGrpcUtils;
 import org.apache.arrow.flight.auth.ServerAuthHandler;
-import org.apache.arrow.memory.BufferAllocator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -43,12 +40,13 @@ public final class FlightBindableService implements BindableService {
       FlightExecutor flightExecutor,
       SystemTableFlightProducer producer,
       @ConfigProperty(name = "quarkus.grpc.server.port") int grpcPort,
-      @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost")
+      @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightAdvertisedHost,
-      @ConfigProperty(name = "floecat.flight.port") int flightAdvertisedPort,
+      @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80")
+          int flightAdvertisedPort,
       @ConfigProperty(name = "floecat.auth.mode", defaultValue = "oidc") String authMode) {
     this.delegate =
-        createDelegate(
+        FlightGrpcUtils.createFlightService(
             allocatorProvider.allocator(),
             producer,
             ServerAuthHandler.NO_OP,
@@ -61,25 +59,5 @@ public final class FlightBindableService implements BindableService {
   @Override
   public ServerServiceDefinition bindService() {
     return delegate.bindService();
-  }
-
-  private static BindableService createDelegate(
-      BufferAllocator allocator,
-      FlightProducer producer,
-      ServerAuthHandler authHandler,
-      ExecutorService executor) {
-    try {
-      Class<?> serviceClass = Class.forName("org.apache.arrow.flight.FlightBindingService");
-      Constructor<?> ctor =
-          serviceClass.getDeclaredConstructor(
-              BufferAllocator.class,
-              FlightProducer.class,
-              ServerAuthHandler.class,
-              ExecutorService.class);
-      ctor.setAccessible(true);
-      return (BindableService) ctor.newInstance(allocator, producer, authHandler, executor);
-    } catch (ReflectiveOperationException e) {
-      throw new IllegalStateException("Failed to initialize Arrow Flight gRPC binding", e);
-    }
   }
 }

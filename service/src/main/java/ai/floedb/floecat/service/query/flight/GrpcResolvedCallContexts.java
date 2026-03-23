@@ -28,6 +28,10 @@ final class GrpcResolvedCallContexts {
 
   static ResolvedCallContext currentOrUnauthenticated() {
     PrincipalContext principal = InboundContextInterceptor.PC_KEY.get();
+    if (principal == null) {
+      return ResolvedCallContext.unauthenticated();
+    }
+
     String queryId = InboundContextInterceptor.QUERY_KEY.get();
     String correlationId = InboundContextInterceptor.CORR_KEY.get();
     EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
@@ -35,17 +39,8 @@ final class GrpcResolvedCallContexts {
     String authorizationHeaderValue =
         InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
 
-    if (principal == null
-        && queryId == null
-        && correlationId == null
-        && engineContext == null
-        && sessionHeaderValue == null
-        && authorizationHeaderValue == null) {
-      return ResolvedCallContext.unauthenticated();
-    }
-
     return new ResolvedCallContext(
-        principal != null ? principal : PrincipalContext.getDefaultInstance(),
+        principal,
         queryId != null ? queryId : "",
         correlationId != null ? correlationId : "",
         engineContext != null ? engineContext : EngineContext.empty(),

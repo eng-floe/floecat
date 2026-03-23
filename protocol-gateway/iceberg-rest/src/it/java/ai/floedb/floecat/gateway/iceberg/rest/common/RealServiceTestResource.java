@@ -49,7 +49,6 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
   private Process serviceProcess;
   private int httpPort;
   private int managementPort;
-  private int flightPort;
   private static final String[] FORWARDED_PROPS = {
     "floecat.kv",
     "floecat.kv.table",
@@ -102,7 +101,6 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
       httpPort = findFreePort();
       managementPort = findFreePort();
-      flightPort = findFreePort();
       System.setProperty(TEST_GRPC_PORT_PROPERTY, Integer.toString(httpPort));
 
       Path runnerJar = serviceRunnerJar();
@@ -136,7 +134,6 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
       command.add("-Dquarkus.management.enabled=true");
       command.add("-Dquarkus.management.host=" + LOOPBACK_HOST);
       command.add("-Dquarkus.management.port=" + managementPort);
-      command.add("-Dfloecat.flight.port=" + flightPort);
       command.add("-Dfloecat.seed.mode=fake");
       command.add("-Dquarkus.profile=test");
       command.add("--add-opens");
@@ -151,8 +148,8 @@ public class RealServiceTestResource implements QuarkusTestResourceLifecycleMana
 
       System.out.printf(
           "RealServiceTestResource launching Floecat service http/grpc port=%d management=%d"
-              + " flight=%d log=%s%n",
-          httpPort, managementPort, flightPort, logFile);
+              + " log=%s%n",
+          httpPort, managementPort, logFile);
 
       ProcessBuilder builder =
           new ProcessBuilder(command)

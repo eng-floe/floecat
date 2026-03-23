@@ -64,7 +64,10 @@ absent for system/unpinned relations; callers must treat them as advisory only.
 
 - `ai.floedb.floecat.arrow.max-bytes`: per-stream Arrow allocator cap.
 - `floecat.flight.memory.max-bytes`: Flight server parent allocator cap.
-- `floecat.flight.host` / `floecat.flight.port`: endpoint advertised to consumers.
+- `floecat.flight.advertised-host`: host advertised to consumers.
+- `floecat.flight.advertised-port`: port advertised to consumers.
+- `quarkus.grpc.server.port` and `quarkus.grpc.server.plain-text`: actual shared gRPC/Flight
+  listener and transport mode.
 
 See:
 

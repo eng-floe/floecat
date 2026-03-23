@@ -38,10 +38,14 @@ import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.arrow.flight.CallHeaders;
+import org.apache.arrow.flight.CallInfo;
 import org.apache.arrow.flight.CallOption;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightClient;
+import org.apache.arrow.flight.FlightClientMiddleware;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.FlightRuntimeException;
@@ -84,6 +88,14 @@ public class SystemTableFlightIT {
   private static CallOption queryHeader(String queryId) {
     Metadata metadata = new Metadata();
     metadata.put(Metadata.Key.of("x-query-id", Metadata.ASCII_STRING_MARSHALLER), queryId);
+    CallHeaders headers = new MetadataAdapter(metadata);
+    return new HeaderCallOption(headers);
+  }
+
+  private static CallOption correlationHeader(String correlationId) {
+    Metadata metadata = new Metadata();
+    metadata.put(
+        Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER), correlationId);
     CallHeaders headers = new MetadataAdapter(metadata);
     return new HeaderCallOption(headers);
   }
@@ -139,6 +151,28 @@ public class SystemTableFlightIT {
         info.getSchemaOptional().orElseThrow(() -> new AssertionError("FlightInfo schema missing"));
     assertFalse(schema.getFields().isEmpty(), "Schema should have fields");
     assertFalse(info.getEndpoints().isEmpty(), "FlightInfo should have at least one endpoint");
+  }
+
+  @Test
+  void getFlightInfo_echoesCorrelationIdInResponseHeaders() throws Exception {
+    ResourceId tableId = informationSchemaColumnsTableId();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
+            .setQueryId(queryId)
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+    String correlationId = "flight-it-" + UUID.randomUUID();
+    HeaderCaptureMiddleware.Factory capture = new HeaderCaptureMiddleware.Factory();
+
+    try (FlightClient clientWithCapture =
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort))
+            .intercept(capture)
+            .build()) {
+      clientWithCapture.getInfo(descriptor, queryHeader(queryId), correlationHeader(correlationId));
+    }
+
+    assertEquals(correlationId, capture.lastHeaders.get(), "Flight should echo x-correlation-id");
   }
 
   @Test
@@ -300,5 +334,33 @@ public class SystemTableFlightIT {
   private static ResourceId systemTableId(String qualifiedName) {
     return SystemNodeRegistry.resourceId(
         EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, ResourceKind.RK_TABLE, qualifiedName);
+  }
+
+  private static final class HeaderCaptureMiddleware implements FlightClientMiddleware {
+    private final AtomicReference<String> headers;
+
+    private HeaderCaptureMiddleware(AtomicReference<String> headers) {
+      this.headers = headers;
+    }
+
+    @Override
+    public void onBeforeSendingHeaders(CallHeaders outgoingHeaders) {}
+
+    @Override
+    public void onHeadersReceived(CallHeaders incomingHeaders) {
+      headers.set(incomingHeaders.get("x-correlation-id"));
+    }
+
+    @Override
+    public void onCallCompleted(CallStatus status) {}
+
+    private static final class Factory implements FlightClientMiddleware.Factory {
+      private final AtomicReference<String> lastHeaders = new AtomicReference<>();
+
+      @Override
+      public FlightClientMiddleware onCallStarted(CallInfo info) {
+        return new HeaderCaptureMiddleware(lastHeaders);
+      }
+    }
   }
 }
