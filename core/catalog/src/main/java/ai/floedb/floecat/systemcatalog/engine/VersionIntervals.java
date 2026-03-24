@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.engine;
 
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -73,7 +73,7 @@ public final class VersionIntervals {
   public record RuleKey(String engineKindNormalizedOrEmpty, String payloadTypeNormalizedOrEmpty) {
     static RuleKey fromRule(EngineSpecificRule rule) {
       String kind =
-          rule == null ? "" : EngineContextNormalizer.normalizeEngineKind(rule.engineKind());
+          rule == null ? "" : EngineIdentityNormalizer.normalizeEngineKind(rule.engineKind());
       String payload = rule == null ? "" : rule.payloadType();
       return new RuleKey(kind, payload);
     }

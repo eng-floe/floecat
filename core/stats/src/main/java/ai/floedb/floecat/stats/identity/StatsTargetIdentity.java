@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.types.Hashing;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -135,6 +135,6 @@ public final class StatsTargetIdentity {
   }
 
   private static String normalizeEngineKind(String engineKind) {
-    return EngineContextNormalizer.normalizeEngineKind(engineKind);
+    return EngineIdentityNormalizer.normalizeEngineKind(engineKind);
   }
 }

@@ -17,10 +17,10 @@
 package ai.floedb.floecat.extensions.example;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
@@ -336,8 +336,8 @@ public final class ExampleCatalogExtension implements EngineSystemCatalogExtensi
 
   @Override
   public boolean supportsEngine(String engineKind) {
-    return EngineContextNormalizer.normalizeEngineKind(engineKind)
-        .equals(EngineContextNormalizer.normalizeEngineKind(this.engineKind()));
+    return EngineIdentityNormalizer.normalizeEngineKind(engineKind)
+        .equals(EngineIdentityNormalizer.normalizeEngineKind(this.engineKind()));
   }
 
   @Override
