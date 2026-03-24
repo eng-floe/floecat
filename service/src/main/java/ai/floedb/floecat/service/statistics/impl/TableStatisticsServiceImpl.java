@@ -36,6 +36,8 @@ import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableStatsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsCoverage;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsService;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
@@ -318,6 +320,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                             + " stats anyway",
                         request.getTableId().getId(), request.getSnapshotId());
                   }
+                  validateStatsMetadata(
+                      request.getStats().hasMetadata() ? request.getStats().getMetadata() : null);
 
                   var fingerprint = canonicalFingerprint(request.getStats());
                   var explicitKey =
@@ -507,6 +511,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     for (var raw : req.getColumnsList()) {
       var columnStats =
           raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
+      validateStatsMetadata(columnStats.hasMetadata() ? columnStats.getMetadata() : null);
       var fingerprint = canonicalFingerprint(columnStats);
 
       if (next.idempotencyKey() == null) {
@@ -559,6 +564,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     for (var raw : req.getFilesList()) {
       var fileStats =
           raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
+      for (var column : fileStats.getColumnsList()) {
+        validateStatsMetadata(column.hasMetadata() ? column.getMetadata() : null);
+      }
       var fingerprint = canonicalFingerprint(fileStats);
 
       if (next.idempotencyKey() == null) {
@@ -605,6 +613,50 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     return hashFingerprint(filePath.getBytes(StandardCharsets.UTF_8));
   }
 
+  private void validateStatsMetadata(StatsMetadata metadata) {
+    if (metadata == null) {
+      return;
+    }
+    if (metadata.hasConfidenceLevel()) {
+      double value = metadata.getConfidenceLevel();
+      if (Double.isNaN(value) || value < 0.0d || value > 1.0d) {
+        throw GrpcErrors.invalidArgument(
+            correlationId(),
+            STATS_METADATA_CONFIDENCE_INVALID,
+            Map.of("value", Double.toString(value)));
+      }
+    }
+    if (!metadata.hasCoverage()) {
+      return;
+    }
+    validateCoverageField(
+        "rows_scanned",
+        metadata.getCoverage().hasRowsScanned(),
+        metadata.getCoverage().getRowsScanned());
+    validateCoverageField(
+        "files_scanned",
+        metadata.getCoverage().hasFilesScanned(),
+        metadata.getCoverage().getFilesScanned());
+    validateCoverageField(
+        "row_groups_sampled",
+        metadata.getCoverage().hasRowGroupsSampled(),
+        metadata.getCoverage().getRowGroupsSampled());
+    validateCoverageField(
+        "bytes_scanned",
+        metadata.getCoverage().hasBytesScanned(),
+        metadata.getCoverage().getBytesScanned());
+  }
+
+  private void validateCoverageField(String field, boolean present, long value) {
+    if (!present || value >= 0L) {
+      return;
+    }
+    throw GrpcErrors.invalidArgument(
+        correlationId(),
+        STATS_METADATA_COVERAGE_NEGATIVE,
+        Map.of("field", field, "value", Long.toString(value)));
+  }
+
   private static byte[] canonicalFingerprint(TableStats stats) {
     var c = new Canonicalizer();
     canonicalResourceId(c, "table_id", stats.getTableId());
@@ -614,6 +666,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     c.scalar("data_file_count", stats.getDataFileCount());
     c.scalar("total_size_bytes", stats.getTotalSizeBytes());
     canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
+    canonicalStatsMetadata(c, "metadata", stats.hasMetadata() ? stats.getMetadata() : null);
     c.map("properties", stats.getPropertiesMap());
     return c.bytes();
   }
@@ -634,6 +687,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     c.scalar("max", stats.getMax());
     c.scalar("histogram_b64", bytesToB64(stats.getHistogram().toByteArray()));
     c.scalar("tdigest_b64", bytesToB64(stats.getTdigest().toByteArray()));
+    canonicalStatsMetadata(c, "metadata", stats.hasMetadata() ? stats.getMetadata() : null);
     c.map("properties", stats.getPropertiesMap());
     return c.bytes();
   }
@@ -752,6 +806,50 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
           g.scalar("version", sketch.getVersion());
           g.scalar("data_b64", bytesToB64(sketch.getData().toByteArray()));
           g.map("properties", sketch.getPropertiesMap());
+        });
+  }
+
+  private static void canonicalStatsMetadata(Canonicalizer c, String key, StatsMetadata metadata) {
+    if (metadata == null) {
+      return;
+    }
+    c.group(
+        key,
+        g -> {
+          g.scalar("producer", metadata.getProducer().name());
+          g.scalar("completeness", metadata.getCompleteness().name());
+          g.scalar("capture_mode", metadata.getCaptureMode().name());
+          if (metadata.hasConfidenceLevel()) {
+            g.scalar("confidence_level", metadata.getConfidenceLevel());
+          }
+          canonicalStatsCoverage(
+              g, "coverage", metadata.hasCoverage() ? metadata.getCoverage() : null);
+          // captured_at and refreshed_at are operational timestamps and intentionally excluded
+          // from content identity/fingerprinting used by idempotency.
+          g.map("properties", metadata.getPropertiesMap());
+        });
+  }
+
+  private static void canonicalStatsCoverage(Canonicalizer c, String key, StatsCoverage coverage) {
+    if (coverage == null) {
+      return;
+    }
+    c.group(
+        key,
+        g -> {
+          if (coverage.hasRowsScanned()) {
+            g.scalar("rows_scanned", coverage.getRowsScanned());
+          }
+          if (coverage.hasFilesScanned()) {
+            g.scalar("files_scanned", coverage.getFilesScanned());
+          }
+          if (coverage.hasRowGroupsSampled()) {
+            g.scalar("row_groups_sampled", coverage.getRowGroupsSampled());
+          }
+          if (coverage.hasBytesScanned()) {
+            g.scalar("bytes_scanned", coverage.getBytesScanned());
+          }
+          g.map("properties", coverage.getPropertiesMap());
         });
   }
 

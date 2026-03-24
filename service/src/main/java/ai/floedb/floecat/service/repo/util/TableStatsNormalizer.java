@@ -32,6 +32,10 @@ public final class TableStatsNormalizer {
       b.setUpstream(up);
     }
 
+    if (b.hasMetadata()) {
+      b.setMetadata(StatsMetadataNormalizer.normalize(b.getMetadata()));
+    }
+
     if (!b.getPropertiesMap().isEmpty()) {
       var sorted = new TreeMap<>(b.getPropertiesMap());
       b.clearProperties();
