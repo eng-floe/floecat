@@ -49,6 +49,7 @@ public class MetadataMaterializer {
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table plannedTable,
       ParsedCommit commit,
+      CurrentTableState currentState,
       TableGatewaySupport tableSupport,
       boolean preMaterializeAssertCreate,
       boolean hadCommittedSnapshot) {
@@ -84,13 +85,16 @@ public class MetadataMaterializer {
               Response.Status.INTERNAL_SERVER_ERROR));
     }
     String baseMetadataLocation = MetadataLocationUtil.metadataLocation(baseMetadata);
+    String authoritativeMetadataLocation = commit.authoritativeMetadataLocation(currentState);
 
     TableMetadata canonicalMetadata =
         icebergMetadataService.applyCommitUpdates(
             baseMetadata, plannedTable, commit.toCommitRequest());
     String canonicalMetadataLocation =
         firstNonBlank(
-            MetadataLocationUtil.metadataLocation(canonicalMetadata), baseMetadataLocation);
+            authoritativeMetadataLocation,
+            MetadataLocationUtil.metadataLocation(canonicalMetadata),
+            baseMetadataLocation);
     if (canonicalMetadata != null
         && canonicalMetadataLocation != null
         && !canonicalMetadataLocation.isBlank()) {
@@ -116,13 +120,19 @@ public class MetadataMaterializer {
     }
 
     IcebergMetadataService.MaterializeResult materialized;
+    Map<String, String> requestFileIoProperties =
+        tableSupport == null ? Map.of() : tableSupport.defaultFileIoProperties();
     try {
       materialized =
           firstWriteCreate
               ? icebergMetadataService.materializeAtExactLocation(
-                  namespace, tableName, canonicalMetadata, canonicalMetadata.metadataFileLocation())
+                  namespace,
+                  tableName,
+                  canonicalMetadata,
+                  canonicalMetadata.metadataFileLocation(),
+                  requestFileIoProperties)
               : icebergMetadataService.materializeNextVersion(
-                  namespace, tableName, canonicalMetadata);
+                  namespace, tableName, canonicalMetadata, requestFileIoProperties);
     } catch (IllegalArgumentException e) {
       return new Result(
           plannedTable,

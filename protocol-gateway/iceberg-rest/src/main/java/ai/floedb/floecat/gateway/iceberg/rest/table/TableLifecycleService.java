@@ -163,8 +163,7 @@ public class TableLifecycleService {
         String tableUuid =
             firstNonBlank(
                 resolved.metadataView() == null ? null : resolved.metadataView().tableUuid(),
-                created.getPropertiesMap().get("table-uuid"),
-                created.hasResourceId() ? created.getResourceId().getId() : null);
+                created.getPropertiesMap().get("table-uuid"));
         if (tableUuid != null && !tableUuid.isBlank()) {
           String reservedMetadataLocation =
               icebergMetadataService.reserveCreateMetadataLocation(

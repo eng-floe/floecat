@@ -67,14 +67,16 @@ class TableCommitServiceTest {
       Mockito.mock(CreateCommitNormalizer.class);
   private final TableCommitResponseService tableCommitResponseService =
       Mockito.mock(TableCommitResponseService.class);
+  private final CommitRequestValidationHelper validationHelper =
+      new CommitRequestValidationHelper();
 
   @BeforeEach
   void setUp() {
     service.config = config;
-    service.tableGatewaySupport = tableSupport;
     service.tableFormatSupport = new TableFormatSupport();
     service.stagedTableRepository = stagedTableRepository;
     service.accountContext = accountContext;
+    service.validationHelper = validationHelper;
     service.createCommitNormalizer = createCommitNormalizer;
     service.tableCommitResponseService = tableCommitResponseService;
 
@@ -85,18 +87,8 @@ class TableCommitServiceTest {
     when(stagedTableRepository.findSingleStage(any(), any(), any(), any()))
         .thenReturn(Optional.empty());
     when(createCommitNormalizer.normalizeFirstWriteCommit(
-            any(),
-            any(),
-            any(),
-            any(),
-            any(),
-            any(),
-            any(Boolean.class),
-            any(),
-            any(),
-            any(),
-            any()))
-        .thenAnswer(invocation -> invocation.getArgument(8, TableRequests.Commit.class));
+            any(), any(), any(), any(), any(Boolean.class), any(), any(), any()))
+        .thenAnswer(invocation -> invocation.getArgument(6, TableRequests.Commit.class));
     when(tableCommitResponseService.buildCommitResponse(any(), any(), any()))
         .thenReturn(Response.ok(defaultCommitResponse()).build());
   }
@@ -178,7 +170,7 @@ class TableCommitServiceTest {
   }
 
   @Test
-  void commitDoesNotDeleteStageWhenResponseBuildFails() {
+  void commitDeletesStageEvenWhenResponseBuildFails() {
     when(tableSupport.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
         .thenThrow(io.grpc.Status.NOT_FOUND.asRuntimeException());
     doReturn(Response.noContent().build()).when(service).commit(any(), any(), any(), any());
@@ -194,7 +186,7 @@ class TableCommitServiceTest {
             () -> service.commitTable(commandWithStage(commitWithSingleUpdate(), "stage-1")));
 
     assertEquals("response build failed", error.getMessage());
-    verify(stagedTableRepository, never()).deleteStage(staged.key());
+    verify(stagedTableRepository).deleteStage(staged.key());
   }
 
   @Test

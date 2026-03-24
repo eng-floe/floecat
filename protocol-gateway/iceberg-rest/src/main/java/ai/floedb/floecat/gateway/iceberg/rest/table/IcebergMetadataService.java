@@ -339,12 +339,41 @@ public class IcebergMetadataService {
   public MaterializeResult materializeAtExactLocation(
       String namespaceFq, String tableName, TableMetadata metadata, String metadataLocation) {
     return materialize(
-        namespaceFq, tableName, metadata, MaterializeMode.EXACT_LOCATION, metadataLocation);
+        namespaceFq, tableName, metadata, MaterializeMode.EXACT_LOCATION, metadataLocation, null);
+  }
+
+  public MaterializeResult materializeAtExactLocation(
+      String namespaceFq,
+      String tableName,
+      TableMetadata metadata,
+      String metadataLocation,
+      Map<String, String> defaultFileIoProperties) {
+    return materialize(
+        namespaceFq,
+        tableName,
+        metadata,
+        MaterializeMode.EXACT_LOCATION,
+        metadataLocation,
+        defaultFileIoProperties);
   }
 
   public MaterializeResult materializeNextVersion(
       String namespaceFq, String tableName, TableMetadata metadata) {
-    return materialize(namespaceFq, tableName, metadata, MaterializeMode.NEXT_VERSION, null);
+    return materialize(namespaceFq, tableName, metadata, MaterializeMode.NEXT_VERSION, null, null);
+  }
+
+  public MaterializeResult materializeNextVersion(
+      String namespaceFq,
+      String tableName,
+      TableMetadata metadata,
+      Map<String, String> defaultFileIoProperties) {
+    return materialize(
+        namespaceFq,
+        tableName,
+        metadata,
+        MaterializeMode.NEXT_VERSION,
+        null,
+        defaultFileIoProperties);
   }
 
   private MaterializeResult materialize(
@@ -352,7 +381,8 @@ public class IcebergMetadataService {
       String tableName,
       TableMetadata metadata,
       MaterializeMode mode,
-      String metadataLocation) {
+      String metadataLocation,
+      Map<String, String> defaultFileIoProperties) {
     if (metadata == null) {
       LOG.debugf(
           "Skipping metadata materialization for %s.%s because commit metadata was empty",
@@ -371,7 +401,9 @@ public class IcebergMetadataService {
     FileIO fileIO = null;
     try {
       Map<String, String> props = new LinkedHashMap<>();
-      if (tableGatewaySupport != null) {
+      if (defaultFileIoProperties != null && !defaultFileIoProperties.isEmpty()) {
+        props.putAll(defaultFileIoProperties);
+      } else if (tableGatewaySupport != null) {
         props.putAll(tableGatewaySupport.defaultFileIoProperties());
       }
       props.putAll(sanitizeProperties(metadata.properties()));
@@ -754,11 +786,7 @@ public class IcebergMetadataService {
       List<ai.floedb.floecat.catalog.rpc.Snapshot> snapshots) {
     Map<String, String> effectiveProps =
         props == null ? new LinkedHashMap<>() : new LinkedHashMap<>(props);
-    String tableUuid =
-        firstNonBlank(
-            effectiveProps.get("table-uuid"),
-            table != null && table.hasResourceId() ? table.getResourceId().getId() : null,
-            tableName);
+    String tableUuid = firstNonBlank(effectiveProps.get("table-uuid"), null);
     String tableLocation =
         firstNonBlank(
             metadata == null ? null : metadata.getLocation(),
@@ -820,6 +848,7 @@ public class IcebergMetadataService {
     SortOrder sortOrder = null;
     Integer defaultSortOrderId = null;
     String location = firstNonBlank(props.get("location"), null);
+    String requestedMetadataLocation = null;
 
     for (Map<String, Object> update : request.updates()) {
       if (update == null) {
@@ -841,6 +870,16 @@ public class IcebergMetadataService {
           if (requestedLocation != null && !requestedLocation.isBlank()) {
             location = requestedLocation;
             props.put("location", requestedLocation);
+          }
+        }
+        case SET_PROPERTIES -> {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> updates =
+              update.get("updates") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
+          String metadataLocation =
+              asString(updates == null ? null : updates.get(MetadataLocationUtil.PRIMARY_KEY));
+          if (metadataLocation != null && !metadataLocation.isBlank()) {
+            requestedMetadataLocation = metadataLocation;
           }
         }
         case ADD_SCHEMA -> {
@@ -923,11 +962,14 @@ public class IcebergMetadataService {
 
     TableMetadata metadata =
         TableMetadata.newTableMetadata(schema, spec, sortOrder, location, props);
-    String metadataLocation = MetadataLocationUtil.metadataLocation(props);
+    String metadataLocation =
+        firstNonBlank(requestedMetadataLocation, MetadataLocationUtil.metadataLocation(props));
     if (metadataLocation != null && !metadataLocation.isBlank()) {
+      props.put(MetadataLocationUtil.PRIMARY_KEY, metadataLocation);
       metadata =
           TableMetadata.buildFrom(metadata)
               .discardChanges()
+              .setProperties(props)
               .withMetadataLocation(metadataLocation)
               .build();
     }

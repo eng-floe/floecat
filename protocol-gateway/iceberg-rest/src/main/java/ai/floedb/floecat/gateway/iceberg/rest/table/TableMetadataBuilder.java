@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 public final class TableMetadataBuilder {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -194,8 +195,8 @@ public final class TableMetadataBuilder {
     removeMetadataLocation(props);
     String tableUuid = props.get("table-uuid");
     if (tableUuid == null || tableUuid.isBlank()) {
-      tableUuid =
-          table != null && table.hasResourceId() ? table.getResourceId().getId() : tableName;
+      tableUuid = UUID.randomUUID().toString();
+      props.put("table-uuid", tableUuid);
     }
     return new CreateRequestState(
         Map.copyOf(props),
@@ -291,15 +292,6 @@ public final class TableMetadataBuilder {
       if (candidate != null && !candidate.isBlank()) {
         tableUuid = candidate;
       }
-    }
-    if (tableUuid == null && table != null && table.hasResourceId()) {
-      String candidate = table.getResourceId().getId();
-      if (candidate != null && !candidate.isBlank()) {
-        tableUuid = candidate;
-      }
-    }
-    if (tableUuid == null || tableUuid.isBlank()) {
-      tableUuid = tableName;
     }
     if (currentSchemaId == null) {
       currentSchemaId = maybeInt(effectiveProps.get("current-schema-id"));

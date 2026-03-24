@@ -33,7 +33,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
-import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rest.table.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableKey;
@@ -48,29 +47,30 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitService {
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
+  private static final Logger LOG = Logger.getLogger(TransactionCommitService.class);
   @Inject IcebergGatewayConfig config;
   @Inject AccountContext accountContext;
   @Inject ResourceResolver resourceResolver;
-  @Inject TableGatewaySupport tableGatewaySupport;
   @Inject TableFormatSupport tableFormatSupport;
-  @Inject IcebergMetadataService icebergMetadataService;
   @Inject StagedTableRepository stagedTableRepository;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TransactionExecutor transactionExecutor;
   @Inject CommitPlanBuilder commitPlanBuilder;
+  @Inject CommitChangeRequestValidator commitChangeRequestValidator;
+  @Inject CommitRequestValidationHelper validationHelper;
   @Inject CreateCommitNormalizer createCommitNormalizer;
   @Inject TransactionAborter transactionAborter;
+  @Inject TransactionOutcomePolicy outcomePolicy;
   @Inject TableCommitResponseService tableCommitResponseService;
   @Inject GrpcServiceFacade grpcClient;
 
@@ -113,14 +113,14 @@ public class TransactionCommitService {
   }
 
   public Response commitTable(CommitCommand command) {
-    if (command == null) {
-      return IcebergErrorResponses.validation("Request body is required");
+    Response commandValidationError = validateCommitCommand(command);
+    if (commandValidationError != null) {
+      return commandValidationError;
     }
     TableRequests.Commit req = command.request();
-    if (req == null) {
-      return IcebergErrorResponses.validation("Request body is required");
-    }
 
+    // Use one request-scoped table support instance for pre-commit resolution, durable commit,
+    // and post-commit response hydration so the whole flow observes one catalog/table context.
     ai.floedb.floecat.catalog.rpc.Table preCommitTable = loadCurrentTable(command);
     if (isDeltaReadOnlyCommitBlocked(preCommitTable)) {
       return IcebergErrorResponses.conflict(
@@ -138,13 +138,10 @@ public class TransactionCommitService {
             command.catalogName(),
             command.namespacePath(),
             command.table(),
-            command.catalogId(),
-            command.namespaceId(),
             preCommitTable != null,
             preCommitTable,
             req,
-            stagedEntryOpt.orElse(null),
-            command.tableSupport());
+            stagedEntryOpt.orElse(null));
 
     TransactionCommitRequest txRequest =
         new TransactionCommitRequest(
@@ -161,11 +158,14 @@ public class TransactionCommitService {
       return txResponse;
     }
 
-    Response response =
-        tableCommitResponseService.buildCommitResponse(
-            command, effectiveReq, stagedEntryOpt.orElse(null));
-    stagedEntryOpt.ifPresent(entry -> stagedTableRepository.deleteStage(entry.key()));
-    return response;
+    try {
+      // The transaction is already durably applied here. Hydration is best-effort enrichment only,
+      // and staged-state cleanup must still run if hydration falls back to a minimal response.
+      return tableCommitResponseService.buildCommitResponse(
+          command, effectiveReq, stagedEntryOpt.orElse(null));
+    } finally {
+      stagedEntryOpt.ifPresent(entry -> stagedTableRepository.deleteStage(entry.key()));
+    }
   }
 
   public Response commitCreate(
@@ -224,6 +224,7 @@ public class TransactionCommitService {
       TransactionCommitRequest request,
       TableGatewaySupport tableSupport,
       boolean preMaterializeAssertCreate) {
+    // Phase 1: validate the request and parse updates once into the internal commit form.
     String accountId = accountContext.getAccountId();
     if (accountId == null || accountId.isBlank()) {
       return IcebergErrorResponses.validation("account context is required");
@@ -233,11 +234,13 @@ public class TransactionCommitService {
     if (changes.isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
-    Response identifierValidationError = validateTableIdentifiers(changes);
-    if (identifierValidationError != null) {
-      return identifierValidationError;
+    List<ValidatedTableChange> validatedChanges;
+    try {
+      validatedChanges = validateAndParseChanges(changes);
+    } catch (WebApplicationException e) {
+      return e.getResponse();
     }
-    String duplicateIdentifier = firstDuplicateTableIdentifier(changes);
+    String duplicateIdentifier = firstDuplicateTableIdentifier(validatedChanges);
     if (duplicateIdentifier != null) {
       return IcebergErrorResponses.validation(
           "duplicate table identifier in table-changes: " + duplicateIdentifier);
@@ -264,6 +267,8 @@ public class TransactionCommitService {
     } catch (RuntimeException beginFailure) {
       return transactionExecutor.stateUnknown();
     }
+
+    // Phase 2: confirm the transaction handle before planning against it.
     String txId = begin.getTransaction().getTxId();
     if (txId == null || txId.isBlank()) {
       return IcebergErrorResponses.failure(
@@ -281,10 +286,18 @@ public class TransactionCommitService {
               ? currentTxn.getTransaction().getState()
               : TransactionState.TS_UNSPECIFIED;
     } catch (StatusRuntimeException e) {
-      transactionAborter.abortQuietly(txId, "failed to load transaction");
+      LOG.warnf(
+          e,
+          "Begin accepted but transaction readback failed for tx=%s outcomeClass=%s; skipping blind abort",
+          txId,
+          outcomePolicy.classifyBeginReadbackFailure(e));
       return transactionExecutor.mapPrepareFailure(e);
     } catch (RuntimeException e) {
-      transactionAborter.abortQuietly(txId, "failed to load transaction");
+      LOG.warnf(
+          e,
+          "Begin accepted but transaction readback failed for tx=%s outcomeClass=%s; skipping blind abort",
+          txId,
+          outcomePolicy.classifyBeginReadbackFailure(e));
       return transactionExecutor.stateUnknown();
     }
     if (currentTxn != null && currentTxn.hasTransaction()) {
@@ -322,11 +335,14 @@ public class TransactionCommitService {
             txCreatedAtMs,
             currentState,
             tableSupport,
-            changes,
-            preMaterializeAssertCreate);
-    CommitPlan plan;
+            validatedChanges,
+            preMaterializeAssertCreate,
+            List.of());
+
+    // Phase 3: resolve authoritative current table state, normalize, validate, and compile.
+    CommitPlanBuilder.PlanBuildResult planning;
     try {
-      plan = commitPlanBuilder.build(context);
+      planning = commitPlanBuilder.build(context);
     } catch (WebApplicationException e) {
       transactionAborter.abortIfOpen(currentState, txId, "transaction commit planning failed");
       return e.getResponse();
@@ -338,15 +354,17 @@ public class TransactionCommitService {
       return transactionExecutor.stateUnknown();
     }
 
-    return transactionExecutor.execute(context, plan, tableSupport);
+    // Phase 4: execute the durable transaction, then run best-effort local post-commit work.
+    return transactionExecutor.execute(planning.context(), planning.plan());
   }
 
   private ai.floedb.floecat.catalog.rpc.Table loadCurrentTable(CommitCommand command) {
     try {
       ResourceId tableId =
-          tableGatewaySupport.resolveTableId(
-              command.catalogName(), command.namespacePath(), command.table());
-      return tableGatewaySupport.getTable(tableId);
+          command
+              .tableSupport()
+              .resolveTableId(command.catalogName(), command.namespacePath(), command.table());
+      return command.tableSupport().getTable(tableId);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return null;
@@ -385,54 +403,36 @@ public class TransactionCommitService {
         accountId, command.catalogName(), command.namespacePath(), command.table());
   }
 
-  private String firstDuplicateTableIdentifier(List<TransactionCommitRequest.TableChange> changes) {
+  private Response validateCommitCommand(CommitCommand command) {
+    if (command == null || command.request() == null) {
+      return IcebergErrorResponses.validation("Request body is required");
+    }
+    if (command.tableSupport() == null) {
+      return IcebergErrorResponses.validation("table gateway support is required");
+    }
+    return null;
+  }
+
+  private List<ValidatedTableChange> validateAndParseChanges(
+      List<TransactionCommitRequest.TableChange> changes) {
+    List<ValidatedTableChange> validated = new java.util.ArrayList<>(changes.size());
+    for (TransactionCommitRequest.TableChange change : changes) {
+      validated.add(commitChangeRequestValidator.validateAndParse(change));
+    }
+    return List.copyOf(validated);
+  }
+
+  private String firstDuplicateTableIdentifier(List<ValidatedTableChange> changes) {
     if (changes == null || changes.isEmpty()) {
       return null;
     }
     Set<String> seen = new LinkedHashSet<>();
-    for (TransactionCommitRequest.TableChange change : changes) {
-      String qualifiedName = canonicalTableIdentifier(change);
+    for (ValidatedTableChange change : changes) {
+      String qualifiedName = validationHelper.canonicalTableIdentifier(change.identifier());
       if (!seen.add(qualifiedName)) {
         return qualifiedName;
       }
     }
     return null;
-  }
-
-  private Response validateTableIdentifiers(List<TransactionCommitRequest.TableChange> changes) {
-    if (changes == null) {
-      return null;
-    }
-    for (TransactionCommitRequest.TableChange change : changes) {
-      if (change == null || change.identifier() == null) {
-        return IcebergErrorResponses.validation("table identifier is required");
-      }
-      if (change.identifier().name() == null || change.identifier().name().isBlank()) {
-        return IcebergErrorResponses.validation("table identifier is required");
-      }
-      List<String> namespace = change.identifier().namespace();
-      if (namespace == null) {
-        continue;
-      }
-      for (String segment : namespace) {
-        if (segment == null || segment.isBlank()) {
-          return IcebergErrorResponses.validation(
-              "table identifier namespace entries must be non-blank");
-        }
-      }
-    }
-    return null;
-  }
-
-  private String canonicalTableIdentifier(TransactionCommitRequest.TableChange change) {
-    TableIdentifierDto identifier = change.identifier();
-    List<String> namespacePath = new ArrayList<>();
-    if (identifier.namespace() != null) {
-      for (String segment : identifier.namespace()) {
-        namespacePath.add(segment.trim().toLowerCase(Locale.ROOT));
-      }
-    }
-    String name = identifier.name().trim().toLowerCase(Locale.ROOT);
-    return namespacePath.isEmpty() ? name : String.join(".", namespacePath) + "." + name;
   }
 }

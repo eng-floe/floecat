@@ -17,11 +17,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -33,14 +36,18 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class CommitRequirementValidatorTest {
+  private final CommitRequirementValidator validator = new CommitRequirementValidator();
+  private final IcebergMetadataService metadataService = mock(IcebergMetadataService.class);
+  private final TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+
+  CommitRequirementValidatorTest() {
+    validator.icebergMetadataService = metadataService;
+  }
 
   @Test
   void assertRefSnapshotIdFailsWhenExpectedSnapshotIdIsSetButRefIsMissing() {
-    CommitRequirementValidator validator = new CommitRequirementValidator();
-    validator.icebergMetadataService = mock(IcebergMetadataService.class);
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     Table table = Table.newBuilder().build();
-    when(validator.icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
         .thenReturn(IcebergMetadata.newBuilder().build());
 
     Response response =
@@ -57,16 +64,12 @@ class CommitRequirementValidatorTest {
 
   @Test
   void assertRefSnapshotIdPassesOnExactMatch() {
-    CommitRequirementValidator validator = new CommitRequirementValidator();
-    validator.icebergMetadataService = mock(IcebergMetadataService.class);
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     Table table = Table.newBuilder().build();
     IcebergMetadata metadata =
         IcebergMetadata.newBuilder()
             .putRefs("branch", IcebergRef.newBuilder().setSnapshotId(7L).build())
             .build();
-    when(validator.icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport))
-        .thenReturn(metadata);
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport)).thenReturn(metadata);
 
     Response response =
         validator.validate(
@@ -81,11 +84,8 @@ class CommitRequirementValidatorTest {
 
   @Test
   void nullSnapshotIdRequirementStillPassesWhenRefIsMissing() {
-    CommitRequirementValidator validator = new CommitRequirementValidator();
-    validator.icebergMetadataService = mock(IcebergMetadataService.class);
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     Table table = Table.newBuilder().build();
-    when(validator.icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
         .thenReturn(IcebergMetadata.newBuilder().build());
 
     Map<String, Object> requirement = new LinkedHashMap<>();
@@ -97,5 +97,96 @@ class CommitRequirementValidatorTest {
         validator.validateNullRefRequirements(tableSupport, table, List.of(requirement));
 
     assertNull(response);
+  }
+
+  @Test
+  void currentSchemaIdUsesAuthoritativeMetadataWhenPropertyMissing() {
+    Table table = Table.newBuilder().build();
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(IcebergMetadata.newBuilder().setCurrentSchemaId(7).build());
+
+    Response response =
+        validator.validate(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 7)),
+            () -> table,
+            message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build(),
+            message -> Response.status(Response.Status.CONFLICT).entity(message).build());
+
+    assertNull(response);
+  }
+
+  @Test
+  void currentSchemaIdFallsBackToPropertyWhenMetadataUnavailable() {
+    Table table = Table.newBuilder().putProperties("current-schema-id", "7").build();
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport)).thenReturn(null);
+
+    Response response =
+        validator.validate(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 7)),
+            () -> table,
+            message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build(),
+            message -> Response.status(Response.Status.CONFLICT).entity(message).build());
+
+    assertNull(response);
+  }
+
+  @Test
+  void currentSchemaIdAcceptsEqualMetadataAndMirroredProperty() {
+    Table table = Table.newBuilder().putProperties("current-schema-id", "7").build();
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(IcebergMetadata.newBuilder().setCurrentSchemaId(7).build());
+
+    Response response =
+        validator.validate(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 7)),
+            () -> table,
+            message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build(),
+            message -> Response.status(Response.Status.CONFLICT).entity(message).build());
+
+    assertNull(response);
+  }
+
+  @Test
+  void currentSchemaIdFailsClosedWhenMetadataAndMirroredPropertyDiverge() {
+    Table table = Table.newBuilder().putProperties("current-schema-id", "9").build();
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(IcebergMetadata.newBuilder().setCurrentSchemaId(7).build());
+
+    Response response =
+        validator.validate(
+            tableSupport,
+            List.of(Map.of("type", "assert-current-schema-id", "current-schema-id", 7)),
+            () -> table,
+            message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build(),
+            message -> Response.status(Response.Status.CONFLICT).entity(message).build());
+
+    IcebergErrorResponse body = assertInstanceOf(IcebergErrorResponse.class, response.getEntity());
+    assertEquals(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), response.getStatus());
+    assertEquals(
+        "backend mirrored property 'current-schema-id' diverged from authoritative Iceberg metadata for current schema id (metadata=7, property=9)",
+        body.error().message());
+  }
+
+  @Test
+  void tableUuidFailsWhenMetadataAndPropertyAreMissing() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("tbl-compat").build())
+            .build();
+    when(metadataService.resolveCurrentIcebergMetadata(table, tableSupport))
+        .thenReturn(IcebergMetadata.newBuilder().build());
+
+    Response response =
+        validator.validate(
+            tableSupport,
+            List.of(Map.of("type", "assert-table-uuid", "uuid", "tbl-compat")),
+            () -> table,
+            message -> Response.status(Response.Status.BAD_REQUEST).entity(message).build(),
+            message -> Response.status(Response.Status.CONFLICT).entity(message).build());
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
   }
 }

@@ -18,8 +18,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.table.ConnectorProvisioningService;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -32,14 +30,12 @@ import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
-import org.apache.iceberg.TableMetadata;
 
 @ApplicationScoped
 public class CommitPlanBuilder {
   @Inject ConnectorProvisioningService connectorProvisioningService;
   @Inject TableCommitOutboxService commitOutboxService;
   @Inject CreateCommitNormalizer createCommitNormalizer;
-  @Inject CommitChangeRequestValidator commitChangeRequestValidator;
   @Inject CommitRequirementValidator commitRequirementValidator;
   @Inject CommitUpdateCompiler commitUpdateCompiler;
   @Inject CommitTargetResolver commitTargetResolver;
@@ -47,31 +43,9 @@ public class CommitPlanBuilder {
   @Inject MetadataMaterializer metadataMaterializer;
   @Inject SnapshotTxChangeBuilder snapshotTxChangeBuilder;
 
-  record NormalizedCommit(
-      CommitTargetResolver.ResolvedTarget target, String namespace, ParsedCommit parsedCommit) {}
+  record PlanBuildResult(CommitRequestContext context, CommitPlan plan) {}
 
-  record ProjectedCommit(
-      CommitTargetResolver.ResolvedTarget target,
-      ParsedCommit parsedCommit,
-      ai.floedb.floecat.catalog.rpc.Table updatedTable) {}
-
-  record MaterializedCommit(
-      CommitTargetResolver.ResolvedTarget target,
-      ParsedCommit parsedCommit,
-      ai.floedb.floecat.catalog.rpc.Table updatedTable,
-      TableMetadata committedMetadata) {}
-
-  record PlannedTableCommit(
-      List<String> namespacePath,
-      ResourceId namespaceId,
-      String tableName,
-      ResourceId tableId,
-      ai.floedb.floecat.catalog.rpc.Table table,
-      ParsedCommit commit,
-      TableMetadata tableMetadata,
-      long expectedVersion) {}
-
-  CommitPlan build(CommitRequestContext context) {
+  PlanBuildResult build(CommitRequestContext context) {
     if (context.currentState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       throw new WebApplicationException(
           IcebergErrorResponses.failure(
@@ -80,53 +54,85 @@ public class CommitPlanBuilder {
 
     boolean alreadyApplied = context.currentState() == TransactionState.TS_APPLIED;
     if (alreadyApplied) {
-      return new CommitPlan(
-          List.of(),
-          commitOutboxService.loadPendingWorkItemsForTx(
-              context.accountId(), context.txId(), context.txCreatedAtMs(), context.requestHash()));
+      return new PlanBuildResult(
+          context.withPlannedChanges(List.of()),
+          new CommitPlan(
+              List.of(),
+              commitOutboxService.loadPendingWorkItemsForTx(
+                  context.accountId(),
+                  context.txId(),
+                  context.txCreatedAtMs(),
+                  context.requestHash())));
     }
 
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
     List<TableCommitOutboxService.WorkItem> outboxItems = new ArrayList<>();
+    List<PlannedTableChange> plannedChanges = new ArrayList<>();
 
-    for (TransactionCommitRequest.TableChange change : context.changes()) {
-      PlannedTableCommit plannedChange = planTransactionChange(change, context);
+    for (ValidatedTableChange change : context.changes()) {
+      PlannedTableChange plannedChange = planTransactionChange(change, context);
+      plannedChanges.add(plannedChange);
       Response assemblyError = appendTxArtifacts(plannedChange, context, txChanges, outboxItems);
       if (assemblyError != null) {
         throw new WebApplicationException(assemblyError);
       }
     }
-    return new CommitPlan(List.copyOf(txChanges), List.copyOf(outboxItems));
+
+    return new PlanBuildResult(
+        context.withPlannedChanges(plannedChanges),
+        new CommitPlan(List.copyOf(txChanges), List.copyOf(outboxItems)));
   }
 
-  private PlannedTableCommit planTransactionChange(
-      TransactionCommitRequest.TableChange change, CommitRequestContext context) {
-    Response inputValidationError = commitChangeRequestValidator.validate(change);
-    if (inputValidationError != null) {
-      throw new WebApplicationException(inputValidationError);
+  private PlannedTableChange planTransactionChange(
+      ValidatedTableChange change, CommitRequestContext context) {
+    CommitTargetResolver.ResolvedTarget target = commitTargetResolver.resolve(context, change);
+    ParsedCommit normalizedCommit = normalizeCommit(change, context, target);
+    Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = target::persistedTable;
+
+    Response requirementError =
+        commitRequirementValidator.validate(target.currentState(), normalizedCommit.requirements());
+    if (requirementError != null) {
+      throw new WebApplicationException(requirementError);
     }
-    CommitTargetResolver.ResolvedTarget target = resolveTarget(change, context);
-    NormalizedCommit normalized = normalizeCommit(change, context, target);
-    ProjectedCommit projected = projectCommit(context, normalized);
-    MaterializedCommit materialized = materializeCommit(context, normalized, projected);
-    return new PlannedTableCommit(
-        target.namespacePath(),
-        target.namespaceId(),
-        target.tableName(),
-        target.tableId(),
-        materialized.updatedTable(),
-        normalized.parsedCommit(),
-        materialized.committedMetadata(),
-        target.pointerVersion());
+
+    CommitUpdateCompiler.CompileResult compiled =
+        commitUpdateCompiler.compile(normalizedCommit, workingTableSupplier, true);
+    if (compiled.hasError()) {
+      throw new WebApplicationException(compiled.error());
+    }
+
+    ai.floedb.floecat.catalog.rpc.Table updatedTable =
+        tablePatchApplier.apply(
+            target.persistedTable(), compiled.patch().spec(), compiled.patch().mask());
+
+    String namespace =
+        target.namespacePath().isEmpty() ? "" : String.join(".", target.namespacePath());
+    MetadataMaterializer.Result materialized =
+        metadataMaterializer.preMaterialize(
+            namespace,
+            target.tableName(),
+            target.tableId(),
+            updatedTable,
+            normalizedCommit,
+            target.currentState(),
+            context.tableSupport(),
+            context.preMaterializeAssertCreate(),
+            target.hadCommittedSnapshot());
+    if (materialized.error() != null) {
+      throw new WebApplicationException(materialized.error());
+    }
+
+    return new PlannedTableChange(
+        change,
+        target,
+        normalizedCommit,
+        compiled.patch(),
+        materialized.table(),
+        materialized.tableMetadata());
   }
 
-  private CommitTargetResolver.ResolvedTarget resolveTarget(
-      TransactionCommitRequest.TableChange change, CommitRequestContext context) {
-    return commitTargetResolver.resolve(context, change);
-  }
-
-  private NormalizedCommit normalizeCommit(
-      TransactionCommitRequest.TableChange change,
+  private ParsedCommit normalizeCommit(
+      ValidatedTableChange change,
       CommitRequestContext context,
       CommitTargetResolver.ResolvedTarget target) {
     ParsedCommit parsedCommit =
@@ -136,85 +142,35 @@ public class CommitPlanBuilder {
                 context.catalogName(),
                 target.namespacePath(),
                 target.tableName(),
-                context.catalogId(),
-                target.namespaceId(),
                 target.persistedTable(),
-                new TableRequests.Commit(change.requirements(), change.updates()),
-                context.tableSupport()));
+                change.parsedCommit().toCommitRequest()));
     Response nullRefRequirementError =
         commitRequirementValidator.validateNullRefRequirements(
-            context.tableSupport(), target.persistedTable(), parsedCommit.requirements());
+            target.currentState(), parsedCommit.requirements());
     if (nullRefRequirementError != null) {
       throw new WebApplicationException(nullRefRequirementError);
     }
-    String namespace =
-        target.namespacePath().isEmpty() ? "" : String.join(".", target.namespacePath());
-    return new NormalizedCommit(target, namespace, parsedCommit);
-  }
-
-  private ProjectedCommit projectCommit(CommitRequestContext context, NormalizedCommit normalized) {
-    Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier =
-        () -> normalized.target().persistedTable();
-    Response requirementError =
-        commitRequirementValidator.validate(
-            context.tableSupport(), normalized.parsedCommit().requirements(), workingTableSupplier);
-    if (requirementError != null) {
-      throw new WebApplicationException(requirementError);
-    }
-
-    CommitUpdateCompiler.CompileResult compiled =
-        commitUpdateCompiler.compile(
-            normalized.parsedCommit().toCommitRequest(), workingTableSupplier, true);
-    if (compiled.hasError()) {
-      throw new WebApplicationException(compiled.error());
-    }
-
-    ai.floedb.floecat.catalog.rpc.Table updated =
-        tablePatchApplier.apply(
-            normalized.target().persistedTable(), compiled.patch().spec(), compiled.patch().mask());
-    return new ProjectedCommit(normalized.target(), normalized.parsedCommit(), updated);
-  }
-
-  private MaterializedCommit materializeCommit(
-      CommitRequestContext context, NormalizedCommit normalized, ProjectedCommit projected) {
-    MetadataMaterializer.Result preMaterialized =
-        metadataMaterializer.preMaterialize(
-            normalized.namespace(),
-            normalized.target().tableName(),
-            normalized.target().tableId(),
-            projected.updatedTable(),
-            normalized.parsedCommit(),
-            context.tableSupport(),
-            context.preMaterializeAssertCreate(),
-            normalized.target().hadCommittedSnapshot());
-    if (preMaterialized.error() != null) {
-      throw new WebApplicationException(preMaterialized.error());
-    }
-    return new MaterializedCommit(
-        normalized.target(),
-        normalized.parsedCommit(),
-        preMaterialized.table(),
-        preMaterialized.tableMetadata());
+    return parsedCommit;
   }
 
   private Response appendTxArtifacts(
-      PlannedTableCommit plan,
+      PlannedTableChange plan,
       CommitRequestContext context,
       List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges,
       List<TableCommitOutboxService.WorkItem> outboxItems) {
-    var tableForTx = plan.table();
+    ai.floedb.floecat.catalog.rpc.Table tableForTx = plan.updatedTable();
     ResourceId scopedTableId =
-        commitTargetResolver.scopeTableIdWithAccount(plan.tableId(), context.accountId());
+        commitTargetResolver.scopeTableIdWithAccount(plan.target().tableId(), context.accountId());
     ConnectorProvisioningService.ProvisionResult connectorResolution =
         connectorProvisioningService.resolveOrCreateForCommit(
             context.accountId(),
             context.txId(),
             context.prefix(),
             context.tableSupport(),
-            plan.namespacePath(),
-            plan.namespaceId(),
+            plan.target().namespacePath(),
+            plan.target().namespaceId(),
             context.catalogId(),
-            plan.tableName(),
+            plan.target().tableName(),
             scopedTableId,
             tableForTx);
     if (connectorResolution.error() != null) {
@@ -227,19 +183,20 @@ public class CommitPlanBuilder {
     }
     txChanges.add(
         ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-            .setTableId(plan.tableId())
+            .setTableId(plan.target().tableId())
             .setTable(tableForTx)
-            .setPrecondition(Precondition.newBuilder().setExpectedVersion(plan.expectedVersion()))
+            .setPrecondition(
+                Precondition.newBuilder().setExpectedVersion(plan.target().pointerVersion()))
             .build());
 
     SnapshotTxChangeBuilder.Result snapshotChangePlan =
         snapshotTxChangeBuilder.build(
             context.accountId(),
-            plan.tableId(),
+            plan.target().tableId(),
             tableForTx,
-            plan.tableMetadata(),
+            plan.committedMetadata(),
             context.tableSupport(),
-            plan.commit(),
+            plan.normalizedCommit(),
             false);
     if (snapshotChangePlan.error() != null) {
       return snapshotChangePlan.error();
@@ -259,7 +216,7 @@ public class CommitPlanBuilder {
   }
 
   private Response appendJournalAndOutboxChanges(
-      PlannedTableCommit plan,
+      PlannedTableChange plan,
       CommitRequestContext context,
       ResourceId connectorId,
       ai.floedb.floecat.catalog.rpc.Table tableForTx,
@@ -271,11 +228,11 @@ public class CommitPlanBuilder {
             context.txId(),
             context.requestHash(),
             scopedTableId,
-            plan.namespacePath(),
-            plan.tableName(),
+            plan.target().namespacePath(),
+            plan.target().tableName(),
             connectorId,
-            plan.commit().parsed().addedSnapshotIds(),
-            plan.commit().parsed().removedSnapshotIds(),
+            plan.normalizedCommit().parsed().addedSnapshotIds(),
+            plan.normalizedCommit().parsed().removedSnapshotIds(),
             tableForTx,
             context.txCreatedAtMs());
     String pendingKey =

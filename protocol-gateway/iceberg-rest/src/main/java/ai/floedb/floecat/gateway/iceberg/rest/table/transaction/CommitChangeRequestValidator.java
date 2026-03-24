@@ -16,35 +16,53 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
-import java.util.List;
 import java.util.Map;
 
 @ApplicationScoped
 public class CommitChangeRequestValidator {
+  @Inject CommitRequestValidationHelper validationHelper;
+
   public Response validate(TransactionCommitRequest.TableChange change) {
-    if (change == null || change.identifier() == null) {
-      return IcebergErrorResponses.validation("table identifier is required");
+    try {
+      validateAndParse(change);
+      return null;
+    } catch (WebApplicationException e) {
+      return e.getResponse();
     }
-    if (change.identifier().name() == null || change.identifier().name().isBlank()) {
-      return IcebergErrorResponses.validation("table identifier is required");
-    }
-    if (change.requirements() == null) {
-      return IcebergErrorResponses.validation("requirements are required");
-    }
-    if (change.updates() == null) {
-      return IcebergErrorResponses.validation("updates are required");
-    }
-    return validateEntries(change.requirements(), change.updates());
   }
 
-  private Response validateEntries(
-      List<Map<String, Object>> requirements, List<Map<String, Object>> updates) {
-    for (Map<String, Object> requirement : requirements) {
+  public ValidatedTableChange validateAndParse(TransactionCommitRequest.TableChange change) {
+    Response identifierError =
+        validationHelper.validateTableIdentifier(change == null ? null : change.identifier());
+    if (identifierError != null) {
+      throw new WebApplicationException(identifierError);
+    }
+    if (change.requirements() == null) {
+      throw new WebApplicationException(
+          IcebergErrorResponses.validation("requirements are required"));
+    }
+    if (change.updates() == null) {
+      throw new WebApplicationException(IcebergErrorResponses.validation("updates are required"));
+    }
+    ParsedCommit parsedCommit =
+        ParsedCommit.from(new TableRequests.Commit(change.requirements(), change.updates()));
+    Response entryError = validateEntries(parsedCommit);
+    if (entryError != null) {
+      throw new WebApplicationException(entryError);
+    }
+    return new ValidatedTableChange(change, parsedCommit);
+  }
+
+  private Response validateEntries(ParsedCommit commit) {
+    for (Map<String, Object> requirement : commit.requirements()) {
       if (requirement == null) {
         return IcebergErrorResponses.validation("commit requirement entry cannot be null");
       }
@@ -57,18 +75,9 @@ public class CommitChangeRequestValidator {
         return IcebergErrorResponses.validation("unsupported commit requirement: " + type);
       }
     }
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        return IcebergErrorResponses.validation("unsupported commit update action: <missing>");
-      }
-      Object actionObj = update.get("action");
-      String action = actionObj instanceof String value ? value : null;
-      if (action == null || action.isBlank()) {
-        return IcebergErrorResponses.validation("unsupported commit update action: <missing>");
-      }
-      if (!CommitUpdateInspector.isSupportedUpdateAction(action)) {
-        return IcebergErrorResponses.validation("unsupported commit update action: " + action);
-      }
+    String unsupported = validationHelper.unsupportedUpdateAction(commit);
+    if (unsupported != null) {
+      return IcebergErrorResponses.validation("unsupported commit update action: " + unsupported);
     }
     return null;
   }

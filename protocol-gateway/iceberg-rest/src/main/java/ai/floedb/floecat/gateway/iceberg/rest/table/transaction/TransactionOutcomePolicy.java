@@ -28,8 +28,51 @@ import jakarta.ws.rs.core.Response;
 
 @ApplicationScoped
 public class TransactionOutcomePolicy {
+  public enum OutcomeClass {
+    DETERMINISTIC_LOCAL_FAILURE,
+    KNOWN_NOT_APPLIED,
+    KNOWN_APPLIED,
+    AMBIGUOUS,
+    POST_COMMIT_HYDRATION_FAILURE
+  }
+
   public boolean isApplied(TransactionState state) {
     return state == TransactionState.TS_APPLIED;
+  }
+
+  public OutcomeClass classifyBeginReadbackFailure(Throwable failure) {
+    return OutcomeClass.AMBIGUOUS;
+  }
+
+  public OutcomeClass classifyPrepareFailure(Throwable failure) {
+    if (!(failure instanceof StatusRuntimeException statusFailure)) {
+      return OutcomeClass.AMBIGUOUS;
+    }
+    Status.Code code = statusFailure.getStatus().getCode();
+    if (code == Status.Code.NOT_FOUND
+        || code == Status.Code.FAILED_PRECONDITION
+        || code == Status.Code.ALREADY_EXISTS) {
+      return OutcomeClass.KNOWN_NOT_APPLIED;
+    }
+    if (code == Status.Code.ABORTED
+        && extractFloecatErrorCode(statusFailure) != ErrorCode.MC_ABORT_RETRYABLE) {
+      return OutcomeClass.KNOWN_NOT_APPLIED;
+    }
+    return OutcomeClass.AMBIGUOUS;
+  }
+
+  public OutcomeClass classifyCommitState(TransactionState state) {
+    if (isApplied(state)) {
+      return OutcomeClass.KNOWN_APPLIED;
+    }
+    if (isDeterministicFailedState(state)) {
+      return OutcomeClass.KNOWN_NOT_APPLIED;
+    }
+    return OutcomeClass.AMBIGUOUS;
+  }
+
+  public OutcomeClass classifyHydrationFailure(Throwable failure) {
+    return OutcomeClass.POST_COMMIT_HYDRATION_FAILURE;
   }
 
   public boolean isDeterministicFailedState(TransactionState state) {

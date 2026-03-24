@@ -17,10 +17,14 @@
 package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import java.util.List;
+import java.util.Map;
+import org.apache.iceberg.TableMetadata;
 
 record CommitRequestContext(
     String accountId,
@@ -33,5 +37,55 @@ record CommitRequestContext(
     long txCreatedAtMs,
     TransactionState currentState,
     TableGatewaySupport tableSupport,
-    List<TransactionCommitRequest.TableChange> changes,
-    boolean preMaterializeAssertCreate) {}
+    List<ValidatedTableChange> changes,
+    boolean preMaterializeAssertCreate,
+    List<PlannedTableChange> plannedChanges) {
+
+  CommitRequestContext withPlannedChanges(List<PlannedTableChange> plannedChanges) {
+    return new CommitRequestContext(
+        accountId,
+        txId,
+        prefix,
+        catalogName,
+        catalogId,
+        idempotencyBase,
+        requestHash,
+        txCreatedAtMs,
+        currentState,
+        tableSupport,
+        changes,
+        preMaterializeAssertCreate,
+        plannedChanges == null ? List.of() : List.copyOf(plannedChanges));
+  }
+}
+
+record ValidatedTableChange(
+    TransactionCommitRequest.TableChange rawChange, ParsedCommit parsedCommit) {
+  TableIdentifierDto identifier() {
+    return rawChange.identifier();
+  }
+
+  List<Map<String, Object>> requirements() {
+    return parsedCommit.requirements();
+  }
+
+  List<Map<String, Object>> updates() {
+    return parsedCommit.updates();
+  }
+}
+
+record PlannedTableChange(
+    ValidatedTableChange requestedChange,
+    CommitTargetResolver.ResolvedTarget target,
+    ParsedCommit normalizedCommit,
+    CommitUpdateCompiler.CompiledTablePatch compiledPatch,
+    ai.floedb.floecat.catalog.rpc.Table updatedTable,
+    TableMetadata committedMetadata) {
+  TableIdentifierDto identifier() {
+    return requestedChange.identifier();
+  }
+
+  TableRequests.Commit commitRequest() {
+    return normalizedCommit.toCommitRequest();
+  }
+}

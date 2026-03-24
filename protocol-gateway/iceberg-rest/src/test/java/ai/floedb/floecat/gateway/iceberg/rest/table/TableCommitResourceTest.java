@@ -154,7 +154,7 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
   }
 
   @Test
-  void commitRequirementTableUuidMismatchReturns409() {
+  void commitRequirementTableUuidMirroredPropertyMismatchFailsClosed() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
@@ -175,14 +175,15 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
-        .statusCode(409)
-        .body("error.type", equalTo("CommitFailedException"));
+        .statusCode(500)
+        .body("error.type", equalTo("InternalServerError"))
+        .body("error.message", containsString("backend mirrored property 'table-uuid'"));
 
     verify(transactionsStub, never()).commitTransaction(any());
   }
 
   @Test
-  void commitRequirementAssertRefSnapshotIdMismatchReturns409() {
+  void commitRequirementAssertRefSnapshotIdMirroredPropertyMismatchFailsClosed() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
@@ -205,8 +206,9 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
         .when()
         .post("/v1/foo/namespaces/db/tables/orders")
         .then()
-        .statusCode(409)
-        .body("error.type", equalTo("CommitFailedException"));
+        .statusCode(500)
+        .body("error.type", equalTo("InternalServerError"))
+        .body("error.message", containsString("backend mirrored property 'current-snapshot-id'"));
 
     verify(transactionsStub, never()).commitTransaction(any());
     verify(transactionsStub).abortTransaction(any());

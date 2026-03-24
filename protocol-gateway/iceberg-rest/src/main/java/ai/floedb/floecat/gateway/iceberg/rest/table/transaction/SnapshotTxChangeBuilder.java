@@ -23,7 +23,6 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.support.SnapshotMetadataUtil;
@@ -65,7 +64,7 @@ public class SnapshotTxChangeBuilder {
       TableGatewaySupport tableSupport,
       ParsedCommit commit,
       boolean alreadyApplied) {
-    if (alreadyApplied || tableId == null || commit.updates().isEmpty()) {
+    if (alreadyApplied || tableId == null || commit.addedSnapshots().isEmpty()) {
       return new Result(List.of(), null);
     }
     String resolvedAccountId = firstNonBlank(tableId.getAccountId(), accountId);
@@ -82,12 +81,7 @@ public class SnapshotTxChangeBuilder {
             ? tableId
             : tableId.toBuilder().setAccountId(resolvedAccountId).build();
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
-    for (Map<String, Object> update : commit.updates()) {
-      if (!CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(
-          CommitUpdateInspector.actionOf(update))) {
-        continue;
-      }
-      Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
+    for (Map<String, Object> snapshotMap : commit.addedSnapshots()) {
       if (snapshotMap == null || snapshotMap.isEmpty()) {
         return new Result(
             List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot"));

@@ -24,6 +24,7 @@ import java.util.Map;
 record ParsedCommit(
     List<Map<String, Object>> requirements,
     List<Map<String, Object>> updates,
+    List<ParsedUpdate> updateEntries,
     CommitUpdateInspector.Parsed parsed) {
   static ParsedCommit from(TableRequests.Commit commit) {
     List<Map<String, Object>> requirements =
@@ -32,10 +33,29 @@ record ParsedCommit(
             : List.copyOf(commit.requirements());
     List<Map<String, Object>> updates =
         commit == null || commit.updates() == null ? List.of() : List.copyOf(commit.updates());
-    return new ParsedCommit(requirements, updates, CommitUpdateInspector.inspectUpdates(updates));
+    List<ParsedUpdate> updateEntries =
+        updates.stream()
+            .map(update -> new ParsedUpdate(CommitUpdateInspector.actionTypeOf(update), update))
+            .toList();
+    return new ParsedCommit(
+        requirements, updates, updateEntries, CommitUpdateInspector.inspectUpdates(updates));
   }
 
   TableRequests.Commit toCommitRequest() {
     return new TableRequests.Commit(requirements, updates);
   }
+
+  String authoritativeMetadataLocation(CurrentTableState currentState) {
+    String requested = parsed == null ? null : parsed.requestedMetadataLocation();
+    if (requested != null && !requested.isBlank()) {
+      return requested;
+    }
+    return currentState == null ? null : currentState.metadataLocation();
+  }
+
+  List<Map<String, Object>> addedSnapshots() {
+    return parsed == null ? List.of() : parsed.addedSnapshots();
+  }
 }
+
+record ParsedUpdate(CommitUpdateInspector.UpdateAction action, Map<String, Object> rawUpdate) {}

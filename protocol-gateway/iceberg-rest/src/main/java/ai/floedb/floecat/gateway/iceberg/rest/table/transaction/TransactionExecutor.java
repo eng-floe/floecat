@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
-import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -39,8 +38,7 @@ public class TransactionExecutor {
   @Inject TransactionAborter transactionAborter;
   @Inject TransactionOutcomePolicy outcomePolicy;
 
-  public Response execute(
-      CommitRequestContext context, CommitPlan plan, TableGatewaySupport tableSupport) {
+  public Response execute(CommitRequestContext context, CommitPlan plan) {
     boolean applied = outcomePolicy.isApplied(context.currentState());
     if (!applied) {
       Response prepareFailure = prepare(context, plan);
@@ -63,7 +61,7 @@ public class TransactionExecutor {
 
     if (!plan.outboxItems().isEmpty()) {
       try {
-        commitOutboxService.processPendingNow(tableSupport, plan.outboxItems());
+        commitOutboxService.processPendingNow(context.tableSupport(), plan.outboxItems());
       } catch (RuntimeException e) {
         LOG.warnf(e, "Best-effort outbox processing failed for tx=%s", context.txId());
       }
@@ -84,8 +82,9 @@ public class TransactionExecutor {
     if (context.currentState() != TransactionState.TS_OPEN) {
       return null;
     }
+    ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest request;
     try {
-      grpcClient.prepareTransaction(
+      request =
           ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest.newBuilder()
               .setTxId(context.txId())
               .addAllChanges(plan.txChanges())
@@ -95,13 +94,31 @@ public class TransactionExecutor {
                           context.idempotencyBase() == null
                               ? ""
                               : context.idempotencyBase() + ":prepare"))
-              .build());
-      return null;
+              .build();
     } catch (RuntimeException e) {
-      transactionAborter.abortQuietly(context.txId(), "transaction prepare failed");
-      if (e instanceof StatusRuntimeException prepareFailure) {
-        return outcomePolicy.mapPrepareFailure(prepareFailure);
-      }
+      transactionAborter.abortQuietly(
+          context.txId(), "transaction prepare request assembly failed");
+      return outcomePolicy.internalStateUnknown();
+    }
+    try {
+      grpcClient.prepareTransaction(request);
+      return null;
+    } catch (StatusRuntimeException prepareFailure) {
+      TransactionOutcomePolicy.OutcomeClass outcomeClass =
+          outcomePolicy.classifyPrepareFailure(prepareFailure);
+      LOG.warnf(
+          prepareFailure,
+          "Prepare failed for tx=%s outcomeClass=%s; not issuing automatic abort after remote handoff",
+          context.txId(),
+          outcomeClass);
+      return outcomePolicy.mapPrepareFailure(prepareFailure);
+    } catch (RuntimeException e) {
+      TransactionOutcomePolicy.OutcomeClass outcomeClass = outcomePolicy.classifyPrepareFailure(e);
+      LOG.warnf(
+          e,
+          "Prepare failed for tx=%s outcomeClass=%s; not issuing automatic abort after remote handoff",
+          context.txId(),
+          outcomeClass);
       return outcomePolicy.internalStateUnknown();
     }
   }
@@ -124,10 +141,12 @@ public class TransactionExecutor {
           commitResponse != null && commitResponse.hasTransaction()
               ? commitResponse.getTransaction().getState()
               : TransactionState.TS_UNSPECIFIED;
-      if (outcomePolicy.isApplied(commitState)) {
+      TransactionOutcomePolicy.OutcomeClass outcomeClass =
+          outcomePolicy.classifyCommitState(commitState);
+      if (outcomeClass == TransactionOutcomePolicy.OutcomeClass.KNOWN_APPLIED) {
         return null;
       }
-      if (outcomePolicy.isDeterministicFailedState(commitState)) {
+      if (outcomeClass == TransactionOutcomePolicy.OutcomeClass.KNOWN_NOT_APPLIED) {
         return IcebergErrorResponses.failure(
             "transaction commit did not reach applied state",
             "CommitFailedException",

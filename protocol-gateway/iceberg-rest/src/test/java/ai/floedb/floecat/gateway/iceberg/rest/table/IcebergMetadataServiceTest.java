@@ -341,6 +341,55 @@ class IcebergMetadataServiceTest {
   }
 
   @Test
+  void bootstrapTableMetadataFromCommitPrefersRequestedMetadataLocationOverPersistedProperty() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    Table table =
+        Table.newBuilder()
+            .putProperties("location", "s3://warehouse/db/orders")
+            .putProperties(
+                "metadata-location", "s3://warehouse/db/orders/metadata/persisted.metadata.json")
+            .build();
+
+    TableMetadata metadata =
+        service.bootstrapTableMetadataFromCommit(
+            table,
+            new TableRequests.Commit(
+                List.of(),
+                List.of(
+                    Map.of(
+                        "action",
+                        "add-schema",
+                        "schema",
+                        Map.of(
+                            "schema-id",
+                            0,
+                            "last-column-id",
+                            1,
+                            "type",
+                            "struct",
+                            "fields",
+                            List.of(
+                                Map.of("id", 1, "name", "id", "required", false, "type", "long")))),
+                    Map.of(
+                        "action",
+                        "set-properties",
+                        "updates",
+                        Map.of(
+                            "metadata-location",
+                            "s3://warehouse/db/orders/metadata/requested.metadata.json")))));
+
+    assertNotNull(metadata);
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/requested.metadata.json",
+        metadata.metadataFileLocation());
+    assertEquals(
+        "s3://warehouse/db/orders/metadata/requested.metadata.json",
+        metadata.properties().get("metadata-location"));
+  }
+
+  @Test
   void materializeHonorsExactMetadataLocationOverride() {
     IcebergMetadataService service = new IcebergMetadataService();
     service.setMapper(new ObjectMapper());

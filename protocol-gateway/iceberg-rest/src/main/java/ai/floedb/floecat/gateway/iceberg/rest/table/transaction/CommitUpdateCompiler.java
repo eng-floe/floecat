@@ -56,26 +56,31 @@ public class CommitUpdateCompiler {
 
   @Inject TablePropertyService tablePropertyService;
   @Inject SnapshotUpdateService snapshotUpdateService;
+  @Inject CommitRequestValidationHelper validationHelper;
   @Inject ObjectMapper mapper;
 
   public CompileResult compile(
       TableRequests.Commit request,
       Supplier<Table> tableSupplier,
       boolean validateSnapshotUpdates) {
-    if (request == null) {
+    return compile(ParsedCommit.from(request), tableSupplier, validateSnapshotUpdates);
+  }
+
+  public CompileResult compile(
+      ParsedCommit commit, Supplier<Table> tableSupplier, boolean validateSnapshotUpdates) {
+    if (commit == null) {
       return CompileResult.failure(IcebergErrorResponses.validation("Request body is required"));
     }
-    if (request.updates() == null) {
+    if (commit.updates() == null) {
       return CompileResult.failure(IcebergErrorResponses.validation("updates are required"));
     }
-    String unsupported = unsupportedUpdateAction(request);
+    String unsupported = validationHelper.unsupportedUpdateAction(commit);
     if (unsupported != null) {
       return CompileResult.failure(
           IcebergErrorResponses.validation("unsupported commit update action: " + unsupported));
     }
     if (validateSnapshotUpdates) {
-      Response snapshotValidation =
-          snapshotUpdateService.validateSnapshotUpdates(request.updates());
+      Response snapshotValidation = snapshotUpdateService.validateSnapshotUpdates(commit.updates());
       if (snapshotValidation != null) {
         return CompileResult.failure(snapshotValidation);
       }
@@ -84,17 +89,17 @@ public class CommitUpdateCompiler {
     TableSpec.Builder spec = TableSpec.newBuilder();
     FieldMask.Builder mask = FieldMask.newBuilder();
     Response locationError =
-        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, request.updates());
+        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, commit.updates());
     if (locationError != null) {
       return CompileResult.failure(locationError);
     }
     var propertyResult =
-        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, null, request.updates());
+        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, null, commit.updates());
     if (propertyResult.hasError()) {
       return CompileResult.failure(propertyResult.error());
     }
     Map<String, String> mergedProps = stripFileIoProperties(propertyResult.properties());
-    applyTableDefinitionSpecUpdates(spec, mask, request.updates());
+    applyTableDefinitionSpecUpdates(spec, mask, commit.updateEntries());
     if (mergedProps != null) {
       spec.clearProperties().putAllProperties(mergedProps);
       mask.addPaths("properties");
@@ -102,39 +107,19 @@ public class CommitUpdateCompiler {
     return CompileResult.success(new CompiledTablePatch(spec.build(), mask.build()));
   }
 
-  private String unsupportedUpdateAction(TableRequests.Commit req) {
-    if (req == null || req.updates() == null) {
-      return null;
-    }
-    for (Map<String, Object> update : req.updates()) {
-      if (update == null) {
-        return "<missing>";
-      }
-      String action = CommitUpdateInspector.actionOf(update);
-      if (action == null || action.isBlank()) {
-        return "<missing>";
-      }
-      if (!CommitUpdateInspector.isSupportedUpdateAction(action)) {
-        return action;
-      }
-    }
-    return null;
-  }
-
   private void applyTableDefinitionSpecUpdates(
-      TableSpec.Builder spec, FieldMask.Builder mask, List<Map<String, Object>> updates) {
+      TableSpec.Builder spec, FieldMask.Builder mask, List<ParsedUpdate> updates) {
     if (updates == null || updates.isEmpty()) {
       return;
     }
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
+    for (ParsedUpdate update : updates) {
+      if (update == null || update.rawUpdate() == null) {
         continue;
       }
-      String action = CommitUpdateInspector.actionOf(update);
-      if (!CommitUpdateInspector.ACTION_ADD_SCHEMA.equals(action)) {
+      if (update.action() != CommitUpdateInspector.UpdateAction.ADD_SCHEMA) {
         continue;
       }
-      Map<String, Object> schema = asObjectMap(update.get("schema"));
+      Map<String, Object> schema = asObjectMap(update.rawUpdate().get("schema"));
       if (schema == null || schema.isEmpty()) {
         continue;
       }

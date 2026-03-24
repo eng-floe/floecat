@@ -16,9 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
-import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableEntry;
@@ -38,13 +36,10 @@ public class CreateCommitNormalizer {
       String catalogName,
       List<String> namespacePath,
       String tableName,
-      ResourceId catalogId,
-      ResourceId namespaceId,
       boolean tableExists,
       ai.floedb.floecat.catalog.rpc.Table persistedTable,
       TableRequests.Commit commit,
-      StagedTableEntry stagedEntry,
-      TableGatewaySupport tableSupport) {
+      StagedTableEntry stagedEntry) {
     if (commit == null || CommitPlanningPredicates.hasCommittedSnapshot(persistedTable)) {
       return commit;
     }
@@ -93,23 +88,10 @@ public class CreateCommitNormalizer {
       String catalogName,
       List<String> namespacePath,
       String tableName,
-      ResourceId catalogId,
-      ResourceId namespaceId,
       ai.floedb.floecat.catalog.rpc.Table persistedTable,
-      TableRequests.Commit commit,
-      TableGatewaySupport tableSupport) {
+      TableRequests.Commit commit) {
     return normalizeFirstWriteCommit(
-        accountId,
-        catalogName,
-        namespacePath,
-        tableName,
-        catalogId,
-        namespaceId,
-        true,
-        persistedTable,
-        commit,
-        null,
-        tableSupport);
+        accountId, catalogName, namespacePath, tableName, true, persistedTable, commit, null);
   }
 
   private TableRequests.Commit injectMetadataLocation(

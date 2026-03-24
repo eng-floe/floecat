@@ -24,11 +24,13 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
+import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
@@ -36,6 +38,8 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class CommitTargetResolver {
+  @Inject IcebergMetadataService icebergMetadataService;
+
   public record ResolvedTarget(
       List<String> namespacePath,
       ResourceId namespaceId,
@@ -43,11 +47,11 @@ public class CommitTargetResolver {
       ResourceId tableId,
       GetTableResponse tableResponse,
       ai.floedb.floecat.catalog.rpc.Table persistedTable,
+      CurrentTableState currentState,
       long pointerVersion,
       boolean hadCommittedSnapshot) {}
 
-  public ResolvedTarget resolve(
-      CommitRequestContext context, TransactionCommitRequest.TableChange change) {
+  public ResolvedTarget resolve(CommitRequestContext context, ValidatedTableChange change) {
     var identifier = change.identifier();
     List<String> namespacePath =
         identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace());
@@ -93,6 +97,15 @@ public class CommitTargetResolver {
                 identifier.name(),
                 context.txCreatedAtMs())
             : tableResponse.getTable();
+    CurrentTableState currentState;
+    try {
+      currentState =
+          CurrentTableState.load(persistedTable, context.tableSupport(), icebergMetadataService);
+    } catch (IllegalStateException e) {
+      throw new WebApplicationException(
+          IcebergErrorResponses.failure(
+              e.getMessage(), "InternalServerError", Response.Status.INTERNAL_SERVER_ERROR));
+    }
     long pointerVersion =
         tableResponse != null && tableResponse.hasMeta()
             ? tableResponse.getMeta().getPointerVersion()
@@ -104,6 +117,7 @@ public class CommitTargetResolver {
         tableId,
         tableResponse,
         persistedTable,
+        currentState,
         pointerVersion,
         CommitPlanningPredicates.hasCommittedSnapshot(persistedTable));
   }

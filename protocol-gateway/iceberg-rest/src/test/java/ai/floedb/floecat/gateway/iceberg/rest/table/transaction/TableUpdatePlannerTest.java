@@ -40,11 +40,14 @@ class TableUpdatePlannerTest {
   private final CommitUpdateCompiler compiler = new CommitUpdateCompiler();
   private final TablePropertyService propertyService = new TablePropertyService();
   private final SnapshotUpdateService snapshotUpdateService = mock(SnapshotUpdateService.class);
+  private final CommitRequestValidationHelper validationHelper =
+      new CommitRequestValidationHelper();
 
   @BeforeEach
   void setUp() {
     compiler.tablePropertyService = propertyService;
     compiler.snapshotUpdateService = snapshotUpdateService;
+    compiler.validationHelper = validationHelper;
     compiler.mapper = new ObjectMapper();
     when(snapshotUpdateService.validateSnapshotUpdates(any())).thenReturn(null);
   }
@@ -92,6 +95,18 @@ class TableUpdatePlannerTest {
   }
 
   @Test
+  void compileReturnsValidationErrorForMissingAction() {
+    CommitUpdateCompiler.CompileResult result =
+        compiler.compile(
+            new TableRequests.Commit(List.of(), List.of(Map.of("value", "x"))),
+            Table::getDefaultInstance,
+            true);
+
+    assertTrue(result.hasError());
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), result.error().getStatus());
+  }
+
+  @Test
   void compileReturnsSnapshotValidationErrors() {
     Response snapshotError = Response.status(Response.Status.CONFLICT).build();
     when(snapshotUpdateService.validateSnapshotUpdates(any())).thenReturn(snapshotError);
@@ -125,5 +140,27 @@ class TableUpdatePlannerTest {
     assertFalse(result.hasError());
     assertEquals("alice", result.patch().spec().getPropertiesOrThrow("owner"));
     assertTrue(!result.patch().spec().containsProperties("io-impl"));
+  }
+
+  @Test
+  void parsedCommitBuildsTypedUpdateEntriesOnce() {
+    ParsedCommit commit =
+        ParsedCommit.from(
+            new TableRequests.Commit(
+                List.of(),
+                List.of(
+                    Map.of("action", "set-properties", "updates", Map.of("owner", "alice")),
+                    Map.of("action", "add-snapshot", "snapshot", Map.of("snapshot-id", 7L)))));
+
+    assertEquals(2, commit.updateEntries().size());
+    assertEquals(
+        ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector.UpdateAction
+            .SET_PROPERTIES,
+        commit.updateEntries().get(0).action());
+    assertEquals(
+        ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector.UpdateAction
+            .ADD_SNAPSHOT,
+        commit.updateEntries().get(1).action());
+    assertEquals(1, commit.addedSnapshots().size());
   }
 }
