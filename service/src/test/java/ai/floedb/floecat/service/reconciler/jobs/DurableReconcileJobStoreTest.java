@@ -16,19 +16,25 @@
 
 package ai.floedb.floecat.service.reconciler.jobs;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -350,5 +356,79 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, stats.running);
     assertEquals(1L, stats.cancelling);
     assertTrue(stats.oldestQueuedCreatedAtMs > 0L);
+  }
+
+  /**
+   * Regression test for: StorageNotFoundException from blobStore.get() inside readRecordByBlobUri()
+   * propagating through reclaimExpiredLeasesIfDue() and leaseNext().
+   *
+   * <p>Before the fix, a missing blob caused leaseNext() to throw, which leaked a worker slot in
+   * ReconcilerScheduler and permanently halted dispatch. After the fix, readRecordByBlobUri()
+   * treats StorageNotFoundException exception the same as a missing blob and returns
+   * Optional.empty().
+   */
+  @Test
+  void leaseNextDoesNotThrowWhenReclaimedBlobIsMissing() throws Exception {
+    System.setProperty("floecat.reconciler.job-store.lease-ms", "1");
+    System.setProperty("floecat.reconciler.job-store.reclaim-interval-ms", "1");
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+    // Take the first lease so the job is removed from the ready queue.
+    // leaseNext() short-circuits via leaseReadyDue() here — reclaim is NOT triggered yet.
+    store.leaseNext().orElseThrow();
+
+    // Replace blobStore with one that throws StorageNotFoundException on every get().
+    // This simulates the S3 "not found" case reported in the bug.
+    store.blobStore = new ThrowingOnGetBlobStore();
+
+    Thread.sleep(50L); // ensure lease-ms and reclaim-interval-ms have elapsed
+
+    // leaseNext() now has nothing in the ready queue, so it calls reclaimExpiredLeasesIfDue(),
+    // which iterates lookup pointers and calls readRecordByBlobUri() → blobStore.get() → throws.
+    // Before the fix: StorageNotFoundException escapes leaseNext().
+    // After the fix: readRecordByBlobUri() catches it and returns Optional.empty().
+    assertDoesNotThrow(() -> store.leaseNext());
+    assertTrue(store.leaseNext().isEmpty());
+  }
+
+  /** BlobStore that throws StorageNotFoundException on every get() call. */
+  private static class ThrowingOnGetBlobStore implements BlobStore {
+    @Override
+    public byte[] get(String uri) {
+      throw new StorageNotFoundException("simulated missing blob: " + uri);
+    }
+
+    @Override
+    public void put(String uri, byte[] bytes, String contentType) {}
+
+    @Override
+    public Optional<BlobHeader> head(String uri) {
+      return Optional.empty();
+    }
+
+    @Override
+    public boolean delete(String uri) {
+      return false;
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {}
+
+    @Override
+    public Page list(String prefix, int limit, String pageToken) {
+      return new Page() {
+        @Override
+        public List<String> keys() {
+          return Collections.emptyList();
+        }
+
+        @Override
+        public String nextToken() {
+          return "";
+        }
+      };
+    }
   }
 }
