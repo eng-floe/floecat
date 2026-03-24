@@ -64,6 +64,35 @@ class StagedTableRepositoryTest {
   }
 
   @Test
+  void findSingleStageIgnoresNonStagedEntries() {
+    Config config = mock(Config.class);
+    when(config.getOptionalValue("floecat.gateway.stage-ttl-seconds", Long.class))
+        .thenReturn(Optional.of(900L));
+    StagedTableRepository repository = new StagedTableRepository(config);
+
+    StagedTableEntry staged = repository.saveStage(stagedEntry());
+    repository.save(withState(stagedEntryWithStageId("stage-2"), StageState.ABORTED));
+
+    Optional<StagedTableEntry> single =
+        repository.findSingleStage("acct", "cat", List.of("db"), "orders");
+
+    assertEquals(staged, single.orElseThrow());
+  }
+
+  @Test
+  void findSingleStageReturnsEmptyWhenMultipleStagedEntriesExist() {
+    Config config = mock(Config.class);
+    when(config.getOptionalValue("floecat.gateway.stage-ttl-seconds", Long.class))
+        .thenReturn(Optional.of(900L));
+    StagedTableRepository repository = new StagedTableRepository(config);
+
+    repository.saveStage(stagedEntry());
+    repository.saveStage(stagedEntryWithStageId("stage-2"));
+
+    assertTrue(repository.findSingleStage("acct", "cat", List.of("db"), "orders").isEmpty());
+  }
+
+  @Test
   void deleteAndExpireStagesRemoveEntries() {
     Config config = mock(Config.class);
     when(config.getOptionalValue("floecat.gateway.stage-ttl-seconds", Long.class))
@@ -93,8 +122,12 @@ class StagedTableRepositoryTest {
   }
 
   private static StagedTableEntry stagedEntry() {
+    return stagedEntryWithStageId("stage-1");
+  }
+
+  private static StagedTableEntry stagedEntryWithStageId(String stageId) {
     return new StagedTableEntry(
-        new StagedTableKey("acct", "cat", List.of("db"), "orders", "stage-1"),
+        new StagedTableKey("acct", "cat", List.of("db"), "orders", stageId),
         ai.floedb.floecat.common.rpc.ResourceId.newBuilder().setId("cat").build(),
         ai.floedb.floecat.common.rpc.ResourceId.newBuilder().setId("ns").build(),
         new ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests.Create(
@@ -105,5 +138,19 @@ class StagedTableRepositoryTest {
         null,
         null,
         "idem");
+  }
+
+  private static StagedTableEntry withState(StagedTableEntry entry, StageState state) {
+    return new StagedTableEntry(
+        entry.key(),
+        entry.catalogId(),
+        entry.namespaceId(),
+        entry.request(),
+        entry.spec(),
+        entry.requirements(),
+        state,
+        entry.createdAt(),
+        entry.updatedAt(),
+        entry.idempotencyKey());
   }
 }

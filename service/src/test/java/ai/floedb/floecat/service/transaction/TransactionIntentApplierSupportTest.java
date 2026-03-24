@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -27,11 +30,13 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TransactionIntentApplierSupportTest {
@@ -246,6 +251,146 @@ class TransactionIntentApplierSupportTest {
         tableAOriginalBlob,
         pointers.get(tableAByIdKey).orElseThrow().getBlobUri(),
         "table-by-id pointer must remain unchanged on name pointer conflict");
+  }
+
+  @Test
+  void applyTransactionClassifiesPostCasNamePointerConflict() throws Exception {
+    PointerStore pointers = mock(PointerStore.class);
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = mock(TransactionIntentRepository.class);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableAId = "table-a";
+    String tableBId = "table-b";
+    String byIdKey = Keys.tablePointerById(accountId, tableAId);
+    String contestedNameKey =
+        Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders-b");
+
+    Table currentTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableAId))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders-a")
+            .build();
+    Table nextTable = currentTable.toBuilder().setDisplayName("orders-b").build();
+    Table conflictingTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableBId))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders-b")
+            .build();
+
+    String currentBlob = "s3://bucket/current";
+    String nextBlob = "s3://bucket/next";
+    String conflictBlob = "s3://bucket/conflict";
+    blobs.put(currentBlob, currentTable.toByteArray(), "application/x-protobuf");
+    blobs.put(nextBlob, nextTable.toByteArray(), "application/x-protobuf");
+    blobs.put(conflictBlob, conflictingTable.toByteArray(), "application/x-protobuf");
+
+    when(pointers.get(byIdKey))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(byIdKey)
+                    .setBlobUri(currentBlob)
+                    .setVersion(1L)
+                    .build()))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(byIdKey)
+                    .setBlobUri(currentBlob)
+                    .setVersion(1L)
+                    .build()));
+    when(pointers.get(contestedNameKey))
+        .thenReturn(Optional.empty())
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(contestedNameKey)
+                    .setBlobUri(conflictBlob)
+                    .setVersion(1L)
+                    .build()));
+    when(pointers.compareAndSetBatch(anyList())).thenReturn(false);
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(nextBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("NAME_POINTER_CONFLICT", outcome.errorCode());
+    assertEquals(tableBId, outcome.conflictOwner());
+  }
+
+  @Test
+  void applyTransactionRetainsRetryableFallbackWhenPostCasConflictIsNotDiagnostic()
+      throws Exception {
+    PointerStore pointers = mock(PointerStore.class);
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = mock(TransactionIntentRepository.class);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String tableId = "table-a";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String nextBlob = "s3://bucket/table-next";
+    Table currentTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableId))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId("cat-1"))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId("ns-1"))
+            .setDisplayName("orders-a")
+            .build();
+    String blobUri = "s3://bucket/table";
+    blobs.put(blobUri, currentTable.toByteArray(), "application/x-protobuf");
+    blobs.put(nextBlob, currentTable.toByteArray(), "application/x-protobuf");
+
+    when(pointers.get(byIdKey))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder().setKey(byIdKey).setBlobUri(blobUri).setVersion(1L).build()))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder().setKey(byIdKey).setBlobUri(blobUri).setVersion(1L).build()));
+    when(pointers.get(Keys.tablePointerByName(accountId, "cat-1", "ns-1", "orders-a")))
+        .thenReturn(Optional.of(Pointer.newBuilder().setBlobUri(blobUri).setVersion(1L).build()))
+        .thenReturn(Optional.of(Pointer.newBuilder().setBlobUri(blobUri).setVersion(1L).build()))
+        .thenReturn(Optional.of(Pointer.newBuilder().setBlobUri(blobUri).setVersion(1L).build()));
+    when(pointers.compareAndSetBatch(anyList())).thenReturn(false);
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(nextBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals("POINTER_TXN_CAS_FAILED", outcome.errorCode());
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

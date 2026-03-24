@@ -39,6 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.support.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedMetadata;
 import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService.ImportedSnapshot;
+import ai.floedb.floecat.gateway.iceberg.rest.table.transaction.TransactionCommitService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;

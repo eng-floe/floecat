@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.table;
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -57,16 +57,16 @@ public class TableCommitJournalService {
   }
 
   private PointerStore resolvePointerStore() {
-    if (pointerStore != null) {
-      return pointerStore;
+    if (pointerStore == null && pointerStores != null && pointerStores.isResolvable()) {
+      pointerStore = pointerStores.get();
     }
-    return pointerStores != null && pointerStores.isResolvable() ? pointerStores.get() : null;
+    return pointerStore;
   }
 
   private BlobStore resolveBlobStore() {
-    if (blobStore != null) {
-      return blobStore;
+    if (blobStore == null && blobStores != null && blobStores.isResolvable()) {
+      blobStore = blobStores.get();
     }
-    return blobStores != null && blobStores.isResolvable() ? blobStores.get() : null;
+    return blobStore;
   }
 }

@@ -27,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
@@ -34,6 +35,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.BlobMetadata;
@@ -420,5 +422,93 @@ class IcebergMetadataServiceTest {
     } finally {
       FileIoFactory.closeQuietly(fileIO);
     }
+  }
+
+  @Test
+  void applyCommitUpdatesFailsForUnknownSnapshotRefTarget() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new org.apache.iceberg.Schema(
+                org.apache.iceberg.types.Types.NestedField.optional(
+                    1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+            org.apache.iceberg.PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of());
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "set-snapshot-ref",
+                    "ref-name",
+                    "branch",
+                    "snapshot-id",
+                    999L,
+                    "type",
+                    "branch")));
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> service.applyCommitUpdates(metadata, Table.newBuilder().build(), request));
+
+    assertEquals(
+        "set-snapshot-ref failed for ref branch: unknown snapshot 999", error.getMessage());
+  }
+
+  @Test
+  void applyCommitUpdatesProcessesRefMutationAfterDuplicateAddSnapshot() {
+    IcebergMetadataService service = new IcebergMetadataService();
+    service.setMapper(new ObjectMapper());
+
+    TableMetadata metadata =
+        TableMetadata.newTableMetadata(
+            new org.apache.iceberg.Schema(
+                org.apache.iceberg.types.Types.NestedField.optional(
+                    1, "id", org.apache.iceberg.types.Types.IntegerType.get())),
+            org.apache.iceberg.PartitionSpec.unpartitioned(),
+            org.apache.iceberg.SortOrder.unsorted(),
+            "s3://warehouse/db/orders",
+            Map.of());
+
+    Map<String, Object> snapshot =
+        new LinkedHashMap<>(
+            Map.of(
+                "snapshot-id",
+                7L,
+                "timestamp-ms",
+                1000L,
+                "manifest-list",
+                "s3://warehouse/db/orders/metadata/manifest.avro",
+                "summary",
+                Map.of("operation", "append")));
+    Map<String, Object> addSnapshot = new LinkedHashMap<>();
+    addSnapshot.put("action", "add-snapshot");
+    addSnapshot.put("snapshot", snapshot);
+
+    Map<String, Object> duplicateAddSnapshot = new LinkedHashMap<>();
+    duplicateAddSnapshot.put("action", "add-snapshot");
+    duplicateAddSnapshot.put("snapshot", new LinkedHashMap<>(snapshot));
+
+    Map<String, Object> setSnapshotRef = new LinkedHashMap<>();
+    setSnapshotRef.put("action", "set-snapshot-ref");
+    setSnapshotRef.put("ref-name", "branch");
+    setSnapshotRef.put("snapshot-id", 7L);
+    setSnapshotRef.put("type", "branch");
+
+    TableMetadata updated =
+        service.applyCommitUpdates(
+            metadata,
+            Table.newBuilder().build(),
+            new TableRequests.Commit(
+                List.of(), List.of(addSnapshot, duplicateAddSnapshot, setSnapshotRef)));
+
+    assertNotNull(updated.refs().get("branch"));
+    assertEquals(7L, updated.refs().get("branch").snapshotId());
   }
 }

@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.table;
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
+import ai.floedb.floecat.gateway.iceberg.rest.table.SnapshotUpdateService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -135,7 +136,9 @@ public class TableCommitOutboxService {
       try {
         byte[] payload = blobStore.get(pointer.getBlobUri());
         if (payload == null) {
-          throw new IllegalStateException("missing outbox blob: " + pointer.getBlobUri());
+          dropCorruptPending(
+              pointer.getKey(), pointer, "missing outbox blob uri=" + pointer.getBlobUri(), null);
+          continue;
         }
         IcebergCommitOutboxEntry entry = IcebergCommitOutboxEntry.parseFrom(payload);
         if (entry.getNextAttemptAtMs() > 0
@@ -148,16 +151,60 @@ public class TableCommitOutboxService {
           LOG.warnf(
               "Skipping table-commit outbox key=%s; journal missing for tx=%s table=%s",
               pointer.getKey(), entry.getTxId(), entry.getTableId());
+          markPendingForRetryOrDeadLetter(
+              pointer.getKey(),
+              "journal missing for tx=" + entry.getTxId() + " table=" + entry.getTableId());
           continue;
         }
         items.add(toWorkItem(pointer.getKey(), journal.get()));
       } catch (InvalidProtocolBufferException e) {
-        LOG.warnf(e, "Skipping unreadable table-commit outbox payload key=%s", pointer.getKey());
+        dropCorruptPending(pointer.getKey(), pointer, "unreadable table-commit outbox payload", e);
       } catch (RuntimeException e) {
         LOG.warnf(e, "Skipping table-commit outbox key=%s", pointer.getKey());
       }
     }
     processPendingNow(tableSupport, items);
+  }
+
+  public List<WorkItem> loadPendingWorkItemsForTx(
+      String accountId, String txId, long createdAtMs, String requestHash) {
+    if (accountId == null
+        || accountId.isBlank()
+        || txId == null
+        || txId.isBlank()
+        || requestHash == null
+        || requestHash.isBlank()) {
+      return List.of();
+    }
+    PointerStore pointerStore = resolvePointerStore();
+    BlobStore blobStore = resolveBlobStore();
+    if (pointerStore == null || blobStore == null) {
+      return List.of();
+    }
+
+    String prefix =
+        Keys.tableCommitOutboxPendingPrefix(accountId)
+            + String.format("%019d/", Math.max(0L, createdAtMs));
+    List<WorkItem> items = new ArrayList<>();
+    String pageToken = "";
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, 100, pageToken, next);
+      if (pointers == null || pointers.isEmpty()) {
+        break;
+      }
+      for (Pointer pointer : pointers) {
+        WorkItem item = loadWorkItemForReplay(pointer, accountId, txId, requestHash, blobStore);
+        if (item != null) {
+          items.add(item);
+        }
+      }
+      if (next.isEmpty() || next.toString().equals(pageToken)) {
+        break;
+      }
+      pageToken = next.toString();
+    }
+    return List.copyOf(items);
   }
 
   public boolean isPending(String pendingKey) {
@@ -232,8 +279,10 @@ public class TableCommitOutboxService {
     if (current == null) {
       return;
     }
-    if (!pointerStore.delete(pendingKey)) {
-      LOG.warnf("Failed to clear table-commit outbox pending key=%s", pendingKey);
+    if (!pointerStore.compareAndDelete(pendingKey, current.getVersion())) {
+      LOG.warnf(
+          "Failed to clear table-commit outbox pending key=%s version=%d",
+          pendingKey, current.getVersion());
       return;
     }
     if (current.getBlobUri() != null && !current.getBlobUri().isBlank()) {
@@ -242,6 +291,50 @@ public class TableCommitOutboxService {
       } catch (RuntimeException e) {
         LOG.debugf(e, "Failed to delete table-commit outbox blob uri=%s", current.getBlobUri());
       }
+    }
+  }
+
+  private void dropCorruptPending(
+      String pendingKey, Pointer current, String reason, Throwable error) {
+    PointerStore pointerStore = resolvePointerStore();
+    BlobStore blobStore = resolveBlobStore();
+    if (pendingKey == null || pendingKey.isBlank() || pointerStore == null || blobStore == null) {
+      return;
+    }
+    if (error != null) {
+      LOG.warnf(
+          error,
+          "Dropping corrupt table-commit outbox pending key=%s reason=%s",
+          pendingKey,
+          reason);
+    } else {
+      LOG.warnf(
+          "Dropping corrupt table-commit outbox pending key=%s reason=%s", pendingKey, reason);
+    }
+    boolean deleted;
+    if (current != null) {
+      deleted = pointerStore.compareAndDelete(pendingKey, current.getVersion());
+      if (!deleted) {
+        LOG.warnf(
+            "Failed to drop corrupt table-commit outbox pending key=%s version=%d",
+            pendingKey, current.getVersion());
+        return;
+      }
+    } else {
+      deleted = pointerStore.delete(pendingKey);
+      if (!deleted) {
+        LOG.warnf("Failed to drop corrupt table-commit outbox pending key=%s", pendingKey);
+        return;
+      }
+    }
+    if (current == null || current.getBlobUri().isBlank()) {
+      return;
+    }
+    try {
+      blobStore.delete(current.getBlobUri());
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e, "Failed to delete corrupt table-commit outbox blob uri=%s", current.getBlobUri());
     }
   }
 
@@ -283,15 +376,20 @@ public class TableCommitOutboxService {
 
     if (nextAttemptCount >= configuredMaxAttempts()) {
       updated.setDeadLetteredAtMs(nowMs).setNextAttemptAtMs(0L);
-      persistOutboxBlob(blobStore, current.getBlobUri(), updated.build());
-      movePendingToDeadLetter(pointerStore, current, updated.build(), pendingKey);
+      IcebergCommitOutboxEntry deadLetterEntry = updated.build();
+      if (!persistOutboxBlob(blobStore, current.getBlobUri(), deadLetterEntry)) {
+        return;
+      }
+      movePendingToDeadLetter(pointerStore, current, deadLetterEntry, pendingKey);
       return;
     }
 
     long backoffMs = computeBackoffMs(nextAttemptCount);
     long nextAttemptAtMs = nowMs + backoffMs;
     IcebergCommitOutboxEntry nextEntry = updated.setNextAttemptAtMs(nextAttemptAtMs).build();
-    persistOutboxBlob(blobStore, current.getBlobUri(), nextEntry);
+    if (!persistOutboxBlob(blobStore, current.getBlobUri(), nextEntry)) {
+      return;
+    }
 
     Pointer nextPointer =
         current.toBuilder().setKey(pendingKey).setBlobUri(current.getBlobUri()).build();
@@ -338,12 +436,14 @@ public class TableCommitOutboxService {
     }
   }
 
-  private void persistOutboxBlob(
+  private boolean persistOutboxBlob(
       BlobStore blobStore, String blobUri, IcebergCommitOutboxEntry entry) {
     try {
       blobStore.put(blobUri, entry.toByteArray(), OUTBOX_PROTO_CONTENT_TYPE);
+      return true;
     } catch (RuntimeException e) {
       LOG.warnf(e, "Failed to persist outbox retry state blob uri=%s", blobUri);
+      return false;
     }
   }
 
@@ -386,17 +486,60 @@ public class TableCommitOutboxService {
     return Math.min(backoff, max);
   }
 
-  private PointerStore resolvePointerStore() {
-    if (pointerStore != null) {
-      return pointerStore;
+  private WorkItem loadWorkItemForReplay(
+      Pointer pointer, String accountId, String txId, String requestHash, BlobStore blobStore) {
+    if (pointer == null
+        || pointer.getKey().isBlank()
+        || pointer.getBlobUri().isBlank()
+        || !pointer.getKey().contains(OUTBOX_PENDING_MARKER)) {
+      return null;
     }
-    return pointerStores != null && pointerStores.isResolvable() ? pointerStores.get() : null;
+    try {
+      byte[] payload = blobStore.get(pointer.getBlobUri());
+      if (payload == null) {
+        throw new IllegalStateException("missing outbox blob: " + pointer.getBlobUri());
+      }
+      IcebergCommitOutboxEntry entry = IcebergCommitOutboxEntry.parseFrom(payload);
+      if (!accountId.equals(entry.getAccountId())
+          || !txId.equals(entry.getTxId())
+          || !requestHash.equals(entry.getRequestHash())) {
+        return null;
+      }
+      Optional<IcebergCommitJournalEntry> journal =
+          commitJournalService.get(entry.getAccountId(), entry.getTableId(), entry.getTxId());
+      if (journal.isEmpty()) {
+        LOG.warnf(
+            "Skipping replay work item key=%s; journal missing for tx=%s table=%s",
+            pointer.getKey(), entry.getTxId(), entry.getTableId());
+        return null;
+      }
+      if (!requestHash.equals(journal.get().getRequestHash())) {
+        LOG.warnf(
+            "Skipping replay work item key=%s; journal hash mismatch for tx=%s table=%s",
+            pointer.getKey(), entry.getTxId(), entry.getTableId());
+        return null;
+      }
+      return toWorkItem(pointer.getKey(), journal.get());
+    } catch (InvalidProtocolBufferException e) {
+      LOG.warnf(e, "Skipping unreadable replay outbox payload key=%s", pointer.getKey());
+      return null;
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "Skipping replay outbox key=%s", pointer.getKey());
+      return null;
+    }
+  }
+
+  private PointerStore resolvePointerStore() {
+    if (pointerStore == null && pointerStores != null && pointerStores.isResolvable()) {
+      pointerStore = pointerStores.get();
+    }
+    return pointerStore;
   }
 
   private BlobStore resolveBlobStore() {
-    if (blobStore != null) {
-      return blobStore;
+    if (blobStore == null && blobStores != null && blobStores.isResolvable()) {
+      blobStore = blobStores.get();
     }
-    return blobStores != null && blobStores.isResolvable() ? blobStores.get() : null;
+    return blobStore;
   }
 }

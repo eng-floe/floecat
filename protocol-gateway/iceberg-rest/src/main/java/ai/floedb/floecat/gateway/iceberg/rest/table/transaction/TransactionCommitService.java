@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.table;
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.firstNonBlank;
 
@@ -33,6 +33,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.support.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.support.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
+import ai.floedb.floecat.gateway.iceberg.rest.table.StageState;
+import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableEntry;
+import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableKey;
+import ai.floedb.floecat.gateway.iceberg.rest.table.StagedTableRepository;
+import ai.floedb.floecat.gateway.iceberg.rest.table.TableLifecycleService;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
@@ -40,25 +46,19 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Base64;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitService {
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
-  private static final List<Map<String, Object>> STAGE_CREATE_REQUIREMENTS =
-      CommitUpdateInspector.assertCreateRequirements();
-  private static final Logger LOG = Logger.getLogger(TransactionCommitService.class);
   @Inject IcebergGatewayConfig config;
   @Inject AccountContext accountContext;
   @Inject ResourceResolver resourceResolver;
@@ -67,8 +67,10 @@ public class TransactionCommitService {
   @Inject IcebergMetadataService icebergMetadataService;
   @Inject StagedTableRepository stagedTableRepository;
   @Inject TableLifecycleService tableLifecycleService;
-  @Inject TransactionApplyService transactionApplyService;
-  @Inject TransactionPlanningService transactionPlanningService;
+  @Inject TransactionExecutor transactionExecutor;
+  @Inject CommitPlanBuilder commitPlanBuilder;
+  @Inject CreateCommitNormalizer createCommitNormalizer;
+  @Inject TransactionAborter transactionAborter;
   @Inject TableCommitResponseService tableCommitResponseService;
   @Inject GrpcServiceFacade grpcClient;
 
@@ -131,7 +133,7 @@ public class TransactionCommitService {
           "stage " + stagedEntryOpt.get().key().stageId() + " was aborted");
     }
     TableRequests.Commit effectiveReq =
-        transactionPlanningService.normalizeFirstWriteCommit(
+        createCommitNormalizer.normalizeFirstWriteCommit(
             accountContext.getAccountId(),
             command.catalogName(),
             command.namespacePath(),
@@ -162,9 +164,7 @@ public class TransactionCommitService {
     Response response =
         tableCommitResponseService.buildCommitResponse(
             command, effectiveReq, stagedEntryOpt.orElse(null));
-    if (response != null && response.getStatus() == Response.Status.OK.getStatusCode()) {
-      stagedEntryOpt.ifPresent(entry -> stagedTableRepository.deleteStage(entry.key()));
-    }
+    stagedEntryOpt.ifPresent(entry -> stagedTableRepository.deleteStage(entry.key()));
     return response;
   }
 
@@ -195,13 +195,13 @@ public class TransactionCommitService {
     TableSpec spec;
     try {
       spec = tableSupport.buildCreateSpec(catalogId, namespaceId, tableName, request).build();
+    } catch (RuntimeException e) {
+      throw e;
     } catch (Exception e) {
-      throw e instanceof IllegalArgumentException
-          ? (IllegalArgumentException) e
-          : new IllegalArgumentException(e.getMessage(), e);
+      throw new IllegalStateException("Failed to build create table specification", e);
     }
 
-    List<Map<String, Object>> updates = buildCreateUpdates(request, spec);
+    List<Map<String, Object>> updates = CreateUpdateFactory.fromCreateRequest(request, spec);
     return new TransactionCommitRequest(
         List.of(
             new TransactionCommitRequest.TableChange(
@@ -233,6 +233,10 @@ public class TransactionCommitService {
     if (changes.isEmpty()) {
       return IcebergErrorResponses.validation("table-changes are required");
     }
+    Response identifierValidationError = validateTableIdentifiers(changes);
+    if (identifierValidationError != null) {
+      return identifierValidationError;
+    }
     String duplicateIdentifier = firstDuplicateTableIdentifier(changes);
     if (duplicateIdentifier != null) {
       return IcebergErrorResponses.validation(
@@ -242,7 +246,7 @@ public class TransactionCommitService {
     String catalogName = catalogContext.catalogName();
     ResourceId catalogId = catalogContext.catalogId();
 
-    String requestHash = requestHash(changes);
+    String requestHash = CommitRequestHasher.hash(changes);
     String beginIdempotency =
         firstNonBlank(idempotencyKey, "req:" + catalogName + ":" + requestHash);
     ai.floedb.floecat.transaction.rpc.BeginTransactionResponse begin;
@@ -256,9 +260,9 @@ public class TransactionCommitService {
                   .putProperties(TX_REQUEST_HASH_PROPERTY, requestHash)
                   .build());
     } catch (StatusRuntimeException beginFailure) {
-      return transactionApplyService.mapPreCommitFailure(beginFailure);
+      return transactionExecutor.mapPrepareFailure(beginFailure);
     } catch (RuntimeException beginFailure) {
-      return transactionApplyService.preCommitStateUnknown();
+      return transactionExecutor.stateUnknown();
     }
     String txId = begin.getTransaction().getTxId();
     if (txId == null || txId.isBlank()) {
@@ -277,11 +281,11 @@ public class TransactionCommitService {
               ? currentTxn.getTransaction().getState()
               : TransactionState.TS_UNSPECIFIED;
     } catch (StatusRuntimeException e) {
-      transactionApplyService.abortQuietly(txId, "failed to load transaction");
-      return transactionApplyService.mapPreCommitFailure(e);
+      transactionAborter.abortQuietly(txId, "failed to load transaction");
+      return transactionExecutor.mapPrepareFailure(e);
     } catch (RuntimeException e) {
-      transactionApplyService.abortQuietly(txId, "failed to load transaction");
-      return transactionApplyService.preCommitStateUnknown();
+      transactionAborter.abortQuietly(txId, "failed to load transaction");
+      return transactionExecutor.stateUnknown();
     }
     if (currentTxn != null && currentTxn.hasTransaction()) {
       String existingRequestHash =
@@ -289,7 +293,7 @@ public class TransactionCommitService {
       if (existingRequestHash != null
           && !existingRequestHash.isBlank()
           && !existingRequestHash.equals(requestHash)) {
-        maybeAbortOpenTransaction(currentState, txId, "transaction request-hash mismatch");
+        transactionAborter.abortIfOpen(currentState, txId, "transaction request-hash mismatch");
         return IcebergErrorResponses.failure(
             "transaction request does not match existing transaction payload",
             "CommitFailedException",
@@ -306,96 +310,35 @@ public class TransactionCommitService {
             : begin.getTransaction().hasCreatedAt()
                 ? Timestamps.toMillis(begin.getTransaction().getCreatedAt())
                 : System.currentTimeMillis();
-    TransactionPlanningService.PlanningResult planningResult =
-        transactionPlanningService.prepareCommit(
-            new TransactionPlanningService.PlanningCommand(
-                accountId,
-                txId,
-                prefix,
-                catalogName,
-                catalogId,
-                idempotencyBase,
-                requestHash,
-                txCreatedAtMs,
-                currentState,
-                changes,
-                tableSupport,
-                preMaterializeAssertCreate));
-    if (planningResult.error() != null) {
-      return planningResult.error();
-    }
-
-    return transactionApplyService.applyTransaction(
-        txId,
-        new CommitContext(
-            currentState,
+    CommitRequestContext context =
+        new CommitRequestContext(
+            accountId,
+            txId,
+            prefix,
+            catalogName,
+            catalogId,
             idempotencyBase,
-            planningResult.txChanges(),
-            planningResult.outboxWorkItems()),
-        tableSupport);
-  }
-
-  private List<Map<String, Object>> buildCreateUpdates(
-      TableRequests.Create request, TableSpec spec) {
-    TableMetadataBuilder.CreateRequestState state =
-        TableMetadataBuilder.createRequestState(null, null, request, spec.getPropertiesMap());
-    Map<String, String> props = new LinkedHashMap<>(state.properties());
-    String tableLocation = blankToNull(props.remove("location"));
-    Integer formatVersion = state.formatVersion();
-
-    List<Map<String, Object>> updates = new ArrayList<>();
-    if (tableLocation != null) {
-      updates.add(
-          Map.of("action", CommitUpdateInspector.ACTION_SET_LOCATION, "location", tableLocation));
+            requestHash,
+            txCreatedAtMs,
+            currentState,
+            tableSupport,
+            changes,
+            preMaterializeAssertCreate);
+    CommitPlan plan;
+    try {
+      plan = commitPlanBuilder.build(context);
+    } catch (WebApplicationException e) {
+      transactionAborter.abortIfOpen(currentState, txId, "transaction commit planning failed");
+      return e.getResponse();
+    } catch (StatusRuntimeException e) {
+      transactionAborter.abortIfOpen(currentState, txId, "transaction commit planning failed");
+      return transactionExecutor.mapPrepareFailure(e);
+    } catch (RuntimeException e) {
+      transactionAborter.abortIfOpen(currentState, txId, "transaction commit planning failed");
+      return transactionExecutor.stateUnknown();
     }
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_UPGRADE_FORMAT_VERSION,
-            "format-version",
-            formatVersion));
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_ADD_SCHEMA,
-            "schema",
-            state.schema(),
-            "last-column-id",
-            state.lastColumnId()));
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_SET_CURRENT_SCHEMA,
-            "schema-id",
-            state.schemaId()));
-    updates.add(
-        Map.of("action", CommitUpdateInspector.ACTION_ADD_SPEC, "spec", state.partitionSpec()));
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_SET_DEFAULT_SPEC,
-            "spec-id",
-            state.defaultSpecId()));
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_ADD_SORT_ORDER,
-            "sort-order",
-            state.sortOrder()));
-    updates.add(
-        Map.of(
-            "action",
-            CommitUpdateInspector.ACTION_SET_DEFAULT_SORT_ORDER,
-            "sort-order-id",
-            state.defaultSortOrderId()));
-    if (!props.isEmpty()) {
-      updates.add(Map.of("action", CommitUpdateInspector.ACTION_SET_PROPERTIES, "updates", props));
-    }
-    return List.copyOf(updates);
-  }
 
-  private String blankToNull(String value) {
-    return value == null || value.isBlank() ? null : value;
+    return transactionExecutor.execute(context, plan, tableSupport);
   }
 
   private ai.floedb.floecat.catalog.rpc.Table loadCurrentTable(CommitCommand command) {
@@ -413,7 +356,7 @@ public class TransactionCommitService {
   }
 
   private boolean isDeltaReadOnlyCommitBlocked(ai.floedb.floecat.catalog.rpc.Table table) {
-    if (table == null || tableFormatSupport == null || config == null) {
+    if (table == null) {
       return false;
     }
     var deltaCompat = config.deltaCompat();
@@ -430,6 +373,7 @@ public class TransactionCommitService {
     if (accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
+    // Stage-create uses the Iceberg transaction header as the persisted stage identifier.
     String stageId = firstNonBlank(command.stageId(), command.transactionId());
     if (stageId != null) {
       StagedTableKey key =
@@ -445,21 +389,9 @@ public class TransactionCommitService {
     if (changes == null || changes.isEmpty()) {
       return null;
     }
-    Set<String> seen = new java.util.LinkedHashSet<>();
+    Set<String> seen = new LinkedHashSet<>();
     for (TransactionCommitRequest.TableChange change : changes) {
-      if (change == null || change.identifier() == null) {
-        continue;
-      }
-      String name = change.identifier().name();
-      if (name == null || name.isBlank()) {
-        continue;
-      }
-      List<String> namespacePath =
-          change.identifier().namespace() == null
-              ? List.of()
-              : List.copyOf(change.identifier().namespace());
-      String qualifiedName =
-          namespacePath.isEmpty() ? name : String.join(".", namespacePath) + "." + name;
+      String qualifiedName = canonicalTableIdentifier(change);
       if (!seen.add(qualifiedName)) {
         return qualifiedName;
       }
@@ -467,117 +399,40 @@ public class TransactionCommitService {
     return null;
   }
 
-  private String requestHash(List<TransactionCommitRequest.TableChange> changes) {
-    List<Map<String, Object>> normalized = new ArrayList<>();
-    if (changes != null) {
-      for (TransactionCommitRequest.TableChange change : changes) {
-        if (change == null) {
-          normalized.add(Map.of());
-          continue;
-        }
-        Map<String, Object> entry = new LinkedHashMap<>();
-        var identifier = change.identifier();
-        if (identifier != null) {
-          Map<String, Object> idMap = new LinkedHashMap<>();
-          idMap.put(
-              "namespace",
-              identifier.namespace() == null ? List.of() : List.copyOf(identifier.namespace()));
-          idMap.put("name", identifier.name());
-          entry.put("identifier", idMap);
-        } else {
-          entry.put("identifier", null);
-        }
-        entry.put(
-            "requirements", change.requirements() == null ? List.of() : change.requirements());
-        entry.put("updates", change.updates() == null ? List.of() : change.updates());
-        normalized.add(entry);
+  private Response validateTableIdentifiers(List<TransactionCommitRequest.TableChange> changes) {
+    if (changes == null) {
+      return null;
+    }
+    for (TransactionCommitRequest.TableChange change : changes) {
+      if (change == null || change.identifier() == null) {
+        return IcebergErrorResponses.validation("table identifier is required");
       }
-    }
-    String canonical = canonicalize(normalized);
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      byte[] hash = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
-      return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 not available", e);
-    }
-  }
-
-  private String canonicalize(Object value) {
-    if (value == null) {
-      return "null";
-    }
-    if (value instanceof Map<?, ?> map) {
-      List<Map.Entry<?, ?>> entries = new ArrayList<>(map.entrySet());
-      entries.sort(java.util.Comparator.comparing(entry -> String.valueOf(entry.getKey())));
-      StringBuilder out = new StringBuilder("{");
-      boolean first = true;
-      for (Map.Entry<?, ?> entry : entries) {
-        if (!first) {
-          out.append(',');
-        }
-        first = false;
-        out.append(escapeJsonString(String.valueOf(entry.getKey())))
-            .append(':')
-            .append(canonicalize(entry.getValue()));
+      if (change.identifier().name() == null || change.identifier().name().isBlank()) {
+        return IcebergErrorResponses.validation("table identifier is required");
       }
-      return out.append('}').toString();
-    }
-    if (value instanceof List<?> list) {
-      StringBuilder out = new StringBuilder("[");
-      boolean first = true;
-      for (Object entry : list) {
-        if (!first) {
-          out.append(',');
-        }
-        first = false;
-        out.append(canonicalize(entry));
+      List<String> namespace = change.identifier().namespace();
+      if (namespace == null) {
+        continue;
       }
-      return out.append(']').toString();
-    }
-    if (value instanceof String str) {
-      return escapeJsonString(str);
-    }
-    if (value instanceof Number || value instanceof Boolean) {
-      return String.valueOf(value);
-    }
-    return escapeJsonString(String.valueOf(value));
-  }
-
-  private String escapeJsonString(String input) {
-    String value = input == null ? "" : input;
-    StringBuilder out = new StringBuilder("\"");
-    for (int i = 0; i < value.length(); i++) {
-      char ch = value.charAt(i);
-      switch (ch) {
-        case '\\' -> out.append("\\\\");
-        case '"' -> out.append("\\\"");
-        case '\b' -> out.append("\\b");
-        case '\f' -> out.append("\\f");
-        case '\n' -> out.append("\\n");
-        case '\r' -> out.append("\\r");
-        case '\t' -> out.append("\\t");
-        default -> {
-          if (ch < 0x20) {
-            out.append(String.format("\\u%04x", (int) ch));
-          } else {
-            out.append(ch);
-          }
+      for (String segment : namespace) {
+        if (segment == null || segment.isBlank()) {
+          return IcebergErrorResponses.validation(
+              "table identifier namespace entries must be non-blank");
         }
       }
     }
-    return out.append('"').toString();
+    return null;
   }
 
-  void maybeAbortOpenTransaction(TransactionState currentState, String txId, String reason) {
-    if (currentState == TransactionState.TS_OPEN) {
-      transactionApplyService.abortQuietly(txId, reason);
+  private String canonicalTableIdentifier(TransactionCommitRequest.TableChange change) {
+    TableIdentifierDto identifier = change.identifier();
+    List<String> namespacePath = new ArrayList<>();
+    if (identifier.namespace() != null) {
+      for (String segment : identifier.namespace()) {
+        namespacePath.add(segment.trim().toLowerCase(Locale.ROOT));
+      }
     }
+    String name = identifier.name().trim().toLowerCase(Locale.ROOT);
+    return namespacePath.isEmpty() ? name : String.join(".", namespacePath) + "." + name;
   }
-
-  public record CommitContext(
-      TransactionState currentState,
-      String idempotencyBase,
-      List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges,
-      List<TableCommitOutboxService.WorkItem> outboxWorkItems) {}
 }

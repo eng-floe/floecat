@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.table;
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -28,6 +30,7 @@ import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import jakarta.enterprise.inject.Instance;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -79,5 +82,30 @@ class TableCommitJournalServiceTest {
     when(blobStore.get("/blob/journal")).thenReturn(new byte[] {1, 2, 3});
 
     assertThrows(IllegalStateException.class, () -> service.get("acct-1", "tbl-1", "tx-1"));
+  }
+
+  @Test
+  void getCachesResolvedStores() {
+    TableCommitJournalService uncached = new TableCommitJournalService();
+    @SuppressWarnings("unchecked")
+    Instance<PointerStore> pointerStores = mock(Instance.class);
+    @SuppressWarnings("unchecked")
+    Instance<BlobStore> blobStores = mock(Instance.class);
+    uncached.pointerStores = pointerStores;
+    uncached.blobStores = blobStores;
+    when(pointerStores.isResolvable()).thenReturn(true);
+    when(blobStores.isResolvable()).thenReturn(true);
+    when(pointerStores.get()).thenReturn(pointerStore);
+    when(blobStores.get()).thenReturn(blobStore);
+    when(pointerStore.get(Keys.tableCommitJournalPointer("acct-1", "tbl-1", "tx-1")))
+        .thenReturn(Optional.empty());
+
+    uncached.get("acct-1", "tbl-1", "tx-1");
+    uncached.get("acct-1", "tbl-1", "tx-1");
+
+    verify(pointerStores, times(1)).get();
+    verify(blobStores, times(1)).get();
+    assertTrue(uncached.pointerStore == pointerStore);
+    assertTrue(uncached.blobStore == blobStore);
   }
 }

@@ -134,7 +134,7 @@ public final class TableMetadataBuilder {
         List.of());
   }
 
-  static CreateRequestState createRequestState(
+  public static CreateRequestState createRequestState(
       String tableName, Table table, TableRequests.Create request, Map<String, String> baseProps) {
     if (request == null) {
       throw new IllegalArgumentException("create request is required");

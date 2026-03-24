@@ -72,6 +72,15 @@ public class StagedTableRepository {
 
   public Optional<StagedTableEntry> findSingle(
       String accountId, String catalog, List<String> namespace, String tableName) {
+    return findSingle(accountId, catalog, namespace, tableName, null);
+  }
+
+  private Optional<StagedTableEntry> findSingle(
+      String accountId,
+      String catalog,
+      List<String> namespace,
+      String tableName,
+      StageState requiredState) {
     StagedTableEntry match = null;
     for (StagedTableEntry entry : stages.values()) {
       StagedTableKey key = entry.key();
@@ -79,6 +88,9 @@ public class StagedTableRepository {
           || !catalog.equals(key.catalogName())
           || !key.namespace().equals(namespace)
           || !tableName.equals(key.tableName())) {
+        continue;
+      }
+      if (requiredState != null && entry.state() != requiredState) {
         continue;
       }
       if (match != null) {
@@ -92,7 +104,7 @@ public class StagedTableRepository {
   public Optional<StagedTableEntry> findSingleStage(
       String accountId, String catalog, List<String> namespace, String tableName) {
     expireStages();
-    return findSingle(accountId, catalog, namespace, tableName);
+    return findSingle(accountId, catalog, namespace, tableName, StageState.STAGED);
   }
 
   public void delete(StagedTableKey key) {

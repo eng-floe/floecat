@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import org.apache.iceberg.TableMetadata;
 
 public final class MetadataLocationUtil {
 
@@ -33,6 +34,13 @@ public final class MetadataLocationUtil {
     }
     String location = props.get(PRIMARY_KEY);
     return (location == null || location.isBlank()) ? null : location;
+  }
+
+  public static String metadataLocation(TableMetadata metadata) {
+    return metadata == null
+        ? null
+        : ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.firstNonBlank(
+            metadata.metadataFileLocation(), metadata.properties().get(PRIMARY_KEY));
   }
 
   public static String resolveCurrentMetadataLocation(

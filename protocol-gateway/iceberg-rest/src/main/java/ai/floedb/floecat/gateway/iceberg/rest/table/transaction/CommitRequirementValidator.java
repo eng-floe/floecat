@@ -14,182 +14,77 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.gateway.iceberg.rest.table;
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.asInteger;
 import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.asLong;
-import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.asObjectMap;
 import static ai.floedb.floecat.gateway.iceberg.rest.support.TableMappingUtil.asString;
 
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableSpec;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
-import ai.floedb.floecat.gateway.iceberg.rest.support.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.support.IcebergErrorResponses;
+import ai.floedb.floecat.gateway.iceberg.rest.support.RefPropertyUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.table.IcebergMetadataService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
 @ApplicationScoped
-public class TableUpdatePlanner {
-
+public class CommitRequirementValidator {
   @Inject IcebergMetadataService icebergMetadataService;
-  @Inject TablePropertyService tablePropertyService;
-  @Inject SnapshotUpdateService snapshotUpdateService;
-  @Inject ObjectMapper mapper;
 
-  public UpdatePlan planUpdates(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      Supplier<Table> requirementTableSupplier,
-      ResourceId tableId) {
-    return planInternal(command, tableSupplier, requirementTableSupplier, false);
+  public Response validate(
+      TableGatewaySupport tableSupport,
+      java.util.List<Map<String, Object>> requirements,
+      Supplier<Table> tableSupplier) {
+    return validate(
+        tableSupport,
+        requirements,
+        tableSupplier,
+        IcebergErrorResponses::validation,
+        this::commitConflictError);
   }
 
-  public UpdatePlan planUpdates(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      ResourceId tableId) {
-    return planUpdates(command, tableSupplier, tableSupplier, tableId);
-  }
-
-  public UpdatePlan planTransactionUpdates(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      Supplier<Table> requirementTableSupplier,
-      ResourceId tableId) {
-    return planInternal(command, tableSupplier, requirementTableSupplier, true);
-  }
-
-  private UpdatePlan planInternal(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      Supplier<Table> requirementTableSupplier,
-      boolean validateSnapshotUpdates) {
-    TableRequests.Commit req = command.request();
-    TableSpec.Builder spec = TableSpec.newBuilder();
-    FieldMask.Builder mask = FieldMask.newBuilder();
-    if (req == null) {
-      return UpdatePlan.failure(spec, mask, validationError("Request body is required"));
+  public Response validateNullRefRequirements(
+      TableGatewaySupport tableSupport,
+      Table table,
+      java.util.List<Map<String, Object>> requirements) {
+    if (requirements == null || requirements.isEmpty()) {
+      return null;
     }
-    if (req.requirements() == null) {
-      return UpdatePlan.failure(spec, mask, validationError("requirements are required"));
-    }
-    if (req.updates() == null) {
-      return UpdatePlan.failure(spec, mask, validationError("updates are required"));
-    }
-    Response requirementError =
-        validateRequirements(
-            command.tableSupport(),
-            req.requirements(),
-            requirementTableSupplier,
-            IcebergErrorResponses::validation,
-            this::commitConflictError);
-    if (requirementError != null) {
-      return UpdatePlan.failure(spec, mask, requirementError);
-    }
-    Map<String, String> mergedProps = null;
-    Response locationError =
-        tablePropertyService.applyLocationUpdate(spec, mask, tableSupplier, req.updates());
-    if (locationError != null) {
-      return UpdatePlan.failure(spec, mask, locationError);
-    }
-    String unsupported = unsupportedUpdateAction(req);
-    if (unsupported != null) {
-      return UpdatePlan.failure(
-          spec, mask, validationError("unsupported commit update action: " + unsupported));
-    }
-    if (validateSnapshotUpdates) {
-      Response snapshotValidation = snapshotUpdateService.validateSnapshotUpdates(req.updates());
-      if (snapshotValidation != null) {
-        return UpdatePlan.failure(spec, mask, snapshotValidation);
+    for (Map<String, Object> requirement : requirements) {
+      if (requirement == null) {
+        continue;
+      }
+      String type = asString(requirement.get("type"));
+      if (!"assert-ref-snapshot-id".equals(type) || !requirement.containsKey("snapshot-id")) {
+        continue;
+      }
+      if (requirement.get("snapshot-id") != null) {
+        continue;
+      }
+      String refName = asString(requirement.get("ref"));
+      if (refName == null || refName.isBlank()) {
+        return IcebergErrorResponses.validation("assert-ref-snapshot-id requires ref");
+      }
+      if (snapshotRefExists(tableSupport, table, refName)) {
+        return IcebergErrorResponses.failure(
+            "assert-ref-snapshot-id failed for ref " + refName,
+            "CommitFailedException",
+            Response.Status.CONFLICT);
       }
     }
-    var propertyResult =
-        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
-    if (propertyResult.hasError()) {
-      return UpdatePlan.failure(spec, mask, propertyResult.error());
-    }
-    mergedProps = propertyResult.properties();
-    applyTableDefinitionSpecUpdates(spec, mask, req.updates());
-    mergedProps = stripFileIoProperties(mergedProps);
-    if (mergedProps != null) {
-      spec.clearProperties().putAllProperties(mergedProps);
-      mask.addPaths("properties");
-    }
-    return UpdatePlan.success(spec, mask);
+    return null;
   }
 
-  public UpdatePlan planTransactionUpdates(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      ResourceId tableId) {
-    return planTransactionUpdates(command, tableSupplier, tableSupplier, tableId);
-  }
-
-  public PlanResult planTransaction(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      Supplier<Table> requirementTableSupplier,
-      ResourceId tableId) {
-    var updatePlan =
-        planTransactionUpdates(command, tableSupplier, requirementTableSupplier, tableId);
-    if (updatePlan.hasError()) {
-      return new PlanResult(null, updatePlan.error());
-    }
-    Table current = tableSupplier.get();
-    Table next = applySpec(current, updatePlan.spec(), updatePlan.mask());
-    return new PlanResult(next, null);
-  }
-
-  public PlanResult planTransaction(
-      TransactionCommitService.CommitCommand command,
-      Supplier<Table> tableSupplier,
-      ResourceId tableId) {
-    return planTransaction(command, tableSupplier, tableSupplier, tableId);
-  }
-
-  public record PlanResult(Table table, Response error) {
-    public boolean hasError() {
-      return error != null;
-    }
-  }
-
-  public record UpdatePlan(TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
-    static UpdatePlan success(TableSpec.Builder spec, FieldMask.Builder mask) {
-      return new UpdatePlan(spec, mask, null);
-    }
-
-    static UpdatePlan failure(TableSpec.Builder spec, FieldMask.Builder mask, Response error) {
-      return new UpdatePlan(spec, mask, error);
-    }
-
-    public boolean hasError() {
-      return error != null;
-    }
-  }
-
-  private Response validationError(String message) {
-    return IcebergErrorResponses.validation(message);
-  }
-
-  Response validateRequirements(
+  Response validate(
       TableGatewaySupport tableSupport,
-      List<Map<String, Object>> requirements,
+      java.util.List<Map<String, Object>> requirements,
       Supplier<Table> tableSupplier,
       Function<String, Response> validationErrorFactory,
       Function<String, Response> conflictErrorFactory) {
@@ -220,9 +115,7 @@ public class TableUpdatePlanner {
         return validationErrorFactory.apply("commit requirement missing type");
       }
       switch (type) {
-        case "assert-create" -> {
-          // no-op
-        }
+        case "assert-create" -> {}
         case "assert-table-uuid" -> {
           String expected = asString(requirement.get("uuid"));
           if (expected == null || expected.isBlank()) {
@@ -329,12 +222,8 @@ public class TableUpdatePlanner {
           if (expected == null) {
             continue;
           }
-          IcebergMetadata metadata = metadataSupplier.get();
-          Long actual = resolveRefSnapshotId(table, metadata, refName);
-          if (actual == null) {
-            continue;
-          }
-          if (!Objects.equals(expected, actual)) {
+          Long actual = resolveRefSnapshotId(table, metadataSupplier.get(), refName);
+          if (actual == null || !Objects.equals(expected, actual)) {
             return conflictErrorFactory.apply("assert-ref-snapshot-id failed for ref " + refName);
           }
         }
@@ -351,93 +240,55 @@ public class TableUpdatePlanner {
         message, "CommitFailedException", Response.Status.CONFLICT);
   }
 
-  private String unsupportedUpdateAction(TableRequests.Commit req) {
-    if (req == null || req.updates() == null) {
-      return null;
+  private boolean snapshotRefExists(TableGatewaySupport tableSupport, Table table, String refName) {
+    if (refName == null || refName.isBlank()) {
+      return false;
     }
-    for (Map<String, Object> update : req.updates()) {
-      if (update == null) {
-        return "<missing>";
+    try {
+      IcebergMetadata metadata =
+          icebergMetadataService == null
+              ? null
+              : icebergMetadataService.resolveCurrentIcebergMetadata(table, tableSupport);
+      if (snapshotRefExistsInMetadata(metadata, refName)) {
+        return true;
       }
-      String action = CommitUpdateInspector.actionOf(update);
-      if (action == null || action.isBlank()) {
-        return "<missing>";
-      }
-      if (!CommitUpdateInspector.isSupportedUpdateAction(action)) {
-        return action;
-      }
+    } catch (RuntimeException ignored) {
     }
-    return null;
+    if (table == null) {
+      return false;
+    }
+    if (hasCurrentMainSnapshot(table.getPropertiesMap(), refName)) {
+      return true;
+    }
+    String encodedRefs = table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
+    if (encodedRefs == null || encodedRefs.isBlank()) {
+      return false;
+    }
+    Map<String, Map<String, Object>> refs = RefPropertyUtil.decode(encodedRefs);
+    if (!refs.containsKey(refName)) {
+      return false;
+    }
+    Long snapshotId = asLong(refs.get(refName).get("snapshot-id"));
+    return snapshotId != null && snapshotId >= 0L;
   }
 
-  private void applyTableDefinitionSpecUpdates(
-      TableSpec.Builder spec, FieldMask.Builder mask, List<Map<String, Object>> updates) {
-    if (updates == null || updates.isEmpty()) {
-      return;
+  private boolean snapshotRefExistsInMetadata(IcebergMetadata metadata, String refName) {
+    if (metadata == null) {
+      return false;
     }
-    for (Map<String, Object> update : updates) {
-      if (update == null) {
-        continue;
-      }
-      String action = CommitUpdateInspector.actionOf(update);
-      if (!CommitUpdateInspector.ACTION_ADD_SCHEMA.equals(action)) {
-        continue;
-      }
-      Map<String, Object> schema = asObjectMap(update.get("schema"));
-      if (schema == null || schema.isEmpty()) {
-        continue;
-      }
-      try {
-        String schemaJson = mapper.writeValueAsString(schema);
-        if (!schemaJson.isBlank()) {
-          spec.setSchemaJson(schemaJson);
-          mask.addPaths("schema_json");
-        }
-      } catch (JsonProcessingException e) {
-        throw new IllegalArgumentException("Invalid add-schema payload", e);
-      }
+    if (metadata.getRefsMap().containsKey(refName)
+        && metadata.getRefsOrThrow(refName).getSnapshotId() >= 0L) {
+      return true;
     }
+    return "main".equals(refName) && metadata.getCurrentSnapshotId() > 0L;
   }
 
-  private Map<String, String> stripFileIoProperties(Map<String, String> mergedProps) {
-    if (mergedProps == null) {
-      return null;
+  private boolean hasCurrentMainSnapshot(Map<String, String> properties, String refName) {
+    if (!"main".equals(refName) || properties == null) {
+      return false;
     }
-    if (mergedProps.isEmpty()) {
-      return mergedProps;
-    }
-    mergedProps.keySet().removeIf(FileIoFactory::isFileIoProperty);
-    return mergedProps;
-  }
-
-  private Table applySpec(Table current, TableSpec.Builder spec, FieldMask.Builder mask) {
-    if (mask == null || mask.getPathsCount() == 0) {
-      return current;
-    }
-    Table.Builder out = current.toBuilder();
-    Set<String> paths = new HashSet<>(mask.getPathsList());
-    if (paths.contains("display_name") && spec.hasDisplayName()) {
-      out.setDisplayName(spec.getDisplayName());
-    }
-    if (paths.contains("description") && spec.hasDescription()) {
-      out.setDescription(spec.getDescription());
-    }
-    if (paths.contains("schema_json") && spec.hasSchemaJson()) {
-      out.setSchemaJson(spec.getSchemaJson());
-    }
-    if (paths.contains("catalog_id") && spec.hasCatalogId()) {
-      out.setCatalogId(spec.getCatalogId());
-    }
-    if (paths.contains("namespace_id") && spec.hasNamespaceId()) {
-      out.setNamespaceId(spec.getNamespaceId());
-    }
-    if ((paths.contains("upstream") || paths.contains("upstream.uri")) && spec.hasUpstream()) {
-      out.setUpstream(spec.getUpstream());
-    }
-    if (paths.contains("properties")) {
-      out.clearProperties().putAllProperties(spec.getPropertiesMap());
-    }
-    return out.build();
+    Long snapshotId = asLong(properties.get("current-snapshot-id"));
+    return snapshotId != null && snapshotId >= 0L;
   }
 
   private static String resolveTableUuid(Table table) {

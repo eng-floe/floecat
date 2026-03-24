@@ -1090,10 +1090,11 @@ public class IcebergMetadataService {
         continue;
       }
       if (!hasKnownSnapshot(snapshotsById, mutation.snapshotId())) {
-        LOG.debugf(
-            "Skipping pre-commit snapshot ref mutation ref=%s snapshotId=%s because snapshot is not yet present in canonical metadata",
-            mutation.refName(), mutation.snapshotId());
-        continue;
+        throw new IllegalArgumentException(
+            "set-snapshot-ref failed for ref "
+                + mutation.refName()
+                + ": unknown snapshot "
+                + mutation.snapshotId());
       }
       SnapshotRef ref = parseSnapshotRef(mutation);
       if (ref != null) {
