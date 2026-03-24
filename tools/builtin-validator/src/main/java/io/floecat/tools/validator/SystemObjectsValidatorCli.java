@@ -16,8 +16,8 @@
 
 package io.floecat.tools.validator;
 
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
@@ -149,7 +149,7 @@ public final class SystemObjectsValidatorCli {
         options.catalogPath() != null
             ? options.catalogPath().getFileName().toString()
             : ("<engine:"
-                + EngineContextNormalizer.normalizeEngineKind(options.engineKind())
+                + EngineIdentityNormalizer.normalizeEngineKind(options.engineKind())
                 + ">");
 
     CatalogStats stats = CatalogStats.from(catalog);
@@ -448,7 +448,7 @@ public final class SystemObjectsValidatorCli {
   }
 
   private static SystemCatalogData loadCatalogFromEngine(String engineKind) throws IOException {
-    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    String normalized = EngineIdentityNormalizer.normalizeEngineKind(engineKind);
     if (normalized.isBlank()) {
       throw new IOException("Engine kind is blank");
     }
@@ -465,7 +465,7 @@ public final class SystemObjectsValidatorCli {
 
   private static List<ValidationIssue> validateWithEngine(
       String engineKind, SystemCatalogData catalog) {
-    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    String normalized = EngineIdentityNormalizer.normalizeEngineKind(engineKind);
     if (normalized.isBlank()) {
       return List.of();
     }
@@ -485,7 +485,7 @@ public final class SystemObjectsValidatorCli {
   private static EngineSystemCatalogExtension findEngineExtension(String normalizedEngineKind) {
     for (EngineSystemCatalogExtension ext :
         ServiceLoader.load(EngineSystemCatalogExtension.class)) {
-      String extKind = EngineContextNormalizer.normalizeEngineKind(ext.engineKind());
+      String extKind = EngineIdentityNormalizer.normalizeEngineKind(ext.engineKind());
       if (normalizedEngineKind.equals(extKind)) {
         return ext;
       }

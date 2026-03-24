@@ -26,26 +26,11 @@
     <relativePath>../..</relativePath>
   </parent>
 
-  <artifactId>floecat-core-stats</artifactId>
-  <name>floecat-core-stats</name>
-  <description>Stats target identity and hashing primitives</description>
+  <artifactId>floecat-core-engine-utils</artifactId>
+  <name>floecat-core-engine-utils</name>
+  <description>Shared engine identity helpers</description>
 
   <dependencies>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-proto</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-types</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-engine-utils</artifactId>
-      <version>${project.version}</version>
-    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>

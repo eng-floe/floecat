@@ -66,6 +66,11 @@
       <artifactId>floecat-core-arrow</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-engine-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
     
     <!-- JUnit for tests -->
     <dependency>

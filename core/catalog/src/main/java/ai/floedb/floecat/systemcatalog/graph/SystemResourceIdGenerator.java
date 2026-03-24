@@ -17,9 +17,9 @@ package ai.floedb.floecat.systemcatalog.graph;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.metagraph.model.ResourceIdUtils;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -62,7 +62,7 @@ public final class SystemResourceIdGenerator {
   private SystemResourceIdGenerator() {}
 
   public static String normalizeEngine(String engineKind) {
-    String normalized = EngineContextNormalizer.normalizeEngineKind(engineKind);
+    String normalized = EngineIdentityNormalizer.normalizeEngineKind(engineKind);
     return normalized.isEmpty() ? EngineCatalogNames.FLOECAT_DEFAULT_CATALOG : normalized;
   }
 

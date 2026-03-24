@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.service.testsupport;
 
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
@@ -73,13 +73,13 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
     private final Map<String, SystemEngineCatalog> catalogs = new HashMap<>();
 
     void register(String engineKind, SystemCatalogData data) {
-      String key = EngineContextNormalizer.normalizeEngineKind(engineKind);
+      String key = EngineIdentityNormalizer.normalizeEngineKind(engineKind);
       catalogs.put(key, SystemEngineCatalog.from(key, data));
     }
 
     @Override
     public SystemEngineCatalog load(EngineContext ctx) {
-      String key = EngineContextNormalizer.normalizeEngineKind(ctx.normalizedKind());
+      String key = EngineIdentityNormalizer.normalizeEngineKind(ctx.normalizedKind());
       if (key.isBlank()) {
         key = EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
       }

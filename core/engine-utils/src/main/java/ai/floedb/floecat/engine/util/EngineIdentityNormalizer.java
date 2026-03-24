@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.scanner.utils;
+package ai.floedb.floecat.engine.util;
 
 import java.util.Locale;
 
-/** Shared helper for normalizing engine contexts across the catalog layer. */
-public final class EngineContextNormalizer {
+/** Shared helper for normalizing engine identity fields across modules. */
+public final class EngineIdentityNormalizer {
 
-  private EngineContextNormalizer() {}
+  private EngineIdentityNormalizer() {}
 
   public static String normalizeEngineKind(String engineKind) {
     if (engineKind == null) {
