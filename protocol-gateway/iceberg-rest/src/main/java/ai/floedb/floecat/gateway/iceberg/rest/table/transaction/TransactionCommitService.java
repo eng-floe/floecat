@@ -286,19 +286,25 @@ public class TransactionCommitService {
               ? currentTxn.getTransaction().getState()
               : TransactionState.TS_UNSPECIFIED;
     } catch (StatusRuntimeException e) {
+      TransactionOutcomePolicy.OutcomeClass outcomeClass =
+          outcomePolicy.classifyBeginReadbackFailure(e);
       LOG.warnf(
           e,
-          "Begin accepted but transaction readback failed for tx=%s outcomeClass=%s; skipping blind abort",
+          "Begin accepted for tx=%s but transaction readback failed with outcomeClass=%s; "
+              + "skipping blind abort and treating outcome as ambiguous rather than a prepare/table failure",
           txId,
-          outcomePolicy.classifyBeginReadbackFailure(e));
-      return transactionExecutor.mapPrepareFailure(e);
+          outcomeClass);
+      return transactionExecutor.mapBeginReadbackFailure(e);
     } catch (RuntimeException e) {
+      TransactionOutcomePolicy.OutcomeClass outcomeClass =
+          outcomePolicy.classifyBeginReadbackFailure(e);
       LOG.warnf(
           e,
-          "Begin accepted but transaction readback failed for tx=%s outcomeClass=%s; skipping blind abort",
+          "Begin accepted for tx=%s but transaction readback failed with outcomeClass=%s; "
+              + "skipping blind abort and treating outcome as ambiguous rather than a prepare/table failure",
           txId,
-          outcomePolicy.classifyBeginReadbackFailure(e));
-      return transactionExecutor.stateUnknown();
+          outcomeClass);
+      return transactionExecutor.mapBeginReadbackFailure(e);
     }
     if (currentTxn != null && currentTxn.hasTransaction()) {
       String existingRequestHash =

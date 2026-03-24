@@ -32,7 +32,9 @@ public class TransactionOutcomePolicy {
     DETERMINISTIC_LOCAL_FAILURE,
     KNOWN_NOT_APPLIED,
     KNOWN_APPLIED,
-    AMBIGUOUS,
+    AMBIGUOUS_BEGIN_READBACK,
+    AMBIGUOUS_PREPARE_CONFIRMATION,
+    AMBIGUOUS_COMMIT_STATE,
     POST_COMMIT_HYDRATION_FAILURE
   }
 
@@ -41,12 +43,12 @@ public class TransactionOutcomePolicy {
   }
 
   public OutcomeClass classifyBeginReadbackFailure(Throwable failure) {
-    return OutcomeClass.AMBIGUOUS;
+    return OutcomeClass.AMBIGUOUS_BEGIN_READBACK;
   }
 
   public OutcomeClass classifyPrepareFailure(Throwable failure) {
     if (!(failure instanceof StatusRuntimeException statusFailure)) {
-      return OutcomeClass.AMBIGUOUS;
+      return OutcomeClass.AMBIGUOUS_PREPARE_CONFIRMATION;
     }
     Status.Code code = statusFailure.getStatus().getCode();
     if (code == Status.Code.NOT_FOUND
@@ -58,7 +60,7 @@ public class TransactionOutcomePolicy {
         && extractFloecatErrorCode(statusFailure) != ErrorCode.MC_ABORT_RETRYABLE) {
       return OutcomeClass.KNOWN_NOT_APPLIED;
     }
-    return OutcomeClass.AMBIGUOUS;
+    return OutcomeClass.AMBIGUOUS_PREPARE_CONFIRMATION;
   }
 
   public OutcomeClass classifyCommitState(TransactionState state) {
@@ -68,7 +70,7 @@ public class TransactionOutcomePolicy {
     if (isDeterministicFailedState(state)) {
       return OutcomeClass.KNOWN_NOT_APPLIED;
     }
-    return OutcomeClass.AMBIGUOUS;
+    return OutcomeClass.AMBIGUOUS_COMMIT_STATE;
   }
 
   public OutcomeClass classifyHydrationFailure(Throwable failure) {
@@ -110,6 +112,14 @@ public class TransactionOutcomePolicy {
     return mapped == null ? internalStateUnknown() : mapped;
   }
 
+  public Response mapBeginReadbackFailure(Throwable failure) {
+    if (!(failure instanceof StatusRuntimeException statusFailure)) {
+      return internalStateUnknown();
+    }
+    Response mapped = mapAmbiguousStateFailure(statusFailure.getStatus().getCode());
+    return mapped == null ? internalStateUnknown() : mapped;
+  }
+
   public Response mapCommitFailure(StatusRuntimeException failure) {
     if (isDeterministicCommitFailure(failure)) {
       return IcebergErrorResponses.failure(
@@ -147,6 +157,25 @@ public class TransactionOutcomePolicy {
         "transaction commit failed",
         "CommitStateUnknownException",
         Response.Status.INTERNAL_SERVER_ERROR);
+  }
+
+  private Response mapAmbiguousStateFailure(Status.Code code) {
+    if (code == Status.Code.UNAVAILABLE) {
+      return stateUnknown();
+    }
+    if (code == Status.Code.UNKNOWN) {
+      return IcebergErrorResponses.failure(
+          "transaction state could not be confirmed",
+          "CommitStateUnknownException",
+          Response.Status.BAD_GATEWAY);
+    }
+    if (code == Status.Code.DEADLINE_EXCEEDED) {
+      return IcebergErrorResponses.failure(
+          "transaction state could not be confirmed",
+          "CommitStateUnknownException",
+          Response.Status.GATEWAY_TIMEOUT);
+    }
+    return null;
   }
 
   private Response mapCommitFailure(Status.Code code) {

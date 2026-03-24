@@ -175,12 +175,44 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitMapsGetTransactionFailureAndAbortsQuietly() {
+  void commitMapsBeginReadbackNotFoundToStateUnknownWithoutAbort() {
+    when(grpcClient.beginTransaction(any())).thenReturn(beginResponse("tx-1"));
+    StatusRuntimeException getFailure = Status.NOT_FOUND.asRuntimeException();
+    Response mapped = Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+    when(grpcClient.getTransaction(any())).thenThrow(getFailure);
+    when(transactionExecutor.mapBeginReadbackFailure(getFailure)).thenReturn(mapped);
+
+    Response response =
+        service.commit("pref", "idem", request(singleChange("db", "orders")), tableSupport);
+
+    assertSame(mapped, response);
+    verify(transactionAborter, never()).abortQuietly("tx-1", "failed to load transaction");
+    verify(transactionExecutor, never()).mapPrepareFailure(getFailure);
+  }
+
+  @Test
+  void commitMapsBeginReadbackTransportFailureToStateUnknownWithoutAbort() {
     when(grpcClient.beginTransaction(any())).thenReturn(beginResponse("tx-1"));
     StatusRuntimeException getFailure = Status.UNAVAILABLE.asRuntimeException();
     Response mapped = Response.status(Response.Status.SERVICE_UNAVAILABLE).build();
     when(grpcClient.getTransaction(any())).thenThrow(getFailure);
-    when(transactionExecutor.mapPrepareFailure(getFailure)).thenReturn(mapped);
+    when(transactionExecutor.mapBeginReadbackFailure(getFailure)).thenReturn(mapped);
+
+    Response response =
+        service.commit("pref", "idem", request(singleChange("db", "orders")), tableSupport);
+
+    assertSame(mapped, response);
+    verify(transactionAborter, never()).abortQuietly("tx-1", "failed to load transaction");
+    verify(transactionExecutor, never()).mapPrepareFailure(getFailure);
+  }
+
+  @Test
+  void commitMapsBeginReadbackRuntimeFailureToStateUnknownWithoutAbort() {
+    when(grpcClient.beginTransaction(any())).thenReturn(beginResponse("tx-1"));
+    RuntimeException getFailure = new IllegalStateException("boom");
+    Response mapped = Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+    when(grpcClient.getTransaction(any())).thenThrow(getFailure);
+    when(transactionExecutor.mapBeginReadbackFailure(getFailure)).thenReturn(mapped);
 
     Response response =
         service.commit("pref", "idem", request(singleChange("db", "orders")), tableSupport);

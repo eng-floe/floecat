@@ -74,6 +74,10 @@ public class TransactionExecutor {
     return outcomePolicy.mapPrepareFailure(failure);
   }
 
+  public Response mapBeginReadbackFailure(Throwable failure) {
+    return outcomePolicy.mapBeginReadbackFailure(failure);
+  }
+
   public Response stateUnknown() {
     return outcomePolicy.internalStateUnknown();
   }
