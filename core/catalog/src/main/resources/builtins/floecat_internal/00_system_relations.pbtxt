@@ -22,36 +22,40 @@ system_namespaces {
 system_tables {
   name {
     path: "information_schema"
-    name: "tables"
+    name: "check_constraints"
   }
-  display_name: "tables"
-  backend_kind: TABLE_BACKEND_KIND_FLOECAT
-  floecat {
-    scanner_id: "tables_scanner"
-  }
+  display_name: "check_constraints"
   columns {
-    name: "table_catalog"
-    type { name: "VARCHAR" }
-    nullable: false
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 1
   }
   columns {
-    name: "table_schema"
-    type { name: "VARCHAR" }
-    nullable: false
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 2
   }
   columns {
-    name: "table_name"
-    type { name: "VARCHAR" }
-    nullable: false
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 3
   }
   columns {
-    name: "table_type"
-    type { name: "VARCHAR" }
-    nullable: false
+    name: "check_clause"
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 4
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "check_constraints_scanner"
   }
 }
 
@@ -61,45 +65,320 @@ system_tables {
     name: "columns"
   }
   display_name: "columns"
-  backend_kind: TABLE_BACKEND_KIND_FLOECAT
-  floecat {
-    scanner_id: "columns_scanner"
-  }
   columns {
     name: "table_catalog"
-    type { name: "VARCHAR" }
-    nullable: true
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 1
   }
   columns {
     name: "table_schema"
-    type { name: "VARCHAR" }
-    nullable: true
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 2
   }
   columns {
     name: "table_name"
-    type { name: "VARCHAR" }
-    nullable: false
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 3
   }
   columns {
     name: "column_name"
-    type { name: "VARCHAR" }
-    nullable: false
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 4
   }
   columns {
     name: "data_type"
-    type { name: "VARCHAR" }
-    nullable: false
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 5
   }
   columns {
     name: "ordinal_position"
-    type { name: "INT" }
-    nullable: false
+    type {
+      name: "INT"
+    }
     ordinal: 6
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "columns_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "constraint_column_usage"
+  }
+  display_name: "constraint_column_usage"
+  columns {
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "table_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "column_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "constraint_column_usage_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "constraint_table_usage"
+  }
+  display_name: "constraint_table_usage"
+  columns {
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "table_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 6
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "constraint_table_usage_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "key_column_usage"
+  }
+  display_name: "key_column_usage"
+  columns {
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "table_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "column_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  columns {
+    name: "ordinal_position"
+    type {
+      name: "INT"
+    }
+    ordinal: 8
+  }
+  columns {
+    name: "position_in_unique_constraint"
+    type {
+      name: "INT"
+    }
+    nullable: true
+    ordinal: 9
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "key_column_usage_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "referential_constraints"
+  }
+  display_name: "referential_constraints"
+  columns {
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "unique_constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 4
+  }
+  columns {
+    name: "unique_constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 5
+  }
+  columns {
+    name: "unique_constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 6
+  }
+  columns {
+    name: "match_option"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  columns {
+    name: "update_rule"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 8
+  }
+  columns {
+    name: "delete_rule"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 9
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "referential_constraints_scanner"
   }
 }
 
@@ -109,20 +388,145 @@ system_tables {
     name: "schemata"
   }
   display_name: "schemata"
-  backend_kind: TABLE_BACKEND_KIND_FLOECAT
-  floecat {
-    scanner_id: "schemata_scanner"
-  }
   columns {
     name: "catalog_name"
-    type { name: "VARCHAR" }
-    nullable: false
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 1
   }
   columns {
     name: "schema_name"
-    type { name: "VARCHAR" }
-    nullable: false
+    type {
+      name: "VARCHAR"
+    }
     ordinal: 2
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "schemata_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "table_constraints"
+  }
+  display_name: "table_constraints"
+  columns {
+    name: "constraint_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "constraint_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "constraint_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  columns {
+    name: "table_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 5
+  }
+  columns {
+    name: "table_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 6
+  }
+  columns {
+    name: "constraint_type"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 7
+  }
+  columns {
+    name: "is_deferrable"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 8
+  }
+  columns {
+    name: "initially_deferred"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 9
+  }
+  columns {
+    name: "enforced"
+    type {
+      name: "VARCHAR"
+    }
+    nullable: true
+    ordinal: 10
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "table_constraints_scanner"
+  }
+}
+
+system_tables {
+  name {
+    path: "information_schema"
+    name: "tables"
+  }
+  display_name: "tables"
+  columns {
+    name: "table_catalog"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 1
+  }
+  columns {
+    name: "table_schema"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 2
+  }
+  columns {
+    name: "table_name"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 3
+  }
+  columns {
+    name: "table_type"
+    type {
+      name: "VARCHAR"
+    }
+    ordinal: 4
+  }
+  backend_kind: TABLE_BACKEND_KIND_FLOECAT
+  floecat {
+    scanner_id: "tables_scanner"
   }
 }

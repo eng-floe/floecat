@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
+import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.ArrayList;
@@ -32,19 +35,41 @@ public final class ConstraintNormalizer {
     var b = in.toBuilder();
 
     if (b.getConstraintsCount() > 0) {
-      List<ConstraintDefinition> normalized = new ArrayList<>(b.getConstraintsCount());
+      // Normalize each definition and build Schwartzian sort keys in one pass.
+      // Precomputing the three string signatures here (O(n)) avoids recomputing them
+      // on every comparator call (O(n log n)).
+      record SortKey(ConstraintDefinition c, String colSig, String refColSig, String refTblSig) {}
+      List<SortKey> keyed = new ArrayList<>(b.getConstraintsCount());
       for (ConstraintDefinition definition : b.getConstraintsList()) {
         var cb = definition.toBuilder();
+        normalizeForeignKeyDefaults(cb);
         if (!cb.getPropertiesMap().isEmpty()) {
           var sorted = new TreeMap<>(cb.getPropertiesMap());
           cb.clearProperties();
           cb.putAllProperties(sorted);
         }
-        normalized.add(cb.build());
+        ConstraintDefinition c = cb.build();
+        keyed.add(
+            new SortKey(
+                c, columnSignature(c), referencedColumnsSignature(c), referencedTableSignature(c)));
       }
-      normalized.sort(ConstraintNormalizer::compareConstraint);
+      keyed.sort(
+          Comparator.comparingInt((SortKey k) -> k.c().getTypeValue())
+              .thenComparing(k -> k.c().getName())
+              .thenComparingInt(k -> k.c().getEnforcementValue())
+              .thenComparing(SortKey::colSig)
+              .thenComparing(k -> k.c().getCheckExpression())
+              .thenComparing(SortKey::refTblSig)
+              .thenComparing(SortKey::refColSig)
+              .thenComparing(k -> k.c().getReferencedConstraintName())
+              .thenComparingInt(k -> k.c().getMatchOptionValue())
+              .thenComparingInt(k -> k.c().getUpdateRuleValue())
+              .thenComparingInt(k -> k.c().getDeleteRuleValue())
+              .thenComparing(k -> k.c().getPropertiesMap().toString()));
       b.clearConstraints();
-      b.addAllConstraints(normalized);
+      for (SortKey k : keyed) {
+        b.addConstraints(k.c());
+      }
     }
 
     if (!b.getPropertiesMap().isEmpty()) {
@@ -56,28 +81,35 @@ public final class ConstraintNormalizer {
     return b.build();
   }
 
-  private static int compareConstraint(ConstraintDefinition left, ConstraintDefinition right) {
-    // Keep this comparator aligned with all persisted ConstraintDefinition fields so normalization
-    // is stable across replay/input ordering differences.
-    Comparator<ConstraintDefinition> comparator =
-        Comparator.comparingInt(ConstraintDefinition::getTypeValue)
-            .thenComparing(ConstraintDefinition::getName)
-            .thenComparingInt(ConstraintDefinition::getEnforcementValue)
-            .thenComparing(ConstraintNormalizer::columnSignature)
-            .thenComparing(ConstraintDefinition::getCheckExpression)
-            .thenComparing(ConstraintNormalizer::referencedTableSignature)
-            .thenComparing(ConstraintDefinition::getReferencedTableName)
-            .thenComparing(ConstraintNormalizer::referencedColumnsSignature)
-            .thenComparing(c -> new TreeMap<>(c.getPropertiesMap()).toString());
-    return comparator.compare(left, right);
-  }
-
   private static String referencedTableSignature(ConstraintDefinition definition) {
-    if (!definition.hasReferencedTableId()) {
-      return "";
+    StringBuilder sig = new StringBuilder();
+    if (definition.hasReferencedTableId()) {
+      ResourceId id = definition.getReferencedTableId();
+      sig.append(id.getAccountId())
+          .append('|')
+          .append(id.getId())
+          .append('|')
+          .append(id.getKindValue());
     }
-    ResourceId id = definition.getReferencedTableId();
-    return id.getAccountId() + "|" + id.getId() + "|" + id.getKindValue();
+    if (definition.hasReferencedTable()) {
+      var ref = definition.getReferencedTable();
+      sig.append('|')
+          .append(ref.getCatalog())
+          .append('|')
+          .append(String.join(".", ref.getPathList()))
+          .append('|')
+          .append(ref.getName());
+      if (ref.hasResourceId()) {
+        ResourceId rid = ref.getResourceId();
+        sig.append('|')
+            .append(rid.getAccountId())
+            .append('|')
+            .append(rid.getId())
+            .append('|')
+            .append(rid.getKindValue());
+      }
+    }
+    return sig.toString();
   }
 
   private static String columnSignature(ConstraintDefinition definition) {
@@ -102,5 +134,20 @@ public final class ConstraintNormalizer {
           .append(';');
     }
     return sb.toString();
+  }
+
+  private static void normalizeForeignKeyDefaults(ConstraintDefinition.Builder builder) {
+    if (builder.getType() != ConstraintType.CT_FOREIGN_KEY) {
+      return;
+    }
+    if (builder.getMatchOption() == ForeignKeyMatchOption.FK_MATCH_OPTION_UNSPECIFIED) {
+      builder.setMatchOption(ForeignKeyMatchOption.FK_MATCH_OPTION_NONE);
+    }
+    if (builder.getUpdateRule() == ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED) {
+      builder.setUpdateRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION);
+    }
+    if (builder.getDeleteRule() == ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED) {
+      builder.setDeleteRule(ForeignKeyActionRule.FK_ACTION_RULE_NO_ACTION);
+    }
   }
 }

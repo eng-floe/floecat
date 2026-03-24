@@ -72,6 +72,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -290,6 +291,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
+
+  @Inject
+  @GrpcClient("floecat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots;
 
   @Inject
@@ -363,6 +368,7 @@ public class Shell implements Runnable {
               "describe",
               "snapshots",
               "stats",
+              "constraints",
               "analyze",
               "query",
               "account",
@@ -606,6 +612,19 @@ public class Shell implements Runnable {
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json] (defaults to current snapshot)
+         constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
+         constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]      (replace bundle)
+         constraints update <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--etag <etag>|--version <n>] [--json]   (server-side merge by constraint name)
+         constraints add <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--etag <etag>|--version <n>] [--json]      (server-side append-only; errors on duplicate names)
+         constraints delete <id|catalog.ns[.ns...].table> [--snapshot <id>]
+         constraints add-one <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <constraint_definition_json> [--etag <etag>|--version <n>] [--json]
+         constraints delete-one <id|catalog.ns[.ns...].table> <constraint_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-pk <id|catalog.ns[.ns...].table> <constraint_name> <columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-unique <id|catalog.ns[.ns...].table> <constraint_name> <columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-not-null <id|catalog.ns[.ns...].table> <constraint_name> <column_name> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
+         constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
              [--snapshot-ids id1,id2,...] [--full]
              # Runs synchronous table-scoped capture_now.
@@ -660,6 +679,7 @@ public class Shell implements Runnable {
     tables = TableServiceGrpc.newBlockingStub(overrideChannel);
     directory = DirectoryServiceGrpc.newBlockingStub(overrideChannel);
     statistics = TableStatisticsServiceGrpc.newBlockingStub(overrideChannel);
+    constraintsService = TableConstraintsServiceGrpc.newBlockingStub(overrideChannel);
     snapshots = SnapshotServiceGrpc.newBlockingStub(overrideChannel);
     viewService = ViewServiceGrpc.newBlockingStub(overrideChannel);
     connectors = ConnectorsGrpc.newBlockingStub(overrideChannel);
@@ -747,6 +767,7 @@ public class Shell implements Runnable {
     tables = tables.withInterceptors(authInterceptor);
     directory = directory.withInterceptors(authInterceptor);
     statistics = statistics.withInterceptors(authInterceptor);
+    constraintsService = constraintsService.withInterceptors(authInterceptor);
     snapshots = snapshots.withInterceptors(authInterceptor);
     viewService = viewService.withInterceptors(authInterceptor);
     connectors = connectors.withInterceptors(authInterceptor);
@@ -792,6 +813,7 @@ public class Shell implements Runnable {
       case "snapshots" -> cmdSnapshots(tail(tokens));
       case "snapshot" -> cmdSnapshotCrud(tail(tokens));
       case "stats" -> cmdStats(tail(tokens));
+      case "constraints" -> cmdConstraints(tail(tokens));
       case "analyze" -> cmdAnalyze(tail(tokens));
       case "query" -> cmdQuery(tail(tokens));
       default -> out.println("Unknown command. Type 'help'.");
@@ -2401,6 +2423,20 @@ public class Shell implements Runnable {
       case "files" -> statsFiles(args.subList(1, args.size()));
       default -> out.println("unknown stats subcommand: " + sub);
     }
+  }
+
+  /** Dispatches `constraints` command verbs to {@link ConstraintsCliSupport}. */
+  private void cmdConstraints(List<String> args) {
+    ConstraintsCliSupport.handle(
+        args,
+        out,
+        constraintsService,
+        snapshots,
+        this::resolveTableIdFlexible,
+        this::parseStringFlag,
+        this::parseIntFlag,
+        this::hasFlag,
+        this::printJson);
   }
 
   // analyze runs a synchronous table-scoped CaptureNow call for metadata and table stats.

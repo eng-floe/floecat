@@ -39,24 +39,42 @@
 # you need to scope a single rule to a specific engine kind within a multi-engine catalog.
 
 # Example scalar type — replace name and properties with your actual type.
-types {
-  name { name: "my_type" path: "example" }
-  category: "N"
-  engine_specific {
-    payload_type: "example.properties"
-    properties { key: "description" value: "replace with your type description" }
-  }
-}
+
 
 # Example array type — demonstrates the is_array / element_type pattern.
 # Replace name and element_type with your actual array type.
+
 types {
-  name { name: "my_array_type" path: "example" }
+  name {
+    path: "example"
+    name: "my_array_type"
+  }
   category: "A"
   is_array: true
-  element_type { name: "my_type" path: "example" }
+  element_type {
+    path: "example"
+    name: "my_type"
+  }
   engine_specific {
     payload_type: "example.properties"
-    properties { key: "description" value: "replace with your array type description" }
+    properties {
+      key: "description"
+      value: "replace with your array type description"
+    }
+  }
+}
+
+types {
+  name {
+    path: "example"
+    name: "my_type"
+  }
+  category: "N"
+  engine_specific {
+    payload_type: "example.properties"
+    properties {
+      key: "description"
+      value: "replace with your type description"
+    }
   }
 }

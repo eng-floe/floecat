@@ -62,6 +62,7 @@ public interface ReconcilerBackend {
 
   void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats);
 
+  /** No-op default; connectors that predate constraints support may omit this. */
   default void putSnapshotConstraints(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {}
 

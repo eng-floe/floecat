@@ -151,4 +151,19 @@ public final class NameRefUtil {
     }
     return out;
   }
+
+  /**
+   * Builds a canonical namespace display form from path segments and leaf display name.
+   *
+   * <p>The leaf is appended only when not already present as the last path segment.
+   */
+  public static String namespaceName(List<String> pathSegments, String displayName) {
+    List<String> segments = new ArrayList<>(pathSegments);
+    if (displayName != null
+        && !displayName.isBlank()
+        && (segments.isEmpty() || !displayName.equals(segments.get(segments.size() - 1)))) {
+      segments.add(displayName);
+    }
+    return String.join(".", segments);
+  }
 }

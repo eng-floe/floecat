@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.graph;
 
+import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -152,6 +153,7 @@ public class SystemNodeRegistry {
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
     String normalizedKind = canonical.normalizedKind();
+    String effectiveKind = canonical.effectiveEngineKind();
     String normalizedVersion = canonical.normalizedVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
@@ -214,7 +216,7 @@ public class SystemNodeRegistry {
     List<SystemTableDef> tableDefs =
         catalog.tables().stream()
             .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withTableRules(def, normalizedKind, normalizedVersion))
+            .map(def -> withTableRules(def, normalizedKind, normalizedVersion, effectiveKind))
             .toList();
 
     // --- Views ---
@@ -584,10 +586,12 @@ public class SystemNodeRegistry {
   }
 
   private SystemTableDef withTableRules(
-      SystemTableDef def, String engineKind, String engineVersion) {
+      SystemTableDef def, String engineKind, String engineVersion, String effectiveEngineKind) {
 
     List<EngineSpecificRule> matched =
         matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ConstraintDefinition> normalizedConstraints =
+        normalizeConstraintCatalogs(def.constraints(), effectiveEngineKind);
 
     return new SystemTableDef(
         def.name(),
@@ -599,7 +603,30 @@ public class SystemNodeRegistry {
         def.storageEndpointKey(),
         matched,
         def.flightEndpoint(),
-        def.constraints());
+        normalizedConstraints);
+  }
+
+  private static List<ConstraintDefinition> normalizeConstraintCatalogs(
+      List<ConstraintDefinition> constraints, String effectiveEngineKind) {
+    if (constraints.isEmpty() || effectiveEngineKind == null || effectiveEngineKind.isBlank()) {
+      return constraints;
+    }
+    List<ConstraintDefinition> normalized = new ArrayList<>(constraints.size());
+    boolean changed = false;
+    for (ConstraintDefinition constraint : constraints) {
+      if (!constraint.hasReferencedTable()
+          || !constraint.getReferencedTable().getCatalog().isBlank()) {
+        normalized.add(constraint);
+        continue;
+      }
+      NameRef referenced =
+          NameRef.newBuilder(constraint.getReferencedTable())
+              .setCatalog(effectiveEngineKind)
+              .build();
+      normalized.add(constraint.toBuilder().setReferencedTable(referenced).build());
+      changed = true;
+    }
+    return changed ? List.copyOf(normalized) : constraints;
   }
 
   private SystemViewDef withViewRules(SystemViewDef def, String engineKind, String engineVersion) {

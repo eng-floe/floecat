@@ -32,14 +32,30 @@
 
 # Example scalar function with a single argument.
 # Replace name, argument_types, return_type, and properties with your actual function.
+
 functions {
-  name { name: "my_function" path: "example" }
-  argument_types { name: "my_type" path: "example" }
-  return_type { name: "my_type" path: "example" }
+  name {
+    path: "example"
+    name: "my_function"
+  }
+  argument_types {
+    path: "example"
+    name: "my_type"
+  }
+  return_type {
+    path: "example"
+    name: "my_type"
+  }
   engine_specific {
     payload_type: "example.properties"
-    properties { key: "description" value: "replace with your function description" }
-    properties { key: "volatility" value: "immutable" }
+    properties {
+      key: "description"
+      value: "replace with your function description"
+    }
+    properties {
+      key: "volatility"
+      value: "immutable"
+    }
   }
 }
 
@@ -47,12 +63,24 @@ functions {
 # Demonstrates version-gating: this entry is excluded for engine versions >= 2.0.
 # Replace name, types, min_version, and properties with your actual versioned function.
 functions {
-  name { name: "my_versioned_function" path: "example" }
-  argument_types { name: "my_type" path: "example" }
-  return_type { name: "my_type" path: "example" }
+  name {
+    path: "example"
+    name: "my_versioned_function"
+  }
+  argument_types {
+    path: "example"
+    name: "my_type"
+  }
+  return_type {
+    path: "example"
+    name: "my_type"
+  }
   engine_specific {
-    payload_type: "example.properties"
     min_version: "2.0"
-    properties { key: "description" value: "replace: only available since engine version 2.0" }
+    payload_type: "example.properties"
+    properties {
+      key: "description"
+      value: "replace: only available since engine version 2.0"
+    }
   }
 }

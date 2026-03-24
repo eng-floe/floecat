@@ -72,6 +72,9 @@
 #   make docker                  # build service container images
 #   make docker-clean-cache      # clear local Jib temp caches (fixes cache corruption errors)
 #   make fmt                     # format Java sources (google-java-format)
+#   make fmt-pbtxt               # reformat all pbtxt catalog files (canonical proto text format)
+#   make validate-pbtxt          # validate all pbtxt catalog files (semantic check, --strict)
+#   make check-pbtxt-format      # check pbtxt formatting (CI gate; exits 2 if drift found)
 #   make help                    # show target list from this Makefile
 #
 # Examples:
@@ -158,6 +161,14 @@ PARENT_STAMP := $(M2_CLI_DIR)/.parent-$(VERSION).stamp
 PROTO_STAMP  := $(M2_CLI_DIR)/.proto-$(VERSION).stamp
 
 APP_NAME     := floedb-floecat
+
+# ---------- PBtxt catalog tools ----------
+BUILTIN_VALIDATOR_JAR := tools/builtin-validator/target/floecat-builtin-validator.jar
+# Auto-discover all catalog dirs that contain an _index.txt (excludes target/ directories).
+PBTXT_DIRS := $(shell find . -not -path '*/target/*' \
+                -name '_index.txt' \
+                -path '*/src/main/resources/builtins/*' \
+                -exec dirname {} \;)
 
 # ---------- Version bump ----------
 .PHONY: bump-version
@@ -886,6 +897,30 @@ quickstart-down:
 fmt:
 	@echo "==> [FMT] (google-java-format)"
 	$(MVN) -q fmt:format
+
+.PHONY: fmt-pbtxt
+fmt-pbtxt: $(BUILTIN_VALIDATOR_JAR)
+	@echo "==> [FMT-PBTXT] (canonical proto text format)"
+	@for dir in $(PBTXT_DIRS); do \
+	  echo "    $$dir"; \
+	  java -cp $(BUILTIN_VALIDATOR_JAR) io.floecat.tools.validator.BuiltinPbtxtFormatter --apply $$dir || exit 1; \
+	done
+
+.PHONY: validate-pbtxt
+validate-pbtxt: $(BUILTIN_VALIDATOR_JAR)
+	@echo "==> [VALIDATE-PBTXT]"
+	@for dir in $(PBTXT_DIRS); do \
+	  echo "    $$dir"; \
+	  java -jar $(BUILTIN_VALIDATOR_JAR) --strict $$dir || exit 1; \
+	done
+
+.PHONY: check-pbtxt-format
+check-pbtxt-format: $(BUILTIN_VALIDATOR_JAR)
+	@echo "==> [CHECK-PBTXT-FORMAT]"
+	@for dir in $(PBTXT_DIRS); do \
+	  echo "    $$dir"; \
+	  java -cp $(BUILTIN_VALIDATOR_JAR) io.floecat.tools.validator.BuiltinPbtxtFormatter --check $$dir || exit 1; \
+	done
 
 # ===================================================
 # Help

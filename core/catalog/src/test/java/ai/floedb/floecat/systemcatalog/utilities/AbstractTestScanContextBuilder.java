@@ -31,6 +31,10 @@ abstract class AbstractTestScanContextBuilder {
     this.catalogId = catalogId;
   }
 
+  public TestCatalogOverlay overlay() {
+    return overlay;
+  }
+
   public SystemObjectScanContext build() {
     return new SystemObjectScanContext(
         overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());

@@ -34,6 +34,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.arrow.ArrowScanPlanner;
@@ -84,6 +85,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @Inject SystemScannerResolver scannerResolver;
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;
+  @Inject ConstraintProviderFactory constraintFactory;
   @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject Observability observability;
@@ -186,7 +188,8 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             null,
             queryCtx.getQueryDefaultCatalogId(),
             context.engineContext(),
-            statsProvider);
+            statsProvider,
+            constraintFactory.provider());
 
     return arrowPlanner.plan(
         scanner, scanContext, scanner.schema(), predicates, requiredColumns, arrowExpr, allocator);

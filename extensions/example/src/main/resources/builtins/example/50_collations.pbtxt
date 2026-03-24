@@ -19,7 +19,11 @@
 #   locale — BCP 47 locale tag (e.g., "en_US", "de_DE", "C", "POSIX")
 
 # Example collation — replace name and locale with your actual collation.
+
 collations {
-  name { name: "my_collation" path: "example" }
+  name {
+    path: "example"
+    name: "my_collation"
+  }
   locale: "en_US"
 }
