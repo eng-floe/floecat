@@ -93,11 +93,14 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
 
-  @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost")
+  @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
   String flightHost;
 
-  @ConfigProperty(name = "floecat.flight.port", defaultValue = "47470")
+  @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80")
   int flightPort;
+
+  @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
+  boolean grpcPlainText;
 
   private Location flightLocation;
   private final ArrowScanPlanner arrowPlanner = new ArrowScanPlanner();
@@ -111,7 +114,10 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @PostConstruct
   void initFlightLocation() {
-    flightLocation = Location.forGrpcInsecure(flightHost, flightPort);
+    flightLocation =
+        grpcPlainText
+            ? Location.forGrpcInsecure(flightHost, flightPort)
+            : Location.forGrpcTls(flightHost, flightPort);
     observability.gauge(
         ServiceMetrics.Flight.INFLIGHT,
         inflightStreams::get,
@@ -132,11 +138,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Override
   protected ResolvedCallContext resolveCallContext(CallContext context) {
-    InboundContextFlightMiddleware mw = context.getMiddleware(InboundContextFlightMiddleware.KEY);
-    if (mw != null) {
-      return mw.callContext();
-    }
-    return ResolvedCallContext.unauthenticated();
+    return GrpcResolvedCallContexts.currentOrUnauthenticated();
   }
 
   @Override

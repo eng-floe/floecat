@@ -27,7 +27,6 @@ import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.FlightDevProfile;
-import ai.floedb.floecat.service.query.flight.FlightServerLifecycle;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
@@ -39,10 +38,14 @@ import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.arrow.flight.CallHeaders;
+import org.apache.arrow.flight.CallInfo;
 import org.apache.arrow.flight.CallOption;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightClient;
+import org.apache.arrow.flight.FlightClientMiddleware;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.FlightRuntimeException;
@@ -54,6 +57,7 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,13 +72,14 @@ import org.junit.jupiter.api.Test;
 @TestProfile(FlightDevProfile.class)
 public class SystemTableFlightIT {
 
-  @Inject FlightServerLifecycle flightServer;
-
   @GrpcClient("floecat")
   QueryServiceGrpc.QueryServiceBlockingStub queries;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+
+  @ConfigProperty(name = "quarkus.grpc.server.port")
+  int grpcPort;
 
   private BufferAllocator allocator;
   private FlightClient client;
@@ -87,14 +92,22 @@ public class SystemTableFlightIT {
     return new HeaderCallOption(headers);
   }
 
+  private static CallOption correlationHeader(String correlationId) {
+    Metadata metadata = new Metadata();
+    metadata.put(
+        Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER), correlationId);
+    CallHeaders headers = new MetadataAdapter(metadata);
+    return new HeaderCallOption(headers);
+  }
+
   @BeforeEach
   void setUp() {
     resetter.wipeAll();
     seeder.seedData();
     allocator = new RootAllocator(Long.MAX_VALUE);
-    int port = flightServer.port();
-    assertTrue(port > 0, "Flight server should be running on a valid port");
-    client = FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", port)).build();
+    assertTrue(grpcPort > 0, "gRPC server should be running on a valid port");
+    client =
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort)).build();
     queryId =
         queries
             .beginQuery(
@@ -138,6 +151,28 @@ public class SystemTableFlightIT {
         info.getSchemaOptional().orElseThrow(() -> new AssertionError("FlightInfo schema missing"));
     assertFalse(schema.getFields().isEmpty(), "Schema should have fields");
     assertFalse(info.getEndpoints().isEmpty(), "FlightInfo should have at least one endpoint");
+  }
+
+  @Test
+  void getFlightInfo_echoesCorrelationIdInResponseHeaders() throws Exception {
+    ResourceId tableId = informationSchemaColumnsTableId();
+    SystemTableFlightCommand command =
+        SystemTableFlightCommand.newBuilder()
+            .setTarget(SystemTableTarget.newBuilder().setId(tableId).build())
+            .setQueryId(queryId)
+            .build();
+    FlightDescriptor descriptor = FlightDescriptor.command(command.toByteArray());
+    String correlationId = "flight-it-" + UUID.randomUUID();
+    HeaderCaptureMiddleware.Factory capture = new HeaderCaptureMiddleware.Factory();
+
+    try (FlightClient clientWithCapture =
+        FlightClient.builder(allocator, Location.forGrpcInsecure("localhost", grpcPort))
+            .intercept(capture)
+            .build()) {
+      clientWithCapture.getInfo(descriptor, queryHeader(queryId), correlationHeader(correlationId));
+    }
+
+    assertEquals(correlationId, capture.lastHeaders.get(), "Flight should echo x-correlation-id");
   }
 
   @Test
@@ -299,5 +334,33 @@ public class SystemTableFlightIT {
   private static ResourceId systemTableId(String qualifiedName) {
     return SystemNodeRegistry.resourceId(
         EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, ResourceKind.RK_TABLE, qualifiedName);
+  }
+
+  private static final class HeaderCaptureMiddleware implements FlightClientMiddleware {
+    private final AtomicReference<String> headers;
+
+    private HeaderCaptureMiddleware(AtomicReference<String> headers) {
+      this.headers = headers;
+    }
+
+    @Override
+    public void onBeforeSendingHeaders(CallHeaders outgoingHeaders) {}
+
+    @Override
+    public void onHeadersReceived(CallHeaders incomingHeaders) {
+      headers.set(incomingHeaders.get("x-correlation-id"));
+    }
+
+    @Override
+    public void onCallCompleted(CallStatus status) {}
+
+    private static final class Factory implements FlightClientMiddleware.Factory {
+      private final AtomicReference<String> lastHeaders = new AtomicReference<>();
+
+      @Override
+      public FlightClientMiddleware onCallStarted(CallInfo info) {
+        return new HeaderCaptureMiddleware(lastHeaders);
+      }
+    }
   }
 }

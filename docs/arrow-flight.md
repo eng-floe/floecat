@@ -151,14 +151,19 @@ Auth/authorization behavior:
 
 | Property | Default | Purpose |
 |---|---|---|
-| `floecat.flight.port` | `47470` | Flight server port |
-| `floecat.flight.host` | `localhost` | Host returned in `FlightEndpointRef` |
-| `floecat.flight.tls` | `false` | TLS toggle (currently unsupported) |
+| `floecat.flight.advertised-host` | `localhost` | Host returned in `FlightEndpointRef` |
+| `floecat.flight.advertised-port` | `80` | Port returned in `FlightEndpointRef` and `FlightInfo` |
+| `quarkus.grpc.server.port` | `${quarkus.http.port}` | Actual shared gRPC and Flight listener port |
+| `quarkus.grpc.server.plain-text` | `true` | Controls whether advertised Flight locations use insecure gRPC or TLS |
 | `floecat.flight.memory.max-bytes` | `0` | Parent allocator cap (0 = unbounded) |
 | `ai.floedb.floecat.arrow.max-bytes` | `1073741824` | Per-stream allocator cap |
 
-The configured `floecat.flight.host` is published in catalog bundles as `FlightEndpointRef`. In
-non-dev/test profiles, avoid loopback values (`localhost` / `127.0.0.1`) for distributed clients.
+The configured `floecat.flight.advertised-host` is published in catalog bundles as
+`FlightEndpointRef`. `floecat.flight.advertised-port` controls the advertised external port
+separately from the actual shared gRPC listener. In non-dev/test profiles, avoid loopback values
+(`localhost` / `127.0.0.1`) for distributed clients.
+Flight now runs on Quarkus's shared gRPC server instead of a separate standalone listener, but the
+advertised host/port can still be overridden to match an ingress or load balancer.
 
 ## Scanner and engine-context resolution
 

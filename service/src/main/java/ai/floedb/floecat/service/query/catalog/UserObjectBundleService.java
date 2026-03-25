@@ -120,8 +120,9 @@ public class UserObjectBundleService {
             && (quarkusProfile.equalsIgnoreCase("dev") || quarkusProfile.equalsIgnoreCase("test"));
     if (isLocalHost && !isDevProfile) {
       LOG.warnf(
-          "floecat.flight.host=%s resolves to %s; configure FLOECAT_FLIGHT_HOST to a routable"
-              + " endpoint before running in prod so workers can connect.",
+          "floecat.flight.advertised-host=%s resolves to %s; configure"
+              + " FLOECAT_FLIGHT_ADVERTISED_HOST to a routable endpoint before running in prod so"
+              + " workers can connect.",
           flightHost, normalized);
     }
   }
@@ -136,9 +137,11 @@ public class UserObjectBundleService {
       EngineContextProvider engineContext,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
-      @ConfigProperty(name = "floecat.flight.host", defaultValue = "localhost") String flightHost,
-      @ConfigProperty(name = "floecat.flight.port", defaultValue = "47470") int flightPort,
-      @ConfigProperty(name = "floecat.flight.tls", defaultValue = "false") boolean flightTls,
+      @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
+          String flightHost,
+      @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80") int flightPort,
+      @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
+          boolean grpcPlainText,
       @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
@@ -151,7 +154,7 @@ public class UserObjectBundleService {
         FlightEndpointRef.newBuilder()
             .setHost(flightHost)
             .setPort(flightPort)
-            .setTls(flightTls)
+            .setTls(!grpcPlainText)
             .build();
     warnFlightHost(flightHost, quarkusProfile);
   }

@@ -43,7 +43,7 @@ import org.jboss.logging.MDC;
  * BlockingServerInterceptor.wrap(...)}.
  *
  * <p>All auth/principal/OIDC logic is now delegated to {@link InboundCallContextHelper}, which is
- * shared with the Arrow Flight path ({@code InboundContextFlightMiddleware}). This class is
+ * shared with the Arrow Flight path when Flight is served on the shared gRPC server. This class is
  * responsible only for the gRPC-specific wiring: populating {@link io.grpc.Context} keys, managing
  * MDC entries, and echoing the correlation-id in response headers.
  */

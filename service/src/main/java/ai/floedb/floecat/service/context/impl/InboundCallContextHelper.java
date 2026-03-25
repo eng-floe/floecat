@@ -47,8 +47,8 @@ import org.jboss.logging.Logger;
  * <ul>
  *   <li>The gRPC path: {@link InboundContextInterceptor} adapts {@code io.grpc.Metadata} into a
  *       {@code Function<String, String>} and delegates here.
- *   <li>The Arrow Flight path: {@code InboundContextFlightMiddleware} passes {@code
- *       CallHeaders::get} directly.
+ *   <li>The Arrow Flight path: requests flow through the shared gRPC server, so Flight producers
+ *       read the resolved values from {@link io.grpc.Context}.
  * </ul>
  *
  * <p>The class is constructed with the same configuration as {@link InboundContextInterceptor} and
