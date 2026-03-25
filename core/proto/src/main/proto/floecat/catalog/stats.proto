@@ -61,6 +61,62 @@ message NdvSketch {
   map<string,string> properties = 99;
 }
 
+enum StatsProducer {
+  // Unknown producer.
+  SPROD_UNSPECIFIED = 0;
+  // Read directly from source-native statistics exposed by the upstream system.
+  SPROD_SOURCE_NATIVE = 1;
+  // Derived from upstream metadata structures (for example manifests/logs), not direct value scans.
+  SPROD_UPSTREAM_METADATA_DERIVED = 2;
+  // Computed by an engine/runtime managed by this deployment.
+  SPROD_ENGINE_COMPUTED = 3;
+}
+
+enum StatsCaptureMode {
+  // Unknown capture mode.
+  SCM_UNSPECIFIED = 0;
+  // Captured on synchronous request path.
+  SCM_SYNC = 1;
+  // Captured on asynchronous/background reconcile path.
+  SCM_ASYNC = 2;
+}
+
+enum StatsCompleteness {
+  SC_UNSPECIFIED = 0;
+  SC_COMPLETE = 1;
+  SC_PARTIAL = 2;
+  SC_UNAVAILABLE = 3;
+}
+
+message StatsCoverage {
+  optional int64 rows_scanned = 1;
+  optional int64 files_scanned = 2;
+  optional int64 row_groups_sampled = 3;
+  optional int64 bytes_scanned = 4;
+  map<string,string> properties = 99;
+}
+
+message StatsMetadata {
+  // Producer that generated this statistic value.
+  StatsProducer producer = 1;
+  // Completeness classification for planner/service quality decisions.
+  StatsCompleteness completeness = 2;
+  // Optional confidence in [0,1]. When absent, confidence is unknown.
+  optional double confidence_level = 3;
+  // Optional scan/sample coverage diagnostics describing how this stat was produced.
+  // Absence is valid and expected when no sampling/scan telemetry is available.
+  StatsCoverage coverage = 4;
+  // Optional time the statistic payload was captured from compute/metadata source.
+  // Absence is valid when the provider cannot determine capture time.
+  google.protobuf.Timestamp captured_at = 5;
+  // Optional time this record was last refreshed in Floecat (may differ from captured_at).
+  // Absence is valid when refresh time is not tracked.
+  google.protobuf.Timestamp refreshed_at = 6;
+  // Whether this statistic entered Floecat via sync or async capture flow.
+  StatsCaptureMode capture_mode = 7;
+  map<string,string> properties = 99;
+}
+
 // ---------- Table-level stats ----------
 
 message TableStats {
@@ -71,6 +127,7 @@ message TableStats {
   int64 data_file_count = 11;
   int64 total_size_bytes = 12;
   Ndv ndv = 20;
+  StatsMetadata metadata = 30;
   map<string, string> properties = 99;
 }
 
@@ -110,6 +167,7 @@ message ColumnStats {
   optional string max = 21;
   bytes histogram = 30;
   bytes tdigest = 31;
+  StatsMetadata metadata = 40;
   map<string, string> properties = 99;
 }
 
