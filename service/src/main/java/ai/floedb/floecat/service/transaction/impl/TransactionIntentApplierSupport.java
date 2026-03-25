@@ -91,7 +91,7 @@ public class TransactionIntentApplierSupport {
       }
       return Table.parseFrom(bytes);
     } catch (Exception e) {
-      LOG.debugf("table blob parse failed: %s", blobUri, e);
+      LOG.debugf(e, "table blob parse failed: %s", blobUri);
       return null;
     }
   }
@@ -249,6 +249,10 @@ public class TransactionIntentApplierSupport {
 
     if (!ops.isEmpty() && !pointerStore.compareAndSetBatch(ops)) {
       ApplyOutcome conflictOutcome = findExpectedVersionConflict(intents);
+      if (conflictOutcome != null) {
+        return conflictOutcome;
+      }
+      conflictOutcome = findTableNamePointerConflict(intents);
       if (conflictOutcome != null) {
         return conflictOutcome;
       }
@@ -477,6 +481,43 @@ public class TransactionIntentApplierSupport {
             intent.getExpectedVersion(),
             actual,
             null);
+      }
+    }
+    return null;
+  }
+
+  private ApplyOutcome findTableNamePointerConflict(List<TransactionIntent> intents) {
+    for (var intent : intents) {
+      if (!isTableByIdPointer(intent.getTargetPointerKey())) {
+        continue;
+      }
+      Table nextTable = readTable(intent.getBlobUri());
+      if (nextTable == null || !nextTable.hasResourceId()) {
+        continue;
+      }
+      String newNameKey =
+          Keys.tablePointerByName(
+              nextTable.getResourceId().getAccountId(),
+              nextTable.getCatalogId().getId(),
+              nextTable.getNamespaceId().getId(),
+              nextTable.getDisplayName());
+      var ptr = pointerStore.get(newNameKey).orElse(null);
+      if (ptr == null || Objects.equals(ptr.getBlobUri(), intent.getBlobUri())) {
+        continue;
+      }
+      Table existing = readTable(ptr.getBlobUri());
+      if (existing == null || !existing.hasResourceId()) {
+        continue;
+      }
+      String existingId = existing.getResourceId().getId();
+      String nextTableId = nextTable.getResourceId().getId();
+      if (!Objects.equals(existingId, nextTableId)) {
+        return ApplyOutcome.conflict(
+            "NAME_POINTER_CONFLICT",
+            "name pointer is owned by a different table",
+            null,
+            null,
+            existingId);
       }
     }
     return null;

@@ -1,0 +1,61 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.gateway.iceberg.rest.table.transaction;
+
+import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.support.CommitUpdateInspector;
+import java.util.List;
+import java.util.Map;
+
+record ParsedCommit(
+    List<Map<String, Object>> requirements,
+    List<Map<String, Object>> updates,
+    List<ParsedUpdate> updateEntries,
+    CommitUpdateInspector.Parsed parsed) {
+  static ParsedCommit from(TableRequests.Commit commit) {
+    List<Map<String, Object>> requirements =
+        commit == null || commit.requirements() == null
+            ? List.of()
+            : List.copyOf(commit.requirements());
+    List<Map<String, Object>> updates =
+        commit == null || commit.updates() == null ? List.of() : List.copyOf(commit.updates());
+    List<ParsedUpdate> updateEntries =
+        updates.stream()
+            .map(update -> new ParsedUpdate(CommitUpdateInspector.actionTypeOf(update), update))
+            .toList();
+    return new ParsedCommit(
+        requirements, updates, updateEntries, CommitUpdateInspector.inspectUpdates(updates));
+  }
+
+  TableRequests.Commit toCommitRequest() {
+    return new TableRequests.Commit(requirements, updates);
+  }
+
+  String authoritativeMetadataLocation(CurrentTableState currentState) {
+    String requested = parsed == null ? null : parsed.requestedMetadataLocation();
+    if (requested != null && !requested.isBlank()) {
+      return requested;
+    }
+    return currentState == null ? null : currentState.metadataLocation();
+  }
+
+  List<Map<String, Object>> addedSnapshots() {
+    return parsed == null ? List.of() : parsed.addedSnapshots();
+  }
+}
+
+record ParsedUpdate(CommitUpdateInspector.UpdateAction action, Map<String, Object> rawUpdate) {}

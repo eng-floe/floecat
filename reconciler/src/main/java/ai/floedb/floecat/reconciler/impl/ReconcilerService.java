@@ -41,6 +41,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -50,6 +51,7 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
@@ -78,6 +80,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcilerService {
   private static final Logger LOG = Logger.getLogger(ReconcilerService.class);
+  private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
   private static final BooleanSupplier NO_CANCEL = () -> false;
   private static final ProgressListener NO_PROGRESS = (s, c, e, sp, stp, m) -> {};
@@ -677,25 +680,30 @@ public class ReconcilerService {
         value -> value > 0);
     applyField(
         () -> bundle.manifestList(),
-        () -> existing != null ? existing.getManifestList() : null,
-        builder::setManifestList,
+        () ->
+            existing != null && existing.getManifestListCount() > 0
+                ? existing.getManifestList(0)
+                : null,
+        builder::addManifestList,
         str -> str != null && !str.isBlank());
+    Map<String, ByteString> mergedMetadata = new LinkedHashMap<>();
+    if (existing != null && !existing.getFormatMetadataMap().isEmpty()) {
+      mergedMetadata.putAll(existing.getFormatMetadataMap());
+    }
     if (bundle.summary() != null && !bundle.summary().isEmpty()) {
       var merged = new LinkedHashMap<>(bundle.summary());
-      if (existing != null && !existing.getSummaryMap().isEmpty()) {
-        existing.getSummaryMap().forEach(merged::putIfAbsent);
+      Map<String, String> existingSummary = snapshotSummary(existing);
+      if (!existingSummary.isEmpty()) {
+        existingSummary.forEach(merged::putIfAbsent);
       }
-      builder.putAllSummary(merged);
+      mergedMetadata.put(
+          ICEBERG_METADATA_KEY, withSnapshotSummary(existing, merged).toByteString());
     }
     applyLongField(
         () -> (long) bundle.schemaId(),
         () -> existing != null ? existing.getSchemaId() : 0L,
         value -> builder.setSchemaId((int) value),
         value -> value > 0);
-    Map<String, ByteString> mergedMetadata = new LinkedHashMap<>();
-    if (existing != null && !existing.getFormatMetadataMap().isEmpty()) {
-      mergedMetadata.putAll(existing.getFormatMetadataMap());
-    }
     if (bundle.metadata() != null && !bundle.metadata().isEmpty()) {
       bundle
           .metadata()
@@ -714,6 +722,36 @@ public class ReconcilerService {
         candidate.toBuilder()
             .setIngestedAt(Timestamps.fromMillis(ctx.now().toEpochMilli()))
             .build());
+  }
+
+  private static Map<String, String> snapshotSummary(Snapshot snapshot) {
+    IcebergMetadata metadata = snapshotMetadata(snapshot);
+    if (metadata == null || metadata.getSummaryMap().isEmpty()) {
+      return Map.of();
+    }
+    return Map.copyOf(metadata.getSummaryMap());
+  }
+
+  private static IcebergMetadata withSnapshotSummary(
+      Snapshot snapshot, Map<String, String> summary) {
+    IcebergMetadata existing = snapshotMetadata(snapshot);
+    IcebergMetadata.Builder builder =
+        existing == null ? IcebergMetadata.newBuilder() : existing.toBuilder();
+    builder.clearSummary();
+    builder.putAllSummary(summary);
+    return builder.build();
+  }
+
+  private static IcebergMetadata snapshotMetadata(Snapshot snapshot) {
+    if (snapshot == null || !snapshot.getFormatMetadataMap().containsKey(ICEBERG_METADATA_KEY)) {
+      return null;
+    }
+    try {
+      return IcebergMetadata.parseFrom(snapshot.getFormatMetadataOrThrow(ICEBERG_METADATA_KEY));
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "Failed to parse Iceberg snapshot metadata for snapshot " + snapshot.getSnapshotId(), e);
+    }
   }
 
   private List<FloecatConnector.SnapshotBundle> filterBundlesForMode(

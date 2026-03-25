@@ -287,11 +287,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasSequenceNumber()) {
                     snapBuilder.setSequenceNumber(spec.getSequenceNumber());
                   }
-                  if (spec.hasManifestList()) {
-                    snapBuilder.setManifestList(spec.getManifestList());
-                  }
-                  if (!spec.getSummaryMap().isEmpty()) {
-                    snapBuilder.putAllSummary(spec.getSummaryMap());
+                  if (spec.getManifestListCount() > 0) {
+                    snapBuilder.addManifestList(spec.getManifestList(0));
                   }
                   if (spec.hasSchemaId()) {
                     snapBuilder.setSchemaId(spec.getSchemaId());
@@ -564,7 +561,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "partition_spec",
           "sequence_number",
           "manifest_list",
-          "summary",
           "schema_id",
           "format_metadata");
 
@@ -616,14 +612,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           builder.setSequenceNumber(spec.getSequenceNumber());
         }
         case "manifest_list" -> {
-          if (!spec.hasManifestList()) {
+          if (spec.getManifestListCount() == 0) {
             throw GrpcErrors.invalidArgument(corr, SNAPSHOT_MANIFEST_LIST_REQUIRED, Map.of());
           }
-          builder.setManifestList(spec.getManifestList());
-        }
-        case "summary" -> {
-          builder.clearSummary();
-          builder.putAllSummary(spec.getSummaryMap());
+          builder.addManifestList(spec.getManifestList(0));
         }
         case "schema_id" -> {
           if (!spec.hasSchemaId()) {
@@ -683,10 +675,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasSequenceNumber()) {
       c.scalar("sequence_number", spec.getSequenceNumber());
     }
-    if (spec.hasManifestList()) {
-      c.scalar("manifest_list", spec.getManifestList());
+    if (spec.getManifestListCount() > 0) {
+      c.scalar("manifest_list", spec.getManifestList(0));
     }
-    c.map("summary", spec.getSummaryMap());
     if (spec.hasSchemaId()) {
       c.scalar("schema_id", spec.getSchemaId());
     }

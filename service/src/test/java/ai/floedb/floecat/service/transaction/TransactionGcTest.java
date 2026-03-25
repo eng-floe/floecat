@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.transaction;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -33,6 +34,66 @@ import java.lang.reflect.Field;
 import org.junit.jupiter.api.Test;
 
 class TransactionGcTest {
+
+  @Test
+  void unreadableOldTransactionBlobIsCollectedConservatively() throws Exception {
+    System.setProperty("floecat.gc.transaction.corrupt-min-age-ms", "0");
+    try {
+      var pointers = new InMemoryPointerStore();
+      var blobs = new InMemoryBlobStore();
+      String accountId = "acct";
+      String txId = "tx-corrupt-old";
+      String targetKey = "/accounts/acct/tables/by-id/t1";
+
+      String txBlob = putCorruptTransactionBlob(blobs, accountId, txId);
+      String txPtr = Keys.transactionPointerById(accountId, txId);
+      pointers.compareAndSet(
+          txPtr, 0L, Pointer.newBuilder().setKey(txPtr).setBlobUri(txBlob).setVersion(1L).build());
+      putIntent(pointers, blobs, accountId, txId, targetKey);
+
+      var gc = new TransactionGc();
+      inject(gc, "pointerStore", pointers);
+      inject(gc, "blobStore", blobs);
+
+      TransactionGc.Result result = gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+      assertEquals(1, result.deleted());
+      assertTrue(pointers.get(txPtr).isEmpty());
+      assertTrue(
+          pointers.get(Keys.transactionIntentPointerByTx(accountId, txId, targetKey)).isEmpty());
+      assertTrue(
+          pointers.get(Keys.transactionIntentPointerByTarget(accountId, targetKey)).isEmpty());
+    } finally {
+      System.clearProperty("floecat.gc.transaction.corrupt-min-age-ms");
+    }
+  }
+
+  @Test
+  void unreadableRecentTransactionBlobIsNotCollected() throws Exception {
+    System.setProperty("floecat.gc.transaction.corrupt-min-age-ms", "86400000");
+    try {
+      var pointers = new InMemoryPointerStore();
+      var blobs = new InMemoryBlobStore();
+      String accountId = "acct";
+      String txId = "tx-corrupt-recent";
+
+      String txBlob = putCorruptTransactionBlob(blobs, accountId, txId);
+      String txPtr = Keys.transactionPointerById(accountId, txId);
+      pointers.compareAndSet(
+          txPtr, 0L, Pointer.newBuilder().setKey(txPtr).setBlobUri(txBlob).setVersion(1L).build());
+
+      var gc = new TransactionGc();
+      inject(gc, "pointerStore", pointers);
+      inject(gc, "blobStore", blobs);
+
+      TransactionGc.Result result = gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+      assertEquals(0, result.deleted());
+      assertTrue(pointers.get(txPtr).isPresent());
+    } finally {
+      System.clearProperty("floecat.gc.transaction.corrupt-min-age-ms");
+    }
+  }
 
   @Test
   void abortedTransactionCleansIntents() throws Exception {
@@ -319,6 +380,12 @@ class TransactionGcTest {
     var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
     blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
     return intentBlob;
+  }
+
+  private String putCorruptTransactionBlob(InMemoryBlobStore blobs, String accountId, String txId) {
+    String txBlob = Keys.transactionBlobUri(accountId, txId, "corrupt");
+    blobs.put(txBlob, new byte[] {1, 2, 3}, "application/x-protobuf");
+    return txBlob;
   }
 
   private static Timestamp now() {

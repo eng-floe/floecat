@@ -33,6 +33,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -50,8 +51,14 @@ class IcebergRestFixtureOidcIT {
   @BeforeAll
   static void setUp() throws Exception {
     String token = fetchAccessToken();
+    int testPort =
+        ConfigProvider.getConfig()
+            .getOptionalValue("quarkus.http.test-port", Integer.class)
+            .orElse(19200);
     spec =
         new RequestSpecBuilder()
+            .setBaseUri("http://127.0.0.1")
+            .setPort(testPort)
             .addHeader("authorization", "Bearer " + token)
             .setContentType(ContentType.JSON)
             .build();
@@ -73,7 +80,7 @@ class IcebergRestFixtureOidcIT {
         "client_id=floecat-client&client_secret=floecat-secret&grant_type=client_credentials";
     HttpRequest request =
         HttpRequest.newBuilder()
-            .uri(URI.create("http://127.0.0.1:12221/realms/floecat/protocol/openid-connect/token"))
+            .uri(KeycloakTestResource.tokenEndpoint())
             .timeout(Duration.ofSeconds(10))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .POST(HttpRequest.BodyPublishers.ofString(body))

@@ -44,34 +44,29 @@ Non-goals for the current release:
 ```
 protocol-gateway/iceberg-rest/
 ├── src/main/java/ai/floedb/floecat/gateway/iceberg/rest
-│   ├── api/              # Request/response DTOs & serializers
-│   ├── common/           # Cross-cutting helpers (context factory, filters, error mappers, metadata utils)
-│   ├── resources/        # JAX-RS controllers (config, namespace, table, view, system)
-│   └── services/         # Adapters and workflows (accounts, catalog, table, metadata, planning, staging, clients)
+│   ├── api/              # Iceberg REST DTOs, request models, metadata views, error payloads
+│   ├── catalog/          # Catalog/name resolution and shared table gateway helpers
+│   ├── compat/           # Delta-to-Iceberg compatibility translation/materialization
+│   ├── namespace/        # Namespace resources and namespace service logic
+│   ├── support/          # Filters, error mappers, commit logging, metadata/location helpers, gRPC facade
+│   ├── system/           # Config and OAuth endpoints
+│   ├── table/            # Table resources, lifecycle, commit planning/apply, metadata mapping, staging
+│   └── view/             # View resources and view metadata/service logic
 └── src/test/java/...     # RestAssured tests, unit tests mirroring the same package structure
 ```
 
-Key packages under `services`:
-
-- `services.catalog` – low-level helpers (table lifecycle, connector wiring, requirement enforcement, metadata sync).
-- `services.table` / `services.view` / `services.namespace` – high-level use cases (create, commit, register, delete, property updates, rename).
-- `services.metadata` – metadata import/materialization (Iceberg metadata files, snapshot transforms).
-- `services.planning` – scan planning orchestration plus `PlanTaskManager`.
-- `services.staging` – staged payload repository and TTL management.
-- `services.client` – typed gRPC clients (TableClient, NamespaceClient, ViewClient, SnapshotClient, QueryClient, ConnectorClient, etc.).
-
-Tests mirror this layout so package-private collaborators (e.g., staged table repositories, planners) are still accessible without widening visibility.
+Tests mirror this structure. Most unit tests live beside the concrete package they exercise, which keeps package-private collaborators such as planners, staged repositories, metadata builders, and mappers testable without widening visibility.
 
 ---
 
 ## Runtime Architecture Overview
 
 1. **Request entry:** Quarkus REST controllers receive Iceberg REST requests. `AccountHeaderFilter` enforces tenant/auth headers and optionally rewrites “prefix-less” paths to a configured default.
-2. **Context resolution:** `RequestContextFactory` resolves catalog prefixes, namespace paths, and table IDs by calling Floecat’s `DirectoryService` and `TableLifecycleService`. Context records travel with each request.
-3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
-4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
-5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` resolves connector IDs and runs best-effort post-commit sync calls (stats capture, reconcile trigger, snapshot pruning where applicable). These side effects happen after backend apply and do not change commit success/failure once core apply is complete.
+2. **Context resolution:** `CatalogResolver`, `ResourceResolver`, `NameResolution`, and `TableGatewaySupport` resolve prefixes, namespaces, table IDs, view IDs, storage defaults, and current table state by calling Floecat directory/table gRPC services.
+3. **Workflow orchestration:** Resource classes under `namespace/`, `table/`, and `view/` delegate into concrete services such as `TableLifecycleService`, `TransactionCommitService`, `TransactionExecutor`, `CommitPlanBuilder`, `ViewService`, and `NamespaceService`.
+4. **gRPC translation:** `GrpcWithHeaders` and `GrpcServiceFacade` ensure backend RPC calls inherit Floecat auth headers and request context while keeping the REST surface decoupled from individual stubs.
+5. **Response mapping:** `TableResponseMapper`, `TableMetadataBuilder`, `ViewMetadataService`, and namespace/view DTO mappers synthesize the Iceberg contract from Floecat table state plus resolved Iceberg metadata. They also inject config overrides such as `write.metadata.path` and vended credentials.
+6. **Commit orchestration:** table commits are normalized into transaction commits, parsed once into typed internal updates, resolved against authoritative current table facts, planned into catalog + snapshot pointer changes, optionally pre-materialized into canonical Iceberg metadata files, and then applied atomically through backend `begin/prepare/commitTransaction`.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -92,17 +87,37 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 
 ### Stage-create (`POST /v1/{prefix}/namespaces/{namespace}/tables` with `stage-create=true`)
 1. Validate schema, spec, write order, and properties. Normalize namespace/table identifiers.
-2. Compute metadata location, connector configuration, and default storage credentials.
-3. Persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id (provided via `Iceberg-Transaction-Id`/`Idempotency-Key` or generated). `StagedTableService` enforces TTL and idempotency.
-4. Return `StageCreateResponse` (stage-id, requirements, config overrides, storage credentials). No catalog mutation occurs yet.
+2. Apply a default table location when the caller omitted one, reserve the exact bootstrap metadata path (`00000-...metadata.json`), and inject `table-uuid` plus `metadata-location` into the staged create properties.
+3. Build a `TableSpec` and persist a `StagedTableEntry` keyed by account + catalog + namespace + table + stage-id. The stage-id comes from `Iceberg-Transaction-Id`, then `Idempotency-Key`, else a generated UUID. Staged entries are kept in `StagedTableRepository`.
+4. Return a load-table-style `LoadTableResultDto` carrying the reserved metadata location, config overrides, and storage credentials. No catalog mutation occurs yet.
 
 ### Commit (`POST /tables/{table}`)
-1. Resolve catalog/namespace/table context and reject unsupported commit modes (for example Delta read-only tables).
-2. Wrap the table commit payload into a single-entry `TransactionCommitRequest` and delegate to `TransactionCommitService`.
-3. `TransactionCommitService` begins/loads a backend transaction, validates idempotency + request-hash replay semantics, validates requirements/updates, and plans table/snapshot pointer changes with optimistic preconditions.
-4. Metadata materialization and `metadata-location` update are prepared before backend apply so pointer updates commit atomically with table state.
-5. Backend `prepareTransaction` + `commitTransaction` apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.
-6. The table endpoint then builds and returns `CommitTableResponseDto` (HTTP 200) from committed state.
+1. Resolve catalog/namespace/table context with one request-scoped `TableGatewaySupport` instance and reject unsupported commit modes (for example Delta read-only tables). Pre-commit reads, durable commit, and post-commit hydration all use the same support object so one request observes one catalog/table context.
+2. Normalize the request into the correct first-write shape before planning:
+   - if this is a staged create commit and the table still has no committed snapshot, prepend staged create initialization and inject the reserved metadata location when needed
+   - if this is a non-staged first write after create and the table still has no committed snapshot, rebuild the same bootstrap from the cached pending create state
+   - once a committed snapshot already exists, no bootstrap is injected and the commit is treated as a normal existing-table update
+3. Wrap the effective table commit into a single-entry `TransactionCommitRequest` and delegate to `TransactionCommitService`.
+4. `TransactionCommitService` runs explicit phases:
+   - request validation
+   - backend `beginTransaction`
+   - backend `getTransaction` readback to confirm the transaction handle and idempotent replay hash
+   - request-context construction (`CommitRequestContext`)
+   - authoritative current-state loading and target resolution
+   - normalization, requirement validation, update compilation, and metadata planning
+   - durable backend `prepareTransaction` / `commitTransaction`
+   - local outbox/finalization
+   - optional response hydration
+5. `CommitPlanBuilder` resolves one `CurrentTableState` per table change. That object is the source for requirement validation and planning fields such as schema/spec/sort-order IDs, last assigned IDs, table UUID, ref snapshot IDs, and metadata location.
+6. The gateway then applies commit updates to canonical metadata and materializes the next `metadata.json`. For first-write create commits it writes the reserved exact metadata location; for later commits it writes the next versioned metadata file.
+7. Backend `prepareTransaction` + `commitTransaction` apply all prepared changes atomically; success returns HTTP 204 from the transactional layer.
+8. The table endpoint then performs best-effort response hydration and returns `CommitTableResponseDto` (HTTP 200). If the durable commit succeeded but hydration fails or is incomplete, the gateway returns a minimal success response instead of surfacing a misleading commit failure.
+
+### What the client writes vs what the gateway writes
+
+- Engines such as Trino write data files, manifests, manifest lists, delete files, and statistics files referenced by their commit payloads.
+- The gateway writes the canonical Iceberg `metadata.json` file and advances the catalog pointer to that metadata location.
+- DuckDB commonly uses the staged-create path; Trino commonly uses the non-staged create followed by a first snapshot commit. Both flows are supported by the current implementation.
 
 Idempotency behavior:
 - `Idempotency-Key` is the request replay key used by commit orchestration.
@@ -121,12 +136,49 @@ pointer mutations, and commits atomically. The endpoint returns:
 - `409` for deterministic conflicts/failed preconditions.
 - `5xx` when commit state is unknown.
 
-For ambiguous backend outcomes (for example retryable/aborted ambiguity), the gateway performs a
-short bounded confirmation poll before returning unknown-state errors. Poll behavior is configurable:
+The request is parsed once near the entry point into `ValidatedTableChange` / `ParsedCommit`, and
+later phases consume that typed internal form instead of repeatedly reinterpreting raw
+`List<Map<String,Object>>` update payloads.
+
+Outcome handling is centralized in `TransactionOutcomePolicy`:
+
+- deterministic failures before remote side effects remain normal validation/conflict errors
+- begin accepted but readback failed is treated as `AMBIGUOUS_BEGIN_READBACK`
+- prepare handoff failures with uncertain remote state are treated as `AMBIGUOUS_PREPARE_CONFIRMATION`
+- commit responses or confirmation states that cannot prove applied/not-applied are treated as `AMBIGUOUS_COMMIT_STATE`
+- post-commit response-building problems are treated as hydration failures, not commit failures
+
+For ambiguous backend outcomes, the gateway does not blindly abort. In particular, if
+`beginTransaction` succeeds but `getTransaction` fails, the gateway does not reuse prepare-failure
+mapping and does not translate that condition into `NoSuchTableException` solely because readback
+returned `NOT_FOUND`. It is surfaced as unknown transaction state.
+
+For ambiguous backend outcomes after prepare/commit handoff (for example retryable/aborted
+ambiguity), the gateway performs a short bounded confirmation poll before returning unknown-state
+errors. Poll behavior is configurable:
 
 - `floecat.gateway.commit.confirm.max-attempts` (default `6`)
 - `floecat.gateway.commit.confirm.initial-sleep-ms` (default `25`)
 - `floecat.gateway.commit.confirm.max-sleep-ms` (default `200`)
+
+### Authoritative table facts
+
+The gateway now resolves current table facts in one place through `CurrentTableState`.
+
+- Iceberg metadata JSON is authoritative when present.
+- Mirrored backend table properties are fallback only when the Iceberg metadata genuinely lacks the field.
+- If metadata and mirrored properties both exist and disagree, the gateway fails closed rather than silently reconciling them.
+
+This rule is used for table UUID, current schema ID, default spec ID, default sort order ID,
+last assigned field/partition IDs, and ref snapshot IDs.
+
+`metadata-location` has request-aware precedence during commit planning and materialization:
+
+- if the client supplied a valid `metadata-location` in the commit payload, that location is authoritative for that request
+- otherwise the gateway uses the persisted current metadata location
+
+The gateway never falls back to internal Floecat `resourceId` values to satisfy Iceberg
+`table-uuid` semantics.
 
 ---
 
@@ -208,6 +260,7 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 - **Single-table core state:** synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.
 - **Post-core side effects (stats sync/reconcile trigger/snapshot prune):** best-effort after backend apply. These are not atomic with the core commit.
+- **Post-commit response hydration:** best-effort after durable commit. If hydration fails, the commit remains successful and the gateway returns a minimal success response rather than a misleading commit failure.
 - **Multi-table `/transactions/commit`:** atomic backend transaction across all table changes in one request.
 
 ---
@@ -216,9 +269,8 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 
 - **REST contract tests:** `*ResourceTest` (RestAssured) validates namespace/table/view endpoints against mocked services.
 - **Integration tests:** `IcebergRestFixtureIT` boots real services (via `RealServiceTestResource`) and exercises stage-create, commit, plan, and view flows end-to-end.
-- **Unit tests:** live under `src/test/java/.../services/*` mirroring the main packages so service collaborators (planners, staged repositories, metadata builders) can be verified with Mockito.
-- **Compose smoke:** `make compose-smoke` runs a DuckDB federation check in LocalStack mode and
-  asserts Delta fixture counts, including `examples.delta.dv_demo_delta = 2` after a delete.
+- **Unit tests:** live under `src/test/java/.../rest/*` mirroring the main packages so collaborators such as planners, staged repositories, metadata builders, mappers, and property services can be verified with Mockito.
+- **Compose smoke:** `make compose-smoke` exercises real engine behavior against the gateway. In LocalStack mode it covers DuckDB staged commits, Trino non-staged commits, and Delta fixture reads, including `examples.delta.dv_demo_delta = 2` after a delete.
 
 ---
 
@@ -239,6 +291,7 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
 - **Multi-table ACID scope:** atomic within a single `/transactions/commit` backend transaction; request validation rejects duplicate table identifiers.
 - **Side-effect orchestration:** post-commit sync/prune actions are best-effort and can lag committed table state.
+- **Commit ambiguity:** when backend state cannot be confirmed after begin/prepare/commit handoff, the gateway prefers explicit unknown-state errors over unsafe cleanup or misleading table/conflict mappings.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---

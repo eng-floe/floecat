@@ -1199,7 +1199,7 @@ public class Shell implements Runnable {
                 : resolveNamespaceIdFlexible(args.get(1));
         var resp =
             namespaces.getNamespace(GetNamespaceRequest.newBuilder().setNamespaceId(nsId).build());
-        printNamespaces(List.of(resp.getNamespace()));
+        printNamespace(resp.getNamespace());
       }
       case "update" -> {
         if (args.size() < 2) {
@@ -3357,6 +3357,19 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printNamespace(Namespace ns) {
+    out.println("Namespace:");
+    out.printf("  id:           %s%n", rid(ns.getResourceId()));
+    out.printf("  created_at:   %s%n", ts(ns.getCreatedAt()));
+    out.printf("  parents:      %s%n", parentsAsList(ns.getParentsList()));
+    out.printf("  leaf:         %s%n", Quotes.quoteIfNeeded(ns.getDisplayName()));
+    out.printf("  description:  %s%n", ns.hasDescription() ? ns.getDescription() : "");
+    if (!ns.getPropertiesMap().isEmpty()) {
+      out.println("  properties:");
+      ns.getPropertiesMap().forEach((k, v) -> out.printf("    %s = %s%n", k, v));
+    }
+  }
+
   private void printResolvedTables(List<ResolveFQTablesResponse.Entry> entries) {
     out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
     for (var e : entries) {
@@ -3417,9 +3430,9 @@ public class Shell implements Runnable {
   private void printSnapshots(List<Snapshot> snaps) {
     out.printf("%-20s  %-24s  %-20s%n", "SNAPSHOT_ID", "UPSTREAM_CREATED_AT", "PARENT_ID");
     for (var s : snaps) {
+      String parentId = s.hasParentSnapshotId() ? Long.toString(s.getParentSnapshotId()) : "-";
       out.printf(
-          "%-20d  %-24s  %-20d%n",
-          s.getSnapshotId(), ts(s.getUpstreamCreatedAt()), s.getParentSnapshotId());
+          "%-20d  %-24s  %-20s%n", s.getSnapshotId(), ts(s.getUpstreamCreatedAt()), parentId);
     }
   }
 

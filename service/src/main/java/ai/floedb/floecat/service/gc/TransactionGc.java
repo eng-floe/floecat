@@ -50,6 +50,10 @@ public class TransactionGc {
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.transaction.min-age-ms", Long.class)
             .orElse(60_000L);
+    long corruptMinAgeMs =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.gc.transaction.corrupt-min-age-ms", Long.class)
+            .orElse(86_400_000L);
     long nowMs = System.currentTimeMillis();
 
     int scanned = 0;
@@ -68,6 +72,9 @@ public class TransactionGc {
         scanned++;
         Transaction txn = readTransaction(p.getBlobUri());
         if (txn == null) {
+          if (collectCorruptTransaction(accountId, p, pageSize, nowMs, corruptMinAgeMs)) {
+            deleted++;
+          }
           continue;
         }
         if (!shouldCollect(accountId, txn, nowMs, minAgeMs)) {
@@ -129,9 +136,61 @@ public class TransactionGc {
       }
       return Transaction.parseFrom(bytes);
     } catch (Exception e) {
-      LOG.warnf("transaction blob parse failed: %s", e.getMessage());
+      LOG.warnf(e, "transaction blob parse failed: %s", blobUri);
       return null;
     }
+  }
+
+  private boolean collectCorruptTransaction(
+      String accountId, Pointer pointer, int pageSize, long nowMs, long corruptMinAgeMs) {
+    if (pointer == null || pointer.getKey().isBlank()) {
+      return false;
+    }
+    Long artifactTimeMs = corruptTransactionArtifactTimeMs(pointer);
+    if (artifactTimeMs == null || artifactTimeMs + corruptMinAgeMs > nowMs) {
+      return false;
+    }
+    String txId = decodeTxIdFromTransactionPointerKey(accountId, pointer.getKey());
+    if (txId.isBlank()) {
+      LOG.warnf("Skipping corrupt transaction cleanup for unparseable key=%s", pointer.getKey());
+      return false;
+    }
+    int intentsDeleted = cleanupIntentsForTx(accountId, txId, pageSize);
+    if (intentsDeleted > 0) {
+      LOG.debugf("Cleaned %d intents for corrupt tx=%s", intentsDeleted, txId);
+    }
+    if (hasIntentsForTx(accountId, txId)) {
+      return false;
+    }
+    if (!pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
+      return false;
+    }
+    blobStore.deletePrefix(Keys.transactionBlobPrefix(accountId, txId));
+    blobStore.deletePrefix(Keys.transactionIntentBlobPrefix(accountId, txId));
+    blobStore.deletePrefix(Keys.transactionObjectBlobPrefix(accountId, txId));
+    return true;
+  }
+
+  private Long corruptTransactionArtifactTimeMs(Pointer pointer) {
+    if (pointer == null) {
+      return null;
+    }
+    if (pointer.getBlobUri() == null || pointer.getBlobUri().isBlank()) {
+      return null;
+    }
+    return blobStore
+        .head(pointer.getBlobUri())
+        .map(
+            header -> {
+              if (header.hasLastModifiedAt()) {
+                return com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt());
+              }
+              if (header.hasCreatedAt()) {
+                return com.google.protobuf.util.Timestamps.toMillis(header.getCreatedAt());
+              }
+              return null;
+            })
+        .orElse(null);
   }
 
   private boolean hasIntentsForTx(String accountId, String txId) {
@@ -309,6 +368,21 @@ public class TransactionGc {
       return "";
     }
     String encoded = key.substring(idx + "/intents/".length());
+    if (encoded.isBlank()) {
+      return "";
+    }
+    return URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+  }
+
+  private String decodeTxIdFromTransactionPointerKey(String accountId, String key) {
+    if (accountId == null || accountId.isBlank() || key == null || key.isBlank()) {
+      return "";
+    }
+    String prefix = Keys.transactionPointerByIdPrefix(accountId);
+    if (!key.startsWith(prefix)) {
+      return "";
+    }
+    String encoded = key.substring(prefix.length());
     if (encoded.isBlank()) {
       return "";
     }
