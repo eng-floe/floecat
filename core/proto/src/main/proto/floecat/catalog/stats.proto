@@ -136,11 +136,17 @@ message EngineExpressionStatsTarget {
   map<string,string> properties = 99;
 }
 
+message FileStatsTarget {
+  // Canonical file path identity within a snapshot.
+  string file_path = 1;
+}
+
 message StatsTarget {
   oneof target {
     TableStatsTarget table = 1;
     ColumnStatsTarget column = 2;
     EngineExpressionStatsTarget expression = 3;
+    FileStatsTarget file = 4;
   }
 }
 
