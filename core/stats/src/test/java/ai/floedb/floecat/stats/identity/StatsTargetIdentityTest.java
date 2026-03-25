@@ -89,4 +89,14 @@ class StatsTargetIdentityTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("column_id");
   }
+
+  @Test
+  void fileTargetIdentityIsStableForEquivalentPaths() {
+    assertThat(
+            StatsTargetIdentity.identityHashHex(
+                StatsTargetIdentity.fileTarget(" /data/file.parquet ")))
+        .isEqualTo(
+            StatsTargetIdentity.identityHashHex(
+                StatsTargetIdentity.fileTarget("/data/file.parquet")));
+  }
 }

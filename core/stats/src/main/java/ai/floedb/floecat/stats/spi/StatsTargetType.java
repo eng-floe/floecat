@@ -22,13 +22,15 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 public enum StatsTargetType {
   TABLE,
   COLUMN,
-  EXPRESSION;
+  EXPRESSION,
+  FILE;
 
   public static StatsTargetType from(StatsTarget target) {
     return switch (target.getTargetCase()) {
       case TABLE -> TABLE;
       case COLUMN -> COLUMN;
       case EXPRESSION -> EXPRESSION;
+      case FILE -> FILE;
       case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
     };
   }

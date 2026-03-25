@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import java.util.Map;
 import java.util.Optional;
@@ -30,7 +31,9 @@ class StatsCaptureValueTest {
   @Test
   void requiresExactlyOnePayload() {
     assertThatThrownBy(
-            () -> new StatsCaptureValue(Optional.empty(), Optional.empty(), Optional.empty()))
+            () ->
+                new StatsCaptureValue(
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Exactly one payload");
 
@@ -38,6 +41,7 @@ class StatsCaptureValueTest {
             () ->
                 new StatsCaptureValue(
                     Optional.of(TableStats.getDefaultInstance()),
+                    Optional.empty(),
                     Optional.of(
                         new StatsColumnValue(
                             1L,
@@ -89,5 +93,20 @@ class StatsCaptureValueTest {
     assertThat(mapped.valueStats().min()).contains("a");
     assertThat(mapped.valueStats().max()).contains("z");
     assertThat(mapped.valueStats().properties()).containsEntry("k", "v");
+  }
+
+  @Test
+  void mapsFileStatsToFilePayload() {
+    FileColumnStats file =
+        FileColumnStats.newBuilder().setFilePath("/data/file.parquet").setRowCount(123L).build();
+
+    StatsCaptureResult result =
+        StatsCaptureResult.forFile(
+            "engine",
+            ai.floedb.floecat.catalog.rpc.StatsTarget.getDefaultInstance(),
+            file,
+            Map.of());
+
+    assertThat(result.value().file()).contains(file);
   }
 }

@@ -24,7 +24,7 @@ Core interfaces and models:
 - `StatsEngineCapabilities`
 - `StatsCaptureRequest`
 - `StatsCaptureResult`
-- `StatsCaptureValue` (exactly one payload: table, column, expression)
+- `StatsCaptureValue` (exactly one payload: table, file, column, expression)
 - `StatsValueSummary` (shared value-level metrics for column/expression payloads)
 - `StatsEngineRegistry`
 
@@ -35,7 +35,7 @@ Module boundaries:
 
 Current baseline engine:
 
-- `PersistedStatsCaptureEngine` (reads already persisted table/column stats from repository)
+- `PersistedStatsCaptureEngine` (reads already persisted table/column stats and internal file stats from repository)
 - configured as a lowest-priority fallback so specialized providers win when available
 
 Service wiring:
@@ -68,7 +68,7 @@ This is intentionally a thin orchestration layer with one baseline engine.
 Each `StatsCaptureEngine` advertises:
 
 - supported connectors (`connectors`)
-- supported target types (`TABLE`, `COLUMN`, `EXPRESSION`)
+- supported target types (`TABLE`, `FILE`, `COLUMN`, `EXPRESSION`)
 - supported statistic kinds (`ROW_COUNT`, `NDV`, ...)
 - supported execution modes (`SYNC`, `ASYNC`)
 - sampling support (`NONE`, `RANDOM_ROW_GROUP`, `METADATA_GUIDED`)
@@ -115,7 +115,8 @@ Guidelines:
 
 ## Existing baseline behavior
 
-`PersistedStatsCaptureEngine` supports table and column targets from repository-backed data.
+`PersistedStatsCaptureEngine` supports repository-backed table and column targets, and can also
+serve file stats for internal/reconciliation capture paths.
 This ensures no regression while making provider selection real.
 
 ## Typical extensions

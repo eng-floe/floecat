@@ -17,6 +17,7 @@
 package ai.floedb.floecat.stats.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import java.util.Map;
@@ -51,5 +52,11 @@ public record StatsCaptureResult(
         target,
         StatsCaptureValue.forColumn(StatsColumnValue.fromColumnStats(columnStats)),
         attrs == null ? Map.of() : attrs);
+  }
+
+  public static StatsCaptureResult forFile(
+      String engineId, StatsTarget target, FileColumnStats fileStats, Map<String, String> attrs) {
+    return new StatsCaptureResult(
+        engineId, target, StatsCaptureValue.forFile(fileStats), attrs == null ? Map.of() : attrs);
   }
 }
