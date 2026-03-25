@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.stats.spi;
 
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import java.util.Objects;
 import java.util.Optional;
@@ -23,15 +24,18 @@ import java.util.Optional;
 /** One typed payload for a single stats target value. */
 public record StatsCaptureValue(
     Optional<TableStats> table,
+    Optional<FileColumnStats> file,
     Optional<StatsColumnValue> column,
     Optional<StatsExpressionValue> expression) {
 
   public StatsCaptureValue {
     table = Objects.requireNonNullElse(table, Optional.empty());
+    file = Objects.requireNonNullElse(file, Optional.empty());
     column = Objects.requireNonNullElse(column, Optional.empty());
     expression = Objects.requireNonNullElse(expression, Optional.empty());
     int present =
         (table.isPresent() ? 1 : 0)
+            + (file.isPresent() ? 1 : 0)
             + (column.isPresent() ? 1 : 0)
             + (expression.isPresent() ? 1 : 0);
     if (present != 1) {
@@ -43,11 +47,21 @@ public record StatsCaptureValue(
     return new StatsCaptureValue(
         Optional.of(Objects.requireNonNull(tableStats, "tableStats")),
         Optional.empty(),
+        Optional.empty(),
+        Optional.empty());
+  }
+
+  public static StatsCaptureValue forFile(FileColumnStats fileStats) {
+    return new StatsCaptureValue(
+        Optional.empty(),
+        Optional.of(Objects.requireNonNull(fileStats, "fileStats")),
+        Optional.empty(),
         Optional.empty());
   }
 
   public static StatsCaptureValue forColumn(StatsColumnValue columnValue) {
     return new StatsCaptureValue(
+        Optional.empty(),
         Optional.empty(),
         Optional.of(Objects.requireNonNull(columnValue, "columnValue")),
         Optional.empty());
@@ -55,6 +69,7 @@ public record StatsCaptureValue(
 
   public static StatsCaptureValue forExpression(StatsExpressionValue expressionValue) {
     return new StatsCaptureValue(
+        Optional.empty(),
         Optional.empty(),
         Optional.empty(),
         Optional.of(Objects.requireNonNull(expressionValue, "expressionValue")));

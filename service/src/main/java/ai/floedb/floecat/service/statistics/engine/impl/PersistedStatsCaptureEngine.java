@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.statistics.engine.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -42,7 +43,7 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
   private static final StatsEngineCapabilities CAPABILITIES =
       StatsEngineCapabilities.builder()
           .connectors(Set.of()) // empty = all connectors
-          .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN))
+          .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN, StatsTargetType.FILE))
           .statisticKinds(
               Set.of(
                   StatsStatisticKind.ROW_COUNT,
@@ -86,6 +87,7 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
     return switch (target.getTargetCase()) {
       case TABLE -> captureTable(request, target);
       case COLUMN -> captureColumn(request, target);
+      case FILE -> captureFile(request, target);
       case EXPRESSION, TARGET_NOT_SET -> Optional.empty();
     };
   }
@@ -113,5 +115,17 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
     return Optional.of(
         StatsCaptureResult.forColumn(
             ENGINE_ID, target, column.get(), Map.of("source", "repository")));
+  }
+
+  private Optional<StatsCaptureResult> captureFile(
+      StatsCaptureRequest request, StatsTarget target) {
+    String filePath = target.getFile().getFilePath();
+    Optional<FileColumnStats> file =
+        statsRepository.getFileColumnStats(request.tableId(), request.snapshotId(), filePath);
+    if (file.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        StatsCaptureResult.forFile(ENGINE_ID, target, file.get(), Map.of("source", "repository")));
   }
 }

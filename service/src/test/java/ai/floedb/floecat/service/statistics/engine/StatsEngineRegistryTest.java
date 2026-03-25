@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.statistics.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
@@ -78,6 +79,50 @@ class StatsEngineRegistryTest {
             Optional.empty());
     StatsCaptureEngine supported =
         new TestEngine("supported", 2, tableOnlyCaps(), Optional.empty());
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(unsupported, supported));
+
+    assertThat(registry.candidates(request))
+        .extracting(StatsCaptureEngine::id)
+        .containsExactly("supported");
+  }
+
+  @Test
+  void candidatesFilterUnsupportedEnginesForFileTarget() {
+    StatsCaptureRequest request =
+        new StatsCaptureRequest(
+            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+            100L,
+            StatsTarget.newBuilder()
+                .setFile(FileStatsTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                .build(),
+            Set.of(StatsStatisticKind.ROW_COUNT),
+            StatsExecutionMode.SYNC,
+            "",
+            false);
+    StatsCaptureEngine unsupported =
+        new TestEngine(
+            "unsupported",
+            1,
+            StatsEngineCapabilities.builder()
+                .targetTypes(Set.of(StatsTargetType.COLUMN))
+                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .executionModes(Set.of(StatsExecutionMode.SYNC))
+                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                .snapshotAware(true)
+                .build(),
+            Optional.empty());
+    StatsCaptureEngine supported =
+        new TestEngine(
+            "supported",
+            2,
+            StatsEngineCapabilities.builder()
+                .targetTypes(Set.of(StatsTargetType.FILE))
+                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .executionModes(Set.of(StatsExecutionMode.SYNC))
+                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                .snapshotAware(true)
+                .build(),
+            Optional.empty());
     StatsEngineRegistry registry = new StatsEngineRegistry(List.of(unsupported, supported));
 
     assertThat(registry.candidates(request))
