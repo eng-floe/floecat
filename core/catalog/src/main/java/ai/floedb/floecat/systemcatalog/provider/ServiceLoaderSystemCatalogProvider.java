@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -77,7 +77,7 @@ public final class ServiceLoaderSystemCatalogProvider
     Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
     for (EngineSystemCatalogExtension ext : engineExtensions) {
-      String normalizedKind = EngineContextNormalizer.normalizeEngineKind(ext.engineKind());
+      String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(ext.engineKind());
       if (normalizedKind.isEmpty()) {
         continue;
       }

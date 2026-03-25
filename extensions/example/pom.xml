@@ -51,10 +51,16 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- SystemObjectScanner, EngineContextNormalizer -->
+        <!-- SystemObjectScanner -->
         <dependency>
             <groupId>ai.floedb.floecat</groupId>
             <artifactId>floecat-core-scanner</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Shared engine identity normalization -->
+        <dependency>
+            <groupId>ai.floedb.floecat</groupId>
+            <artifactId>floecat-core-engine-utils</artifactId>
             <version>${project.version}</version>
         </dependency>
 
