@@ -66,7 +66,7 @@ message ScanFile {
   ScanFileContent file_content = 5;
 
   // Optional per-column min/max stats for pruning.
-  repeated ai.floedb.floecat.catalog.ColumnStats columns = 6;
+  repeated ai.floedb.floecat.catalog.ScalarStats columns = 6;
 
   // JSON-encoded structured representation of Iceberg partition values.
   string partition_data_json = 7;

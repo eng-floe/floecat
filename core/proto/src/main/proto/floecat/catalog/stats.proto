@@ -131,7 +131,8 @@ message EngineExpressionStatsTarget {
   string engine_kind = 1;
   // Engine-owned opaque expression identity bytes. Floecat stores and matches this value as-is.
   bytes engine_expression_key = 2;
-  // Optional producer version for observability. Not part of target identity.
+  // Optional producer version for observability.
+  // Not part of target identity so statistics persist across engine version upgrades.
   string engine_version = 3;
   map<string,string> properties = 99;
 }
@@ -150,70 +151,71 @@ message StatsTarget {
   }
 }
 
-// ---------- Table-level stats ----------
+enum StatsTargetKind {
+  STK_UNSPECIFIED = 0;
+  STK_TABLE = 1;
+  STK_COLUMN = 2;
+  STK_EXPRESSION = 3;
+  STK_FILE = 4;
+}
 
-message TableStats {
+// Persisted target-scoped stats envelope keyed by (table_id, snapshot_id, target).
+message TargetStatsRecord {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  UpstreamStamp upstream = 3;
-  int64 row_count = 10;
-  int64 data_file_count = 11;
-  int64 total_size_bytes = 12;
-  Ndv ndv = 20;
-  StatsMetadata metadata = 30;
+  StatsTarget target = 3;
+  // Canonical metadata envelope for all target kinds.
+  StatsMetadata metadata = 4;
+  // value holds the statistics payload for this record.
+  // Expression targets (StatsTarget.expression) store their statistics as scalar values.
+  // There is no dedicated expression value payload type.
+  oneof value {
+    TableValueStats table = 10;
+    ScalarStats scalar = 11;
+    FileTargetStats file = 12;
+  }
   map<string, string> properties = 99;
 }
 
-// ---------- Column-level stats  ----------
+message TableValueStats {
+  UpstreamStamp upstream = 1;
+  int64 row_count = 2;
+  int64 data_file_count = 3;
+  int64 total_size_bytes = 4;
+  map<string, string> properties = 99;
+}
 
-message ColumnStats {
-  ai.floedb.floecat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  int64 column_id = 3;
-  string column_name = 4;
-  string logical_type = 5;
-  UpstreamStamp upstream = 6;
-  int64 value_count = 9;
-  optional int64 null_count = 10;
-  optional int64 nan_count = 11;
-  
-  /**
-   * NDV summary; callers MUST check {@code hasNdv()} before using this field.
-   * When the field is absent, NDV is unknown and should not be inferred.
-   * When present, {@code mode} controls interpretation:
-   *   - mode unset → NDV unknown (avoid inferring from other data).
-   *   - approx → honor {@code NdvApprox.estimate} and ignore sketches unless you understand them.
-   *   - exact → use {@code Ndv.exact}.
-   * Sketches can be left unset unless the connector knows how to decode them.
-   */
-  Ndv ndv = 12;
-  
-  /**
-   * Optional, canonical UTF-8 bound; presence indicates it was computed even if empty.
-   * See docs/connectors-spi.md#column-bounds-encoding for the per-type encoding rules.
-   */
-  optional string min = 20;
-  
-  /**
-   * Max follows the same canonical encoding rules as {@code min}.
-   */
-  optional string max = 21;
-  bytes histogram = 30;
-  bytes tdigest = 31;
-  StatsMetadata metadata = 40;
+// ---------- Scalar value stats ----------
+
+message ScalarStats {
+  // Optional presentation label for this scalar target (column name, alias, etc.).
+  // This field is cosmetic only and MUST NOT be used for identity, routing, or storage keys.
+  string display_name = 1;
+  string logical_type = 2;
+  UpstreamStamp upstream = 3;
+  int64 value_count = 4;
+  optional int64 null_count = 5;
+  optional int64 nan_count = 6;
+  Ndv ndv = 7;
+  optional string min = 8;
+  optional string max = 9;
+  bytes histogram = 10;
+  bytes tdigest = 11;
   map<string, string> properties = 99;
 }
 
 // ---------- File-level stats ------------
 
-message FileColumnStats {
+message FileTargetStats {
+  // Redundant with enclosing TargetStatsRecord.table_id. Kept for standalone deserialization.
   ai.floedb.floecat.common.ResourceId table_id = 1;
+  // Redundant with enclosing TargetStatsRecord.snapshot_id. Kept for standalone deserialization.
   int64 snapshot_id = 2;
   string file_path = 3;
   string file_format = 4;
   int64 row_count = 5;
   int64 size_bytes = 6;
-  repeated ColumnStats columns = 7;
+  repeated ScalarStats columns = 7;
   FileContent file_content = 8;
   string partition_data_json = 9;
   int32 partition_spec_id = 10;
@@ -230,78 +232,44 @@ enum FileContent {
 
 // ---------- Requests/Responses ----------
 
-message PutTableStatsRequest {
+message PutTargetStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   // Stats writes are accepted even when snapshot_id is not yet materialized.
-  // The service currently treats stats as create-only per (table_id, snapshot_id).
+  // The service currently treats stats as create-only per (table_id, snapshot_id, target).
   int64 snapshot_id = 2;
-  TableStats stats = 3;
+  repeated TargetStatsRecord records = 3;
   ai.floedb.floecat.common.IdempotencyKey idempotency = 4;
 }
-message PutTableStatsResponse {
-  TableStats stats = 1;
-  ai.floedb.floecat.common.MutationMeta meta = 2;
-}
-
-message PutColumnStatsRequest {
-  ai.floedb.floecat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  repeated ColumnStats columns = 3;
-  ai.floedb.floecat.common.IdempotencyKey idempotency = 4;
-}
-message PutColumnStatsResponse {
+message PutTargetStatsResponse {
   int32 upserted = 1;
 }
 
-message PutFileColumnStatsRequest {
+message GetTargetStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
-  int64 snapshot_id = 2;
-  repeated FileColumnStats files = 3;
-  ai.floedb.floecat.common.IdempotencyKey idempotency = 4;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
+  StatsTarget target = 3;
 }
-message PutFileColumnStatsResponse {
-  int32 upserted = 1;
+message GetTargetStatsResponse {
+  TargetStatsRecord stats = 1;
 }
 
-message GetTableStatsRequest {
+message ListTargetStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.SnapshotRef snapshot = 2;
   ai.floedb.floecat.common.PageRequest page = 3;
+  // At most one kind per request is currently supported.
+  // Multi-kind filtering is reserved for future use.
+  repeated StatsTargetKind target_kinds = 4;
 }
-message GetTableStatsResponse {
-  TableStats stats = 1;
-  ai.floedb.floecat.common.PageResponse page = 2;
-}
-
-message ListColumnStatsRequest {
-  ai.floedb.floecat.common.ResourceId table_id = 1;
-  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
-  ai.floedb.floecat.common.PageRequest page = 3;
-}
-message ListColumnStatsResponse {
-  repeated ColumnStats columns = 1;
-  ai.floedb.floecat.common.PageResponse page = 2;
-}
-
-message ListFileColumnStatsRequest {
-  ai.floedb.floecat.common.ResourceId table_id = 1;
-  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
-  ai.floedb.floecat.common.PageRequest page = 3;
-}
-message ListFileColumnStatsResponse {
-  repeated FileColumnStats file_columns = 1;
+message ListTargetStatsResponse {
+  repeated TargetStatsRecord records = 1;
   ai.floedb.floecat.common.PageResponse page = 2;
 }
 
 // ---------- Services ----------
 
 service TableStatisticsService {
-  rpc GetTableStats(GetTableStatsRequest) returns (GetTableStatsResponse);
-  rpc ListColumnStats(ListColumnStatsRequest) returns (ListColumnStatsResponse);
-  rpc ListFileColumnStats(ListFileColumnStatsRequest) returns (ListFileColumnStatsResponse);
-  rpc PutTableStats(PutTableStatsRequest) returns (PutTableStatsResponse);
-  rpc PutColumnStats(stream PutColumnStatsRequest)
-      returns (PutColumnStatsResponse);
-  rpc PutFileColumnStats(stream PutFileColumnStatsRequest)
-      returns (PutFileColumnStatsResponse);
+  rpc GetTargetStats(GetTargetStatsRequest) returns (GetTargetStatsResponse);
+  rpc ListTargetStats(ListTargetStatsRequest) returns (ListTargetStatsResponse);
+  rpc PutTargetStats(stream PutTargetStatsRequest) returns (PutTargetStatsResponse);
 }

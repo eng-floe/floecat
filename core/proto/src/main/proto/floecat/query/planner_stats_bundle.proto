@@ -23,49 +23,47 @@ option java_outer_classname = "PlannerStatsProto";
 import "floecat/catalog/stats.proto";
 import "floecat/catalog/constraints.proto";
 import "floecat/common/common.proto";
-import "floecat/query/engine_specific.proto";
 
-// ---------- Planner stats API (column stats fetch) ----------
+// ---------- Planner stats API (target stats fetch) ----------
 service PlannerStatsService {
   /**
-   * GetColumnStats returns stats for specific columns the planner decided it needs.
+   * GetTargetStats returns stats for specific targets the planner decided it needs.
    *
    * The server resolves snapshot semantics using query_id pins when available.
    * Strict semantics are enforced: each table_id must have an active pin in the QueryContext,
-   * and stats are read only at that pinned snapshot for the (table_id, column_id) pairs that
-   * were surfaced (typically via GetUserObjects). Duplicate column_ids are deduped and the
-   * request is bounded by server-side table/column limits.
+   * and stats are read only at that pinned snapshot for the requested target identities.
+   * Duplicate targets are deduped and the request is bounded by server-side table/target limits.
    *
-   * Failure codes reported inside ColumnStatsResult.failure.code:
+   * Failure codes reported inside TargetStatsResult.failure.code:
    *   planner_stats.pin.missing – the QueryContext lacks a pin for the requested table.
-   *   planner_stats.column_stats.missing – the column stats were not found for the pinned snapshot.
-   *   planner_stats.column_stats.error – an unexpected repository failure occurred while reading stats.
+   *   planner_stats.target_stats.missing – stats were not found for the pinned snapshot/target.
+   *   planner_stats.target_stats.error – an unexpected repository failure occurred while reading stats.
    */
-  rpc GetColumnStats(FetchColumnStatsRequest) returns (stream ColumnStatsBundleChunk);
+  rpc GetTargetStats(FetchTargetStatsRequest) returns (stream TargetStatsBundleChunk);
 
   /**
    * GetTableConstraints returns table-scoped constraints for planner-selected relations.
    *
    * GetTableConstraints provides a dedicated constraints stream for planner clients that fetch
-   * constraints separately. GetColumnStats(include_constraints=true) remains available for clients
+   * constraints separately. GetTargetStats(include_constraints=true) remains available for clients
    * that prefer combined retrieval in one roundtrip.
    *
    * Visibility semantics are request-scoped at relation level: results may be pruned/redacted
    * by requested tables (for example, foreign keys to non-requested tables are hidden).
    *
-   * Unlike GetColumnStats(include_constraints=true), this request does not carry column
+   * Unlike GetTargetStats(include_constraints=true), this request does not carry target
    * projection context, so column-level pruning/masking cannot be made projection-aware here.
    */
   rpc GetTableConstraints(FetchTableConstraintsRequest) returns (stream TableConstraintsBundleChunk);
 }
 
-/** Request stats for a set of columns across one or more relations. */
-message FetchColumnStatsRequest {
+/** Request stats for a set of targets across one or more relations. */
+message FetchTargetStatsRequest {
   /** Query ID obtained from BeginQuery (and used for snapshot pins). */
   string query_id = 1;
 
-  /** Which columns the planner needs stats for. */
-  repeated TableColumnStatsRequest tables = 2;
+  /** Which targets the planner needs stats for. */
+  repeated TableTargetStatsRequest tables = 2;
 
   /**
    * When true, include table-scoped constraint bundles for requested tables.
@@ -90,26 +88,26 @@ message FetchTableConstraintsRequest {
   repeated ai.floedb.floecat.common.ResourceId table_ids = 2;
 }
 
-/** Columns requested for one table. */
-message TableColumnStatsRequest {
+/** Targets requested for one table. */
+message TableTargetStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 
   /**
-   * Column IDs as returned by UserObjectsService ColumnResult.column_id (stable column_id).
-   * Duplicates are deduped server-side and column_ids must be positive.
+   * Target identities to resolve for this table. Duplicates are deduped server-side.
+   * For column targets, column_id must be positive.
    */
-  repeated int64 column_ids = 2;
+  repeated ai.floedb.floecat.catalog.StatsTarget targets = 2;
 }
 
-/** Streamed chunk for column stats bundles. */
-message ColumnStatsBundleChunk {
+/** Streamed chunk for target stats bundles. */
+message TargetStatsBundleChunk {
   string query_id = 1;
   uint64 seq = 2;
 
   oneof payload {
-    ColumnStatsBundleHeader header = 10;
-    ColumnStatsBatch batch = 20;
-    ColumnStatsBundleEnd end = 90;
+    TargetStatsBundleHeader header = 10;
+    TargetStatsBatch batch = 20;
+    TargetStatsBundleEnd end = 90;
   }
 }
 
@@ -125,15 +123,15 @@ message TableConstraintsBundleChunk {
   }
 }
 
-message ColumnStatsBundleHeader {}
+message TargetStatsBundleHeader {}
 message TableConstraintsBundleHeader {}
 
-message ColumnStatsBundleEnd {
+message TargetStatsBundleEnd {
   uint64 requested_tables = 1;
-  uint64 requested_columns = 2;
-  uint64 returned_columns = 3;
-  uint64 not_found_columns = 4;
-  uint64 error_columns = 5;
+  uint64 requested_targets = 2;
+  uint64 returned_targets = 3;
+  uint64 not_found_targets = 4;
+  uint64 error_targets = 5;
 }
 
 message TableConstraintsBundleEnd {
@@ -149,9 +147,9 @@ message StatsWarning {
   map<string,string> details = 10;
 }
 
-/** Batch of column stats results. */
-message ColumnStatsBatch {
-  repeated ColumnStatsResult columns = 1;
+/** Batch of target stats results. */
+message TargetStatsBatch {
+  repeated TargetStatsResult targets = 1;
   repeated StatsWarning warnings = 2;
 
   /**
@@ -159,7 +157,7 @@ message ColumnStatsBatch {
    * Each result is addressed by table id, and the contained definitions may mix table
    * and column-level constraints.
    *
-   * Emitted only when requested via FetchColumnStatsRequest.include_constraints.
+   * Emitted only when requested via FetchTargetStatsRequest.include_constraints.
    */
   repeated TableConstraintsResult constraints = 3;
 }
@@ -178,15 +176,15 @@ enum BundleResultStatus {
   BUNDLE_RESULT_STATUS_ERROR = 3;
 }
 
-message ColumnStatsResult {
+message TargetStatsResult {
   ai.floedb.floecat.common.ResourceId table_id = 1;
-  int64 column_id = 2;
-  string column_name = 3;
+  int64 snapshot_id = 2;
+  ai.floedb.floecat.catalog.StatsTarget target = 3;
 
   BundleResultStatus status = 4;
 
   /** Present when status == FOUND. */
-  ColumnStatsInfo stats = 10;
+  ai.floedb.floecat.catalog.TargetStatsRecord stats = 10;
 
   /** Present when status != FOUND. */
   BundleFailure failure = 11;
@@ -207,59 +205,11 @@ message TableConstraintsResult {
 /**
  * Planner-specific failure metadata. The server typically sets one of:
  *   planner_stats.pin.missing – reported with `status = BUNDLE_RESULT_STATUS_ERROR`
- *   planner_stats.column_stats.missing – reported with `status = BUNDLE_RESULT_STATUS_NOT_FOUND`
- *   planner_stats.column_stats.error – reported with `status = BUNDLE_RESULT_STATUS_ERROR`
+ *   planner_stats.target_stats.missing – reported with `status = BUNDLE_RESULT_STATUS_NOT_FOUND`
+ *   planner_stats.target_stats.error – reported with `status = BUNDLE_RESULT_STATUS_ERROR`
  */
 message BundleFailure {
   string code = 1;
   string message = 2;
   map<string,string> details = 10;
-}
-
-/**
- * Column stats the planner can consume.
- *
- * Today the planner fills logical_type, value_count, null_count, nan_count, ndv (when
- * available), and the canonical min/max strings whenever the upstream stats provide them.
- * All string bounds follow the encoding documented in ColumnStats (floecat/catalog/stats.proto),
- * so planner/engine code can decode by looking at logical_type or by plugging in a decorator.
- */
-message ColumnStatsInfo {
-  /** Logical type string (same encoding as SchemaColumn.logical_type). */
-  string logical_type = 1;
-
-  /**
-   * Number of rows scanned / total rows considered for this column stats (includes nulls).
-   * Null fraction is computed as {@code null_count / value_count}.
-   */
-  int64 value_count = 2;
-
-  /** Number of nulls observed (subset of {@code value_count}). */
-  optional int64 null_count = 3;
-
-  /** Number of NaNs observed. */
-  optional int64 nan_count = 4;
-
-  /** NDV, exact or approximate. */
-  ai.floedb.floecat.catalog.Ndv ndv = 5;
-
-  /**
-   * Canonical min bound; follows the same UTF-8 encoding rules as {@code ColumnStats.min}
-   * (boolean = {@code "true"/"false"}, ints = base-10, floats = {@code Float/Double.toString},
-   * decimal = normalized plain string, DATE/TIME = ISO-8601, TIMESTAMP = ISO local date-time
-   * (no zone suffix), TIMESTAMPTZ = ISO instant with {@code Z}, uuid lowercase display,
-   * string literal, binary base64). Presence indicates the bound was observed even if it is empty.
-   */
-  optional string min = 10;
-  /**
-   * Canonical max bound with the same encoding rules as {@code min}.
-   */
-  optional string max = 11;
-
-  /** Optional binary payloads for richer estimators. */
-  bytes histogram = 20;
-  bytes tdigest = 21;
-
-  /** Optional engine-specific metadata extensions. */
-  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
 }
