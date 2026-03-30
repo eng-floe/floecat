@@ -38,6 +38,11 @@ final class StatsCanonicalizer {
 
   private StatsCanonicalizer() {}
 
+  /**
+   * Computes canonical SHA-256 input bytes for a target record idempotency fingerprint.
+   *
+   * <p>Operational timestamps (for example captured/refresh times) are intentionally excluded.
+   */
   static byte[] canonicalFingerprint(TargetStatsRecord record) {
     var c = new Canonicalizer();
     canonicalResourceId(c, "table_id", record.getTableId());
@@ -83,6 +88,11 @@ final class StatsCanonicalizer {
     return c.bytes();
   }
 
+  /**
+   * Computes canonical SHA-256 input bytes for scalar payload fingerprinting.
+   *
+   * <p>Cosmetic labels are excluded from identity.
+   */
   static byte[] canonicalFingerprint(ScalarStats stats) {
     var c = new Canonicalizer();
     c.scalar("logical_type", stats.getLogicalType());
@@ -99,6 +109,11 @@ final class StatsCanonicalizer {
     return c.bytes();
   }
 
+  /**
+   * Computes canonical SHA-256 input bytes for file payload fingerprinting.
+   *
+   * <p>Per-column entries are sorted deterministically by content-derived keys.
+   */
   static byte[] canonicalFingerprint(FileTargetStats stats) {
     var c = new Canonicalizer();
     canonicalResourceId(c, "table_id", stats.getTableId());

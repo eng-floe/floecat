@@ -24,16 +24,24 @@ public final class StatsUnsupportedTargetException extends RuntimeException {
   private final StatsTargetType targetType;
   private final StatsCaptureRequest request;
 
+  /**
+   * Creates an unsupported-target exception with routing context.
+   *
+   * @param targetType canonical target category that had no matching engine
+   * @param request original capture request
+   */
   public StatsUnsupportedTargetException(StatsTargetType targetType, StatsCaptureRequest request) {
     super("No stats engine supports capture for target type " + targetType.name());
     this.targetType = Objects.requireNonNull(targetType, "targetType");
     this.request = Objects.requireNonNull(request, "request");
   }
 
+  /** Returns the unsupported target category. */
   public StatsTargetType targetType() {
     return targetType;
   }
 
+  /** Returns the original capture request associated with this error. */
   public StatsCaptureRequest request() {
     return request;
   }

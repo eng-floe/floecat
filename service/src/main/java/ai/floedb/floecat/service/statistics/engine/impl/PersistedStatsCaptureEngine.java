@@ -97,6 +97,8 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
     };
   }
 
+  // Returns empty when no table record exists for the normalized target or value type mismatches.
+  // Result attributes include source=repository to make provenance explicit in routing traces.
   private Optional<StatsCaptureResult> captureTable(StatsCaptureRequest request) {
     if (!supportsRequestedKinds(request.requestedKinds(), TABLE_STATISTIC_KINDS)) {
       return Optional.empty();
@@ -111,6 +113,8 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
         StatsCaptureResult.forRecord(ENGINE_ID, tableRecord.get(), Map.of("source", "repository")));
   }
 
+  // Returns empty when repository has no column target record or payload is not scalar.
+  // Result attributes include source=repository to signal persisted lookup path.
   private Optional<StatsCaptureResult> captureColumn(
       StatsCaptureRequest request, StatsTarget target) {
     if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {
@@ -128,6 +132,8 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
             ENGINE_ID, columnRecord.get(), Map.of("source", "repository")));
   }
 
+  // Returns empty when repository has no file target record or payload is not file stats.
+  // Result attributes include source=repository to signal persisted lookup path.
   private Optional<StatsCaptureResult> captureFile(
       StatsCaptureRequest request, StatsTarget target) {
     if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {

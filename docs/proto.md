@@ -39,13 +39,13 @@ packages and are consumed by the Quarkus service, connectors, CLI, and reconcile
 | `TableService` | `ListTables`, `GetTable`, `CreateTable`, `UpdateTable`, `DeleteTable` | `TableSpec` carries `UpstreamRef` with connector link, schema JSON, and partition info. |
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
-| `TableStatisticsService` | `GetTableStats`, `ListColumnStats`, `ListFileColumnStats`, `PutTableStats`, client-streaming `PutColumnStats` + `PutFileColumnStats` | Accepts per-snapshot NDV/histogram payloads and per-file column stats; streaming RPCs collapse multiple batches into a single call. |
+| `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
 | `Connectors` | Connector CRUD, `ValidateConnector`, `StartCapture`, `GetReconcileJob`. |
 | `QueryService` | `BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`, `FetchScanBundle`. |
-| `PlannerStatsService` | `GetColumnStats`, `GetTableConstraints` | Split planner-facing streams for column stats and table constraints; `GetColumnStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
+| `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
 | `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
@@ -78,15 +78,15 @@ engine release.
   tables must be `RK_TABLE`). Clients should populate the `kind` enum to improve error messages.
 - **`SnapshotRef` semantics** – `oneof which { snapshot_id | as_of | special }`. `special` currently
   allows `SS_CURRENT`. Planner RPCs interpret `as_of` timestamps when enumerating snapshots.
-- **File-level stats** – `FileColumnStats` mirrors `ColumnStats` but anchors counts and sketches to
-  a file path. `PutFileColumnStats` uses the same idempotency key across streamed batches for the
-  same table/snapshot pair; the service enforces consistent `table_id`/`snapshot_id` in a stream.
-- **Stats vs constraints snapshot policy** – `PutTableStats` currently accepts unknown snapshots
+- **File-level stats** – `FileTargetStats` anchors counts and sketches to
+  a file path. File stats are written as `TargetStatsRecord` values with `target.file` identity via
+  `PutTargetStats`; the service enforces consistent `table_id`/`snapshot_id` in a stream.
+- **Stats vs constraints snapshot policy** – `PutTargetStats` currently accepts unknown snapshots
   (lenient ordering), while `PutTableConstraints` is strict and requires a materialized snapshot
   row before write. Rationale: stats keeps existing capture ordering compatibility, while
   constraints are modeled as snapshot-attached relational facts.
 - **Planner split vs combined retrieval** – `PlannerStatsService.GetTableConstraints` provides a
-  dedicated constraints-only stream, while `GetColumnStats(include_constraints=true)` remains
+  dedicated constraints-only stream, while `GetTargetStats(include_constraints=true)` remains
   available as a combined convenience mode. Split mode is relation-scoped (table visibility pruning
   only) because `FetchTableConstraintsRequest` does not carry column projection context; combined
   mode can apply relation+column request-shape-aware pruning. For constraints lookups,

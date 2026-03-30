@@ -29,6 +29,11 @@ public enum StatsTargetType {
   /** File-level statistics target. */
   FILE;
 
+  /**
+   * Maps a proto {@link StatsTarget} to its canonical routing category.
+   *
+   * @throws IllegalArgumentException when {@code target} has no selected target case
+   */
   public static StatsTargetType from(StatsTarget target) {
     return switch (target.getTargetCase()) {
       case TABLE -> TABLE;

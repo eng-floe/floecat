@@ -23,6 +23,7 @@ import "floecat/catalog/table.proto";
 
 import "google/protobuf/timestamp.proto";
 
+// Upstream provenance stamp for a value captured from metadata or compute.
 message UpstreamStamp {
   TableFormat system = 1;
   string table_native_id = 2;
@@ -31,6 +32,7 @@ message UpstreamStamp {
   map<string,string> properties = 99;
 }
 
+// Number-of-distinct-values payload supporting exact and approximate representations.
 message Ndv {
   oneof mode {
     int64 exact = 1;
@@ -40,6 +42,7 @@ message Ndv {
   repeated NdvSketch sketches = 20;
 }
 
+// Approximate NDV estimate plus confidence and sampling diagnostics.
 message NdvApprox {
   double estimate = 1;
   double relative_standard_error = 2;
@@ -52,6 +55,7 @@ message NdvApprox {
   map<string,string> properties = 99;
 }
 
+// Serialized NDV sketch artifact used for replay/diagnostics.
 message NdvSketch {
   string type = 1;
   bytes data = 2;
@@ -119,6 +123,7 @@ message StatsMetadata {
 
 // ---------- Generalized stats targets ----------
 
+// Table-wide target identity (single record per table/snapshot).
 message TableStatsTarget {}
 
 message ColumnStatsTarget {

@@ -29,6 +29,14 @@ public final class TargetStatsRecords {
 
   private TargetStatsRecords() {}
 
+  /**
+   * Builds a table-target stats record envelope.
+   *
+   * @param tableId table resource identifier
+   * @param snapshotId table snapshot identifier
+   * @param tableValueStats table-level value payload
+   * @param metadata optional stats metadata; pass {@code null} to omit
+   */
   public static TargetStatsRecord tableRecord(
       ResourceId tableId,
       long snapshotId,
@@ -46,6 +54,15 @@ public final class TargetStatsRecords {
     return builder.build();
   }
 
+  /**
+   * Builds a column-target stats record envelope.
+   *
+   * @param tableId table resource identifier
+   * @param snapshotId table snapshot identifier
+   * @param columnId stable column identifier
+   * @param scalarStats scalar payload for the column target
+   * @param metadata optional stats metadata; pass {@code null} to omit
+   */
   public static TargetStatsRecord columnRecord(
       ResourceId tableId,
       long snapshotId,
@@ -64,6 +81,12 @@ public final class TargetStatsRecords {
     return builder.build();
   }
 
+  /**
+   * Builds an expression-target stats record envelope without metadata.
+   *
+   * @see #expressionRecord(ResourceId, long, EngineExpressionStatsTarget, ScalarStats,
+   *     StatsMetadata)
+   */
   public static TargetStatsRecord expressionRecord(
       ResourceId tableId,
       long snapshotId,
@@ -72,11 +95,25 @@ public final class TargetStatsRecords {
     return expressionRecord(tableId, snapshotId, expressionTarget, scalarStats, null);
   }
 
+  /**
+   * Builds a file-target stats record envelope without metadata.
+   *
+   * @see #fileRecord(ResourceId, long, FileTargetStats, StatsMetadata)
+   */
   public static TargetStatsRecord fileRecord(
       ResourceId tableId, long snapshotId, FileTargetStats fileStats) {
     return fileRecord(tableId, snapshotId, fileStats, null);
   }
 
+  /**
+   * Builds an expression-target stats record envelope.
+   *
+   * @param tableId table resource identifier
+   * @param snapshotId table snapshot identifier
+   * @param expressionTarget expression target identity
+   * @param scalarStats scalar payload for the expression target
+   * @param metadata optional stats metadata; pass {@code null} to omit
+   */
   public static TargetStatsRecord expressionRecord(
       ResourceId tableId,
       long snapshotId,
@@ -95,6 +132,17 @@ public final class TargetStatsRecords {
     return builder.build();
   }
 
+  /**
+   * Builds a file-target stats record envelope.
+   *
+   * <p>The file payload is normalized so {@code table_id} and {@code snapshot_id} embedded in
+   * {@code fileStats} match the enclosing record envelope.
+   *
+   * @param tableId table resource identifier
+   * @param snapshotId table snapshot identifier
+   * @param fileStats file-level payload
+   * @param metadata optional stats metadata; pass {@code null} to omit
+   */
   public static TargetStatsRecord fileRecord(
       ResourceId tableId, long snapshotId, FileTargetStats fileStats, StatsMetadata metadata) {
     FileTargetStats normalized =

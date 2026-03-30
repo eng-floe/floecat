@@ -73,6 +73,12 @@ public interface StatsStore {
   MutationMeta metaForTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target, Timestamp nowTs);
 
+  /**
+   * Immutable page container for {@link #listTargetStats}.
+   *
+   * <p>Records are defensively copied; {@code nextPageToken} is normalized to empty-string when
+   * null.
+   */
   record StatsStorePage(List<TargetStatsRecord> records, String nextPageToken) {
     public StatsStorePage {
       records = records == null ? List.of() : List.copyOf(records);

@@ -32,14 +32,14 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   without changing the SPI surface.
 - **Auth providers** – `AuthProvider` + concrete implementations such as `NoAuthProvider` and
   `AwsSigV4AuthProvider` supply credentials or headers per connector.
-- **Stats helpers** – `StatsEngine`, `GenericStatsEngine`, `ProtoStatsBuilder`, and NDV utilities
+- **Stats helpers** – `StatsEngine`, `GenericStatsEngine`, `StatsProtoEmitter`, and NDV utilities
   (`NdvProvider`, `SamplingNdvProvider`, `ParquetNdvProvider`, `FilteringNdvProvider`,
   `StaticOnceNdvProvider`, `NdvApprox`, `NdvSketch`). These components interpret Parquet footers,
-  combine NDV approximations, and emit `TableStats`/`ColumnStats` protobufs.
+  combine NDV approximations, and emit target-native `TargetStatsRecord` protobufs.
 
 ### Column bounds encoding
 
-When connectors emit `ColumnStats.min`/`max`, they must use the canonical string format documented in
+When connectors emit `ScalarStats.min`/`max`, they must use the canonical string format documented in
 `floecat/catalog/stats.proto`. Each of these bounds is optional—`hasMin()`/`hasMax()` indicate the
 field was populated (even when the string itself is empty). In brief:
 
@@ -128,10 +128,11 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
   store) so connectors can merge Parquet-level NDV sketches with streaming approximations. The SPI
   exposes `NdvApprox` structures mirroring `catalog/stats.proto` for compatibility.
 - **Parquet helpers** – `ParquetFooterStats` and `ParquetNdvProvider` parse Parquet metadata once and
-  reuse the results for multiple columns to minimize IO; `ProtoStatsBuilder.toFileColumnStats`
-  packages footer-derived stats into `FileColumnStats` payloads.
+  reuse the results for multiple columns to minimize IO; `StatsProtoEmitter` packages footer-derived
+  stats into `FileTargetStats` payloads with `FileColumnStats { column_id, scalar }` entries.
 - **Planner integration** – `Planner` interface (under `connector/common`) converts connector output
-  into executor-facing `ScanFile` lists, ensuring file stats include `ColumnStats` when available.
+  into executor-facing `ScanFile` lists, ensuring file stats include target-native scalar payloads
+  when available.
 - **Error propagation** – Connector implementations should wrap transient upstream failures inside
   unchecked exceptions so `ReconcilerService` can count them and continue scanning other tables.
 

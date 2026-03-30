@@ -16,8 +16,7 @@ Blobs follow deterministic prefixes:
 /accounts/{account_id}/namespaces/{namespace_id}/namespace/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/table/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/snapshot/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/table-stats/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/column-stats/{column_id}/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{target_id}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/file-stats/{file_path}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id}/{sha}.pb
 /accounts/{account_id}/views/{view_id}/view/{sha}.pb
@@ -42,8 +41,7 @@ Pointers capture hierarchy and name lookups:
 /accounts/{account_id}/catalogs/{catalog_id}/namespaces/{namespace_id}/views/by-name/{view_name}
 /accounts/{account_id}/tables/{table_id}/snapshots/by-id/{snapshot_id}
 /accounts/{account_id}/tables/{table_id}/snapshots/by-time/{timestamp}-{snapshot_id}
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/table
-/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/columns/{column_id}
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/targets/{target_id}
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/files/{file_path}
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id}/stats/constraints
 /accounts/{account_id}/tables/{table_id}/constraints/by-snapshot/{snapshot_id}
@@ -54,6 +52,9 @@ Pointers capture hierarchy and name lookups:
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
 ```
 
+Stats target identity is encoded in `{target_id}` and is the storage key component for all
+persisted table/column/expression stats at a given `(table_id, snapshot_id)`.
+
 Constraint storage semantics:
 
 - The persisted constraints unit is per table per snapshot (`.../constraints/by-snapshot/{snapshot_id}`).
@@ -61,7 +62,7 @@ Constraint storage semantics:
   represented in table scope (for example `NOT NULL`).
 - Ingestion policy is intentionally asymmetric today:
   - `PutTableConstraints` is strict and requires an existing snapshot row.
-  - `PutTableStats` is lenient and may accept writes before snapshot materialization.
+  - `PutTargetStats` is lenient and may accept writes before snapshot materialization.
   - Rationale: preserve existing stats capture ordering while keeping constraints explicitly
     attached to materialized snapshots.
 

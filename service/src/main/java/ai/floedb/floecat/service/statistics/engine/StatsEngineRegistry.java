@@ -37,11 +37,13 @@ public class StatsEngineRegistry {
 
   private final List<StatsCaptureEngine> captureEngines;
 
+  /** CDI constructor used in production; discovered engines are sorted by priority then id. */
   @Inject
   public StatsEngineRegistry(Instance<StatsCaptureEngine> captureEngines) {
     this(captureEngines == null ? List.of() : captureEngines.stream().toList());
   }
 
+  /** Testing/override constructor; engines are sorted by priority then id. */
   public StatsEngineRegistry(List<StatsCaptureEngine> captureEngines) {
     this.captureEngines =
         (captureEngines == null ? List.<StatsCaptureEngine>of() : captureEngines)
@@ -52,10 +54,12 @@ public class StatsEngineRegistry {
                 .toList();
   }
 
+  /** Returns all registered engines sorted by priority then id. */
   public List<StatsCaptureEngine> engines() {
     return captureEngines;
   }
 
+  /** Returns request-compatible engines after applying {@link StatsCaptureEngine#supports}. */
   public List<StatsCaptureEngine> candidates(StatsCaptureRequest request) {
     return captureEngines.stream().filter(e -> e.supports(request)).toList();
   }

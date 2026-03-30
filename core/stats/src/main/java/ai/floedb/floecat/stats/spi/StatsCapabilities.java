@@ -144,32 +144,38 @@ public record StatsCapabilities(
 
     private Builder() {}
 
+    /** Limits matching to the provided connector types (empty set means all connectors). */
     public Builder connectors(Set<String> connectors) {
       this.connectors = normalizeConnectors(connectors);
       return this;
     }
 
+    /** Limits matching to the provided target types (empty set means all target types). */
     public Builder targetTypes(Set<StatsTargetType> targetTypes) {
       this.targetTypes = Set.copyOf(targetTypes);
       return this;
     }
 
+    /** Limits matching to the provided statistic kinds (empty set means all kinds). */
     public Builder statisticKindsByTarget(
         Map<StatsTargetType, Set<StatsKind>> statisticKindsByTarget) {
       this.statisticKindsByTarget = normalizeStatisticKindsByTarget(statisticKindsByTarget);
       return this;
     }
 
+    /** Declares execution modes accepted by the engine (default is {@code SYNC} only). */
     public Builder executionModes(Set<StatsExecutionMode> executionModes) {
       this.executionModes = Set.copyOf(executionModes);
       return this;
     }
 
+    /** Declares sampling features accepted by the engine (default is {@code NONE}). */
     public Builder samplingSupport(Set<StatsSamplingSupport> samplingSupport) {
       this.samplingSupport = Set.copyOf(samplingSupport);
       return this;
     }
 
+    /** Declares whether snapshot-scoped requests are supported by this engine. */
     public Builder snapshotAware(boolean snapshotAware) {
       this.snapshotAware = snapshotAware;
       return this;
