@@ -16,19 +16,17 @@
 
 package ai.floedb.floecat.service.statistics.engine.impl;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TableStats;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCapabilities;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
-import ai.floedb.floecat.stats.spi.StatsEngineCapabilities;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsSamplingSupport;
-import ai.floedb.floecat.stats.spi.StatsStatisticKind;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -36,24 +34,22 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** Baseline engine exposing already-persisted stats through the new capture SPI. */
+/**
+ * Baseline reference engine exposing already-persisted stats through the capture SPI.
+ *
+ * <p>Custom engines should generally use a lower priority value (less than {@code 10_000}) to take
+ * precedence over this fallback engine.
+ */
 @ApplicationScoped
 public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
 
   private static final String ENGINE_ID = "persisted_stats";
-  private static final Set<StatsStatisticKind> TABLE_STATISTIC_KINDS =
-      Set.of(
-          StatsStatisticKind.ROW_COUNT,
-          StatsStatisticKind.FILE_COUNT,
-          StatsStatisticKind.TOTAL_BYTES);
-  private static final Set<StatsStatisticKind> VALUE_STATISTIC_KINDS =
-      Set.of(
-          StatsStatisticKind.NULL_COUNT,
-          StatsStatisticKind.NDV,
-          StatsStatisticKind.MIN_MAX,
-          StatsStatisticKind.HISTOGRAM);
-  private static final StatsEngineCapabilities CAPABILITIES =
-      StatsEngineCapabilities.builder()
+  private static final Set<StatsKind> TABLE_STATISTIC_KINDS =
+      Set.of(StatsKind.ROW_COUNT, StatsKind.FILE_COUNT, StatsKind.TOTAL_BYTES);
+  private static final Set<StatsKind> VALUE_STATISTIC_KINDS =
+      Set.of(StatsKind.NULL_COUNT, StatsKind.NDV, StatsKind.MIN_MAX, StatsKind.HISTOGRAM);
+  private static final StatsCapabilities CAPABILITIES =
+      StatsCapabilities.builder()
           .connectors(Set.of()) // empty = all connectors
           .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN, StatsTargetType.FILE))
           .statisticKindsByTarget(
@@ -61,16 +57,16 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
                   StatsTargetType.TABLE, TABLE_STATISTIC_KINDS,
                   StatsTargetType.COLUMN, VALUE_STATISTIC_KINDS,
                   StatsTargetType.FILE, VALUE_STATISTIC_KINDS))
-          .executionModes(Set.of(StatsExecutionMode.SYNC, StatsExecutionMode.ASYNC))
+          .executionModes(Set.of(StatsExecutionMode.SYNC))
           .samplingSupport(Set.of(StatsSamplingSupport.NONE))
           .snapshotAware(true)
           .build();
 
-  private final StatsRepository statsRepository;
+  private final StatsStore statsStore;
 
   @Inject
-  public PersistedStatsCaptureEngine(StatsRepository statsRepository) {
-    this.statsRepository = statsRepository;
+  public PersistedStatsCaptureEngine(StatsStore statsStore) {
+    this.statsStore = statsStore;
   }
 
   @Override
@@ -85,7 +81,7 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
   }
 
   @Override
-  public StatsEngineCapabilities capabilities() {
+  public StatsCapabilities capabilities() {
     return CAPABILITIES;
   }
 
@@ -93,26 +89,26 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
     StatsTarget target = request.target();
     return switch (target.getTargetCase()) {
-      case TABLE -> captureTable(request, target);
+      case TABLE -> captureTable(request);
       case COLUMN -> captureColumn(request, target);
+      case EXPRESSION -> captureExpression(request, target);
       case FILE -> captureFile(request, target);
-      case EXPRESSION, TARGET_NOT_SET -> Optional.empty();
+      case TARGET_NOT_SET -> Optional.empty();
     };
   }
 
-  private Optional<StatsCaptureResult> captureTable(
-      StatsCaptureRequest request, StatsTarget target) {
+  private Optional<StatsCaptureResult> captureTable(StatsCaptureRequest request) {
     if (!supportsRequestedKinds(request.requestedKinds(), TABLE_STATISTIC_KINDS)) {
       return Optional.empty();
     }
-    Optional<TableStats> table =
-        statsRepository.getTableStats(request.tableId(), request.snapshotId());
-    if (table.isEmpty()) {
+    StatsTarget normalizedTarget = StatsTargetIdentity.tableTarget();
+    Optional<TargetStatsRecord> tableRecord =
+        statsStore.getTargetStats(request.tableId(), request.snapshotId(), normalizedTarget);
+    if (tableRecord.isEmpty() || !tableRecord.get().hasTable()) {
       return Optional.empty();
     }
     return Optional.of(
-        StatsCaptureResult.forTable(
-            ENGINE_ID, target, table.get(), Map.of("source", "repository")));
+        StatsCaptureResult.forRecord(ENGINE_ID, tableRecord.get(), Map.of("source", "repository")));
   }
 
   private Optional<StatsCaptureResult> captureColumn(
@@ -121,14 +117,15 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
       return Optional.empty();
     }
     long columnId = target.getColumn().getColumnId();
-    Optional<ColumnStats> column =
-        statsRepository.getColumnStats(request.tableId(), request.snapshotId(), columnId);
-    if (column.isEmpty()) {
+    StatsTarget normalizedTarget = StatsTargetIdentity.columnTarget(columnId);
+    Optional<TargetStatsRecord> columnRecord =
+        statsStore.getTargetStats(request.tableId(), request.snapshotId(), normalizedTarget);
+    if (columnRecord.isEmpty() || !columnRecord.get().hasScalar()) {
       return Optional.empty();
     }
     return Optional.of(
-        StatsCaptureResult.forColumn(
-            ENGINE_ID, target, column.get(), Map.of("source", "repository")));
+        StatsCaptureResult.forRecord(
+            ENGINE_ID, columnRecord.get(), Map.of("source", "repository")));
   }
 
   private Optional<StatsCaptureResult> captureFile(
@@ -136,20 +133,18 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
     if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {
       return Optional.empty();
     }
-    String filePath = StatsTargetIdentity.filePath(target.getFile().getFilePath());
-    StatsTarget normalizedTarget = StatsTargetIdentity.fileTarget(filePath);
-    Optional<FileColumnStats> file =
-        statsRepository.getFileColumnStats(request.tableId(), request.snapshotId(), filePath);
-    if (file.isEmpty()) {
+    StatsTarget normalizedTarget = StatsTargetIdentity.fileTarget(target.getFile().getFilePath());
+    Optional<TargetStatsRecord> fileRecord =
+        statsStore.getTargetStats(request.tableId(), request.snapshotId(), normalizedTarget);
+    if (fileRecord.isEmpty() || !fileRecord.get().hasFile()) {
       return Optional.empty();
     }
     return Optional.of(
-        StatsCaptureResult.forFile(
-            ENGINE_ID, normalizedTarget, file.get(), Map.of("source", "repository")));
+        StatsCaptureResult.forRecord(ENGINE_ID, fileRecord.get(), Map.of("source", "repository")));
   }
 
   private static boolean supportsRequestedKinds(
-      Set<StatsStatisticKind> requestedKinds, Set<StatsStatisticKind> supportedKinds) {
+      Set<StatsKind> requestedKinds, Set<StatsKind> supportedKinds) {
     return requestedKinds.isEmpty() || supportedKinds.containsAll(requestedKinds);
   }
 }

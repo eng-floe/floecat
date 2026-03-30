@@ -17,20 +17,24 @@
 package ai.floedb.floecat.service.statistics.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.stats.spi.StatsCapabilities;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
-import ai.floedb.floecat.stats.spi.StatsEngineCapabilities;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsSamplingSupport;
-import ai.floedb.floecat.stats.spi.StatsStatisticKind;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
+import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,48 +47,85 @@ class StatsEngineRegistryTest {
   void routesByPriorityAndReturnsFirstNonEmptyResult() {
     StatsCaptureRequest request = sampleRequest();
     StatsCaptureEngine emptyHighPriority =
-        new TestEngine("empty-first", 1, tableOnlyCaps(), Optional.empty());
-    TableStats expected = TableStats.newBuilder().setSnapshotId(100L).build();
+        TestStatsCaptureEngine.builder("empty-first")
+            .priority(1)
+            .capabilities(tableOnlyCaps())
+            .fixed(Optional.empty())
+            .build();
+    TargetStatsRecord expected =
+        TargetStatsRecord.newBuilder()
+            .setTableId(request.tableId())
+            .setSnapshotId(request.snapshotId())
+            .setTarget(request.target())
+            .setTable(TableValueStats.newBuilder().setRowCount(10L).build())
+            .build();
     StatsCaptureEngine hitSecond =
-        new TestEngine(
-            "hit-second",
-            2,
-            tableOnlyCaps(),
-            Optional.of(
-                StatsCaptureResult.forTable(
-                    "hit-second", request.target(), expected, Map.of("path", "unit"))));
+        TestStatsCaptureEngine.builder("hit-second")
+            .priority(2)
+            .capabilities(tableOnlyCaps())
+            .fixed(
+                Optional.of(
+                    StatsCaptureResult.forRecord("hit-second", expected, Map.of("path", "unit"))))
+            .build();
 
     StatsEngineRegistry registry = new StatsEngineRegistry(List.of(hitSecond, emptyHighPriority));
 
     Optional<StatsCaptureResult> out = registry.capture(request);
     assertThat(out).isPresent();
     assertThat(out.get().engineId()).isEqualTo("hit-second");
-    assertThat(out.get().value().table()).contains(expected);
+    assertThat(out.get().record()).isEqualTo(expected);
   }
 
   @Test
   void candidatesFilterUnsupportedEngines() {
     StatsCaptureRequest request = sampleRequest();
     StatsCaptureEngine unsupported =
-        new TestEngine(
-            "unsupported",
-            1,
-            StatsEngineCapabilities.builder()
-                .targetTypes(Set.of(StatsTargetType.COLUMN))
-                .statisticKindsByTarget(
-                    Map.of(StatsTargetType.COLUMN, Set.of(StatsStatisticKind.NDV)))
-                .executionModes(Set.of(StatsExecutionMode.SYNC))
-                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                .snapshotAware(true)
-                .build(),
-            Optional.empty());
+        TestStatsCaptureEngine.builder("unsupported")
+            .priority(1)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.COLUMN))
+                    .statisticKindsByTarget(Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.NDV)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(true)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
     StatsCaptureEngine supported =
-        new TestEngine("supported", 2, tableOnlyCaps(), Optional.empty());
+        TestStatsCaptureEngine.builder("supported")
+            .priority(2)
+            .capabilities(tableOnlyCaps())
+            .fixed(Optional.empty())
+            .build();
     StatsEngineRegistry registry = new StatsEngineRegistry(List.of(unsupported, supported));
 
     assertThat(registry.candidates(request))
         .extracting(StatsCaptureEngine::id)
         .containsExactly("supported");
+  }
+
+  @Test
+  void captureThrowsNonImplementedWhenNoSelectedEngineSupportsRequest() {
+    StatsCaptureRequest request = sampleRequest();
+    StatsCaptureEngine columnOnly =
+        TestStatsCaptureEngine.builder("column-only")
+            .priority(1)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.COLUMN))
+                    .statisticKinds(Set.of(StatsKind.ROW_COUNT))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(true)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(columnOnly));
+
+    assertThatThrownBy(() -> registry.capture(request))
+        .isInstanceOf(StatsUnsupportedTargetException.class)
+        .hasMessageContaining("target type TABLE");
   }
 
   @Test
@@ -97,36 +138,38 @@ class StatsEngineRegistryTest {
                 .setFile(FileStatsTarget.newBuilder().setFilePath("/data/file.parquet").build())
                 .build(),
             Set.of(),
-            Set.of(StatsStatisticKind.ROW_COUNT),
+            Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
             false);
     StatsCaptureEngine unsupported =
-        new TestEngine(
-            "unsupported",
-            1,
-            StatsEngineCapabilities.builder()
-                .targetTypes(Set.of(StatsTargetType.COLUMN))
-                .statisticKindsByTarget(
-                    Map.of(StatsTargetType.COLUMN, Set.of(StatsStatisticKind.ROW_COUNT)))
-                .executionModes(Set.of(StatsExecutionMode.SYNC))
-                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                .snapshotAware(true)
-                .build(),
-            Optional.empty());
+        TestStatsCaptureEngine.builder("unsupported")
+            .priority(1)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.COLUMN))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.ROW_COUNT)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(true)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
     StatsCaptureEngine supported =
-        new TestEngine(
-            "supported",
-            2,
-            StatsEngineCapabilities.builder()
-                .targetTypes(Set.of(StatsTargetType.FILE))
-                .statisticKindsByTarget(
-                    Map.of(StatsTargetType.FILE, Set.of(StatsStatisticKind.ROW_COUNT)))
-                .executionModes(Set.of(StatsExecutionMode.SYNC))
-                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                .snapshotAware(true)
-                .build(),
-            Optional.empty());
+        TestStatsCaptureEngine.builder("supported")
+            .priority(2)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.FILE))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.FILE, Set.of(StatsKind.ROW_COUNT)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(true)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
     StatsEngineRegistry registry = new StatsEngineRegistry(List.of(unsupported, supported));
 
     assertThat(registry.candidates(request))
@@ -138,20 +181,25 @@ class StatsEngineRegistryTest {
   void candidatesExcludeNonSnapshotAwareEngineForConcreteSnapshot() {
     StatsCaptureRequest request = sampleRequest(); // concrete snapshot id: 100
     StatsCaptureEngine notSnapshotAware =
-        new TestEngine(
-            "not-snapshot-aware",
-            1,
-            StatsEngineCapabilities.builder()
-                .targetTypes(Set.of(StatsTargetType.TABLE))
-                .statisticKindsByTarget(
-                    Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
-                .executionModes(Set.of(StatsExecutionMode.SYNC))
-                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                .snapshotAware(false)
-                .build(),
-            Optional.empty());
+        TestStatsCaptureEngine.builder("not-snapshot-aware")
+            .priority(1)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.TABLE))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(false)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
     StatsCaptureEngine snapshotAware =
-        new TestEngine("snapshot-aware", 2, tableOnlyCaps(), Optional.empty());
+        TestStatsCaptureEngine.builder("snapshot-aware")
+            .priority(2)
+            .capabilities(tableOnlyCaps())
+            .fixed(Optional.empty())
+            .build();
 
     StatsEngineRegistry registry =
         new StatsEngineRegistry(List.of(notSnapshotAware, snapshotAware));
@@ -169,23 +217,24 @@ class StatsEngineRegistryTest {
             0L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
-            Set.of(StatsStatisticKind.ROW_COUNT),
+            Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
             false);
     StatsCaptureEngine notSnapshotAware =
-        new TestEngine(
-            "not-snapshot-aware",
-            1,
-            StatsEngineCapabilities.builder()
-                .targetTypes(Set.of(StatsTargetType.TABLE))
-                .statisticKindsByTarget(
-                    Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
-                .executionModes(Set.of(StatsExecutionMode.SYNC))
-                .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                .snapshotAware(false)
-                .build(),
-            Optional.empty());
+        TestStatsCaptureEngine.builder("not-snapshot-aware")
+            .priority(1)
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.TABLE))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(false)
+                    .build())
+            .fixed(Optional.empty())
+            .build();
 
     StatsEngineRegistry registry = new StatsEngineRegistry(List.of(notSnapshotAware));
 
@@ -200,32 +249,19 @@ class StatsEngineRegistryTest {
         100L,
         StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
         Set.of(),
-        Set.of(StatsStatisticKind.ROW_COUNT),
+        Set.of(StatsKind.ROW_COUNT),
         StatsExecutionMode.SYNC,
         "",
         false);
   }
 
-  private static StatsEngineCapabilities tableOnlyCaps() {
-    return StatsEngineCapabilities.builder()
+  private static StatsCapabilities tableOnlyCaps() {
+    return StatsCapabilities.builder()
         .targetTypes(Set.of(StatsTargetType.TABLE))
-        .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
+        .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
         .executionModes(Set.of(StatsExecutionMode.SYNC))
         .samplingSupport(Set.of(StatsSamplingSupport.NONE))
         .snapshotAware(true)
         .build();
-  }
-
-  private record TestEngine(
-      String id,
-      int priority,
-      StatsEngineCapabilities capabilities,
-      Optional<StatsCaptureResult> output)
-      implements StatsCaptureEngine {
-
-    @Override
-    public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-      return output;
-    }
   }
 }
