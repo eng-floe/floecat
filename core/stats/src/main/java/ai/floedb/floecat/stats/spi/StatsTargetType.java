@@ -20,9 +20,13 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 
 /** Canonical stats target categories understood by routing capabilities. */
 public enum StatsTargetType {
+  /** Table-wide statistics target. */
   TABLE,
+  /** Physical column statistics target. */
   COLUMN,
+  /** Expression-derived statistics target. */
   EXPRESSION,
+  /** File-level statistics target. */
   FILE;
 
   public static StatsTargetType from(StatsTarget target) {

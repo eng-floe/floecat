@@ -18,6 +18,8 @@ package ai.floedb.floecat.stats.spi;
 
 /** Execution mode for statistics capture requests. */
 public enum StatsExecutionMode {
+  /** Foreground request path with strict latency constraints. */
   SYNC,
+  /** Background/asynchronous execution path. */
   ASYNC
 }

@@ -37,7 +37,7 @@ public record StatsCaptureRequest(
     long snapshotId,
     StatsTarget target,
     Set<String> columnSelectors,
-    Set<StatsStatisticKind> requestedKinds,
+    Set<StatsKind> requestedKinds,
     StatsExecutionMode executionMode,
     String connectorType,
     boolean samplingRequested,
@@ -60,16 +60,13 @@ public record StatsCaptureRequest(
     }
   }
 
-  /**
-   * Backward-compatible constructor for call sites that do not pass a latency budget. {@code
-   * latencyBudget} defaults to empty.
-   */
+  /** Convenience constructor that defaults {@code latencyBudget} to empty. */
   public StatsCaptureRequest(
       ResourceId tableId,
       long snapshotId,
       StatsTarget target,
       Set<String> columnSelectors,
-      Set<StatsStatisticKind> requestedKinds,
+      Set<StatsKind> requestedKinds,
       StatsExecutionMode executionMode,
       String connectorType,
       boolean samplingRequested) {
