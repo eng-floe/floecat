@@ -67,6 +67,7 @@ public final class StatsProviderFactory {
 
     private final StatsEngineRegistry statsEngineRegistry;
     private final SnapshotPinResolver pinResolver;
+    private final String correlationId;
     private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
         tableCache = new ConcurrentHashMap<>();
 
@@ -76,6 +77,7 @@ public final class StatsProviderFactory {
         QueryContext ctx,
         String correlationId) {
       this.statsEngineRegistry = statsEngineRegistry;
+      this.correlationId = correlationId == null ? "" : correlationId;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
     }
 
@@ -113,6 +115,7 @@ public final class StatsProviderFactory {
                 StatsExecutionMode.SYNC,
                 // Empty connector type means no connector-based engine filtering.
                 "",
+                correlationId,
                 false);
         return statsEngineRegistry
             .capture(request)
@@ -143,6 +146,7 @@ public final class StatsProviderFactory {
                 StatsExecutionMode.SYNC,
                 // Empty connector type means no connector-based engine filtering.
                 "",
+                correlationId,
                 false);
         return statsEngineRegistry
             .capture(request)

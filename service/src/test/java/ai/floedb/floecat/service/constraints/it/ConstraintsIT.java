@@ -102,7 +102,11 @@ class ConstraintsIT {
                     .setName("pk_fact_constraints")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
+                        ConstraintColumnRef.newBuilder()
+                            .setColumnId(1L)
+                            .setColumnName("id")
+                            .setOrdinal(1)
+                            .build())
                     .build())
             .build();
 
@@ -118,6 +122,7 @@ class ConstraintsIT {
     assertEquals(snapshotId, stored.getSnapshotId());
     assertEquals(1, stored.getConstraintsCount());
     assertEquals("pk_fact_constraints", stored.getConstraints(0).getName());
+    assertEquals(1L, stored.getConstraints(0).getColumns(0).getColumnId());
   }
 
   @Test
@@ -893,6 +898,7 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_PRIMARY_KEY)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
+                                        .setColumnId(2L)
                                         .setColumnName("id2")
                                         .setOrdinal(1)
                                         .build())
@@ -903,6 +909,7 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_UNIQUE)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
+                                        .setColumnId(3L)
                                         .setColumnName("email")
                                         .setOrdinal(1)
                                         .build())
@@ -912,13 +919,13 @@ class ConstraintsIT {
 
     assertEquals(2, merged.getConstraints().getConstraintsCount());
     assertEquals(
-        "id2",
+        2L,
         merged.getConstraints().getConstraintsList().stream()
             .filter(c -> c.getName().equals("pk_existing"))
             .findFirst()
             .orElseThrow()
             .getColumns(0)
-            .getColumnName());
+            .getColumnId());
     assertEquals(
         1,
         merged.getConstraints().getConstraintsList().stream()

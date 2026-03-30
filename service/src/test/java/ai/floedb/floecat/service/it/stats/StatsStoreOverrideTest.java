@@ -79,6 +79,7 @@ class StatsStoreOverrideTest {
             Set.of(StatsKind.NULL_COUNT),
             StatsExecutionMode.SYNC,
             "iceberg",
+            "test-corr",
             false);
 
     var result = persistedEngine.capture(request);

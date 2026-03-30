@@ -141,6 +141,7 @@ class StatsEngineRegistryTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "test-corr-file",
             false);
     StatsCaptureEngine unsupported =
         TestStatsCaptureEngine.builder("unsupported")
@@ -220,6 +221,7 @@ class StatsEngineRegistryTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "test-corr-zero",
             false);
     StatsCaptureEngine notSnapshotAware =
         TestStatsCaptureEngine.builder("not-snapshot-aware")
@@ -252,6 +254,7 @@ class StatsEngineRegistryTest {
         Set.of(StatsKind.ROW_COUNT),
         StatsExecutionMode.SYNC,
         "",
+        "test-corr",
         false);
   }
 

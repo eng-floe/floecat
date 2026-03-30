@@ -748,6 +748,7 @@ class TableMutationIT {
     var spec1 =
         SnapshotSpec.newBuilder()
             .setTableId(tbl.getResourceId())
+            .setSnapshotId(snapId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .build();
@@ -756,6 +757,7 @@ class TableMutationIT {
     var spec2 =
         SnapshotSpec.newBuilder()
             .setTableId(tbl.getResourceId())
+            .setSnapshotId(snapId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .setSchemaJson(
                 "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},"

@@ -39,7 +39,7 @@ public interface StatsCaptureEngine {
    * Capture priority where lower values win.
    *
    * <p>Baseline persisted engine uses {@code 10_000}. Most specialized engines should use lower
-   * values.
+   * values. The default return value is {@code 100}, which takes priority over the baseline.
    */
   default int priority() {
     return 100;

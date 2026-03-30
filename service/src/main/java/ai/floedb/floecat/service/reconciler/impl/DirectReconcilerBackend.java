@@ -358,6 +358,9 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
       return;
     }
     for (TargetStatsRecord record : stats) {
+      if (!record.hasTableId() || record.getTableId().getId().isBlank()) {
+        throw new IllegalArgumentException("record missing tableId");
+      }
       statsStore.putTargetStats(record);
     }
   }

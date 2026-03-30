@@ -73,6 +73,13 @@ public class StatsEngineRegistry {
     if (candidates.isEmpty()) {
       throw new StatsUnsupportedTargetException(StatsTargetType.from(request.target()), request);
     }
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "Stats capture routed corr=%s target=%s candidates=%s",
+          request.correlationId(),
+          StatsTargetType.from(request.target()),
+          candidates.stream().map(StatsCaptureEngine::id).toList());
+    }
     for (StatsCaptureEngine engine : candidates) {
       Optional<StatsCaptureResult> out = engine.capture(request);
       if (out.isPresent()) {
@@ -80,7 +87,8 @@ public class StatsEngineRegistry {
       }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
-            "Stats engine %s returned empty for request target=%s", engine.id(), request.target());
+            "Stats engine %s returned empty corr=%s target=%s",
+            engine.id(), request.correlationId(), request.target());
       }
     }
     return Optional.empty();

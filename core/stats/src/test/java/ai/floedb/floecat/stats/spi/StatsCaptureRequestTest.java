@@ -40,6 +40,7 @@ class StatsCaptureRequestTest {
             Set.of(),
             StatsExecutionMode.SYNC,
             "",
+            "corr-1",
             false);
     assertThat(req.snapshotId()).isZero();
   }
@@ -58,6 +59,7 @@ class StatsCaptureRequestTest {
                     Set.of(),
                     StatsExecutionMode.SYNC,
                     "",
+                    "corr-2",
                     false))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("non-negative");
@@ -74,6 +76,7 @@ class StatsCaptureRequestTest {
             Set.of(),
             StatsExecutionMode.SYNC,
             "",
+            "corr-3",
             false,
             Optional.of(Duration.ofSeconds(1)));
     assertThat(withBudget.latencyBudget()).contains(Duration.ofSeconds(1));
@@ -90,6 +93,7 @@ class StatsCaptureRequestTest {
                     Set.of(),
                     StatsExecutionMode.SYNC,
                     "",
+                    "corr-4",
                     false,
                     Optional.of(Duration.ZERO)))
         .isInstanceOf(IllegalArgumentException.class)

@@ -61,6 +61,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "corr-table",
             false);
 
     var result = engine.capture(request);
@@ -90,6 +91,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.NDV),
             StatsExecutionMode.SYNC,
             "",
+            "corr-column",
             false);
 
     var result = engine.capture(request);
@@ -119,6 +121,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "corr-file",
             false);
 
     var result = engine.capture(request);
@@ -155,6 +158,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.NDV),
             StatsExecutionMode.SYNC,
             "",
+            "corr-expression",
             false);
 
     var result = engine.capture(request);
@@ -180,6 +184,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "corr-missing",
             false);
     assertThat(engine.capture(missingRequest)).isEmpty();
 
@@ -198,6 +203,7 @@ class PersistedStatsCaptureEngineTest {
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
+            "corr-mismatch",
             false);
     assertThat(engine.capture(mismatchRequest)).isEmpty();
   }
