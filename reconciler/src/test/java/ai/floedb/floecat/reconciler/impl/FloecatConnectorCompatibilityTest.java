@@ -37,19 +37,7 @@ class FloecatConnectorCompatibilityTest {
 
     FloecatConnector.SnapshotBundle bundle =
         new FloecatConnector.SnapshotBundle(
-            10L,
-            0L,
-            0L,
-            null,
-            List.of(),
-            List.of(),
-            null,
-            null,
-            0L,
-            null,
-            java.util.Map.of(),
-            0,
-            java.util.Map.of());
+            10L, 0L, 0L, List.of(), "", null, 0L, null, java.util.Map.of(), 0, java.util.Map.of());
     Optional<?> fromBundle = connector.snapshotConstraints("ns", "tbl", tableId, bundle);
     assertTrue(fromBundle.isEmpty());
   }

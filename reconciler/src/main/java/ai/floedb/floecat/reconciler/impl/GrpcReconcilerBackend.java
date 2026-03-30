@@ -16,39 +16,36 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
-import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
-import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -57,6 +54,7 @@ import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -346,29 +344,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     try {
-      var tableStatsResponse =
-          statistics(ctx)
-              .getTableStats(
-                  GetTableStatsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                      .build());
-      var stats = tableStatsResponse.getStats();
-      if (!stats.hasTableId() || stats.getSnapshotId() != snapshotId) {
-        return false;
-      }
-      if (stats.getDataFileCount() <= 0) {
-        return true;
-      }
-      var fileStatsResponse =
-          statistics(ctx)
-              .listFileColumnStats(
-                  ListFileColumnStatsRequest.newBuilder()
-                      .setTableId(tableId)
-                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                      .setPage(PageRequest.newBuilder().setPageSize(1).build())
-                      .build());
-      return fileStatsResponse.hasPage() && fileStatsResponse.getPage().getTotalSize() > 0;
+      var response =
+          statistics(ctx).getTargetStats(buildStatsAlreadyCapturedRequest(tableId, snapshotId));
+      var stats = response.getStats();
+      return stats.hasTable() && stats.getSnapshotId() == snapshotId;
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return false;
@@ -378,34 +357,12 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public void putTableStats(ReconcileContext ctx, ResourceId tableId, TableStats stats) {
-    statistics(ctx)
-        .putTableStats(
-            PutTableStatsRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshotId(stats.getSnapshotId())
-                .setStats(stats)
-                .build());
-  }
-
-  @Override
-  public void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats) {
+  public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     if (stats == null || stats.isEmpty()) {
       return;
     }
     statisticsMutiny(ctx)
-        .putColumnStats(Multi.createFrom().iterable(groupColumnRequests(stats)))
-        .await()
-        .atMost(statsTimeout);
-  }
-
-  @Override
-  public void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats) {
-    if (stats == null || stats.isEmpty()) {
-      return;
-    }
-    statisticsMutiny(ctx)
-        .putFileColumnStats(Multi.createFrom().iterable(groupFileRequests(stats)))
+        .putTargetStats(Multi.createFrom().iterable(groupTargetRequests(stats)))
         .await()
         .atMost(statsTimeout);
   }
@@ -436,6 +393,19 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .build();
   }
 
+  static GetTargetStatsRequest buildStatsAlreadyCapturedRequest(
+      ResourceId tableId, long snapshotId) {
+    ResourceId canonicalId =
+        tableId.getKind() == ResourceKind.RK_TABLE
+            ? tableId
+            : tableId.toBuilder().setKind(ResourceKind.RK_TABLE).build();
+    return GetTargetStatsRequest.newBuilder()
+        .setTableId(canonicalId)
+        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+        .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.newBuilder().build()).build())
+        .build();
+  }
+
   private static String snapshotConstraintsIdempotencyKey(
       ResourceId tableId, long snapshotId, SnapshotConstraints constraints) {
     String accountId = tableId == null ? "" : tableId.getAccountId();
@@ -458,37 +428,21 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         + digest;
   }
 
-  private List<PutColumnStatsRequest> groupColumnRequests(List<ColumnStats> stats) {
-    Map<StatsGroupKey, List<ColumnStats>> grouped = new LinkedHashMap<>();
-    for (ColumnStats column : stats) {
-      StatsGroupKey key = new StatsGroupKey(column.getTableId(), column.getSnapshotId());
-      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(column);
+  private List<PutTargetStatsRequest> groupTargetRequests(List<TargetStatsRecord> stats) {
+    Map<StatsGroupKey, List<TargetStatsRecord>> grouped = new LinkedHashMap<>();
+    for (TargetStatsRecord record : stats) {
+      StatsGroupKey key = new StatsGroupKey(record.getTableId(), record.getSnapshotId());
+      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(record);
     }
-    List<PutColumnStatsRequest> requests = new ArrayList<>(grouped.size());
+    List<PutTargetStatsRequest> requests = new ArrayList<>(grouped.size());
     for (var entry : grouped.entrySet()) {
-      PutColumnStatsRequest.Builder builder =
-          PutColumnStatsRequest.newBuilder()
+      PutTargetStatsRequest.Builder builder =
+          PutTargetStatsRequest.newBuilder()
               .setTableId(entry.getKey().tableId)
               .setSnapshotId(entry.getKey().snapshotId);
-      entry.getValue().forEach(builder::addColumns);
-      requests.add(builder.build());
-    }
-    return requests;
-  }
-
-  private List<PutFileColumnStatsRequest> groupFileRequests(List<FileColumnStats> stats) {
-    Map<StatsGroupKey, List<FileColumnStats>> grouped = new LinkedHashMap<>();
-    for (FileColumnStats fileStats : stats) {
-      StatsGroupKey key = new StatsGroupKey(fileStats.getTableId(), fileStats.getSnapshotId());
-      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(fileStats);
-    }
-    List<PutFileColumnStatsRequest> requests = new ArrayList<>(grouped.size());
-    for (var entry : grouped.entrySet()) {
-      PutFileColumnStatsRequest.Builder builder =
-          PutFileColumnStatsRequest.newBuilder()
-              .setTableId(entry.getKey().tableId)
-              .setSnapshotId(entry.getKey().snapshotId);
-      entry.getValue().forEach(builder::addFiles);
+      for (TargetStatsRecord record : entry.getValue()) {
+        builder.addRecords(record);
+      }
       requests.add(builder.build());
     }
     return requests;

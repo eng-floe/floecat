@@ -18,13 +18,11 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -225,10 +223,8 @@ class ReconcilerServiceTest {
                 42L,
                 0L,
                 Instant.now().toEpochMilli(),
-                null,
                 List.of(),
-                List.of(),
-                null,
+                "",
                 null,
                 0L,
                 null,
@@ -383,10 +379,8 @@ class ReconcilerServiceTest {
                 101L,
                 0L,
                 Instant.now().toEpochMilli(),
-                null,
                 List.of(),
-                List.of(),
-                null,
+                "",
                 null,
                 0L,
                 null,
@@ -516,10 +510,8 @@ class ReconcilerServiceTest {
                 102L,
                 0L,
                 Instant.now().toEpochMilli(),
-                null,
                 List.of(),
-                List.of(),
-                null,
+                "",
                 null,
                 0L,
                 null,
@@ -656,10 +648,8 @@ class ReconcilerServiceTest {
                 103L,
                 0L,
                 Instant.now().toEpochMilli(),
-                null,
                 List.of(),
-                List.of(),
-                null,
+                "",
                 null,
                 0L,
                 null,
@@ -699,9 +689,7 @@ class ReconcilerServiceTest {
             .build();
 
     class Backend extends DefaultBackend {
-      int putTableStatsCalls = 0;
-      int putColumnStatsCalls = 0;
-      int putFileColumnStatsCalls = 0;
+      int putTargetStatsCalls = 0;
 
       @Override
       public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
@@ -744,18 +732,8 @@ class ReconcilerServiceTest {
       }
 
       @Override
-      public void putTableStats(ReconcileContext ctx, ResourceId ignoredTableId, TableStats stats) {
-        putTableStatsCalls++;
-      }
-
-      @Override
-      public void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats) {
-        putColumnStatsCalls++;
-      }
-
-      @Override
-      public void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats) {
-        putFileColumnStatsCalls++;
+      public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
+        putTargetStatsCalls++;
       }
 
       @Override
@@ -806,10 +784,8 @@ class ReconcilerServiceTest {
                 104L,
                 0L,
                 Instant.now().toEpochMilli(),
-                TableStats.newBuilder().setSnapshotId(104L).build(),
                 List.of(),
-                List.of(),
-                null,
+                "",
                 null,
                 0L,
                 null,
@@ -845,9 +821,7 @@ class ReconcilerServiceTest {
     assertThat(result.errors).isEqualTo(1);
     assertThat(result.error).isNotNull();
     assertThat(result.error.getMessage()).contains("stats-captured-constraints-fail");
-    assertThat(backend.putTableStatsCalls).isZero();
-    assertThat(backend.putColumnStatsCalls).isZero();
-    assertThat(backend.putFileColumnStatsCalls).isZero();
+    assertThat(backend.putTargetStatsCalls).isZero();
   }
 
   @Test
@@ -1112,17 +1086,7 @@ class ReconcilerServiceTest {
     }
 
     @Override
-    public void putTableStats(ReconcileContext ctx, ResourceId tableId, TableStats stats) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats) {
+    public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
       throw new UnsupportedOperationException();
     }
 
@@ -1194,12 +1158,10 @@ class ReconcilerServiceTest {
             existing.getSnapshotId(),
             existing.getParentSnapshotId(),
             Instant.now().toEpochMilli(),
-            null,
             List.of(),
-            List.of(),
+            "",
             null,
-            null,
-            0,
+            0L,
             null,
             Map.of("new-key", "new-val"),
             0,
@@ -1256,14 +1218,11 @@ class ReconcilerServiceTest {
     List<FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
+                10L, 0L, 1L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
             new FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
+                11L, 10L, 2L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
             new FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()));
+                12L, 11L, 3L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()));
 
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
@@ -1290,11 +1249,9 @@ class ReconcilerServiceTest {
     List<FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
+                10L, 0L, 1L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
             new FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()));
+                11L, 10L, 2L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()));
 
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
@@ -1311,11 +1268,9 @@ class ReconcilerServiceTest {
     List<FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
+                10L, 0L, 1L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
             new FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()));
+                11L, 10L, 2L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()));
 
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
@@ -1325,6 +1280,27 @@ class ReconcilerServiceTest {
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
         .containsExactly(10L, 11L);
+  }
+
+  @Test
+  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
+    List<FloecatConnector.SnapshotBundle> bundles =
+        List.of(
+            new FloecatConnector.SnapshotBundle(
+                10L, 0L, 1L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                11L, 10L, 2L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()),
+            new FloecatConnector.SnapshotBundle(
+                12L, 11L, 3L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()));
+
+    @SuppressWarnings("unchecked")
+    List<FloecatConnector.SnapshotBundle> filtered =
+        (List<FloecatConnector.SnapshotBundle>)
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L, 12L));
+
+    assertThat(filtered)
+        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
+        .containsExactly(12L);
   }
 
   @Test
@@ -1373,8 +1349,7 @@ class ReconcilerServiceTest {
             invokeTableChanged(
                 List.of(
                     new FloecatConnector.SnapshotBundle(
-                        11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                        Map.of()))))
+                        11L, 10L, 2L, List.of(), "", null, 0L, null, Map.of(), 0, Map.of()))))
         .isTrue();
   }
 
