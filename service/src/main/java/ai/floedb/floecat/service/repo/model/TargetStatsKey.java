@@ -16,6 +16,6 @@
 
 package ai.floedb.floecat.service.repo.model;
 
-public record ColumnStatsKey(
-    String accountId, String tableId, long snapshotId, long columnId, String sha256)
+public record TargetStatsKey(
+    String accountId, String tableId, long snapshotId, String targetId, String sha256)
     implements ResourceKey {}

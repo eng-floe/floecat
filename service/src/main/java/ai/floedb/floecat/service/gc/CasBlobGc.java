@@ -143,27 +143,16 @@ public class CasBlobGc {
     blobsScanned += snapshots.scanned();
     blobsDeleted += snapshots.deleted();
 
-    var tableStats =
+    var targetStats =
         deleteUnreferenced(
             Keys.tableRootPrefix(accountId),
             referenced,
-            key -> key.contains(Keys.SEG_TABLE_STATS),
+            key -> key.contains(Keys.SEG_TARGET_STATS),
             pageSize,
             nowMs,
             minAgeMs);
-    blobsScanned += tableStats.scanned();
-    blobsDeleted += tableStats.deleted();
-
-    var columnStats =
-        deleteUnreferenced(
-            Keys.tableRootPrefix(accountId),
-            referenced,
-            key -> key.contains(Keys.SEG_COLUMN_STATS),
-            pageSize,
-            nowMs,
-            minAgeMs);
-    blobsScanned += columnStats.scanned();
-    blobsDeleted += columnStats.deleted();
+    blobsScanned += targetStats.scanned();
+    blobsDeleted += targetStats.deleted();
 
     var fileStats =
         deleteUnreferenced(

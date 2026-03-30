@@ -425,7 +425,7 @@ public class PointerGc {
         long snapshotId = parseLong(decode(parts[5]));
         return Keys.snapshotPointerById(accountId, tableId, snapshotId);
       }
-      if ("table-stats".equals(sub) || "column-stats".equals(sub) || "file-stats".equals(sub)) {
+      if ("target-stats".equals(sub) || "file-stats".equals(sub)) {
         return null;
       }
     }

@@ -18,18 +18,16 @@ package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.service.repo.util.ColumnStatsNormalizer;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
-import ai.floedb.floecat.service.repo.util.TableStatsNormalizer;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.types.Hashing;
@@ -134,65 +132,72 @@ public final class Schemas {
               })
           .withCasBlobs();
 
-  public static final ResourceSchema<TableStats, TableStatsKey> TABLE_STATS =
-      ResourceSchema.<TableStats, TableStatsKey>of(
-              "table-stats",
-              (TableStatsKey key) ->
-                  Keys.snapshotTableStatsPointer(key.accountId(), key.tableId(), key.snapshotId()),
-              (TableStatsKey key) ->
-                  Keys.snapshotTableStatsBlobUri(key.accountId(), key.tableId(), key.sha256()),
-              (TableStats v) -> Map.of(),
-              (TableStats v) -> {
-                var norm = TableStatsNormalizer.normalize(v);
-                var sha = Hashing.sha256Hex(norm.toByteArray());
-                return new TableStatsKey(
-                    v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
-              })
-          .withCasBlobs();
-
-  public static final ResourceSchema<ColumnStats, ColumnStatsKey> COLUMN_STATS =
-      ResourceSchema.<ColumnStats, ColumnStatsKey>of(
-              "column-stats",
-              (ColumnStatsKey key) ->
-                  Keys.snapshotColumnStatsPointer(
-                      key.accountId(), key.tableId(), key.snapshotId(), key.columnId()),
-              (ColumnStatsKey key) ->
-                  Keys.snapshotColumnStatsBlobUri(
-                      key.accountId(), key.tableId(), key.columnId(), key.sha256()),
-              (ColumnStats v) -> Map.of(),
-              (ColumnStats v) -> {
-                var norm = ColumnStatsNormalizer.normalize(v);
-                var sha = Hashing.sha256Hex(norm.toByteArray());
-                return new ColumnStatsKey(
+  public static final ResourceSchema<TargetStatsRecord, TargetStatsKey> TARGET_STATS =
+      ResourceSchema.<TargetStatsRecord, TargetStatsKey>of(
+              "target-stats",
+              (TargetStatsKey key) ->
+                  Keys.snapshotTargetStatsPointer(
+                      key.accountId(), key.tableId(), key.snapshotId(), key.targetId()),
+              (TargetStatsKey key) ->
+                  Keys.snapshotTargetStatsBlobUri(
+                      key.accountId(), key.tableId(), key.targetId(), key.sha256()),
+              (TargetStatsRecord v) -> Map.of(),
+              (TargetStatsRecord v) -> {
+                var target = v.getTarget();
+                if (target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
+                  throw new IllegalArgumentException("target must be set on TargetStatsRecord");
+                }
+                validateTargetValueCompatibility(target, v.getValueCase());
+                var normalizedTarget =
+                    target.getTargetCase() == StatsTarget.TargetCase.EXPRESSION
+                        ? StatsTarget.newBuilder()
+                            .setExpression(
+                                StatsTargetIdentity.normalizeExpressionTarget(
+                                    target.getExpression()))
+                            .build()
+                        : target;
+                var canonical =
+                    switch (v.getValueCase()) {
+                      case TABLE, SCALAR, FILE -> v.toBuilder().setTarget(normalizedTarget).build();
+                      case VALUE_NOT_SET ->
+                          throw new IllegalArgumentException(
+                              "value must be set on TargetStatsRecord");
+                    };
+                var sha = Hashing.sha256Hex(canonical.toByteArray());
+                return new TargetStatsKey(
                     v.getTableId().getAccountId(),
                     v.getTableId().getId(),
                     v.getSnapshotId(),
-                    v.getColumnId(),
+                    StatsTargetIdentity.storageId(normalizedTarget),
                     sha);
               })
           .withCasBlobs();
 
-  public static final ResourceSchema<FileColumnStats, FileColumnStatsKey> FILE_COLUMN_STATS =
-      ResourceSchema.<FileColumnStats, FileColumnStatsKey>of(
-              "file-column-stats",
-              (FileColumnStatsKey key) ->
-                  Keys.snapshotFileStatsPointer(
-                      key.accountId(), key.tableId(), key.snapshotId(), key.filePath()),
-              (FileColumnStatsKey key) ->
-                  Keys.snapshotFileStatsBlobUri(
-                      key.accountId(), key.tableId(), key.filePath(), key.sha256()),
-              v -> Map.of(),
-              v -> {
-                var bytes = v.toByteArray();
-                var sha = Hashing.sha256Hex(bytes);
-                return new FileColumnStatsKey(
-                    v.getTableId().getAccountId(),
-                    v.getTableId().getId(),
-                    v.getSnapshotId(),
-                    v.getFilePath(),
-                    sha);
-              })
-          .withCasBlobs();
+  private static void validateTargetValueCompatibility(
+      StatsTarget target, TargetStatsRecord.ValueCase valueCase) {
+    switch (target.getTargetCase()) {
+      case TABLE -> {
+        if (valueCase != TargetStatsRecord.ValueCase.TABLE) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: table target requires table value");
+        }
+      }
+      case COLUMN, EXPRESSION -> {
+        if (valueCase != TargetStatsRecord.ValueCase.SCALAR) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: column/expression target requires scalar value");
+        }
+      }
+      case FILE -> {
+        if (valueCase != TargetStatsRecord.ValueCase.FILE) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: file target requires file value");
+        }
+      }
+      case TARGET_NOT_SET ->
+          throw new IllegalArgumentException("target must be set on TargetStatsRecord");
+    }
+  }
 
   public static final ResourceSchema<SnapshotConstraints, SnapshotConstraintsKey>
       SNAPSHOT_CONSTRAINTS =
