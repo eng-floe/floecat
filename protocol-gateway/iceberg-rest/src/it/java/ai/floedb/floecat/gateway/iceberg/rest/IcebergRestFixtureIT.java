@@ -29,21 +29,22 @@ import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -1843,57 +1844,53 @@ class IcebergRestFixtureIT {
           "Snapshot catalog should contain fixture snapshot ids");
 
       SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
-      TableStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
+      TableValueStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
       Assertions.assertTrue(
           stats.getRowCount() > 0, "Fixture stats should report a positive row count");
       Assertions.assertTrue(
           stats.getTotalSizeBytes() > 0, "Fixture stats should track total bytes");
 
-      ListColumnStatsResponse columnStats =
+      List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStats =
           awaitColumnStats(tableId, current, Duration.ofSeconds(30));
-      Assertions.assertFalse(
-          columnStats.getColumnsList().isEmpty(), "Column statistics must be available");
+      Assertions.assertFalse(columnStats.isEmpty(), "Column NDV statistics must be available");
       columnStats
-          .getColumnsList()
           .forEach(
               col -> {
-                Assertions.assertNotNull(col.getColumnName(), "Column name should be set");
-                Assertions.assertFalse(col.getColumnName().isBlank(), "Column name should be set");
+                Assertions.assertNotNull(col.getDisplayName(), "Column name should be set");
+                Assertions.assertFalse(col.getDisplayName().isBlank(), "Column name should be set");
                 Assertions.assertFalse(
                     col.getLogicalType().isBlank(),
-                    () -> "Logical type should be populated for " + col.getColumnName());
-                if (col.hasNdv()) {
+                    () -> "Logical type should be populated for " + col.getDisplayName());
+                Assertions.assertTrue(
+                    col.hasNdv(), "NDV must be present for " + col.getDisplayName());
+                Assertions.assertTrue(
+                    col.getNdv().hasApprox() || col.getNdv().hasExact(),
+                    () -> "NDV should contain exact or approx estimate for " + col.getDisplayName());
+                if (col.getNdv().hasApprox()) {
+                  var approx = col.getNdv().getApprox();
                   Assertions.assertTrue(
-                      col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                      () -> "NDV should contain exact or approx estimate for " + col.getColumnName());
-                  if (col.getNdv().hasApprox()) {
-                    var approx = col.getNdv().getApprox();
-                    Assertions.assertTrue(
-                        approx.getEstimate() > 0.0d,
-                        () -> "Approximate NDV must be positive for " + col.getColumnName());
-                    Assertions.assertTrue(
-                        approx.getRowsSeen() > 0,
-                        () -> "rows-seen must be positive for " + col.getColumnName());
-                    Assertions.assertTrue(
-                        approx.getRowsTotal() >= approx.getRowsSeen(),
-                        () -> "rows-total must be >= rows-seen for " + col.getColumnName());
-                    Assertions.assertFalse(
-                        approx.getMethod().isBlank(),
-                        () -> "NDV method must be set for " + col.getColumnName());
-                  }
+                      approx.getEstimate() > 0.0d,
+                      () -> "Approximate NDV must be positive for " + col.getDisplayName());
+                  Assertions.assertTrue(
+                      approx.getRowsSeen() > 0,
+                      () -> "rows-seen must be positive for " + col.getDisplayName());
+                  Assertions.assertTrue(
+                      approx.getRowsTotal() >= approx.getRowsSeen(),
+                      () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
                   Assertions.assertFalse(
-                      col.getNdv().getSketchesList().isEmpty(),
-                      () -> "Sketch metadata must be present for " + col.getColumnName());
-                  col.getNdv()
-                      .getSketchesList()
-                      .forEach(
-                          sketch ->
-                              Assertions.assertFalse(
-                                  sketch.getType().isBlank(),
-                                  () ->
-                                      "Sketch type must be set for column "
-                                          + col.getColumnName()));
+                      approx.getMethod().isBlank(),
+                      () -> "NDV method must be set for " + col.getDisplayName());
                 }
+                Assertions.assertFalse(
+                    col.getNdv().getSketchesList().isEmpty(),
+                    () -> "Sketch metadata must be present for " + col.getDisplayName());
+                col.getNdv()
+                    .getSketchesList()
+                    .forEach(
+                        sketch ->
+                            Assertions.assertFalse(
+                                sketch.getType().isBlank(),
+                                () -> "Sketch type must be set for column " + col.getDisplayName()));
               });
     }
   }
@@ -2033,10 +2030,14 @@ class IcebergRestFixtureIT {
 
   private String registerTable(
       String namespace, String table, String metadataLocation, boolean overwrite) {
-    Map<String, Object> properties = fixtureIoProperties();
+    Map<String, String> properties = fixtureIoProperties();
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", table);
-    payload.put("metadata-location", TestS3Fixtures.bucketUri(metadataLocation));
+    String registerMetadataLocation =
+        metadataLocation != null && metadataLocation.startsWith("s3://")
+            ? metadataLocation
+            : TestS3Fixtures.bucketUri(metadataLocation);
+    payload.put("metadata-location", registerMetadataLocation);
     payload.put("overwrite", overwrite);
     payload.put("properties", properties);
     System.out.printf(
@@ -2281,8 +2282,8 @@ class IcebergRestFixtureIT {
     return payload;
   }
 
-  private Map<String, Object> fixtureIoProperties() {
-    Map<String, Object> props = new LinkedHashMap<>();
+  private Map<String, String> fixtureIoProperties() {
+    Map<String, String> props = new LinkedHashMap<>();
     TestS3Fixtures.fileIoProperties(TEST_S3_ROOT.toAbsolutePath().toString()).forEach(props::put);
     int formatVersion = fixtureMetadata == null ? 2 : fixtureMetadata.formatVersion();
     props.put("format-version", Integer.toString(formatVersion));
@@ -2332,7 +2333,7 @@ class IcebergRestFixtureIT {
     request.put("schema", fixtureSchema());
     request.put("partition-spec", fixturePartitionSpec());
     request.put("write-order", fixtureWriteOrder());
-    Map<String, Object> props = fixtureIoProperties();
+    Map<String, Object> props = new LinkedHashMap<>(fixtureIoProperties());
     props.put("metadata-location", stagedMetadataLocation);
     request.put("properties", props);
     request.put("location", String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table));
@@ -2555,21 +2556,28 @@ class IcebergRestFixtureIT {
         .collect(Collectors.toList());
   }
 
-  private TableStats awaitTableStats(
+  private TableValueStats awaitTableStats(
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
       try {
-        GetTableStatsResponse response =
+        var response =
             withStatisticsClient(
                 stub ->
-                    stub.getTableStats(
-                        GetTableStatsRequest.newBuilder()
+                    stub.getTargetStats(
+                        GetTargetStatsRequest.newBuilder()
                             .setTableId(tableId)
                             .setSnapshot(snapshotRef)
+                            .setTarget(
+                                StatsTarget.newBuilder()
+                                    .setTable(TableStatsTarget.newBuilder().build())
+                                    .build())
                             .build()));
-        if (response.hasStats() && response.getStats().getRowCount() > 0) {
-          return response.getStats();
+        if (response.hasStats() && response.getStats().hasTable()) {
+          var tableStats = tableStatsFromTargetRecord(response.getStats());
+          if (tableStats.getRowCount() > 0) {
+            return tableStats;
+          }
         }
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
@@ -2584,24 +2592,25 @@ class IcebergRestFixtureIT {
       }
     }
     Assertions.fail("Timed out waiting for table stats for " + tableId.getId());
-    return TableStats.getDefaultInstance();
+    return TableValueStats.getDefaultInstance();
   }
 
-  private ListColumnStatsResponse awaitColumnStats(
+  private List<ai.floedb.floecat.catalog.rpc.ScalarStats> awaitColumnStats(
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
-      ListColumnStatsResponse response =
+      var response =
           withStatisticsClient(
               stub ->
-                  stub.listColumnStats(
-                      ListColumnStatsRequest.newBuilder()
+                  stub.listTargetStats(
+                      ListTargetStatsRequest.newBuilder()
                           .setTableId(tableId)
                           .setSnapshot(snapshotRef)
                           .setPage(PageRequest.newBuilder().setPageSize(200).build())
                           .build()));
-      if (!response.getColumnsList().isEmpty()) {
-        return response;
+      var columns = columnStatsFromTargetRecords(response.getRecordsList());
+      if (!columns.isEmpty()) {
+        return columns;
       }
       try {
         TimeUnit.MILLISECONDS.sleep(200);
@@ -2611,7 +2620,50 @@ class IcebergRestFixtureIT {
       }
     }
     Assertions.fail("Timed out waiting for column stats for " + tableId.getId());
-    return ListColumnStatsResponse.getDefaultInstance();
+    return List.of();
+  }
+
+  private static TableValueStats tableStatsFromTargetRecord(TargetStatsRecord record) {
+    return record.getTable();
+  }
+
+  private static List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStatsFromTargetRecords(
+      List<TargetStatsRecord> records) {
+    List<ai.floedb.floecat.catalog.rpc.ScalarStats> out = new ArrayList<>();
+    for (TargetStatsRecord record : records) {
+      if (!record.getTarget().hasColumn() || !record.hasScalar()) {
+        continue;
+      }
+      var scalar = record.getScalar();
+      var builder =
+          ai.floedb.floecat.catalog.rpc.ScalarStats.newBuilder()
+              .setDisplayName(scalar.getDisplayName())
+              .setLogicalType(scalar.getLogicalType())
+              .setValueCount(scalar.getValueCount())
+              .setHistogram(scalar.getHistogram())
+              .setTdigest(scalar.getTdigest())
+              .putAllProperties(scalar.getPropertiesMap());
+      if (scalar.hasUpstream()) {
+        builder.setUpstream(scalar.getUpstream());
+      }
+      if (scalar.hasNullCount()) {
+        builder.setNullCount(scalar.getNullCount());
+      }
+      if (scalar.hasNanCount()) {
+        builder.setNanCount(scalar.getNanCount());
+      }
+      if (scalar.hasNdv()) {
+        builder.setNdv(scalar.getNdv());
+      }
+      if (scalar.hasMin()) {
+        builder.setMin(scalar.getMin());
+      }
+      if (scalar.hasMax()) {
+        builder.setMax(scalar.getMax());
+      }
+      out.add(builder.build());
+    }
+    return out;
   }
 
   private static void reseedFixtureBucket() {

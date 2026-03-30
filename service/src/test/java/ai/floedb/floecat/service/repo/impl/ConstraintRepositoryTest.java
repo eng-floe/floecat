@@ -412,10 +412,7 @@ class ConstraintRepositoryTest {
       List<ConstraintDefinition> definitions,
       List<String> propertyInsertionOrder) {
     SnapshotConstraints.Builder builder =
-        SnapshotConstraints.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .addAllConstraints(definitions);
+        SnapshotConstraints.newBuilder().addAllConstraints(definitions);
 
     for (String property : propertyInsertionOrder) {
       builder.putProperties(property, "v-" + property);
@@ -434,12 +431,7 @@ class ConstraintRepositoryTest {
             .setName(name)
             .setType(type)
             .setEnforcement(ConstraintEnforcement.CE_ENFORCED)
-            .addColumns(
-                ConstraintColumnRef.newBuilder()
-                    .setOrdinal(1)
-                    .setColumnId(1)
-                    .setColumnName("id")
-                    .build());
+            .addColumns(ConstraintColumnRef.newBuilder().setOrdinal(1).setColumnName("id").build());
     for (String property : propertyInsertionOrder) {
       builder.putProperties(property, "v-" + property);
     }
@@ -466,7 +458,6 @@ class ConstraintRepositoryTest {
       builder.addColumns(
           ConstraintColumnRef.newBuilder()
               .setOrdinal(i + 1)
-              .setColumnId(i + 1L)
               .setColumnName(localColumnNames.get(i))
               .build());
     }
@@ -474,7 +465,6 @@ class ConstraintRepositoryTest {
       builder.addReferencedColumns(
           ConstraintColumnRef.newBuilder()
               .setOrdinal(i + 1)
-              .setColumnId(100 + i)
               .setColumnName(referencedColumnNames.get(i))
               .build());
     }

@@ -23,6 +23,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
@@ -54,7 +55,12 @@ class TransactionCommitResourceTest extends AbstractRestResourceTest {
   void setUpTableLookup() {
     Table table =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("foo:db:orders"))
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(TEST_ACCOUNT_ID)
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("foo:db:orders")
+                    .build())
             .putProperties("location", "s3://warehouse/db/orders")
             .build();
     when(tableStub.getTable(any()))

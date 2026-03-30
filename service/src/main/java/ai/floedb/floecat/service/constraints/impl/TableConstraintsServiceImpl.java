@@ -442,11 +442,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
       SnapshotConstraints source, ResourceId tableId, long snapshotId, String localCatalog) {
     SnapshotConstraints normalizedReferencedTables =
         normalizeReferencedTableCatalogs(source, localCatalog);
-    return ConstraintNormalizer.normalize(
-        normalizedReferencedTables.toBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .build());
+    return ConstraintNormalizer.normalize(normalizedReferencedTables.toBuilder().build());
   }
 
   /** Normalizes a single constraint payload into a canonical standalone entry. */
@@ -504,12 +500,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
         if (hasMeaningfulPrecondition(precondition)) {
           throw constraintsBundleNotFound(tableId, snapshotId);
         }
-        SnapshotConstraints created =
-            mutator.apply(
-                SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .build());
+        SnapshotConstraints created = mutator.apply(SnapshotConstraints.newBuilder().build());
         if (constraints.createSnapshotConstraintsIfAbsent(tableId, snapshotId, created)) {
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(created);
         }

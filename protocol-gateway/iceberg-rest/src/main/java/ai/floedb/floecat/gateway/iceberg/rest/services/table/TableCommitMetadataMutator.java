@@ -250,7 +250,8 @@ public class TableCommitMetadataMutator {
   private TableMetadataView mergeSnapshotUpdates(
       TableMetadataView metadata, CommitUpdateInspector.Parsed parsed) {
     List<Map<String, Object>> addedSnapshots = parsed.addedSnapshots();
-    if (addedSnapshots.isEmpty()) {
+    var removedSnapshotIds = parsed.removedSnapshotIdsSet();
+    if (addedSnapshots.isEmpty() && (removedSnapshotIds == null || removedSnapshotIds.isEmpty())) {
       return metadata;
     }
     List<Map<String, Object>> existing =
@@ -259,12 +260,18 @@ public class TableCommitMetadataMutator {
     for (Map<String, Object> snapshot : existing) {
       Long id = snapshotId(snapshot);
       if (id != null) {
+        if (removedSnapshotIds != null && removedSnapshotIds.contains(id)) {
+          continue;
+        }
         merged.put(id, new LinkedHashMap<>(snapshot));
       }
     }
     for (Map<String, Object> snapshot : addedSnapshots) {
       Long id = snapshotId(snapshot);
       if (id == null) {
+        continue;
+      }
+      if (removedSnapshotIds != null && removedSnapshotIds.contains(id)) {
         continue;
       }
       merged.put(id, new LinkedHashMap<>(snapshot));

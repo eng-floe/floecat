@@ -16,8 +16,9 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.QueryInput;
@@ -522,7 +523,7 @@ public class DeltaManifestMaterializer {
     if (spec.isPartitioned()) {
       maybeApplyPartition(builder, file, spec);
     }
-    Metrics metrics = toMetrics(file);
+    Metrics metrics = toMetrics(file, spec.schema());
     if (metrics != null) {
       builder.withMetrics(metrics);
     }
@@ -802,7 +803,7 @@ public class DeltaManifestMaterializer {
 
   private record DeleteFileEntry(DeleteFile file, Long sequenceNumber) {}
 
-  private Metrics toMetrics(ScanFile file) {
+  private Metrics toMetrics(ScanFile file, Schema schema) {
     if (file == null || file.getColumnsCount() == 0) {
       return null;
     }
@@ -810,11 +811,32 @@ public class DeltaManifestMaterializer {
     Map<Integer, Long> nullValueCounts = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> lowerBounds = new LinkedHashMap<>();
     Map<Integer, ByteBuffer> upperBounds = new LinkedHashMap<>();
-    for (ColumnStats column : file.getColumnsList()) {
-      if (column == null || column.getColumnId() <= 0 || column.getColumnId() > Integer.MAX_VALUE) {
+    List<Types.NestedField> schemaFields = schema == null ? List.of() : schema.columns();
+    for (int i = 0; i < file.getColumnsCount(); i++) {
+      FileColumnStats entry = file.getColumns(i);
+      ScalarStats column = entry.getScalar();
+      if (column == null || schema == null) {
         continue;
       }
-      int fieldId = (int) column.getColumnId();
+      Types.NestedField field = null;
+      if (entry.getColumnId() > 0) {
+        field = schema.findField((int) entry.getColumnId());
+      }
+      if (field == null && !column.getDisplayName().isBlank()) {
+        field = schema.findField(column.getDisplayName());
+      }
+      if (field == null && i < schemaFields.size()) {
+        field = schemaFields.get(i);
+      }
+      int fieldId;
+      if (field != null) {
+        fieldId = field.fieldId();
+      } else if (schemaFields.isEmpty()) {
+        // Fall back to deterministic positional IDs when schema projection is unavailable.
+        fieldId = i + 1;
+      } else {
+        continue;
+      }
       valueCounts.put(fieldId, Math.max(0L, column.getValueCount()));
       if (column.hasNullCount()) {
         nullValueCounts.put(fieldId, Math.max(0L, column.getNullCount()));

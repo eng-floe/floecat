@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import org.junit.jupiter.api.Test;
@@ -49,11 +50,15 @@ class TableStatisticsServiceImplFingerprintTest {
             .setFileFormat("parquet")
             .setRowCount(2L)
             .setSizeBytes(100L)
-            .addColumns(colA)
-            .addColumns(colB)
+            .addColumns(FileColumnStats.newBuilder().setColumnId(1L).setScalar(colA).build())
+            .addColumns(FileColumnStats.newBuilder().setColumnId(2L).setScalar(colB).build())
             .build();
     FileTargetStats second =
-        first.toBuilder().clearColumns().addColumns(colB).addColumns(colA).build();
+        first.toBuilder()
+            .clearColumns()
+            .addColumns(FileColumnStats.newBuilder().setColumnId(2L).setScalar(colB).build())
+            .addColumns(FileColumnStats.newBuilder().setColumnId(1L).setScalar(colA).build())
+            .build();
 
     assertThat(StatsCanonicalizer.canonicalFingerprint(first))
         .isEqualTo(StatsCanonicalizer.canonicalFingerprint(second));

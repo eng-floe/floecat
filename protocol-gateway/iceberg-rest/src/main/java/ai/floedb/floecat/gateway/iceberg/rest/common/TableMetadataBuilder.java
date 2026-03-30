@@ -631,7 +631,12 @@ public final class TableMetadataBuilder {
             if (refSnapshotId == null
                 || refSnapshotId < 0
                 || !snapshotIds.contains(refSnapshotId)) {
-              return;
+              if (currentSnapshotId == null
+                  || currentSnapshotId < 0
+                  || !snapshotIds.contains(currentSnapshotId)) {
+                return;
+              }
+              refSnapshotId = currentSnapshotId;
             }
             ref.put("snapshot-id", refSnapshotId);
             String type = asString(ref.get("type"));

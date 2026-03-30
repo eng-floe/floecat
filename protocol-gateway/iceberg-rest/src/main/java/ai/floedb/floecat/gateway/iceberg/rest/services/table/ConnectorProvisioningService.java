@@ -198,8 +198,8 @@ public class ConnectorProvisioningService {
         DestinationTarget.newBuilder()
             .setCatalogId(catalogId)
             .setNamespaceId(namespaceId)
-            .setTableId(tableId)
             .setTableDisplayName(tableName)
+            .setTableId(tableId)
             .build();
     Connector.Builder connector =
         Connector.newBuilder()

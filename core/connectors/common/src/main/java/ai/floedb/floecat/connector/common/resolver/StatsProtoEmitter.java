@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
@@ -276,7 +277,7 @@ public final class StatsProtoEmitter {
         continue;
       }
 
-      List<ScalarStats> cols = new ArrayList<>();
+      List<FileColumnStats> cols = new ArrayList<>();
       if (fv.columns() != null && !fv.columns().isEmpty()) {
         for (var v : fv.columns()) {
           if (v == null || v.ref() == null) {
@@ -302,7 +303,7 @@ public final class StatsProtoEmitter {
           if (v.properties() != null && !v.properties().isEmpty()) {
             b.putAllProperties(v.properties());
           }
-          cols.add(b.build());
+          cols.add(FileColumnStats.newBuilder().setColumnId(colId).setScalar(b.build()).build());
         }
       }
 
@@ -430,7 +431,7 @@ public final class StatsProtoEmitter {
       if (fileView == null) {
         continue;
       }
-      List<ScalarStats> columns = new ArrayList<>();
+      List<FileColumnStats> columns = new ArrayList<>();
       if (fileView.columns() != null && !fileView.columns().isEmpty()) {
         for (var columnView : fileView.columns()) {
           if (columnView == null || columnView.ref() == null) {
@@ -468,7 +469,8 @@ public final class StatsProtoEmitter {
           if (columnView.ndv() != null) {
             column.setNdv(columnView.ndv());
           }
-          columns.add(column.build());
+          columns.add(
+              FileColumnStats.newBuilder().setColumnId(columnId).setScalar(column.build()).build());
         }
       }
 

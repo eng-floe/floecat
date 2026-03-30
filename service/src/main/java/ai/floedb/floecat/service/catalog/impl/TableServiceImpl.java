@@ -54,7 +54,6 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -81,7 +80,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
-  @Inject StatsRepository statsRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;

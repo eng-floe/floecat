@@ -362,7 +362,22 @@ public class TableGatewaySupport {
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
-      return SnapshotMetadataUtil.parseSnapshotMetadata(response.getSnapshot());
+      var snapshot = response.getSnapshot();
+      IcebergMetadata parsed = SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
+      Long propertySnapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+      Long resolvedSnapshotId = null;
+      if (snapshot.getSnapshotId() > 0) {
+        resolvedSnapshotId = snapshot.getSnapshotId();
+      } else if (parsed != null && parsed.getCurrentSnapshotId() > 0) {
+        resolvedSnapshotId = parsed.getCurrentSnapshotId();
+      }
+      if (propertySnapshotId != null
+          && propertySnapshotId > 0
+          && resolvedSnapshotId != null
+          && !propertySnapshotId.equals(resolvedSnapshotId)) {
+        return loadSnapshotById(table.getResourceId(), propertySnapshotId);
+      }
+      return parsed;
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }

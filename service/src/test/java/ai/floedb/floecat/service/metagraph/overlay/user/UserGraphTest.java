@@ -110,6 +110,7 @@ class UserGraphTest {
 
     Snapshot snapshot =
         Snapshot.newBuilder()
+            .setTableId(ids.tableId())
             .setSnapshotId(10L)
             .setSchemaJson("{\"fields\":[{\"name\":\"snap\"}]}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-01-01T00:00:00Z")))
@@ -129,12 +130,14 @@ class UserGraphTest {
 
     Snapshot oldSnapshot =
         Snapshot.newBuilder()
+            .setTableId(ids.tableId())
             .setSnapshotId(11L)
             .setSchemaJson("{\"old\":true}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-02-01T00:00:00Z")))
             .build();
     Snapshot newSnapshot =
         Snapshot.newBuilder()
+            .setTableId(ids.tableId())
             .setSnapshotId(12L)
             .setSchemaJson("{\"new\":true}")
             .setUpstreamCreatedAt(ts(Instant.parse("2024-03-01T00:00:00Z")))
@@ -508,7 +511,8 @@ class UserGraphTest {
 
     Snapshot snapshot =
         Snapshot.newBuilder()
-            .setSnapshotId(9999)
+            .setTableId(tableId)
+            .setSnapshotId(9999L)
             .setSchemaJson("{}")
             .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123))
             .build();

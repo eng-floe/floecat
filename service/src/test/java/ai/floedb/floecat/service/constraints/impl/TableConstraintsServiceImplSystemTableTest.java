@@ -104,7 +104,6 @@ class TableConstraintsServiceImplSystemTableTest {
                     .putTableConstraints(
                         PutTableConstraintsRequest.newBuilder()
                             .setTableId(tableId)
-                            .setSnapshotId(11L)
                             .setConstraints(SnapshotConstraints.getDefaultInstance())
                             .build())
                     .await()
@@ -127,10 +126,7 @@ class TableConstraintsServiceImplSystemTableTest {
             () ->
                 service
                     .deleteTableConstraints(
-                        DeleteTableConstraintsRequest.newBuilder()
-                            .setTableId(tableId)
-                            .setSnapshotId(12L)
-                            .build())
+                        DeleteTableConstraintsRequest.newBuilder().setTableId(tableId).build())
                     .await()
                     .indefinitely());
 
@@ -151,7 +147,6 @@ class TableConstraintsServiceImplSystemTableTest {
                     .addTableConstraint(
                         AddTableConstraintRequest.newBuilder()
                             .setTableId(tableId)
-                            .setSnapshotId(14L)
                             .setConstraint(
                                 ConstraintDefinition.newBuilder().setName("pk_add_one").build())
                             .build())
@@ -176,7 +171,6 @@ class TableConstraintsServiceImplSystemTableTest {
                     .mergeTableConstraints(
                         MergeTableConstraintsRequest.newBuilder()
                             .setTableId(tableId)
-                            .setSnapshotId(16L)
                             .setConstraints(SnapshotConstraints.getDefaultInstance())
                             .build())
                     .await()
@@ -200,7 +194,6 @@ class TableConstraintsServiceImplSystemTableTest {
                     .appendTableConstraints(
                         AppendTableConstraintsRequest.newBuilder()
                             .setTableId(tableId)
-                            .setSnapshotId(17L)
                             .setConstraints(SnapshotConstraints.getDefaultInstance())
                             .build())
                     .await()
@@ -224,7 +217,6 @@ class TableConstraintsServiceImplSystemTableTest {
                     .deleteTableConstraint(
                         DeleteTableConstraintRequest.newBuilder()
                             .setTableId(tableId)
-                            .setSnapshotId(15L)
                             .setConstraintName("pk_delete_one")
                             .build())
                     .await()
@@ -239,7 +231,7 @@ class TableConstraintsServiceImplSystemTableTest {
     ResourceId tableId = systemTableId("sys_tbl_constraints_get");
     overlay.addNode(systemTableNode(tableId, "system_constraints_get"));
 
-    when(constraints.getSnapshotConstraints(tableId, 13L)).thenReturn(Optional.empty());
+    when(constraints.getSnapshotConstraints(tableId, 0L)).thenReturn(Optional.empty());
 
     StatusRuntimeException ex =
         assertThrows(
@@ -247,15 +239,12 @@ class TableConstraintsServiceImplSystemTableTest {
             () ->
                 service
                     .getTableConstraints(
-                        GetTableConstraintsRequest.newBuilder()
-                            .setTableId(tableId)
-                            .setSnapshotId(13L)
-                            .build())
+                        GetTableConstraintsRequest.newBuilder().setTableId(tableId).build())
                     .await()
                     .indefinitely());
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
-    verify(constraints).getSnapshotConstraints(tableId, 13L);
+    verify(constraints).getSnapshotConstraints(tableId, 0L);
   }
 
   @Test

@@ -299,7 +299,7 @@ class TableResponseMapperTest {
                 "s3://yb-iceberg-tpcds/trino_test/metadata/00000-abc.metadata.json")
             .addStatistics(
                 IcebergStatisticsFile.newBuilder()
-                    .setSnapshotId(5)
+                    .setSnapshotId(5L)
                     .setStatisticsPath("s3://stats")
                     .setFileSizeInBytes(128)
                     .build())

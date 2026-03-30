@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.statistics.impl;
 
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
@@ -119,11 +120,18 @@ final class StatsCanonicalizer {
 
     var cols = new ArrayList<>(stats.getColumnsList());
     cols.sort(
-        Comparator.comparing(ScalarStats::getLogicalType)
-            .thenComparing(col -> bytesToB64(canonicalFingerprint(col))));
+        Comparator.comparingLong(FileColumnStats::getColumnId)
+            .thenComparing(col -> bytesToB64(canonicalFingerprint(col.getScalar()))));
     for (int i = 0; i < cols.size(); i++) {
-      ScalarStats col = cols.get(i);
-      c.group("column_" + i, g -> g.scalar("fp_b64", bytesToB64(canonicalFingerprint(col))));
+      FileColumnStats col = cols.get(i);
+      c.group(
+          "column_" + i,
+          g -> {
+            g.scalar("column_id", col.getColumnId());
+            if (col.hasScalar()) {
+              g.scalar("fp_b64", bytesToB64(canonicalFingerprint(col.getScalar())));
+            }
+          });
     }
 
     return c.bytes();

@@ -204,6 +204,13 @@ message ScalarStats {
   map<string, string> properties = 99;
 }
 
+// Per-column stats entry within a file-level record.
+// Pairs stable column identity with its scalar statistics payload.
+message FileColumnStats {
+  int64 column_id = 1;
+  ScalarStats scalar = 2;
+}
+
 // ---------- File-level stats ------------
 
 message FileTargetStats {
@@ -215,7 +222,7 @@ message FileTargetStats {
   string file_format = 4;
   int64 row_count = 5;
   int64 size_bytes = 6;
-  repeated ScalarStats columns = 7;
+  repeated FileColumnStats columns = 7;
   FileContent file_content = 8;
   string partition_data_json = 9;
   int32 partition_spec_id = 10;

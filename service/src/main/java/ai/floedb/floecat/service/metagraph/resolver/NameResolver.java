@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -105,7 +106,8 @@ public final class NameResolver {
                                     catalog.getResourceId().getId(),
                                     ns.getResourceId().getId(),
                                     ref.getName())
-                                .map(Table::getResourceId)));
+                                .map(Table::getResourceId)
+                                .map(this::requireCanonicalTableId)));
   }
 
   public Optional<ResourceId> resolveViewId(String cid, String accountId, NameRef ref) {
@@ -141,10 +143,11 @@ public final class NameResolver {
         .getByName(
             accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
         .map(
-            t ->
-                new ResolvedRelation(
-                    t.getResourceId(),
-                    canonicalName(catalog, ns, t.getDisplayName(), t.getResourceId())));
+            t -> {
+              ResourceId tableId = requireCanonicalTableId(t.getResourceId());
+              return new ResolvedRelation(
+                  tableId, canonicalName(catalog, ns, t.getDisplayName(), tableId));
+            });
   }
 
   public Optional<ResolvedRelation> resolveViewRelation(String accountId, NameRef ref) {
@@ -242,7 +245,7 @@ public final class NameResolver {
       List<Table> tables =
           tableRepository.list(
               accountId, catalogId, ns.getId(), Integer.MAX_VALUE, "", new StringBuilder());
-      for (Table t : tables) out.add(t.getResourceId());
+      for (Table t : tables) out.add(requireCanonicalTableId(t.getResourceId()));
     }
     return out;
   }
@@ -252,7 +255,17 @@ public final class NameResolver {
     List<Table> tables =
         tableRepository.list(
             accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
-    return tables.stream().map(Table::getResourceId).toList();
+    return tables.stream().map(Table::getResourceId).map(this::requireCanonicalTableId).toList();
+  }
+
+  private ResourceId requireCanonicalTableId(ResourceId tableId) {
+    if (tableId == null
+        || tableId.getId().isBlank()
+        || tableId.getAccountId().isBlank()
+        || tableId.getKind() != ResourceKind.RK_TABLE) {
+      throw new IllegalStateException("non-canonical table resource id in resolver");
+    }
+    return tableId;
   }
 
   public List<ResourceId> listViewIds(String accountId, String catalogId) {

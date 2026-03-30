@@ -36,6 +36,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
@@ -89,6 +90,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.mockito.Mockito;
 
 public abstract class AbstractRestResourceTest {
+  protected static final String TEST_ACCOUNT_ID = "account1";
   private static final TrinoFixtureTestSupport.Fixture FIXTURE =
       TrinoFixtureTestSupport.simpleFixture();
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -234,7 +236,12 @@ public abstract class AbstractRestResourceTest {
                   currentSnapshot,
                   List.copyOf(snapshots));
             });
-    ResourceId catalogId = ResourceId.newBuilder().setId("cat:default").build();
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat:default")
+            .build();
     Mockito.when(directoryStub.resolveCatalog(Mockito.any()))
         .thenReturn(ResolveCatalogResponse.newBuilder().setResourceId(catalogId).build());
     Mockito.when(directoryStub.resolveNamespace(Mockito.any()))
@@ -246,7 +253,10 @@ public abstract class AbstractRestResourceTest {
               }
               ResourceId id =
                   buildResourceId(
-                      request.getRef().getCatalog(), request.getRef().getPathList(), null);
+                      request.getRef().getCatalog(),
+                      request.getRef().getPathList(),
+                      null,
+                      ResourceKind.RK_NAMESPACE);
               return ResolveNamespaceResponse.newBuilder().setResourceId(id).build();
             });
     Mockito.when(directoryStub.resolveTable(Mockito.any()))
@@ -260,7 +270,8 @@ public abstract class AbstractRestResourceTest {
                   buildResourceId(
                       request.getRef().getCatalog(),
                       request.getRef().getPathList(),
-                      request.getRef().getName());
+                      request.getRef().getName(),
+                      ResourceKind.RK_TABLE);
               return ResolveTableResponse.newBuilder().setResourceId(id).build();
             });
     Mockito.when(directoryStub.resolveView(Mockito.any()))
@@ -274,7 +285,8 @@ public abstract class AbstractRestResourceTest {
                   buildResourceId(
                       request.getRef().getCatalog(),
                       request.getRef().getPathList(),
-                      request.getRef().getName());
+                      request.getRef().getName(),
+                      ResourceKind.RK_VIEW);
               return ResolveViewResponse.newBuilder().setResourceId(id).build();
             });
     defaultSpec = new RequestSpecBuilder().addHeader("authorization", "Bearer token").build();
@@ -289,7 +301,8 @@ public abstract class AbstractRestResourceTest {
     }
   }
 
-  private ResourceId buildResourceId(String catalog, List<String> path, String leafName) {
+  private ResourceId buildResourceId(
+      String catalog, List<String> path, String leafName, ResourceKind kind) {
     StringBuilder builder = new StringBuilder("cat");
     if (catalog != null && !catalog.isBlank()) {
       builder.append(':').append(catalog);
@@ -304,7 +317,11 @@ public abstract class AbstractRestResourceTest {
     if (leafName != null && !leafName.isBlank()) {
       builder.append(':').append(leafName);
     }
-    return ResourceId.newBuilder().setId(builder.toString()).build();
+    return ResourceId.newBuilder()
+        .setAccountId(TEST_ACCOUNT_ID)
+        .setKind(kind)
+        .setId(builder.toString())
+        .build();
   }
 
   private static ImportedSnapshot currentSnapshotFromFixture() {

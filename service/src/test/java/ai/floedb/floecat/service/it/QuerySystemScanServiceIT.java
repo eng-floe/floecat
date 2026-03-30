@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
@@ -35,6 +35,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanServiceGrpc;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
@@ -212,13 +213,9 @@ public class QuerySystemScanServiceIT {
     assertEquals(0, preSnapshots.getPinsCount(), "BeginQuery should start with zero pins");
 
     ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(systemTableId)
-            .setSnapshotId(987L)
-            .setRowCount(1)
-            .build();
-    statsRepository.putTableStats(systemTableId, 987L, stats);
+    TableValueStats stats = TableValueStats.newBuilder().setRowCount(1).build();
+    statsRepository.putTargetStats(
+        TargetStatsRecords.tableRecord(systemTableId, 987L, stats, null));
 
     var provider = statsFactory.forQuery(preScan, "corr-stats");
     assertTrue(provider.tableStats(systemTableId).isEmpty(), "Unpinned tables should skip stats");

@@ -317,15 +317,17 @@ class TableMutationIT {
             "s3://bucket/orders",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
-    var tblId = tbl.getResourceId();
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
 
     long snapshotId = 11L;
     TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
 
-    TableStats tStats =
-        TableStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
+    TableValueStats tStats =
+        TableValueStats.newBuilder()
             .setRowCount(10)
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
@@ -746,7 +748,6 @@ class TableMutationIT {
     var spec1 =
         SnapshotSpec.newBuilder()
             .setTableId(tbl.getResourceId())
-            .setSnapshotId(snapId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
             .build();
@@ -755,7 +756,6 @@ class TableMutationIT {
     var spec2 =
         SnapshotSpec.newBuilder()
             .setTableId(tbl.getResourceId())
-            .setSnapshotId(snapId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .setSchemaJson(
                 "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},"

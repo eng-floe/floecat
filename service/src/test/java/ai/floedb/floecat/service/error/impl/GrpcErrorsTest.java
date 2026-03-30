@@ -104,6 +104,26 @@ class GrpcErrorsTest {
     assertEquals("header", badRequest.getFieldViolations(0).getField());
   }
 
+  @Test
+  void unimplementedUsesGeneratedMessageKeyAndCanonicalCode() {
+    StatusRuntimeException ex =
+        GrpcErrors.unimplemented(
+            "corr-id",
+            GeneratedErrorMessages.MessageKey.STATS_ENGINE_NOT_IMPLEMENTED,
+            Map.of("operation", "list_target_stats", "reason", "no engine"));
+
+    Status statusProto = StatusProto.fromThrowable(ex);
+    assertNotNull(statusProto);
+    assertEquals(io.grpc.Status.Code.UNIMPLEMENTED.value(), statusProto.getCode());
+
+    FloecatStatus floecatStatus = FloecatStatus.fromThrowable(ex);
+    assertNotNull(floecatStatus);
+    assertEquals(io.grpc.Status.Code.UNIMPLEMENTED, floecatStatus.canonicalCode());
+    assertEquals(ErrorCode.MC_UNAVAILABLE, floecatStatus.errorCode());
+    assertEquals("stats.engine.not.implemented", floecatStatus.messageKey());
+    assertEquals("list_target_stats", floecatStatus.params().get("operation"));
+  }
+
   private static <T extends com.google.protobuf.Message> T detailOfType(
       Status statusProto, Class<T> clazz) {
     for (Any detail : statusProto.getDetailsList()) {

@@ -19,8 +19,8 @@ package ai.floedb.floecat.connector.common.resolver;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
-import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
@@ -259,12 +259,12 @@ public class StatsProtoEmitterTest {
     assertEquals(2, f0.getColumnsCount());
 
     // ensure b resolved
-    ScalarStats colB =
+    FileColumnStats colB =
         f0.getColumnsList().stream()
-            .filter(c -> "b".equals(c.getDisplayName()))
+            .filter(c -> c.hasScalar() && "b".equals(c.getScalar().getDisplayName()))
             .findFirst()
             .orElseThrow();
-    assertEquals("b", colB.getDisplayName());
+    assertEquals("b", colB.getScalar().getDisplayName());
 
     assertTrue(out.get(1).hasFile());
     var f1 = out.get(1).getFile();
@@ -351,11 +351,11 @@ public class StatsProtoEmitterTest {
 
     // Delta: column is preserved in file payload.
     assertEquals(1, deltaProto.getColumnsCount());
-    assertEquals("id", deltaProto.getColumns(0).getDisplayName());
+    assertEquals("id", deltaProto.getColumns(0).getScalar().getDisplayName());
 
     // Iceberg: column is preserved in file payload.
     assertEquals(1, icebergProto.getColumnsCount());
-    assertEquals("id", icebergProto.getColumns(0).getDisplayName());
+    assertEquals("id", icebergProto.getColumns(0).getScalar().getDisplayName());
   }
 
   /**
