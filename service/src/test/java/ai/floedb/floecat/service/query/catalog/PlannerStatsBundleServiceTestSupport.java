@@ -16,32 +16,36 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
-import ai.floedb.floecat.query.rpc.ColumnStatsResult;
-import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
-import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
+import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Optional;
 
 abstract class PlannerStatsBundleServiceTestSupport {
 
@@ -71,9 +75,9 @@ abstract class PlannerStatsBundleServiceTestSupport {
       UserObjectBundleTestSupport.TestQueryContextStore store,
       int chunkSize,
       int maxTables,
-      int maxColumns) {
+      int maxTargets) {
     return createService(
-        repository, store, ConstraintProvider.NONE, chunkSize, maxTables, maxColumns);
+        repository, store, ConstraintProvider.NONE, chunkSize, maxTables, maxTargets);
   }
 
   protected static PlannerStatsBundleService createService(
@@ -82,40 +86,47 @@ abstract class PlannerStatsBundleServiceTestSupport {
       ConstraintProvider constraintProvider,
       int chunkSize,
       int maxTables,
-      int maxColumns) {
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+      int maxTargets) {
+    StatsEngineRegistry registry =
+        new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository)));
+    StatsProviderFactory factory = new StatsProviderFactory(registry, store);
     return PlannerStatsBundleService.forTesting(
-        factory, constraintProvider, repository, maxTables, maxColumns, chunkSize);
+        factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
   }
 
   protected static StatsRepository createRepository() {
     return new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
   }
 
-  protected static ColumnStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
-    return ColumnStats.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setColumnId(columnId)
-        .setColumnName("col" + columnId)
+  protected static ScalarStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
+    return ScalarStats.newBuilder()
+        .setDisplayName("col" + columnId)
         .setValueCount(columnId * 10)
         .setNullCount(columnId)
+        .putProperties("column_id", Long.toString(columnId))
         .build();
   }
 
-  protected static FetchColumnStatsRequest requestFor(
+  protected static FetchTargetStatsRequest requestFor(
       String queryId, ResourceId tableId, List<Long> columnIds) {
-    return FetchColumnStatsRequest.newBuilder()
+    return FetchTargetStatsRequest.newBuilder()
         .setQueryId(queryId)
         .addTables(tableRequest(tableId, columnIds))
         .build();
   }
 
-  protected static TableColumnStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
-    return TableColumnStatsRequest.newBuilder()
-        .setTableId(tableId)
-        .addAllColumnIds(columnIds)
-        .build();
+  protected static TableTargetStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
+    List<StatsTarget> targets = new ArrayList<>(columnIds.size());
+    for (Long columnId : columnIds) {
+      targets.add(
+          StatsTarget.newBuilder()
+              .setColumn(
+                  ai.floedb.floecat.catalog.rpc.ColumnStatsTarget.newBuilder()
+                      .setColumnId(columnId)
+                      .build())
+              .build());
+    }
+    return TableTargetStatsRequest.newBuilder().setTableId(tableId).addAllTargets(targets).build();
   }
 
   protected static QueryContext queryContextWithPin(String queryId, long snapshotId) {
@@ -178,20 +189,20 @@ abstract class PlannerStatsBundleServiceTestSupport {
     return SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
   }
 
-  protected static List<ColumnStatsResult> flatten(List<ColumnStatsBundleChunk> chunks) {
-    List<ColumnStatsResult> results = new ArrayList<>();
-    for (ColumnStatsBundleChunk chunk : chunks) {
+  protected static List<TargetStatsResult> flatten(List<TargetStatsBundleChunk> chunks) {
+    List<TargetStatsResult> results = new ArrayList<>();
+    for (TargetStatsBundleChunk chunk : chunks) {
       if (chunk.hasBatch()) {
-        results.addAll(chunk.getBatch().getColumnsList());
+        results.addAll(chunk.getBatch().getTargetsList());
       }
     }
     return results;
   }
 
   protected static List<TableConstraintsResult> flattenConstraints(
-      List<ColumnStatsBundleChunk> chunks) {
+      List<TargetStatsBundleChunk> chunks) {
     List<TableConstraintsResult> results = new ArrayList<>();
-    for (ColumnStatsBundleChunk chunk : chunks) {
+    for (TargetStatsBundleChunk chunk : chunks) {
       if (chunk.hasBatch()) {
         results.addAll(chunk.getBatch().getConstraintsList());
       }
@@ -246,42 +257,13 @@ abstract class PlannerStatsBundleServiceTestSupport {
 
   protected static final class SmartScanOnlyStatsRepository extends StatsRepository {
     protected SmartScanOnlyStatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-      super(
-          pointerStore,
-          blobStore,
-          /* smartThreshold= */ 2,
-          /* scanColumnsPerPage= */ 5,
-          /* maxScanPages= */ 5);
-    }
-
-    @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      throw new AssertionError("smart scan path should not require per-column batches");
+      super(pointerStore, blobStore);
     }
   }
 
   protected static final class CappingStatsRepository extends StatsRepository {
-    private final AtomicInteger batchCalls = new AtomicInteger();
-
     protected CappingStatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-      super(
-          pointerStore,
-          blobStore,
-          /* smartThreshold= */ 2,
-          /* scanColumnsPerPage= */ 1,
-          /* maxScanPages= */ 1);
-    }
-
-    @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      batchCalls.incrementAndGet();
-      return super.getColumnStatsBatch(tableId, snapshotId, columnIds);
-    }
-
-    int batchCallCount() {
-      return batchCalls.get();
+      super(pointerStore, blobStore);
     }
   }
 
@@ -292,14 +274,8 @@ abstract class PlannerStatsBundleServiceTestSupport {
     }
 
     @Override
-    public List<ColumnStats> getColumnStatsBatch(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
-      throw new RuntimeException("boom");
-    }
-
-    @Override
-    public ColumnStatsBatchResult getColumnStatsBatchSmart(
-        ResourceId tableId, long snapshotId, List<Long> columnIds) {
+    public Optional<TargetStatsRecord> getTargetStats(
+        ResourceId tableId, long snapshotId, StatsTarget target) {
       throw new RuntimeException("boom");
     }
   }

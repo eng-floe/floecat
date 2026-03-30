@@ -74,6 +74,9 @@ class TableMutationIT {
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statsMutiny;
+
+  @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   private String tablePrefix = this.getClass().getSimpleName() + "_";
@@ -327,12 +330,31 @@ class TableMutationIT {
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
             .build();
-    stats.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
-            .setStats(tStats)
-            .build());
+    statsMutiny
+        .putTargetStats(
+            io.smallrye.mutiny.Multi.createFrom()
+                .item(
+                    PutTargetStatsRequest.newBuilder()
+                        .setTableId(tblId)
+                        .setSnapshotId(snapshotId)
+                        .addRecords(
+                            TargetStatsRecord.newBuilder()
+                                .setTableId(tblId)
+                                .setSnapshotId(snapshotId)
+                                .setTarget(
+                                    StatsTarget.newBuilder()
+                                        .setTable(TableStatsTarget.newBuilder().build())
+                                        .build())
+                                .setTable(
+                                    TableValueStats.newBuilder()
+                                        .setRowCount(tStats.getRowCount())
+                                        .setDataFileCount(tStats.getDataFileCount())
+                                        .setTotalSizeBytes(tStats.getTotalSizeBytes())
+                                        .build())
+                                .build())
+                        .build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
 
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tblId).build());
 

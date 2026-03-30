@@ -20,27 +20,32 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
-import ai.floedb.floecat.query.rpc.ColumnStatsResult;
-import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
+import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
-import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
+import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.grpc.Context;
@@ -75,7 +80,7 @@ class PlannerStatsServiceImplTest {
     PlannerStatsBundleService bundles = createBundleService(repository, store);
     PlannerStatsServiceImpl service = createServiceImpl(bundles, store);
 
-    FetchColumnStatsRequest request = requestFor("missing-query", TABLE, List.of(1L));
+    FetchTargetStatsRequest request = requestFor("missing-query", TABLE, List.of(1L));
     PrincipalContext principal = principal("corr-missing", true);
 
     StatusRuntimeException failure =
@@ -85,7 +90,7 @@ class PlannerStatsServiceImplTest {
                 withPrincipal(
                     principal,
                     () ->
-                        service.getColumnStats(request).collect().asList().await().indefinitely()));
+                        service.getTargetStats(request).collect().asList().await().indefinitely()));
     assertEquals(Status.NOT_FOUND.getCode(), failure.getStatus().getCode());
   }
 
@@ -159,7 +164,7 @@ class PlannerStatsServiceImplTest {
     QueryContext ctx = queryContextWithPin("query-inactive", 200L, QueryContext.State.ENDED_ABORT);
     store.seed(ctx);
 
-    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
     PrincipalContext principal = principal("corr-inactive", true);
 
     StatusRuntimeException failure =
@@ -169,7 +174,7 @@ class PlannerStatsServiceImplTest {
                 withPrincipal(
                     principal,
                     () ->
-                        service.getColumnStats(request).collect().asList().await().indefinitely()));
+                        service.getTargetStats(request).collect().asList().await().indefinitely()));
     assertEquals(Status.FAILED_PRECONDITION.getCode(), failure.getStatus().getCode());
   }
 
@@ -219,7 +224,7 @@ class PlannerStatsServiceImplTest {
     QueryContext ctx = queryContextWithPin("query-auth", 201L, QueryContext.State.ACTIVE);
     store.seed(ctx);
 
-    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
     PrincipalContext principal = principal("corr-auth", false);
 
     StatusRuntimeException failure =
@@ -229,7 +234,7 @@ class PlannerStatsServiceImplTest {
                 withPrincipal(
                     principal,
                     () ->
-                        service.getColumnStats(request).collect().asList().await().indefinitely()));
+                        service.getTargetStats(request).collect().asList().await().indefinitely()));
     assertEquals(Status.PERMISSION_DENIED.getCode(), failure.getStatus().getCode());
   }
 
@@ -278,22 +283,23 @@ class PlannerStatsServiceImplTest {
 
     QueryContext ctx = queryContextWithPin("query-ok", 202L, QueryContext.State.ACTIVE);
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 202L, sampleStats(TABLE, 202L, 1L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 202L, 1L, sampleStats(TABLE, 202L, 1L), null));
 
-    FetchColumnStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
     assertFalse(request.getIncludeConstraints());
-    List<ColumnStatsBundleChunk> chunks =
+    List<TargetStatsBundleChunk> chunks =
         withPrincipal(
             principal("corr-ok", true),
-            () -> service.getColumnStats(request).collect().asList().await().indefinitely());
+            () -> service.getTargetStats(request).collect().asList().await().indefinitely());
 
-    List<ColumnStatsResult> results = flatten(chunks);
+    List<TargetStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
 
-    ColumnStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
-    assertEquals(1L, end.getReturnedColumns());
-    assertEquals(0L, end.getNotFoundColumns());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
   }
 
   @Test
@@ -334,9 +340,11 @@ class PlannerStatsServiceImplTest {
 
   private static PlannerStatsBundleService createBundleService(
       StatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(
+            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository))), store);
     return PlannerStatsBundleService.forTesting(
-        factory, repository, /* maxTables= */ 10, /* maxColumns= */ 10, /* chunkSize= */ 5);
+        factory, repository, /* maxTables= */ 10, /* maxTargets= */ 10, /* chunkSize= */ 5);
   }
 
   private static StatsRepository createRepository() {
@@ -365,27 +373,28 @@ class PlannerStatsServiceImplTest {
     }
   }
 
-  private static FetchColumnStatsRequest requestFor(
+  private static FetchTargetStatsRequest requestFor(
       String queryId, ResourceId tableId, List<Long> columnIds) {
-    return FetchColumnStatsRequest.newBuilder()
+    return FetchTargetStatsRequest.newBuilder()
         .setQueryId(queryId)
         .addTables(tableRequest(tableId, columnIds))
         .build();
   }
 
-  private static TableColumnStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
-    return TableColumnStatsRequest.newBuilder()
-        .setTableId(tableId)
-        .addAllColumnIds(columnIds)
-        .build();
+  private static TableTargetStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
+    List<StatsTarget> targets = new ArrayList<>(columnIds.size());
+    for (Long columnId : columnIds) {
+      targets.add(
+          StatsTarget.newBuilder()
+              .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId).build())
+              .build());
+    }
+    return TableTargetStatsRequest.newBuilder().setTableId(tableId).addAllTargets(targets).build();
   }
 
-  private static ColumnStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
-    return ColumnStats.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
-        .setColumnId(columnId)
-        .setColumnName("col" + columnId)
+  private static ScalarStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
+    return ScalarStats.newBuilder()
+        .setDisplayName("col" + columnId)
         .setValueCount(columnId * 10)
         .setNullCount(columnId)
         .build();
@@ -413,11 +422,11 @@ class PlannerStatsServiceImplTest {
         .build();
   }
 
-  private static List<ColumnStatsResult> flatten(List<ColumnStatsBundleChunk> chunks) {
-    List<ColumnStatsResult> results = new ArrayList<>();
-    for (ColumnStatsBundleChunk chunk : chunks) {
+  private static List<TargetStatsResult> flatten(List<TargetStatsBundleChunk> chunks) {
+    List<TargetStatsResult> results = new ArrayList<>();
+    for (TargetStatsBundleChunk chunk : chunks) {
       if (chunk.hasBatch()) {
-        results.addAll(chunk.getBatch().getColumnsList());
+        results.addAll(chunk.getBatch().getTargetsList());
       }
     }
     return results;

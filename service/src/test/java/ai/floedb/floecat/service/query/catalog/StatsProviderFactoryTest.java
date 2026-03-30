@@ -19,9 +19,11 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -31,9 +33,13 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +64,7 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
     QueryContext ctx = queryContextWithoutPin();
     store.seed(ctx);
     var provider = factory.forQuery(ctx, "corr");
@@ -72,13 +78,11 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
     long snapshotId = 10L;
     long fetchedAtMs = 10_123L;
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(TABLE)
-            .setSnapshotId(snapshotId)
+    TableValueStats stats =
+        TableValueStats.newBuilder()
             .setRowCount(5)
             .setTotalSizeBytes(7_777)
             .setUpstream(
@@ -90,7 +94,7 @@ class StatsProviderFactoryTest {
                             .build())
                     .build())
             .build();
-    repository.putTableStats(TABLE, snapshotId, stats);
+    repository.putTargetStats(TargetStatsRecords.tableRecord(TABLE, snapshotId, stats, null));
 
     QueryContext ctx = queryContextWithPin(snapshotId);
     store.seed(ctx);
@@ -98,18 +102,13 @@ class StatsProviderFactoryTest {
     var view = provider.tableStats(TABLE).orElseThrow();
     assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
     assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
-    assertEquals(stats.getSnapshotId(), view.snapshotId());
+    assertEquals(snapshotId, view.snapshotId());
     assertEquals(1, repository.tableStatsCalls());
 
     long newSnapshot = snapshotId + 1;
-    TableStats otherStats =
-        TableStats.newBuilder()
-            .setTableId(TABLE)
-            .setSnapshotId(newSnapshot)
-            .setRowCount(7)
-            .setTotalSizeBytes(9)
-            .build();
-    repository.putTableStats(TABLE, newSnapshot, otherStats);
+    TableValueStats otherStats =
+        TableValueStats.newBuilder().setRowCount(7).setTotalSizeBytes(9).build();
+    repository.putTargetStats(TargetStatsRecords.tableRecord(TABLE, newSnapshot, otherStats, null));
 
     QueryContext otherCtx = queryContextWithPin(newSnapshot);
     store.seed(otherCtx);
@@ -125,11 +124,10 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
     long snapshotId = 33L;
-    TableStats stats =
-        TableStats.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).setRowCount(11).build();
-    repository.putTableStats(TABLE, snapshotId, stats);
+    TableValueStats stats = TableValueStats.newBuilder().setRowCount(11).build();
+    repository.putTargetStats(TargetStatsRecords.tableRecord(TABLE, snapshotId, stats, null));
 
     QueryContext ctx = queryContextWithPin(snapshotId);
     store.seed(ctx);
@@ -144,16 +142,13 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
     long snapshotId = 22L;
     long columnId = 1L;
     Ndv ndv = Ndv.newBuilder().setExact(5L).build();
-    ColumnStats stats =
-        ColumnStats.newBuilder()
-            .setTableId(TABLE)
-            .setSnapshotId(snapshotId)
-            .setColumnId(columnId)
-            .setColumnName("col")
+    ScalarStats stats =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
             .setValueCount(77)
             .setNullCount(2)
             .setNanCount(3)
@@ -161,12 +156,14 @@ class StatsProviderFactoryTest {
             .setMin("1")
             .setMax("5")
             .setNdv(ndv)
+            .putProperties("column_id", Long.toString(columnId))
             .setUpstream(
                 UpstreamStamp.newBuilder()
                     .setFetchedAt(Timestamp.newBuilder().setSeconds(1).build())
                     .build())
             .build();
-    repository.putColumnStats(TABLE, snapshotId, stats);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, snapshotId, columnId, stats, null));
 
     QueryContext ctx = queryContextWithPin(snapshotId);
     store.seed(ctx);
@@ -194,7 +191,7 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
 
     long snapshotId = 99L;
     QueryContext pinned = queryContextWithPin("query-pin", snapshotId);
@@ -213,16 +210,11 @@ class StatsProviderFactoryTest {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
-    StatsProviderFactory factory = new StatsProviderFactory(repository, store);
+    StatsProviderFactory factory = factory(repository, store);
     long snapshotId = 66L;
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(TABLE)
-            .setSnapshotId(snapshotId)
-            .setRowCount(12)
-            .setTotalSizeBytes(34)
-            .build();
-    repository.putTableStats(TABLE, snapshotId, stats);
+    TableValueStats stats =
+        TableValueStats.newBuilder().setRowCount(12).setTotalSizeBytes(34).build();
+    repository.putTargetStats(TargetStatsRecords.tableRecord(TABLE, snapshotId, stats, null));
 
     QueryContext ctx = queryContextWithoutPin();
     store.seed(ctx);
@@ -242,6 +234,13 @@ class StatsProviderFactoryTest {
 
   private static QueryContext queryContextWithPin(long snapshotId) {
     return queryContextWithPin("query-" + snapshotId, snapshotId);
+  }
+
+  private static StatsProviderFactory factory(
+      CountingStatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
+    StatsEngineRegistry registry =
+        new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository)));
+    return new StatsProviderFactory(registry, store);
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
@@ -293,17 +292,16 @@ class StatsProviderFactoryTest {
     }
 
     @Override
-    public Optional<ColumnStats> getColumnStats(
-        ResourceId tableId, long snapshotId, long columnId) {
-      columnStatsCalls++;
-      return super.getColumnStats(tableId, snapshotId, columnId);
-    }
-
-    @Override
-    public Optional<StatsRepository.TableStatsView> getTableStatsView(
-        ResourceId tableId, long snapshotId) {
-      tableStatsCalls++;
-      return super.getTableStatsView(tableId, snapshotId);
+    public Optional<TargetStatsRecord> getTargetStats(
+        ResourceId tableId, long snapshotId, StatsTarget target) {
+      switch (target.getTargetCase()) {
+        case TABLE -> tableStatsCalls++;
+        case COLUMN -> columnStatsCalls++;
+        case TARGET_NOT_SET, EXPRESSION, FILE -> {
+          // no-op
+        }
+      }
+      return super.getTargetStats(tableId, snapshotId, target);
     }
 
     private int tableStatsCalls() {

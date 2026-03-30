@@ -51,7 +51,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     StatsRepository repository = createRepository();
     PlannerStatsBundleService service =
         createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxColumns= */ 10);
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
     QueryContext ctx = queryContextWithPin("query-constraints-empty-ids", 495L);
     store.seed(ctx);
 
@@ -78,7 +78,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     StatsRepository repository = createRepository();
     PlannerStatsBundleService service =
         createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 1, /* maxColumns= */ 10);
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 1, /* maxTargets= */ 10);
     QueryContext ctx = queryContextWithPin("query-constraints-too-many-ids", 496L);
     store.seed(ctx);
 
@@ -109,7 +109,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     StatsRepository repository = createRepository();
     PlannerStatsBundleService service =
         createService(
-            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxColumns= */ 10);
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
     QueryContext ctx = queryContextWithPin("query-constraints-blank-id", 497L);
     store.seed(ctx);
 
@@ -177,7 +177,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -230,7 +230,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -291,7 +291,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 1,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -349,7 +349,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -396,7 +396,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -451,7 +451,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -481,7 +481,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             ConstraintProvider.NONE,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
@@ -539,7 +539,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
     FetchTableConstraintsRequest request =
         FetchTableConstraintsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())

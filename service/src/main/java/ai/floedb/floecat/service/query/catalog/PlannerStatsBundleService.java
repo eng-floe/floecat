@@ -18,32 +18,33 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
-import ai.floedb.floecat.query.rpc.ColumnStatsBatch;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleEnd;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleHeader;
-import ai.floedb.floecat.query.rpc.ColumnStatsInfo;
-import ai.floedb.floecat.query.rpc.ColumnStatsResult;
-import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
-import ai.floedb.floecat.query.rpc.StatsWarning;
-import ai.floedb.floecat.query.rpc.TableColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBatch;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleHeader;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TargetStatsBatch;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
+import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
-import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository.ColumnStatsBatchResult;
+import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -55,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.BiFunction;
@@ -69,34 +71,33 @@ public class PlannerStatsBundleService {
   private static final Logger LOG = Logger.getLogger(PlannerStatsBundleService.class);
 
   private static final String PIN_MISSING_CODE = "planner_stats.pin.missing";
-  private static final String COLUMN_MISSING_CODE = "planner_stats.column_stats.missing";
-  private static final String COLUMN_ERROR_CODE = "planner_stats.column_stats.error";
+  private static final String TARGET_MISSING_CODE = "planner_stats.target_stats.missing";
+  private static final String TARGET_ERROR_CODE = "planner_stats.target_stats.error";
   private static final String CONSTRAINT_MISSING_CODE = "planner_stats.constraints.missing";
   private static final String CONSTRAINT_ERROR_CODE = "planner_stats.constraints.error";
-  private static final String SCAN_CAPPED_CODE = "planner_stats.column_stats.scan_capped";
 
   private final StatsProviderFactory statsFactory;
   private final Supplier<ConstraintProvider> constraintProviderSupplier;
   private final BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner>
       constraintPrunerFactory;
   private final Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory;
-  private final StatsRepository repository;
+  private final TargetStatsLookup targetStatsLookup;
   private final int maxTables;
-  private final int maxColumns;
+  private final int maxTargets;
   private final int maxResultsPerChunk;
 
   private static final record PlannerStatsLimits(
-      int maxTables, int maxColumns, int maxResultsPerChunk) {}
+      int maxTables, int maxTargets, int maxResultsPerChunk) {}
 
   @Inject
   public PlannerStatsBundleService(
       StatsProviderFactory statsFactory,
       ConstraintProviderFactory constraintFactory,
       ConstraintPrunerFactory constraintPrunerFactory,
-      StatsRepository repository,
+      StatsEngineRegistry statsEngineRegistry,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
-      @ConfigProperty(name = "floecat.planner.stats.max-columns", defaultValue = "1024")
-          int maxColumns,
+      @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "1024")
+          int maxTargets,
       @ConfigProperty(name = "floecat.planner.stats.max-results-per-chunk", defaultValue = "100")
           int maxResultsPerChunk) {
     this(
@@ -104,8 +105,8 @@ public class PlannerStatsBundleService {
         constraintFactory::provider,
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,
-        repository,
-        new PlannerStatsLimits(maxTables, maxColumns, maxResultsPerChunk));
+        providerLookup(statsEngineRegistry),
+        new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
   PlannerStatsBundleService(
@@ -113,7 +114,7 @@ public class PlannerStatsBundleService {
       Supplier<ConstraintProvider> constraintProviderSupplier,
       BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
       Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory,
-      StatsRepository repository,
+      TargetStatsLookup targetStatsLookup,
       PlannerStatsLimits limits) {
     this.statsFactory = Objects.requireNonNull(statsFactory, "statsFactory");
     this.constraintProviderSupplier =
@@ -122,47 +123,47 @@ public class PlannerStatsBundleService {
         Objects.requireNonNull(constraintPrunerFactory, "constraintPrunerFactory");
     this.constraintsOnlyPrunerFactory =
         Objects.requireNonNull(constraintsOnlyPrunerFactory, "constraintsOnlyPrunerFactory");
-    this.repository = Objects.requireNonNull(repository, "repository");
+    this.targetStatsLookup = Objects.requireNonNull(targetStatsLookup, "targetStatsLookup");
     this.maxTables = Math.max(1, limits.maxTables);
-    this.maxColumns = Math.max(1, limits.maxColumns);
+    this.maxTargets = Math.max(1, limits.maxTargets);
     this.maxResultsPerChunk = Math.max(1, limits.maxResultsPerChunk);
   }
 
   public static PlannerStatsBundleService forTesting(
       StatsProviderFactory statsFactory,
-      StatsRepository repository,
+      StatsStore statsStore,
       int maxTables,
-      int maxColumns,
+      int maxTargets,
       int maxResultsPerChunk) {
     return forTesting(
         statsFactory,
         ConstraintProvider.NONE,
-        repository,
+        statsStore,
         maxTables,
-        maxColumns,
+        maxTargets,
         maxResultsPerChunk);
   }
 
   public static PlannerStatsBundleService forTesting(
       StatsProviderFactory statsFactory,
       ConstraintProvider constraintProvider,
-      StatsRepository repository,
+      StatsStore statsStore,
       int maxTables,
-      int maxColumns,
+      int maxTargets,
       int maxResultsPerChunk) {
     return new PlannerStatsBundleService(
         statsFactory,
         () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
-        repository,
-        new PlannerStatsLimits(maxTables, maxColumns, maxResultsPerChunk));
+        statsStore::getTargetStats,
+        new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
-  public Multi<ColumnStatsBundleChunk> stream(
-      String correlationId, QueryContext ctx, FetchColumnStatsRequest request) {
-    FetchColumnStatsRequest safeRequest =
-        request == null ? FetchColumnStatsRequest.getDefaultInstance() : request;
+  public Multi<TargetStatsBundleChunk> streamTargets(
+      String correlationId, QueryContext ctx, FetchTargetStatsRequest request) {
+    FetchTargetStatsRequest safeRequest =
+        request == null ? FetchTargetStatsRequest.getDefaultInstance() : request;
     NormalizedRequest normalized = normalizeRequest(correlationId, safeRequest);
     List<TableRequest> tableRequests = normalized.tables();
     ConstraintProvider constraintProvider =
@@ -171,12 +172,12 @@ public class PlannerStatsBundleService {
             : ConstraintProvider.NONE;
     SnapshotPinLookup pinLookup = statsFactory.pinLookupForQuery(ctx, correlationId);
     return Multi.createFrom()
-        .<ColumnStatsBundleChunk>deferred(
+        .<TargetStatsBundleChunk>deferred(
             () ->
                 Multi.createFrom()
                     .iterable(
                         () ->
-                            new PlannerStatsIterator(
+                            new TargetStatsIterator(
                                 ctx.getQueryId(),
                                 correlationId,
                                 tableRequests,
@@ -184,10 +185,25 @@ public class PlannerStatsBundleService {
                                 constraintProvider,
                                 safeRequest.getIncludeConstraints(),
                                 constraintPrunerFactory,
-                                repository,
+                                targetStatsLookup,
                                 maxResultsPerChunk,
                                 tableRequests.size(),
-                                normalized.requestedColumns())));
+                                normalized.requestedTargets())));
+  }
+
+  @FunctionalInterface
+  private interface TargetStatsLookup {
+    Optional<TargetStatsRecord> get(ResourceId tableId, long snapshotId, StatsTarget target);
+  }
+
+  private static TargetStatsLookup providerLookup(StatsEngineRegistry statsEngineRegistry) {
+    Objects.requireNonNull(statsEngineRegistry, "statsEngineRegistry");
+    return (tableId, snapshotId, target) ->
+        statsEngineRegistry
+            .capture(
+                new StatsCaptureRequest(
+                    tableId, snapshotId, target, Set.of(), StatsExecutionMode.SYNC, "", "", false))
+            .map(ai.floedb.floecat.stats.spi.StatsCaptureResult::record);
   }
 
   public Multi<TableConstraintsBundleChunk> streamConstraints(
@@ -219,7 +235,7 @@ public class PlannerStatsBundleService {
   }
 
   private NormalizedRequest normalizeRequest(
-      String correlationId, FetchColumnStatsRequest request) {
+      String correlationId, FetchTargetStatsRequest request) {
     if (request.getTablesCount() == 0) {
       throw GrpcErrors.invalidArgument(
           correlationId, PLANNER_STATS_REQUEST_TABLES_MISSING, Map.of());
@@ -232,43 +248,43 @@ public class PlannerStatsBundleService {
     }
 
     List<TableRequest> normalized = new ArrayList<>(request.getTablesCount());
-    long totalColumns = 0;
+    long totalTargets = 0;
 
     for (int tableIndex = 0; tableIndex < request.getTablesCount(); tableIndex++) {
-      TableColumnStatsRequest table = request.getTables(tableIndex);
+      TableTargetStatsRequest table = request.getTables(tableIndex);
       if (!table.hasTableId()) {
         throw GrpcErrors.invalidArgument(
             correlationId,
             PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
             Map.of("table_index", Integer.toString(tableIndex)));
       }
-      if (table.getColumnIdsCount() == 0) {
+      if (table.getTargetsCount() == 0) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            PLANNER_STATS_REQUEST_COLUMNS_MISSING,
+            PLANNER_STATS_REQUEST_TARGETS_MISSING,
             Map.of("table_id", table.getTableId().getId()));
       }
 
-      List<Long> deduped =
-          dedupeColumnIds(correlationId, table.getTableId().getId(), table.getColumnIdsList());
+      List<StatsTarget> deduped =
+          dedupeTargets(correlationId, table.getTableId().getId(), table.getTargetsList());
       if (deduped.isEmpty()) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            PLANNER_STATS_REQUEST_COLUMNS_MISSING,
+            PLANNER_STATS_REQUEST_TARGETS_MISSING,
             Map.of("table_id", table.getTableId().getId()));
       }
 
       normalized.add(new TableRequest(table.getTableId(), List.copyOf(deduped)));
-      totalColumns += deduped.size();
-      if (totalColumns > maxColumns) {
+      totalTargets += deduped.size();
+      if (totalTargets > maxTargets) {
         throw GrpcErrors.invalidArgument(
             correlationId,
-            PLANNER_STATS_REQUEST_COLUMNS_LIMIT,
-            Map.of("max_columns", Integer.toString(maxColumns)));
+            PLANNER_STATS_REQUEST_TARGETS_LIMIT,
+            Map.of("max_targets", Integer.toString(maxTargets)));
       }
     }
 
-    return new NormalizedRequest(List.copyOf(normalized), totalColumns);
+    return new NormalizedRequest(List.copyOf(normalized), totalTargets);
   }
 
   private List<ResourceId> normalizeConstraintsRequest(
@@ -298,19 +314,21 @@ public class PlannerStatsBundleService {
     return List.copyOf(deduped.values());
   }
 
-  private static List<Long> dedupeColumnIds(
-      String correlationId, String tableId, List<Long> columnIds) {
-    LinkedHashSet<Long> seen = new LinkedHashSet<>(columnIds.size());
-    for (Long id : columnIds) {
-      if (id == null || id <= 0) {
+  private static List<StatsTarget> dedupeTargets(
+      String correlationId, String tableId, List<StatsTarget> targets) {
+    Map<String, StatsTarget> deduped = new LinkedHashMap<>(targets.size());
+    for (StatsTarget target : targets) {
+      if (target == null || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
         throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_COLUMN_ID_INVALID,
-            Map.of("table_id", tableId, "column_id", id == null ? "null" : Long.toString(id)));
+            correlationId, PLANNER_STATS_REQUEST_TARGET_INVALID, Map.of());
       }
-      seen.add(id);
+      if (target.hasColumn() && target.getColumn().getColumnId() <= 0) {
+        throw GrpcErrors.invalidArgument(
+            correlationId, PLANNER_STATS_REQUEST_TARGET_INVALID, Map.of());
+      }
+      deduped.putIfAbsent(StatsTargetIdentity.storageId(target), target);
     }
-    return new ArrayList<>(seen);
+    return new ArrayList<>(deduped.values());
   }
 
   // ---------------------------------------------------------------------------
@@ -359,10 +377,10 @@ public class PlannerStatsBundleService {
   }
 
   // ---------------------------------------------------------------------------
-  // Column stats iterator
+  // Target stats iterator
   // ---------------------------------------------------------------------------
 
-  private static final class PlannerStatsIterator extends BundleIterator<ColumnStatsBundleChunk> {
+  private static final class TargetStatsIterator extends BundleIterator<TargetStatsBundleChunk> {
 
     private final String correlationId;
     private final List<TableWork> tableWorks;
@@ -370,18 +388,17 @@ public class PlannerStatsBundleService {
     private final ConstraintProvider constraintProvider;
     private final boolean includeConstraints;
     private final ConstraintPruner constraintPruner;
-    private final StatsRepository repository;
+    private final TargetStatsLookup targetStatsLookup;
     private final int maxResultsPerChunk;
     private final long requestedTables;
-    private final long requestedColumns;
+    private final long requestedTargets;
 
     private int nextTableIndex = 0;
-    private long returnedColumns = 0;
-    private long notFoundColumns = 0;
-    private long errorColumns = 0;
-    private final List<StatsWarning> pendingWarnings = new ArrayList<>();
+    private long returnedTargets = 0;
+    private long notFoundTargets = 0;
+    private long errorTargets = 0;
 
-    private PlannerStatsIterator(
+    private TargetStatsIterator(
         String queryId,
         String correlationId,
         List<TableRequest> tables,
@@ -389,27 +406,33 @@ public class PlannerStatsBundleService {
         ConstraintProvider constraintProvider,
         boolean includeConstraints,
         BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
-        StatsRepository repository,
+        TargetStatsLookup targetStatsLookup,
         int maxResultsPerChunk,
         long requestedTables,
-        long requestedColumns) {
+        long requestedTargets) {
       super(queryId);
       this.correlationId = correlationId;
       this.pinLookup = pinLookup;
       this.constraintProvider = constraintProvider;
       this.includeConstraints = includeConstraints;
-      this.repository = repository;
+      this.targetStatsLookup = targetStatsLookup;
       this.maxResultsPerChunk = maxResultsPerChunk;
       this.requestedTables = requestedTables;
-      this.requestedColumns = requestedColumns;
+      this.requestedTargets = requestedTargets;
       Set<String> requestedRelationKeys = new LinkedHashSet<>();
       Map<String, Set<Long>> requestedColumnsByRelationKey = new LinkedHashMap<>();
       this.tableWorks = new ArrayList<>(tables.size());
       for (TableRequest table : tables) {
         String key = RequestScopeConstraintPruner.relationKey(table.tableId());
         requestedRelationKeys.add(key);
-        requestedColumnsByRelationKey.put(key, new LinkedHashSet<>(table.columnIds()));
-        this.tableWorks.add(new TableWork(table.tableId(), table.columnIds()));
+        Set<Long> requestedColumnIds = new LinkedHashSet<>();
+        for (StatsTarget target : table.targets()) {
+          if (target.hasColumn()) {
+            requestedColumnIds.add(target.getColumn().getColumnId());
+          }
+        }
+        requestedColumnsByRelationKey.put(key, requestedColumnIds);
+        this.tableWorks.add(new TableWork(table.tableId(), table.targets()));
       }
       this.constraintPruner =
           constraintPrunerFactory.apply(
@@ -426,38 +449,36 @@ public class PlannerStatsBundleService {
     }
 
     @Override
-    protected ColumnStatsBundleChunk header() {
-      return ColumnStatsBundleChunk.newBuilder()
+    protected TargetStatsBundleChunk header() {
+      return TargetStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
           .setSeq(seq++)
-          .setHeader(ColumnStatsBundleHeader.newBuilder().build())
+          .setHeader(TargetStatsBundleHeader.newBuilder().build())
           .build();
     }
 
     @Override
-    protected ColumnStatsBundleChunk batch() {
-      List<ColumnStatsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
+    protected TargetStatsBundleChunk batch() {
+      List<TargetStatsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
       List<TableConstraintsResult> constraintsOut = new ArrayList<>();
       while (out.size() < maxResultsPerChunk && hasMoreWork()) {
         TableWork work = tableWorks.get(nextTableIndex);
-        ColumnStatsResult result = processNextColumn(work);
+        TargetStatsResult result = processNextTarget(work);
         out.add(result);
         if (includeConstraints && !work.constraintsEmitted()) {
           constraintsOut.add(processConstraints(work));
           work.markConstraintsEmitted();
         }
-        if (!work.hasMoreColumns()) {
+        if (!work.hasMoreTargets()) {
           nextTableIndex++;
         }
       }
-      ColumnStatsBatch.Builder batchBuilder =
-          ColumnStatsBatch.newBuilder().addAllColumns(out).addAllConstraints(constraintsOut);
-      if (!pendingWarnings.isEmpty()) {
-        batchBuilder.addAllWarnings(pendingWarnings);
-        pendingWarnings.clear();
-      }
-      ColumnStatsBatch batch = batchBuilder.build();
-      return ColumnStatsBundleChunk.newBuilder()
+      TargetStatsBatch batch =
+          TargetStatsBatch.newBuilder()
+              .addAllTargets(out)
+              .addAllConstraints(constraintsOut)
+              .build();
+      return TargetStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
           .setSeq(seq++)
           .setBatch(batch)
@@ -465,46 +486,51 @@ public class PlannerStatsBundleService {
     }
 
     @Override
-    protected ColumnStatsBundleChunk end() {
-      ColumnStatsBundleEnd end =
-          ColumnStatsBundleEnd.newBuilder()
+    protected TargetStatsBundleChunk end() {
+      TargetStatsBundleEnd end =
+          TargetStatsBundleEnd.newBuilder()
               .setRequestedTables(requestedTables)
-              .setRequestedColumns(requestedColumns)
-              .setReturnedColumns(returnedColumns)
-              .setNotFoundColumns(notFoundColumns)
-              .setErrorColumns(errorColumns)
+              .setRequestedTargets(requestedTargets)
+              .setReturnedTargets(returnedTargets)
+              .setNotFoundTargets(notFoundTargets)
+              .setErrorTargets(errorTargets)
               .build();
-      return ColumnStatsBundleChunk.newBuilder()
+      return TargetStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
           .setSeq(seq++)
           .setEnd(end)
           .build();
     }
 
-    private ColumnStatsResult processNextColumn(TableWork work) {
-      long columnId = work.columnIdAt(work.columnIndex());
+    private TargetStatsResult processNextTarget(TableWork work) {
+      StatsTarget target = work.targetAt(work.targetIndex());
       ResourceId tableId = work.tableId;
       OptionalLong snapshot = resolveSnapshot(work);
-      ColumnStatsResult result;
+      TargetStatsResult result;
       if (snapshot.isEmpty()) {
-        errorColumns++;
-        result = pinMissingResult(tableId, columnId);
+        errorTargets++;
+        result = pinMissingResult(tableId, target);
       } else {
-        ColumnStats stats = lookupStats(work, snapshot.getAsLong(), columnId);
-        if (stats != null) {
-          returnedColumns++;
-          result = buildFoundResult(tableId, columnId, stats);
-        } else if (work.statsError != null) {
-          errorColumns++;
-          result = buildErrorResult(tableId, columnId, snapshot.getAsLong(), work.statsError);
-        } else {
-          notFoundColumns++;
-          result =
-              notFoundResult(
-                  tableId, columnId, COLUMN_MISSING_CODE, "column stats missing", snapshot);
+        try {
+          Optional<TargetStatsRecord> recordOpt =
+              targetStatsLookup.get(tableId, snapshot.getAsLong(), target);
+          if (recordOpt.isPresent()) {
+            returnedTargets++;
+            result = buildFoundResult(recordOpt.get());
+          } else {
+            notFoundTargets++;
+            result =
+                notFoundResult(
+                    tableId, target, TARGET_MISSING_CODE, "target stats missing", snapshot);
+          }
+        } catch (RuntimeException e) {
+          errorTargets++;
+          result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
+          LOG.debugf(
+              e, "target stats lookup failed for %s snapshot %s", tableId, snapshot.getAsLong());
         }
       }
-      work.advanceColumn();
+      work.advanceTarget();
       return result;
     }
 
@@ -523,112 +549,61 @@ public class PlannerStatsBundleService {
       return work.pinnedSnapshot;
     }
 
-    private ColumnStats lookupStats(TableWork work, long snapshotId, long columnId) {
-      if (work.statsByColumn == null && work.statsError == null) {
-        loadStats(work, snapshotId);
-      }
-      if (work.statsError != null) {
-        return null;
-      }
-      return work.statsByColumn.get(columnId);
-    }
-
-    private void loadStats(TableWork work, long snapshotId) {
-      try {
-        ColumnStatsBatchResult batch =
-            repository.getColumnStatsBatchSmart(work.tableId, snapshotId, work.columnIds);
-        work.statsByColumn = batch.stats();
-        if (batch.capped()) {
-          recordScanWarning(work, snapshotId, batch);
-        }
-      } catch (RuntimeException e) {
-        work.statsError = e;
-        work.statsByColumn = Map.of();
-        LOG.debugf(e, "column stats lookup failed for %s snapshot %s", work.tableId, snapshotId);
-      }
-    }
-
-    private void recordScanWarning(TableWork work, long snapshotId, ColumnStatsBatchResult batch) {
-      if (!batch.capped()) {
-        return;
-      }
-      StatsWarning warning =
-          StatsWarning.newBuilder()
-              .setCode(SCAN_CAPPED_CODE)
-              .setMessage("column stats scan hit the configured page cap")
-              .putDetails("table_id", work.tableId.getId())
-              .putDetails("snapshot_id", Long.toString(snapshotId))
-              .putDetails("pages_scanned", Integer.toString(batch.pagesScanned()))
-              .putDetails("scan_limit", Integer.toString(repository.maxScanPages()))
-              .putDetails("columns_requested", Integer.toString(work.columnIds.size()))
-              .putDetails("columns_found", Integer.toString(batch.stats().size()))
-              .build();
-      pendingWarnings.add(warning);
-    }
-
-    private ColumnStatsResult buildFoundResult(
-        ResourceId tableId, long columnId, ColumnStats stats) {
-      StatsProvider.ColumnStatsView view = StatsProviderViews.columnStatsView(stats);
-      ColumnStatsInfo.Builder info =
-          ColumnStatsInfo.newBuilder()
-              .setValueCount(stats.getValueCount())
-              .setLogicalType(view.logicalType())
-              .setTdigest(stats.getTdigest())
-              .setHistogram(stats.getHistogram());
-
-      view.nullCountValue().ifPresent(info::setNullCount);
-      view.nanCountValue().ifPresent(info::setNanCount);
-      view.minValue().ifPresent(info::setMin);
-      view.maxValue().ifPresent(info::setMax);
-      view.ndv().ifPresent(info::setNdv);
-
-      return ColumnStatsResult.newBuilder()
-          .setTableId(tableId)
-          .setColumnId(columnId)
-          .setColumnName(view.columnName())
+    private static TargetStatsResult buildFoundResult(TargetStatsRecord stats) {
+      return TargetStatsResult.newBuilder()
+          .setTableId(stats.getTableId())
+          .setSnapshotId(stats.getSnapshotId())
+          .setTarget(stats.getTarget())
           .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
-          .setStats(info.build())
+          .setStats(stats)
           .build();
     }
 
-    private ColumnStatsResult buildErrorResult(
-        ResourceId tableId, long columnId, long snapshotId, RuntimeException e) {
-      BundleFailure failure =
-          failureBase(tableId, COLUMN_ERROR_CODE, "column stats lookup failed")
-              .putDetails("column_id", Long.toString(columnId))
-              .putDetails("snapshot_id", Long.toString(snapshotId))
-              .putDetails("exception", e.getClass().getSimpleName())
-              .putDetails("message", e.getMessage() == null ? "" : e.getMessage())
-              .build();
-      return ColumnStatsResult.newBuilder()
-          .setTableId(tableId)
-          .setColumnId(columnId)
-          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
-          .setFailure(failure)
-          .build();
-    }
-
-    private ColumnStatsResult notFoundResult(
-        ResourceId tableId, long columnId, String code, String message, OptionalLong snapshotId) {
+    private TargetStatsResult buildErrorResult(
+        ResourceId tableId, StatsTarget target, long snapshotId, RuntimeException e) {
       BundleFailure.Builder failure =
-          failureBase(tableId, code, message).putDetails("column_id", Long.toString(columnId));
-      snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
-      return ColumnStatsResult.newBuilder()
+          failureBase(tableId, TARGET_ERROR_CODE, "target stats lookup failed")
+              .putDetails("snapshot_id", Long.toString(snapshotId))
+              .putDetails("target", StatsTargetIdentity.storageId(target))
+              .putDetails("exception", e.getClass().getSimpleName())
+              .putDetails("message", e.getMessage() == null ? "" : e.getMessage());
+      return TargetStatsResult.newBuilder()
           .setTableId(tableId)
-          .setColumnId(columnId)
-          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
+          .setSnapshotId(snapshotId)
+          .setTarget(target)
+          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
           .setFailure(failure.build())
           .build();
     }
 
-    private ColumnStatsResult pinMissingResult(ResourceId tableId, long columnId) {
+    private TargetStatsResult notFoundResult(
+        ResourceId tableId,
+        StatsTarget target,
+        String code,
+        String message,
+        OptionalLong snapshotId) {
+      BundleFailure.Builder failure =
+          failureBase(tableId, code, message)
+              .putDetails("target", StatsTargetIdentity.storageId(target));
+      snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
+      TargetStatsResult.Builder builder =
+          TargetStatsResult.newBuilder()
+              .setTableId(tableId)
+              .setTarget(target)
+              .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
+              .setFailure(failure.build());
+      snapshotId.ifPresent(builder::setSnapshotId);
+      return builder.build();
+    }
+
+    private TargetStatsResult pinMissingResult(ResourceId tableId, StatsTarget target) {
       BundleFailure failure =
           failureBase(tableId, PIN_MISSING_CODE, "snapshot pin missing")
-              .putDetails("column_id", Long.toString(columnId))
+              .putDetails("target", StatsTargetIdentity.storageId(target))
               .build();
-      return ColumnStatsResult.newBuilder()
+      return TargetStatsResult.newBuilder()
           .setTableId(tableId)
-          .setColumnId(columnId)
+          .setTarget(target)
           .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
           .setFailure(failure)
           .build();
@@ -876,33 +851,31 @@ public class PlannerStatsBundleService {
 
   private static final class TableWork {
     private final ResourceId tableId;
-    private final List<Long> columnIds;
+    private final List<StatsTarget> targets;
     private OptionalLong pinnedSnapshot = OptionalLong.empty();
     private boolean pinResolved = false;
-    private Map<Long, ColumnStats> statsByColumn;
-    private RuntimeException statsError;
-    private int columnIndex = 0;
+    private int targetIndex = 0;
     private boolean constraintsEmitted = false;
 
-    private TableWork(ResourceId tableId, List<Long> columnIds) {
+    private TableWork(ResourceId tableId, List<StatsTarget> targets) {
       this.tableId = tableId;
-      this.columnIds = columnIds;
+      this.targets = targets;
     }
 
-    private boolean hasMoreColumns() {
-      return columnIndex < columnIds.size();
+    private boolean hasMoreTargets() {
+      return targetIndex < targets.size();
     }
 
-    private long columnIdAt(int index) {
-      return columnIds.get(index);
+    private StatsTarget targetAt(int index) {
+      return targets.get(index);
     }
 
-    private void advanceColumn() {
-      columnIndex++;
+    private void advanceTarget() {
+      targetIndex++;
     }
 
-    private int columnIndex() {
-      return columnIndex;
+    private int targetIndex() {
+      return targetIndex;
     }
 
     private boolean constraintsEmitted() {
@@ -914,7 +887,7 @@ public class PlannerStatsBundleService {
     }
   }
 
-  private record TableRequest(ResourceId tableId, List<Long> columnIds) {}
+  private record TableRequest(ResourceId tableId, List<StatsTarget> targets) {}
 
-  private record NormalizedRequest(List<TableRequest> tables, long requestedColumns) {}
+  private record NormalizedRequest(List<TableRequest> tables, long requestedTargets) {}
 }
