@@ -49,6 +49,10 @@ import java.util.Objects;
 public final class StatsTargetIdentity {
 
   private static final byte SEP = 0x1f;
+  private static final String TABLE_STORAGE_ID = "table";
+  private static final String COLUMN_STORAGE_PREFIX = "column-";
+  private static final String FILE_STORAGE_PREFIX = "file-";
+  private static final String EXPRESSION_STORAGE_PREFIX = "expression-";
 
   private StatsTargetIdentity() {}
 
@@ -127,6 +131,11 @@ public final class StatsTargetIdentity {
    */
   public static String expressionIdentityHashHex(EngineExpressionStatsTarget expressionTarget) {
     EngineExpressionStatsTarget normalized = normalizeExpressionTarget(expressionTarget);
+    return expressionIdentityHashHexNormalized(normalized);
+  }
+
+  private static String expressionIdentityHashHexNormalized(
+      EngineExpressionStatsTarget normalized) {
     byte[] kind = normalized.getEngineKind().getBytes(StandardCharsets.UTF_8);
     byte[] expr = normalized.getEngineExpressionKey().toByteArray();
     byte[] payload = new byte[3 + kind.length + expr.length];
@@ -168,6 +177,52 @@ public final class StatsTargetIdentity {
 
   public static StatsTarget expressionTarget(EngineExpressionStatsTarget target) {
     return StatsTarget.newBuilder().setExpression(normalizeExpressionTarget(target)).build();
+  }
+
+  /**
+   * Stable storage identifier for target-keyed repository entries.
+   *
+   * <p>For expression targets this uses the same canonical identity hash path as {@link
+   * #identityHashHex(StatsTarget)} and prefixes it with normalized {@code engine_kind} for
+   * readability.
+   */
+  public static String storageId(StatsTarget target) {
+    Objects.requireNonNull(target, "target");
+    return switch (target.getTargetCase()) {
+      case TABLE -> TABLE_STORAGE_ID;
+      case COLUMN -> {
+        long columnId = target.getColumn().getColumnId();
+        if (columnId <= 0L) {
+          throw new IllegalArgumentException("column_id must be positive");
+        }
+        yield COLUMN_STORAGE_PREFIX + String.format("%019d", columnId);
+      }
+      case FILE -> FILE_STORAGE_PREFIX + fileIdentityHashHex(target.getFile());
+      case EXPRESSION -> {
+        EngineExpressionStatsTarget normalized = normalizeExpressionTarget(target.getExpression());
+        yield EXPRESSION_STORAGE_PREFIX
+            + normalized.getEngineKind()
+            + "-"
+            + expressionIdentityHashHexNormalized(normalized);
+      }
+      case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
+    };
+  }
+
+  public static String columnStorageIdPrefix() {
+    return COLUMN_STORAGE_PREFIX;
+  }
+
+  public static String tableStorageIdPrefix() {
+    return TABLE_STORAGE_ID;
+  }
+
+  public static String fileStorageIdPrefix() {
+    return FILE_STORAGE_PREFIX;
+  }
+
+  public static String expressionStorageIdPrefix() {
+    return EXPRESSION_STORAGE_PREFIX;
   }
 
   private static String normalizeEngineKind(String engineKind) {
