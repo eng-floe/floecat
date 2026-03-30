@@ -17,10 +17,20 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
+import ai.floedb.floecat.catalog.rpc.StatsProducer;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -36,15 +46,40 @@ import java.util.Map;
 import org.jboss.logging.Logger;
 
 /**
- * Converts connector stats objects (ColumnStatsView, FileColumnStatsView) into RPC protos
- * (ColumnStats, FileColumnStats), computing stable column IDs based on schema.
+ * Converts connector stats objects (ColumnStatsView, FileColumnStatsView) into target-native RPC
+ * records (`TargetStatsRecord`) with canonical target identities and scalar/file payloads.
  *
  * <p>Handles both FIELD_ID and PATH_ORDINAL column ID algorithms.
  */
 public final class StatsProtoEmitter {
   private static final Logger LOG = Logger.getLogger(StatsProtoEmitter.class);
+  private static final StatsMetadata DEFAULT_CONNECTOR_METADATA =
+      StatsMetadata.newBuilder()
+          .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+          .setCompleteness(StatsCompleteness.SC_COMPLETE)
+          .setCaptureMode(StatsCaptureMode.SCM_ASYNC)
+          .build();
 
   private StatsProtoEmitter() {}
+
+  public static TargetStatsRecord tableStatsToTargetRecord(
+      ResourceId tableId, long snapshotId, TableValueStats tableValueStats) {
+    return tableStatsToTargetRecord(tableId, snapshotId, tableValueStats, null);
+  }
+
+  public static TargetStatsRecord tableStatsToTargetRecord(
+      ResourceId tableId,
+      long snapshotId,
+      TableValueStats tableValueStats,
+      StatsMetadata metadata) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
+        .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
+        .setTable(tableValueStats)
+        .build();
+  }
 
   /**
    * Build a map from canonical path to column ID, derived from schema using the configured
@@ -129,11 +164,7 @@ public final class StatsProtoEmitter {
     return 0L;
   }
 
-  /**
-   * Convert connector ColumnStatsView objects to RPC ColumnStats protos, computing stable column
-   * IDs.
-   */
-  public static List<ColumnStats> toColumnStats(
+  public static List<TargetStatsRecord> toTargetColumnStats(
       ResourceId tableId,
       long snapshotId,
       long upstreamCreatedAtMs,
@@ -141,6 +172,94 @@ public final class StatsProtoEmitter {
       ColumnIdAlgorithm algo,
       SchemaDescriptor schema,
       List<FloecatConnector.ColumnStatsView> in) {
+    return toTargetColumnStats(
+        tableId, snapshotId, upstreamCreatedAtMs, format, algo, schema, in, null);
+  }
+
+  public static List<TargetStatsRecord> toTargetColumnStats(
+      ResourceId tableId,
+      long snapshotId,
+      long upstreamCreatedAtMs,
+      ConnectorFormat format,
+      ColumnIdAlgorithm algo,
+      SchemaDescriptor schema,
+      List<FloecatConnector.ColumnStatsView> in,
+      StatsMetadata metadata) {
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
+
+    Map<String, Long> idByPath = buildIdByCanonicalPath(algo, schema);
+    List<TargetStatsRecord> out = new ArrayList<>(in.size());
+    for (var view : in) {
+      if (view == null || view.ref() == null) {
+        continue;
+      }
+      long columnId = resolveId(algo, idByPath, view.ref());
+      if (columnId <= 0L) {
+        continue;
+      }
+
+      ScalarStats.Builder scalar =
+          ScalarStats.newBuilder()
+              .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
+              .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
+              .setValueCount(view.valueCount() == null ? 0L : view.valueCount())
+              .putAllProperties(view.properties() == null ? Map.of() : view.properties());
+      if (view.nullCount() != null) {
+        scalar.setNullCount(view.nullCount());
+      }
+      if (view.nanCount() != null) {
+        scalar.setNanCount(view.nanCount());
+      }
+      if (view.min() != null) {
+        scalar.setMin(view.min());
+      }
+      if (view.max() != null) {
+        scalar.setMax(view.max());
+      }
+      if (view.ndv() != null) {
+        scalar.setNdv(view.ndv());
+      }
+
+      out.add(
+          TargetStatsRecord.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId)))
+              .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
+              .setScalar(scalar)
+              .build());
+    }
+    return Collections.unmodifiableList(out);
+  }
+
+  public static List<TargetStatsRecord> toTargetFileStats(
+      ResourceId tableId,
+      long snapshotId,
+      long upstreamCreatedAtMs,
+      ConnectorFormat format,
+      ColumnIdAlgorithm algo,
+      SchemaDescriptor schema,
+      List<FloecatConnector.FileColumnStatsView> in) {
+    return toTargetFileStats(
+        tableId, snapshotId, upstreamCreatedAtMs, format, algo, schema, in, null);
+  }
+
+  public static List<TargetStatsRecord> toTargetFileStats(
+      ResourceId tableId,
+      long snapshotId,
+      long upstreamCreatedAtMs,
+      ConnectorFormat format,
+      ColumnIdAlgorithm algo,
+      SchemaDescriptor schema,
+      List<FloecatConnector.FileColumnStatsView> in,
+      StatsMetadata metadata) {
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
 
     var upstream =
         LogicalTypeProtoAdapter.upstreamStamp(
@@ -149,71 +268,46 @@ public final class StatsProtoEmitter {
             Long.toString(snapshotId),
             Timestamps.fromMillis(Math.max(0L, upstreamCreatedAtMs)),
             Map.of());
-
     Map<String, Long> idByPath = buildIdByCanonicalPath(algo, schema);
 
-    var out = new ArrayList<ColumnStats>(in.size());
-    for (var v : in) {
-      if (v == null || v.ref() == null) continue;
-
-      long colId = resolveId(algo, idByPath, v.ref());
-      if (colId == 0L) {
-        // If we can't resolve, skip (safe: you'll store no stats for that column)
+    List<TargetStatsRecord> out = new ArrayList<>(in.size());
+    for (var fv : in) {
+      if (fv == null) {
         continue;
       }
 
-      var b =
-          ColumnStats.newBuilder()
-              .setTableId(tableId)
-              .setSnapshotId(snapshotId)
-              .setColumnId(colId)
-              .setColumnName(v.ref().name() == null ? "" : v.ref().name())
-              .setUpstream(upstream);
+      List<ScalarStats> cols = new ArrayList<>();
+      if (fv.columns() != null && !fv.columns().isEmpty()) {
+        for (var v : fv.columns()) {
+          if (v == null || v.ref() == null) {
+            continue;
+          }
+          long colId = resolveId(algo, idByPath, v.ref());
+          if (colId == 0L) {
+            continue;
+          }
+          var b =
+              ScalarStats.newBuilder()
+                  .setDisplayName(v.ref().name() == null ? "" : v.ref().name())
+                  .setUpstream(upstream);
+          if (v.valueCount() != null) b.setValueCount(v.valueCount());
+          if (v.nullCount() != null) b.setNullCount(v.nullCount());
+          if (v.nanCount() != null) b.setNanCount(v.nanCount());
+          if (v.logicalType() != null && !v.logicalType().isBlank()) {
+            b.setLogicalType(v.logicalType());
+          }
+          if (v.min() != null) b.setMin(v.min());
+          if (v.max() != null) b.setMax(v.max());
+          if (v.ndv() != null) b.setNdv(v.ndv());
+          if (v.properties() != null && !v.properties().isEmpty()) {
+            b.putAllProperties(v.properties());
+          }
+          cols.add(b.build());
+        }
+      }
 
-      if (v.valueCount() != null) b.setValueCount(v.valueCount());
-      if (v.nullCount() != null) b.setNullCount(v.nullCount());
-      if (v.nanCount() != null) b.setNanCount(v.nanCount());
-      if (v.logicalType() != null && !v.logicalType().isBlank()) b.setLogicalType(v.logicalType());
-      if (v.min() != null) b.setMin(v.min());
-      if (v.max() != null) b.setMax(v.max());
-      if (v.ndv() != null) b.setNdv(v.ndv());
-      if (v.properties() != null && !v.properties().isEmpty()) b.putAllProperties(v.properties());
-
-      out.add(b.build());
-    }
-    return Collections.unmodifiableList(out);
-  }
-
-  /**
-   * Convert connector FileColumnStatsView objects to RPC FileColumnStats protos, including
-   * per-column stats.
-   */
-  public static List<FileColumnStats> toFileColumnStats(
-      ResourceId tableId,
-      long snapshotId,
-      long upstreamCreatedAtMs,
-      ConnectorFormat format,
-      ColumnIdAlgorithm algo,
-      SchemaDescriptor schema,
-      List<FloecatConnector.FileColumnStatsView> in) {
-
-    if (in == null || in.isEmpty()) {
-      return List.of();
-    }
-
-    var out = new ArrayList<FileColumnStats>(in.size());
-
-    for (var fv : in) {
-      if (fv == null) continue;
-
-      var cols =
-          (fv.columns() == null || fv.columns().isEmpty())
-              ? List.<ColumnStats>of()
-              : toColumnStats(
-                  tableId, snapshotId, upstreamCreatedAtMs, format, algo, schema, fv.columns());
-
-      var fb =
-          FileColumnStats.newBuilder()
+      var file =
+          FileTargetStats.newBuilder()
               .setTableId(tableId)
               .setSnapshotId(snapshotId)
               .setFilePath(fv.filePath() == null ? "" : fv.filePath())
@@ -224,17 +318,192 @@ public final class StatsProtoEmitter {
               .setPartitionSpecId(Math.max(0, fv.partitionSpecId()))
               .setFileContent(fv.fileContent() == null ? FileContent.FC_DATA : fv.fileContent())
               .addAllColumns(cols);
-
       if (fv.equalityFieldIds() != null && !fv.equalityFieldIds().isEmpty()) {
-        fb.addAllEqualityFieldIds(fv.equalityFieldIds());
+        file.addAllEqualityFieldIds(fv.equalityFieldIds());
       }
       if (fv.sequenceNumber() != null && fv.sequenceNumber() > 0) {
-        fb.setSequenceNumber(fv.sequenceNumber());
+        file.setSequenceNumber(fv.sequenceNumber());
+      }
+      FileTargetStats fileStats = file.build();
+
+      out.add(
+          TargetStatsRecord.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setFile(FileStatsTarget.newBuilder().setFilePath(fileStats.getFilePath())))
+              .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
+              .setFile(fileStats)
+              .build());
+    }
+    return Collections.unmodifiableList(out);
+  }
+
+  public static List<TargetStatsRecord> toTargetColumnStatsFromViews(
+      ResourceId tableId,
+      long snapshotId,
+      ColumnIdAlgorithm algo,
+      List<FloecatConnector.ColumnStatsView> in) {
+    return toTargetColumnStatsFromViews(tableId, snapshotId, algo, in, null);
+  }
+
+  public static List<TargetStatsRecord> toTargetColumnStatsFromViews(
+      ResourceId tableId,
+      long snapshotId,
+      ColumnIdAlgorithm algo,
+      List<FloecatConnector.ColumnStatsView> in,
+      StatsMetadata metadata) {
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> out = new ArrayList<>(in.size());
+    for (var view : in) {
+      if (view == null || view.ref() == null) {
+        continue;
+      }
+      long columnId =
+          ColumnIdComputer.compute(
+              algo,
+              view.ref().name(),
+              view.ref().physicalPath(),
+              view.ref().ordinal(),
+              view.ref().fieldId());
+      if (columnId <= 0L) {
+        continue;
+      }
+      ScalarStats.Builder scalar =
+          ScalarStats.newBuilder()
+              .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
+              .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
+              .setValueCount(view.valueCount() == null ? 0L : view.valueCount())
+              .putAllProperties(view.properties() == null ? Map.of() : view.properties());
+      if (view.nullCount() != null) {
+        scalar.setNullCount(view.nullCount());
+      }
+      if (view.nanCount() != null) {
+        scalar.setNanCount(view.nanCount());
+      }
+      if (view.min() != null) {
+        scalar.setMin(view.min());
+      }
+      if (view.max() != null) {
+        scalar.setMax(view.max());
+      }
+      if (view.ndv() != null) {
+        scalar.setNdv(view.ndv());
       }
 
-      out.add(fb.build());
+      out.add(
+          TargetStatsRecord.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId)))
+              .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
+              .setScalar(scalar)
+              .build());
     }
+    return Collections.unmodifiableList(out);
+  }
 
+  public static List<TargetStatsRecord> toTargetFileStatsFromViews(
+      ResourceId tableId,
+      long snapshotId,
+      ColumnIdAlgorithm algo,
+      List<FloecatConnector.FileColumnStatsView> in) {
+    return toTargetFileStatsFromViews(tableId, snapshotId, algo, in, null);
+  }
+
+  public static List<TargetStatsRecord> toTargetFileStatsFromViews(
+      ResourceId tableId,
+      long snapshotId,
+      ColumnIdAlgorithm algo,
+      List<FloecatConnector.FileColumnStatsView> in,
+      StatsMetadata metadata) {
+    if (in == null || in.isEmpty()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> out = new ArrayList<>(in.size());
+    for (var fileView : in) {
+      if (fileView == null) {
+        continue;
+      }
+      List<ScalarStats> columns = new ArrayList<>();
+      if (fileView.columns() != null && !fileView.columns().isEmpty()) {
+        for (var columnView : fileView.columns()) {
+          if (columnView == null || columnView.ref() == null) {
+            continue;
+          }
+          long columnId =
+              ColumnIdComputer.compute(
+                  algo,
+                  columnView.ref().name(),
+                  columnView.ref().physicalPath(),
+                  columnView.ref().ordinal(),
+                  columnView.ref().fieldId());
+          if (columnId <= 0L) {
+            continue;
+          }
+          ScalarStats.Builder column =
+              ScalarStats.newBuilder()
+                  .setDisplayName(columnView.ref().name() == null ? "" : columnView.ref().name())
+                  .setLogicalType(columnView.logicalType() == null ? "" : columnView.logicalType())
+                  .setValueCount(columnView.valueCount() == null ? 0L : columnView.valueCount())
+                  .putAllProperties(
+                      columnView.properties() == null ? Map.of() : columnView.properties());
+          if (columnView.nullCount() != null) {
+            column.setNullCount(columnView.nullCount());
+          }
+          if (columnView.nanCount() != null) {
+            column.setNanCount(columnView.nanCount());
+          }
+          if (columnView.min() != null) {
+            column.setMin(columnView.min());
+          }
+          if (columnView.max() != null) {
+            column.setMax(columnView.max());
+          }
+          if (columnView.ndv() != null) {
+            column.setNdv(columnView.ndv());
+          }
+          columns.add(column.build());
+        }
+      }
+
+      FileTargetStats.Builder file =
+          FileTargetStats.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setFilePath(fileView.filePath() == null ? "" : fileView.filePath())
+              .setFileFormat(fileView.fileFormat() == null ? "" : fileView.fileFormat())
+              .setRowCount(fileView.rowCount())
+              .setSizeBytes(fileView.sizeBytes())
+              .setFileContent(
+                  fileView.fileContent() == null ? FileContent.FC_DATA : fileView.fileContent())
+              .setPartitionDataJson(
+                  fileView.partitionDataJson() == null ? "" : fileView.partitionDataJson())
+              .setPartitionSpecId(Math.max(0, fileView.partitionSpecId()))
+              .addAllColumns(columns);
+      if (fileView.equalityFieldIds() != null && !fileView.equalityFieldIds().isEmpty()) {
+        file.addAllEqualityFieldIds(fileView.equalityFieldIds());
+      }
+      if (fileView.sequenceNumber() != null && fileView.sequenceNumber() > 0) {
+        file.setSequenceNumber(fileView.sequenceNumber());
+      }
+
+      out.add(
+          TargetStatsRecord.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(snapshotId)
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setFile(FileStatsTarget.newBuilder().setFilePath(file.getFilePath())))
+              .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
+              .setFile(file)
+              .build());
+    }
     return Collections.unmodifiableList(out);
   }
 

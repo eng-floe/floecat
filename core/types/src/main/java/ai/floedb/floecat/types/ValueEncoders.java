@@ -32,7 +32,7 @@ public final class ValueEncoders {
   private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ISO_LOCAL_TIME;
 
   /**
-   * Encode {@code value} to the canonical string used by ColumnStats min/max. Each {@link
+   * Encode {@code value} to the canonical string used by ScalarStats min/max. Each {@link
    * LogicalKind} maps to the format described in {@code floecat/catalog/stats.proto}: booleans as
    * {@code "true"/"false"}, integers as base-10, floats with {@code Float/Double.toString},
    * dates/times in ISO-8601, decimals as plain strings, binaries as base64, etc.

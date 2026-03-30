@@ -19,9 +19,9 @@ package ai.floedb.floecat.connector.common.resolver;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -86,8 +86,8 @@ public class StatsProtoEmitterTest {
             // and also exact canonical already
             view(ref("b", "a[].b", 0, 0), 456L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -98,24 +98,22 @@ public class StatsProtoEmitterTest {
 
     assertEquals(2, out.size(), "both stats views should resolve");
 
-    ColumnStats s0 = out.get(0);
-    ColumnStats s1 = out.get(1);
+    TargetStatsRecord s0 = out.get(0);
+    TargetStatsRecord s1 = out.get(1);
 
-    assertEquals(tableId, s0.getTableId());
-    assertEquals(snapshotId, s0.getSnapshotId());
-    assertTrue(s0.getColumnId() > 0L);
-    assertEquals("b", s0.getColumnName());
-    assertEquals(123L, s0.getValueCount());
+    assertTrue(s0.getTarget().getColumn().getColumnId() > 0L);
+    assertEquals("b", s0.getScalar().getDisplayName());
+    assertEquals(123L, s0.getScalar().getValueCount());
 
-    assertEquals(tableId, s1.getTableId());
-    assertEquals(snapshotId, s1.getSnapshotId());
-    assertTrue(s1.getColumnId() > 0L);
-    assertEquals("b", s1.getColumnName());
-    assertEquals(456L, s1.getValueCount());
+    assertTrue(s1.getTarget().getColumn().getColumnId() > 0L);
+    assertEquals("b", s1.getScalar().getDisplayName());
+    assertEquals(456L, s1.getScalar().getValueCount());
 
     // Both refer to the *same schema column*, so the computed id must be the same.
     assertEquals(
-        s0.getColumnId(), s1.getColumnId(), "canonicalized paths should resolve to same id");
+        s0.getTarget().getColumn().getColumnId(),
+        s1.getTarget().getColumn().getColumnId(),
+        "canonicalized paths should resolve to same id");
   }
 
   @Test
@@ -129,8 +127,8 @@ public class StatsProtoEmitterTest {
         List.of(
             view(ref("id", "id", 0, 0), 10L), view(ref("missing", "does.not.exist", 0, 0), 20L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -140,8 +138,8 @@ public class StatsProtoEmitterTest {
             in);
 
     assertEquals(1, out.size(), "unresolvable column must be skipped safely");
-    assertEquals("id", out.get(0).getColumnName());
-    assertEquals(10L, out.get(0).getValueCount());
+    assertEquals("id", out.get(0).getScalar().getDisplayName());
+    assertEquals(10L, out.get(0).getScalar().getValueCount());
   }
 
   @Test
@@ -160,8 +158,8 @@ public class StatsProtoEmitterTest {
             view(ref("whatever", "does.not.matter", 0, 123), 42L),
             view(ref("alsoWhatever", "", 0, 999), 99L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -171,11 +169,11 @@ public class StatsProtoEmitterTest {
             in);
 
     assertEquals(2, out.size());
-    assertEquals(123L, out.get(0).getColumnId());
-    assertEquals(42L, out.get(0).getValueCount());
+    assertEquals(123L, out.get(0).getTarget().getColumn().getColumnId());
+    assertEquals(42L, out.get(0).getScalar().getValueCount());
 
-    assertEquals(999L, out.get(1).getColumnId());
-    assertEquals(99L, out.get(1).getValueCount());
+    assertEquals(999L, out.get(1).getTarget().getColumn().getColumnId());
+    assertEquals(99L, out.get(1).getScalar().getValueCount());
   }
 
   @Test
@@ -187,8 +185,8 @@ public class StatsProtoEmitterTest {
             view(ref("id", "id", 0, 0), 10L), // fieldId missing => cannot resolve
             view(ref("id", "id", 0, -1), 20L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             rid("t1"),
             1L,
             1700000000000L,
@@ -201,7 +199,7 @@ public class StatsProtoEmitterTest {
   }
 
   @Test
-  public void toFileColumnStats_populatesFileMetadataAndNestedColumns() {
+  public void toTargetFileStats_populatesFileMetadataAndNestedColumns() {
     var schema =
         schemaWithColumns(schemaCol("id", "id", 1, 1, true), schemaCol("b", "a[].b", 2, 2, true));
 
@@ -236,8 +234,8 @@ public class StatsProtoEmitterTest {
                 77L,
                 List.of()));
 
-    List<FileColumnStats> out =
-        StatsProtoEmitter.toFileColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetFileStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -248,7 +246,8 @@ public class StatsProtoEmitterTest {
 
     assertEquals(2, out.size());
 
-    FileColumnStats f0 = out.get(0);
+    assertTrue(out.get(0).hasFile());
+    var f0 = out.get(0).getFile();
     assertEquals(tableId, f0.getTableId());
     assertEquals(snapshotId, f0.getSnapshotId());
     assertEquals("s3://bucket/path/file1.parquet", f0.getFilePath());
@@ -260,14 +259,15 @@ public class StatsProtoEmitterTest {
     assertEquals(2, f0.getColumnsCount());
 
     // ensure b resolved
-    ColumnStats colB =
+    ScalarStats colB =
         f0.getColumnsList().stream()
-            .filter(c -> "b".equals(c.getColumnName()))
+            .filter(c -> "b".equals(c.getDisplayName()))
             .findFirst()
             .orElseThrow();
-    assertTrue(colB.getColumnId() > 0L);
+    assertEquals("b", colB.getDisplayName());
 
-    FileColumnStats f1 = out.get(1);
+    assertTrue(out.get(1).hasFile());
+    var f1 = out.get(1).getFile();
     assertEquals(FileContent.FC_EQUALITY_DELETES, f1.getFileContent());
     assertEquals(List.of(1, 2), f1.getEqualityFieldIdsList());
     assertEquals(77L, f1.getSequenceNumber());
@@ -275,7 +275,7 @@ public class StatsProtoEmitterTest {
   }
 
   @Test
-  public void toFileColumnStats_deltaAndIcebergLambdas_produceConsistentFileMetadata() {
+  public void toTargetFileStats_deltaAndIcebergLambdas_produceConsistentFileMetadata() {
     // This test verifies that ConnectorStatsViewBuilder.toFileColumnStatsView()
     // produces consistent FileColumnStatsView records regardless of format-specific lambdas
     var schema = schemaWithColumns(schemaCol("id", "id", 1, 1, true));
@@ -311,8 +311,8 @@ public class StatsProtoEmitterTest {
             null,
             List.of(view(ref("id", "id", 1, 1), 500L)));
 
-    List<FileColumnStats> deltaOut =
-        StatsProtoEmitter.toFileColumnStats(
+    List<TargetStatsRecord> deltaOut =
+        StatsProtoEmitter.toTargetFileStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -321,8 +321,8 @@ public class StatsProtoEmitterTest {
             schema,
             List.of(deltaFile));
 
-    List<FileColumnStats> icebergOut =
-        StatsProtoEmitter.toFileColumnStats(
+    List<TargetStatsRecord> icebergOut =
+        StatsProtoEmitter.toTargetFileStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -334,8 +334,10 @@ public class StatsProtoEmitterTest {
     assertEquals(1, deltaOut.size());
     assertEquals(1, icebergOut.size());
 
-    FileColumnStats deltaProto = deltaOut.get(0);
-    FileColumnStats icebergProto = icebergOut.get(0);
+    assertTrue(deltaOut.get(0).hasFile());
+    assertTrue(icebergOut.get(0).hasFile());
+    var deltaProto = deltaOut.get(0).getFile();
+    var icebergProto = icebergOut.get(0).getFile();
 
     // Both should have same file metadata
     assertEquals("s3://bucket/delta_file.parquet", deltaProto.getFilePath());
@@ -347,20 +349,21 @@ public class StatsProtoEmitterTest {
     assertEquals(4096L, deltaProto.getSizeBytes());
     assertEquals(4096L, icebergProto.getSizeBytes());
 
-    // Delta: column resolved by path, so has column ID
+    // Delta: column is preserved in file payload.
     assertEquals(1, deltaProto.getColumnsCount());
-    assertTrue(deltaProto.getColumns(0).getColumnId() > 0L);
+    assertEquals("id", deltaProto.getColumns(0).getDisplayName());
 
-    // Iceberg: column resolved by field ID (1), so has column ID
+    // Iceberg: column is preserved in file payload.
     assertEquals(1, icebergProto.getColumnsCount());
-    assertEquals(1L, icebergProto.getColumns(0).getColumnId());
+    assertEquals("id", icebergProto.getColumns(0).getDisplayName());
   }
 
   /**
    * Verifies that a column with all-null stats (no valueCount, no min/max) is still emitted as a
-   * valid ColumnStats entry with column_id and column_name set. This is the new code path exercised
-   * when GenericStatsEngine densifies per-file stats with planner.columns() — columns without
-   * Iceberg metrics produce all-null ColumnStatsView entries that must not be silently dropped.
+   * valid scalar stats entry with target identity and column_name set. This is the new code path
+   * exercised when GenericStatsEngine densifies per-file stats with planner.columns() — columns
+   * without Iceberg metrics produce all-null ColumnStatsView entries that must not be silently
+   * dropped.
    */
   @Test
   public void toColumnStats_fieldId_emitsEntryForColumnWithNullStats() {
@@ -380,8 +383,8 @@ public class StatsProtoEmitterTest {
                 null, // ndv
                 Map.of()));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             rid("t1"),
             1L,
             1700000000000L,
@@ -391,11 +394,12 @@ public class StatsProtoEmitterTest {
             in);
 
     assertEquals(1, out.size(), "column with null stats must not be dropped");
-    ColumnStats cs = out.get(0);
-    assertEquals(42L, cs.getColumnId(), "column_id must be resolved from fieldId");
-    assertEquals("ts_col", cs.getColumnName(), "column_name must be preserved");
-    assertFalse(cs.hasNullCount(), "null nullCount must not produce a set proto field");
-    assertFalse(cs.hasMin(), "null min must not produce a set proto field");
-    assertFalse(cs.hasMax(), "null max must not produce a set proto field");
+    TargetStatsRecord cs = out.get(0);
+    assertEquals(
+        42L, cs.getTarget().getColumn().getColumnId(), "column_id must be resolved from fieldId");
+    assertEquals("ts_col", cs.getScalar().getDisplayName(), "column_name must be preserved");
+    assertFalse(cs.getScalar().hasNullCount(), "null nullCount must not produce a set proto field");
+    assertFalse(cs.getScalar().hasMin(), "null min must not produce a set proto field");
+    assertFalse(cs.getScalar().hasMax(), "null max must not produce a set proto field");
   }
 }

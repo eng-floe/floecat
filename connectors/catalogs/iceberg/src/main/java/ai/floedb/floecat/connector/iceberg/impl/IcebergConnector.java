@@ -25,7 +25,7 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
@@ -36,6 +36,7 @@ import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
+import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -218,22 +219,16 @@ public abstract class IcebergConnector implements FloecatConnector {
       Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
       String schemaJson = SchemaParser.toJson(schema);
 
-      TableStats tStats = null;
-      List<ColumnStatsView> cStats = List.of();
-      List<FileColumnStatsView> fileStats = List.of();
+      List<TargetStatsRecord> targetStats = List.of();
       if (includeStatistics) {
         EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
 
         var columnNames = engineOutput.columnNames();
         var logicalTypes = engineOutput.logicalTypes();
 
-        tStats =
-            ConnectorStatsViewBuilder.toTableStats(
-                destinationTableId,
-                snapshotId,
-                createdMs,
-                TableFormat.TF_ICEBERG,
-                engineOutput.result());
+        var tStats =
+            ConnectorStatsViewBuilder.toTableValueStats(
+                snapshotId, createdMs, TableFormat.TF_ICEBERG, engineOutput.result());
         // Build per-field metadata so ColumnRef can carry field_id + physical_path (+ optional
         // ordinal); single traversal for efficiency
         var fieldMaps = fieldIdMaps(schema);
@@ -257,7 +252,7 @@ public abstract class IcebergConnector implements FloecatConnector {
           snapshotRowCount = engineOutput.result().totalRowCount();
         }
 
-        cStats =
+        var cStats =
             ConnectorStatsViewBuilder.toColumnStatsView(
                 engineOutput.result().columns(),
                 id -> {
@@ -342,7 +337,16 @@ public abstract class IcebergConnector implements FloecatConnector {
 
         List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
         allFiles.addAll(deleteStats);
-        fileStats = allFiles;
+        List<TargetStatsRecord> materialized = new ArrayList<>();
+        materialized.add(
+            StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
+        materialized.addAll(
+            StatsProtoEmitter.toTargetColumnStatsFromViews(
+                destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cStats));
+        materialized.addAll(
+            StatsProtoEmitter.toTargetFileStatsFromViews(
+                destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, allFiles));
+        targetStats = List.copyOf(materialized);
       }
 
       Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
@@ -363,9 +367,7 @@ public abstract class IcebergConnector implements FloecatConnector {
               snapshotId,
               parentId,
               createdMs,
-              tStats,
-              cStats,
-              fileStats,
+              targetStats,
               schemaJson,
               toPartitionSpecInfo(table, snapshot),
               sequenceNumber,
@@ -393,12 +395,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       return Optional.empty();
     }
 
-    return Optional.of(
-        SnapshotConstraints.newBuilder()
-            .setTableId(destinationTableId)
-            .setSnapshotId(snapshotId)
-            .addAllConstraints(constraints)
-            .build());
+    return Optional.of(SnapshotConstraints.newBuilder().addAllConstraints(constraints).build());
   }
 
   static List<ConstraintDefinition> mapIcebergConstraints(Schema schema) {
