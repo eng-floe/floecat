@@ -15,20 +15,30 @@
   limitations under the License.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.w3.org/2001/XMLSchema-instance http://maven.apache.org/maven-v4_0_0.xsd">
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
+
   <parent>
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../..</relativePath>
   </parent>
-  <artifactId>floecat-core-scanner</artifactId>
-  <description>Scanner SPI, expr model, and columnar helpers</description>
+
+  <artifactId>floecat-core-stats</artifactId>
+  <name>floecat-core-stats</name>
+  <description>Stats target identity and hashing primitives</description>
+
   <dependencies>
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-arrow</artifactId>
+      <artifactId>floecat-proto</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-types</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
@@ -36,34 +46,16 @@
       <artifactId>floecat-core-engine-utils</artifactId>
       <version>${project.version}</version>
     </dependency>
-    
-    <!-- MetaGraph definition -->
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-metagraph</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    
-    <!-- Proto definitions  -->
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-proto</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    
-    <!-- JUnit for tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
       <scope>test</scope>
     </dependency>
-
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- AssertJ for fluent assertions -->
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>

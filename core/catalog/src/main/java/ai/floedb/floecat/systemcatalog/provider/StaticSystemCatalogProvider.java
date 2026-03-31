@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EngineContextNormalizer;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.HashMap;
@@ -31,7 +31,7 @@ public final class StaticSystemCatalogProvider implements SystemCatalogProvider 
 
   public StaticSystemCatalogProvider(Map<String, SystemCatalogData> input) {
     input.forEach(
-        (kind, data) -> catalogs.put(EngineContextNormalizer.normalizeEngineKind(kind), data));
+        (kind, data) -> catalogs.put(EngineIdentityNormalizer.normalizeEngineKind(kind), data));
   }
 
   @Override

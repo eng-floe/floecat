@@ -117,6 +117,33 @@ message StatsMetadata {
   map<string,string> properties = 99;
 }
 
+// ---------- Generalized stats targets ----------
+
+message TableStatsTarget {}
+
+message ColumnStatsTarget {
+  // Stable column_id from table schema metadata.
+  int64 column_id = 1;
+}
+
+message EngineExpressionStatsTarget {
+  // Engine scope for this expression key (for example: trino, spark, duckdb).
+  string engine_kind = 1;
+  // Engine-owned opaque expression identity bytes. Floecat stores and matches this value as-is.
+  bytes engine_expression_key = 2;
+  // Optional producer version for observability. Not part of target identity.
+  string engine_version = 3;
+  map<string,string> properties = 99;
+}
+
+message StatsTarget {
+  oneof target {
+    TableStatsTarget table = 1;
+    ColumnStatsTarget column = 2;
+    EngineExpressionStatsTarget expression = 3;
+  }
+}
+
 // ---------- Table-level stats ----------
 
 message TableStats {

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.scanner.utils;
 
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -50,12 +51,12 @@ public final class EngineContext {
     boolean hasKind = !kind.isEmpty();
     String normalizedKind =
         hasKind
-            ? EngineContextNormalizer.normalizeEngineKind(kind)
+            ? EngineIdentityNormalizer.normalizeEngineKind(kind)
             : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
     if (!hasKind) {
       version = "";
     }
-    String normalizedVersion = EngineContextNormalizer.normalizeEngineVersion(version);
+    String normalizedVersion = EngineIdentityNormalizer.normalizeEngineVersion(version);
     if (!hasKind && version.isEmpty()) {
       return EMPTY;
     }
