@@ -27,6 +27,9 @@ import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
+import ai.floedb.floecat.catalog.rpc.StatsProducer;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
@@ -138,6 +141,20 @@ class IcebergNativeStatsCaptureEngineTest {
     Optional<ai.floedb.floecat.stats.spi.StatsCaptureResult> result = engine.capture(request);
 
     assertThat(result).isPresent();
+    assertThat(result.get().record().getTable()).isEqualTo(tableRecord.getTable());
+    assertThat(result.get().record().getMetadata().getProducer())
+        .isEqualTo(StatsProducer.SPROD_SOURCE_NATIVE);
+    assertThat(result.get().record().getMetadata().getCompleteness())
+        .isEqualTo(StatsCompleteness.SC_COMPLETE);
+    assertThat(result.get().record().getMetadata().getCaptureMode())
+        .isEqualTo(StatsCaptureMode.SCM_SYNC);
+    assertThat(result.get().record().getMetadata().hasConfidenceLevel()).isTrue();
+    assertThat(result.get().record().getMetadata().hasCoverage()).isTrue();
+    assertThat(result.get().record().getMetadata().hasCapturedAt()).isTrue();
+    assertThat(result.get().record().getMetadata().hasRefreshedAt()).isTrue();
+    assertThat(result.get().record().getMetadata().getPropertiesMap())
+        .containsEntry("method", "connector_native")
+        .containsEntry("engine_id", IcebergNativeStatsCaptureEngine.ENGINE_ID);
     verify(statsStore, times(1))
         .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
     verify(statsStore, times(1))

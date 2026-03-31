@@ -16,6 +16,11 @@
 
 package ai.floedb.floecat.service.statistics.engine.impl;
 
+import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
+import ai.floedb.floecat.catalog.rpc.StatsCoverage;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
+import ai.floedb.floecat.catalog.rpc.StatsProducer;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -35,7 +40,9 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import com.google.protobuf.util.Timestamps;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -132,15 +139,23 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
         if (record.isEmpty()) {
           return Optional.empty();
         }
+        TargetStatsRecord canonicalRecord = withCanonicalMetadata(record.get(), request);
         if (request.target().hasTable()) {
+          // Table-target capture persists the full bundle so later column/file lookups hit store
+          // without additional capture. Replace the table entry with the matched canonical record.
           for (TargetStatsRecord bundleRecord : bundle.get().targetStats()) {
-            persistRecord(bundleRecord);
+            TargetStatsRecord toPersist =
+                bundleRecord.hasTable()
+                    ? canonicalRecord
+                    : withCanonicalMetadata(bundleRecord, request);
+            persistRecord(toPersist);
           }
         } else {
-          persistRecord(record.get());
+          persistRecord(canonicalRecord);
         }
         return Optional.of(
-            StatsCaptureResult.forRecord(id(), record.get(), Map.of("source", "native_connector")));
+            StatsCaptureResult.forRecord(
+                id(), canonicalRecord, Map.of("source", "native_connector")));
       }
     } catch (RuntimeException e) {
       log.warnf(
@@ -214,6 +229,55 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
           id(),
           record.getTarget());
     }
+  }
+
+  private TargetStatsRecord withCanonicalMetadata(
+      TargetStatsRecord record, StatsCaptureRequest request) {
+    long nowMs = System.currentTimeMillis();
+    StatsMetadata.Builder metadata =
+        (record.hasMetadata() ? record.getMetadata() : StatsMetadata.getDefaultInstance())
+            .toBuilder();
+
+    if (metadata.getProducer() == StatsProducer.SPROD_UNSPECIFIED) {
+      metadata.setProducer(StatsProducer.SPROD_SOURCE_NATIVE);
+    }
+    if (metadata.getCompleteness() == StatsCompleteness.SC_UNSPECIFIED) {
+      // PR6 baseline policy: native connector captures are treated as complete unless stated
+      // otherwise by upstream metadata.
+      metadata.setCompleteness(StatsCompleteness.SC_COMPLETE);
+    }
+    metadata.setCaptureMode(
+        request.executionMode() == StatsExecutionMode.SYNC
+            ? StatsCaptureMode.SCM_SYNC
+            : StatsCaptureMode.SCM_ASYNC);
+
+    if (!metadata.hasConfidenceLevel()) {
+      // PR6 baseline policy for callers that do not emit confidence.
+      double defaultConfidence =
+          metadata.getCompleteness() == StatsCompleteness.SC_COMPLETE ? 1.0d : 0.5d;
+      metadata.setConfidenceLevel(defaultConfidence);
+    }
+    if (!metadata.hasCoverage()) {
+      metadata.setCoverage(StatsCoverage.getDefaultInstance());
+    }
+    if (!metadata.hasCapturedAt()) {
+      // Timestamp reflects Floecat normalization/persistence time when source capture time is
+      // absent.
+      metadata.setCapturedAt(Timestamps.fromMillis(nowMs));
+    }
+    if (!metadata.hasRefreshedAt()) {
+      // Timestamp reflects Floecat refresh/persistence time when source refresh time is absent.
+      metadata.setRefreshedAt(Timestamps.fromMillis(nowMs));
+    }
+
+    if (!metadata.containsProperties("method")) {
+      metadata.putProperties("method", "connector_native");
+    }
+    if (!metadata.containsProperties("engine_id")) {
+      metadata.putProperties("engine_id", id());
+    }
+
+    return record.toBuilder().setMetadata(metadata.build()).build();
   }
 
   protected static ConnectorConfig applyIcebergOverrides(ConnectorConfig base) {
