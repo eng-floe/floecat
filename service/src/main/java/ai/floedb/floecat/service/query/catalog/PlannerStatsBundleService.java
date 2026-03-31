@@ -40,7 +40,8 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
-import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
@@ -94,7 +95,8 @@ public class PlannerStatsBundleService {
       StatsProviderFactory statsFactory,
       ConstraintProviderFactory constraintFactory,
       ConstraintPrunerFactory constraintPrunerFactory,
-      StatsEngineRegistry statsEngineRegistry,
+      StatsOrchestrator statsOrchestrator,
+      TableRepository tableRepository,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
       @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "1024")
           int maxTargets,
@@ -105,7 +107,7 @@ public class PlannerStatsBundleService {
         constraintFactory::provider,
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,
-        providerLookup(statsEngineRegistry),
+        providerLookup(statsOrchestrator, tableRepository),
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -196,22 +198,22 @@ public class PlannerStatsBundleService {
     Optional<TargetStatsRecord> get(ResourceId tableId, long snapshotId, StatsTarget target);
   }
 
-  private static TargetStatsLookup providerLookup(StatsEngineRegistry statsEngineRegistry) {
-    Objects.requireNonNull(statsEngineRegistry, "statsEngineRegistry");
+  private static TargetStatsLookup providerLookup(
+      StatsOrchestrator statsOrchestrator, TableRepository tableRepository) {
+    Objects.requireNonNull(statsOrchestrator, "statsOrchestrator");
+    Objects.requireNonNull(tableRepository, "tableRepository");
     return (tableId, snapshotId, target) ->
-        statsEngineRegistry
-            .capture(
-                new StatsCaptureRequest(
-                    tableId,
-                    snapshotId,
-                    target,
-                    Set.of(),
-                    Set.of(),
-                    StatsExecutionMode.SYNC,
-                    "",
-                    "",
-                    false))
-            .map(ai.floedb.floecat.stats.spi.StatsCaptureResult::record);
+        statsOrchestrator.resolve(
+            new StatsCaptureRequest(
+                tableId,
+                snapshotId,
+                target,
+                Set.of(),
+                Set.of(),
+                StatsExecutionMode.SYNC,
+                ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId),
+                "",
+                false));
   }
 
   public Multi<TableConstraintsBundleChunk> streamConstraints(

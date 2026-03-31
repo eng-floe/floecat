@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.query.catalog;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -28,11 +27,10 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
-import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
@@ -47,23 +45,23 @@ public final class StatsProviderFactory {
 
   private static final Logger LOG = Logger.getLogger(StatsProviderFactory.class);
 
-  private final StatsEngineRegistry statsEngineRegistry;
-  private final QueryContextStore queryStore;
+  private final StatsOrchestrator statsOrchestrator;
   private final TableRepository tableRepository;
+  private final QueryContextStore queryStore;
 
   @Inject
   public StatsProviderFactory(
-      StatsEngineRegistry statsEngineRegistry,
-      QueryContextStore queryStore,
-      TableRepository tableRepository) {
-    this.statsEngineRegistry = statsEngineRegistry;
-    this.queryStore = queryStore;
+      StatsOrchestrator statsOrchestrator,
+      TableRepository tableRepository,
+      QueryContextStore queryStore) {
+    this.statsOrchestrator = statsOrchestrator;
     this.tableRepository = tableRepository;
+    this.queryStore = queryStore;
   }
 
   public StatsProvider forQuery(QueryContext ctx, String correlationId) {
     return new CachedStatsProvider(
-        statsEngineRegistry, queryStore, tableRepository, ctx, correlationId);
+        statsOrchestrator, tableRepository, queryStore, ctx, correlationId);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -72,21 +70,20 @@ public final class StatsProviderFactory {
 
   private static final class CachedStatsProvider implements StatsProvider {
 
-    private final StatsEngineRegistry statsEngineRegistry;
+    private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
     private final SnapshotPinResolver pinResolver;
     private final String correlationId;
     private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
         tableCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<ResourceId, String> connectorTypeCache = new ConcurrentHashMap<>();
 
     private CachedStatsProvider(
-        StatsEngineRegistry statsEngineRegistry,
-        QueryContextStore queryStore,
+        StatsOrchestrator statsOrchestrator,
         TableRepository tableRepository,
+        QueryContextStore queryStore,
         QueryContext ctx,
         String correlationId) {
-      this.statsEngineRegistry = statsEngineRegistry;
+      this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
@@ -113,27 +110,6 @@ public final class StatsProviderFactory {
       return pinResolver.pinnedSnapshotId(tableId);
     }
 
-    private String connectorType(ResourceId tableId) {
-      return connectorTypeCache.computeIfAbsent(tableId, this::loadConnectorType);
-    }
-
-    private String loadConnectorType(ResourceId tableId) {
-      TableFormat format =
-          tableRepository
-              .getById(tableId)
-              .filter(t -> t.hasUpstream())
-              .map(t -> t.getUpstream().getFormat())
-              .orElse(TableFormat.TF_UNSPECIFIED);
-      return switch (format) {
-        case TF_ICEBERG -> "iceberg";
-        case TF_DELTA -> "delta";
-        default -> {
-          LOG.debugf("No stats connector type mapping for table=%s format=%s", tableId, format);
-          yield "";
-        }
-      };
-    }
-
     private Optional<StatsProvider.TableStatsView> safeTableStats(
         ResourceId tableId, long snapshotId) {
       try {
@@ -146,19 +122,13 @@ public final class StatsProviderFactory {
                 Set.of(),
                 Set.of(),
                 StatsExecutionMode.SYNC,
-                connectorType(tableId),
+                connectorTypeFor(tableId),
                 correlationId,
                 false);
-        return statsEngineRegistry
-            .capture(request)
-            .map(result -> result.record())
+        return statsOrchestrator
+            .resolve(request)
             .filter(TargetStatsRecord::hasTable)
             .map(CachedStatsProvider::toTableStatsView);
-      } catch (StatsUnsupportedTargetException e) {
-        LOG.debugf(
-            "table stats unsupported for %s snapshot %s targetType=%s",
-            tableId, snapshotId, e.targetType());
-        return Optional.empty();
       } catch (RuntimeException e) {
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
         return Optional.empty();
@@ -177,19 +147,13 @@ public final class StatsProviderFactory {
                 Set.of(),
                 Set.of(),
                 StatsExecutionMode.SYNC,
-                connectorType(tableId),
+                connectorTypeFor(tableId),
                 correlationId,
                 false);
-        return statsEngineRegistry
-            .capture(request)
-            .map(result -> result.record())
+        return statsOrchestrator
+            .resolve(request)
             .filter(TargetStatsRecord::hasScalar)
             .map(CachedStatsProvider::toColumnStatsView);
-      } catch (StatsUnsupportedTargetException e) {
-        LOG.debugf(
-            "column stats unsupported for %s column %s snapshot %s targetType=%s",
-            tableId, columnId, snapshotId, e.targetType());
-        return Optional.empty();
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -199,6 +163,10 @@ public final class StatsProviderFactory {
             snapshotId);
         return Optional.empty();
       }
+    }
+
+    private String connectorTypeFor(ResourceId tableId) {
+      return ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId);
     }
 
     private static StatsProvider.TableStatsView toTableStatsView(TargetStatsRecord record) {
