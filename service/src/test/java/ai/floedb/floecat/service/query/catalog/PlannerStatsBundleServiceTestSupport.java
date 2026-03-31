@@ -33,13 +33,15 @@ import ai.floedb.floecat.query.rpc.TableConstraintsResult;
 import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
-import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
-import ai.floedb.floecat.service.testsupport.FakeTableRepository;
+import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -47,6 +49,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.mockito.Mockito;
 
 abstract class PlannerStatsBundleServiceTestSupport {
 
@@ -89,9 +92,13 @@ abstract class PlannerStatsBundleServiceTestSupport {
       int maxTables,
       int maxTargets) {
     StatsEngineRegistry registry =
-        new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository)));
-    StatsProviderFactory factory =
-        new StatsProviderFactory(registry, store, new FakeTableRepository());
+        new StatsEngineRegistry(
+            List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build()));
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            repository, Mockito.mock(ReconcileJobStore.class), tableRepository, registry);
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
     return PlannerStatsBundleService.forTesting(
         factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
   }

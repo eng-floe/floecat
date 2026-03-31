@@ -23,7 +23,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.it.profiles.StatsStoreOverrideProfile;
-import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
@@ -43,7 +43,7 @@ class StatsStoreOverrideTest {
 
   @Inject StatsStore statsStore;
 
-  @Inject PersistedStatsCaptureEngine persistedEngine;
+  @Inject StatsOrchestrator orchestrator;
 
   @BeforeEach
   void resetCounters() {
@@ -51,7 +51,7 @@ class StatsStoreOverrideTest {
   }
 
   @Test
-  void selectedAlternativeStoreIsUsedByCaptureEngine() {
+  void selectedAlternativeStoreIsUsedByOrchestratorReadPath() {
     assertThat(statsStore).isInstanceOf(TestOverrideStatsStore.class);
 
     ResourceId tableId =
@@ -83,10 +83,10 @@ class StatsStoreOverrideTest {
             "test-corr",
             false);
 
-    var result = persistedEngine.capture(request);
+    var result = orchestrator.resolve(request);
 
     assertThat(result).isPresent();
-    assertThat(result.orElseThrow().record()).isEqualTo(columnRecord);
+    assertThat(result.orElseThrow()).isEqualTo(columnRecord);
     assertThat(TestOverrideStatsStore.putCount()).isEqualTo(1);
     assertThat(TestOverrideStatsStore.getCount()).isGreaterThan(0);
   }
