@@ -85,6 +85,10 @@ public final class ColumnStatsNormalizer {
       b.setNdv(ndv);
     }
 
+    if (b.hasMetadata()) {
+      b.setMetadata(StatsMetadataNormalizer.normalize(b.getMetadata()));
+    }
+
     if (!b.getPropertiesMap().isEmpty()) {
       var sorted = new TreeMap<>(b.getPropertiesMap());
       b.clearProperties();
