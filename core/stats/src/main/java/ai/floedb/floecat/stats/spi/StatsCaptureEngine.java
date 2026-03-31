@@ -25,7 +25,7 @@ import java.util.Optional;
  * @jakarta.enterprise.context.ApplicationScoped}, and it will be auto-discovered by {@code
  * StatsEngineRegistry} through CDI {@code Instance<>} injection.
  *
- * <p>See {@code PersistedStatsCaptureEngine} for the baseline reference implementation.
+ * <p>See native connector engines (for example Iceberg/Delta) for reference implementations.
  */
 public interface StatsCaptureEngine {
   /**
