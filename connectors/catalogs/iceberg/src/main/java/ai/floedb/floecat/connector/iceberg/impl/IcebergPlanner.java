@@ -53,8 +53,10 @@ import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
+import org.jboss.logging.Logger;
 
 final class IcebergPlanner implements Planner<Integer> {
+  private static final Logger LOG = Logger.getLogger(IcebergPlanner.class);
   private static final long MICROS_PER_DAY = 86_400_000_000L;
   private static final long MICROS_PER_SECOND = 1_000_000L;
   private static final long NANOS_PER_SECOND = 1_000_000_000L;
@@ -194,13 +196,23 @@ final class IcebergPlanner implements Planner<Integer> {
       Integer id = column.getKey();
       Type type = idToIceType.get(id);
       Object decoded = null;
-      if (type != null) {
-        decoded = Conversions.fromByteBuffer(type, column.getValue());
-      } else {
-        ByteBuffer dup = column.getValue().duplicate();
-        byte[] bytes = new byte[dup.remaining()];
-        dup.get(bytes);
-        decoded = new String(bytes, StandardCharsets.UTF_8);
+      try {
+        if (type != null) {
+          ByteBuffer value = column.getValue();
+          if (isEmptyBoundValue(value)) {
+            logSkippedBound(id, type, "empty bound payload");
+            continue;
+          }
+          decoded = Conversions.fromByteBuffer(type, value);
+        } else {
+          ByteBuffer dup = column.getValue().duplicate();
+          byte[] bytes = new byte[dup.remaining()];
+          dup.get(bytes);
+          decoded = new String(bytes, StandardCharsets.UTF_8);
+        }
+      } catch (RuntimeException e) {
+        logSkippedBound(id, type, e.getClass().getSimpleName() + ": " + e.getMessage());
+        continue;
       }
       decoded = canonicalizeDecodedBound(type, decoded);
       LogicalType logicalType = idToLogical.get(id);
@@ -211,6 +223,19 @@ final class IcebergPlanner implements Planner<Integer> {
       }
     }
     return out.isEmpty() ? null : out;
+  }
+
+  private static boolean isEmptyBoundValue(ByteBuffer value) {
+    return value == null || value.duplicate().remaining() == 0;
+  }
+
+  private void logSkippedBound(Integer id, Type type, String reason) {
+    if (!LOG.isDebugEnabled()) {
+      return;
+    }
+    LOG.debugf(
+        "Skipping malformed Iceberg bound for columnId=%s type=%s reason=%s",
+        id, type == null ? "<unknown>" : type, reason == null ? "<unknown>" : reason);
   }
 
   static Object canonicalizeDecodedBound(Type type, Object decoded) {

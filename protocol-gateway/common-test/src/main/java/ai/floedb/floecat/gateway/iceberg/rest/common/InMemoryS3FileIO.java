@@ -149,8 +149,8 @@ public final class InMemoryS3FileIO implements SupportsPrefixOperations {
         Objects.requireNonNull(root, "InMemoryS3FileIO is not initialized; call initialize first")
             .normalize();
     URI uri = URI.create(location);
-    if (!"s3".equalsIgnoreCase(uri.getScheme())) {
-      throw new IllegalArgumentException("Only s3:// URIs are supported: " + location);
+    if (!isSupportedS3Scheme(uri.getScheme())) {
+      throw new IllegalArgumentException("Only s3:// and s3a:// URIs are supported: " + location);
     }
     if (uri.getQuery() != null || uri.getFragment() != null || uri.getUserInfo() != null) {
       throw new IllegalArgumentException("Invalid s3 URI form: " + location);
@@ -198,6 +198,10 @@ public final class InMemoryS3FileIO implements SupportsPrefixOperations {
       }
     }
     return resolved;
+  }
+
+  private static boolean isSupportedS3Scheme(String scheme) {
+    return "s3".equalsIgnoreCase(scheme) || "s3a".equalsIgnoreCase(scheme);
   }
 
   private static final class LocalInputFile implements InputFile {
