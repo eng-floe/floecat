@@ -204,16 +204,12 @@ public class PlannerStatsBundleService {
     Objects.requireNonNull(tableRepository, "tableRepository");
     return (tableId, snapshotId, target) ->
         statsOrchestrator.resolve(
-            new StatsCaptureRequest(
-                tableId,
-                snapshotId,
-                target,
-                Set.of(),
-                Set.of(),
-                StatsExecutionMode.SYNC,
-                ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId),
-                "",
-                false));
+            StatsCaptureRequest.builder(tableId, snapshotId, target)
+                .columnSelectors(Set.of())
+                .requestedKinds(Set.of())
+                .executionMode(StatsExecutionMode.SYNC)
+                .connectorType(ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId))
+                .build());
   }
 
   public Multi<TableConstraintsBundleChunk> streamConstraints(

@@ -114,18 +114,19 @@ public final class StatsProviderFactory {
         ResourceId tableId, long snapshotId) {
       try {
         var request =
-            new StatsCaptureRequest(
-                tableId,
-                snapshotId,
-                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-                Set.of(),
+            StatsCaptureRequest.builder(
+                    tableId,
+                    snapshotId,
+                    StatsTarget.newBuilder()
+                        .setTable(TableStatsTarget.getDefaultInstance())
+                        .build())
+                .columnSelectors(Set.of())
                 // Empty requested kinds means "accept any available stat family".
-                Set.of(),
-                Set.of(),
-                StatsExecutionMode.SYNC,
-                connectorTypeFor(tableId),
-                correlationId,
-                false);
+                .requestedKinds(Set.of())
+                .executionMode(StatsExecutionMode.SYNC)
+                .connectorType(connectorTypeFor(tableId))
+                .correlationId(correlationId)
+                .build();
         return statsOrchestrator
             .resolve(request)
             .filter(TargetStatsRecord::hasTable)
@@ -140,18 +141,15 @@ public final class StatsProviderFactory {
         ResourceId tableId, long snapshotId, long columnId) {
       try {
         var request =
-            new StatsCaptureRequest(
-                tableId,
-                snapshotId,
-                StatsTargetIdentity.columnTarget(columnId),
-                Set.of(),
+            StatsCaptureRequest.builder(
+                    tableId, snapshotId, StatsTargetIdentity.columnTarget(columnId))
+                .columnSelectors(Set.of())
                 // Empty requested kinds means "accept any available stat family".
-                Set.of(),
-                Set.of(),
-                StatsExecutionMode.SYNC,
-                connectorTypeFor(tableId),
-                correlationId,
-                false);
+                .requestedKinds(Set.of())
+                .executionMode(StatsExecutionMode.SYNC)
+                .connectorType(connectorTypeFor(tableId))
+                .correlationId(correlationId)
+                .build();
         return statsOrchestrator
             .resolve(request)
             .filter(TargetStatsRecord::hasScalar)

@@ -33,17 +33,14 @@ class StatsCaptureRequestTest {
   @Test
   void snapshotZeroIsAccepted() {
     StatsCaptureRequest req =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-            0L,
-            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-            Set.of("c1"),
-            Set.of(),
-            Set.of(),
-            StatsExecutionMode.SYNC,
-            "",
-            "corr-1",
-            false);
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                0L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .columnSelectors(Set.of("c1"))
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("corr-1")
+            .build();
     assertThat(req.snapshotId()).isZero();
   }
 
@@ -70,17 +67,14 @@ class StatsCaptureRequestTest {
   @Test
   void latencyBudgetOptionalAndPositiveWhenPresent() {
     StatsCaptureRequest withBudget =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-            1L,
-            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-            Set.of(),
-            Set.of(),
-            StatsExecutionMode.SYNC,
-            "",
-            "corr-3",
-            false,
-            Optional.of(Duration.ofSeconds(1)));
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                1L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("corr-3")
+            .latencyBudget(Optional.of(Duration.ofSeconds(1)))
+            .build();
     assertThat(withBudget.latencyBudget()).contains(Duration.ofSeconds(1));
 
     assertThatThrownBy(
@@ -107,16 +101,15 @@ class StatsCaptureRequestTest {
     HashSet<String> selectors = new HashSet<>();
     selectors.add("id");
     StatsCaptureRequest req =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-            1L,
-            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-            selectors,
-            Set.of(),
-            StatsExecutionMode.ASYNC,
-            "iceberg",
-            "corr-5",
-            false);
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                1L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .columnSelectors(selectors)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr-5")
+            .build();
     selectors.add("name");
     assertThat(req.columnSelectors()).containsExactly("id");
     assertThatThrownBy(() -> req.columnSelectors().add("x"))

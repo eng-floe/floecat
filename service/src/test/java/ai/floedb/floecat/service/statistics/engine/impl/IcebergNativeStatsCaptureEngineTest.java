@@ -128,16 +128,13 @@ class IcebergNativeStatsCaptureEngineTest {
                     java.util.Map.of())));
 
     StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            tableId,
-            101L,
-            tableTarget,
-            Set.of("c7"),
-            Set.of(StatsKind.ROW_COUNT),
-            StatsExecutionMode.SYNC,
-            "iceberg",
-            "corr",
-            false);
+        StatsCaptureRequest.builder(tableId, 101L, tableTarget)
+            .columnSelectors(Set.of("c7"))
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
 
     Optional<ai.floedb.floecat.stats.spi.StatsCaptureResult> result = engine.capture(request);
 
@@ -247,16 +244,12 @@ class IcebergNativeStatsCaptureEngineTest {
                     java.util.Map.of())));
 
     StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            tableId,
-            101L,
-            fileTarget,
-            Set.of(),
-            Set.of(StatsKind.ROW_COUNT, StatsKind.TOTAL_BYTES),
-            StatsExecutionMode.SYNC,
-            "iceberg",
-            "corr",
-            false);
+        StatsCaptureRequest.builder(tableId, 101L, fileTarget)
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT, StatsKind.TOTAL_BYTES))
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
 
     Optional<ai.floedb.floecat.stats.spi.StatsCaptureResult> result = engine.capture(request);
 

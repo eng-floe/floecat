@@ -88,13 +88,11 @@ public class StatsOrchestrator {
     // PR10 insertion point: after enqueue below, wait up to latency budget and re-read store.
     boolean enqueueEligible = true;
     if (request.executionMode() == StatsExecutionMode.SYNC) {
-      Optional<TargetStatsRecord> captured = capture(request).map(StatsCaptureResult::record);
-      if (captured.isPresent()) {
-        return captured;
+      CaptureAttempt attempt = captureAttempt(request);
+      if (attempt.result().isPresent()) {
+        return attempt.result().map(StatsCaptureResult::record);
       }
-      if (!isCaptureSupported(request)) {
-        enqueueEligible = false;
-      }
+      enqueueEligible = attempt.supported();
     }
 
     // Miss fallback: schedule table-scoped async stats-only capture for the requested snapshot
@@ -149,35 +147,34 @@ public class StatsOrchestrator {
     StatsCaptureRequest asyncRequest =
         request.executionMode() == StatsExecutionMode.ASYNC
             ? request
-            : new StatsCaptureRequest(
-                request.tableId(),
-                request.snapshotId(),
-                request.target(),
-                request.columnSelectors(),
-                request.requestedKinds(),
-                StatsExecutionMode.ASYNC,
-                request.connectorType(),
-                request.correlationId(),
-                request.samplingRequested(),
-                request.latencyBudget());
+            : StatsCaptureRequest.builder(request.tableId(), request.snapshotId(), request.target())
+                .columnSelectors(request.columnSelectors())
+                .requestedKinds(request.requestedKinds())
+                .executionMode(StatsExecutionMode.ASYNC)
+                .connectorType(request.connectorType())
+                .correlationId(request.correlationId())
+                .samplingRequested(request.samplingRequested())
+                .latencyBudget(request.latencyBudget())
+                .build();
     List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(asyncRequest);
     return candidates != null && !candidates.isEmpty();
   }
 
   /** Executes one capture attempt via the shared registry-backed control plane. */
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+    return captureAttempt(request).result();
+  }
+
+  private CaptureAttempt captureAttempt(StatsCaptureRequest request) {
     try {
-      return statsEngineRegistry.capture(request);
+      return new CaptureAttempt(statsEngineRegistry.capture(request), true);
     } catch (StatsUnsupportedTargetException unsupported) {
       LOG.debugf(
           "Stats target not supported for capture table=%s snapshot=%s target=%s",
           request.tableId(), request.snapshotId(), unsupported.targetType());
-      return Optional.empty();
+      return new CaptureAttempt(Optional.empty(), false);
     }
   }
 
-  private boolean isCaptureSupported(StatsCaptureRequest request) {
-    List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(request);
-    return candidates != null && !candidates.isEmpty();
-  }
+  private record CaptureAttempt(Optional<StatsCaptureResult> result, boolean supported) {}
 }

@@ -132,18 +132,16 @@ class StatsEngineRegistryTest {
   @Test
   void candidatesFilterUnsupportedEnginesForFileTarget() {
     StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-            100L,
-            StatsTarget.newBuilder()
-                .setFile(FileStatsTarget.newBuilder().setFilePath("/data/file.parquet").build())
-                .build(),
-            Set.of(),
-            Set.of(StatsKind.ROW_COUNT),
-            StatsExecutionMode.SYNC,
-            "",
-            "test-corr-file",
-            false);
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                100L,
+                StatsTarget.newBuilder()
+                    .setFile(FileStatsTarget.newBuilder().setFilePath("/data/file.parquet").build())
+                    .build())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("test-corr-file")
+            .build();
     StatsCaptureEngine unsupported =
         TestStatsCaptureEngine.builder("unsupported")
             .priority(1)
@@ -214,16 +212,14 @@ class StatsEngineRegistryTest {
   @Test
   void candidatesAllowNonSnapshotAwareEngineForUnresolvedSnapshotSentinel() {
     StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-            0L,
-            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-            Set.of(),
-            Set.of(StatsKind.ROW_COUNT),
-            StatsExecutionMode.SYNC,
-            "",
-            "test-corr-zero",
-            false);
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                0L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("test-corr-zero")
+            .build();
     StatsCaptureEngine notSnapshotAware =
         TestStatsCaptureEngine.builder("not-snapshot-aware")
             .priority(1)
@@ -247,16 +243,14 @@ class StatsEngineRegistryTest {
   }
 
   private static StatsCaptureRequest sampleRequest() {
-    return new StatsCaptureRequest(
-        ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-        100L,
-        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-        Set.of(),
-        Set.of(StatsKind.ROW_COUNT),
-        StatsExecutionMode.SYNC,
-        "",
-        "test-corr",
-        false);
+    return StatsCaptureRequest.builder(
+            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+            100L,
+            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+        .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+        .executionMode(StatsExecutionMode.SYNC)
+        .correlationId("test-corr")
+        .build();
   }
 
   private static StatsCapabilities tableOnlyCaps() {

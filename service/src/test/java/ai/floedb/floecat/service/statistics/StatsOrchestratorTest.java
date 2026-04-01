@@ -43,7 +43,6 @@ import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import com.google.protobuf.ByteString;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -95,7 +94,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void syncMissEvaluatesCaptureSupportBeforeEnqueuePolicy() {
+  void syncMissUnsupportedDoesNotEnqueueWithoutSecondLookup() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -106,18 +105,13 @@ class StatsOrchestratorTest {
     StatsCaptureRequest request = request(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.empty());
-    when(registry.capture(request)).thenReturn(Optional.empty());
-    when(registry.candidates(any())).thenReturn(List.of());
+    when(registry.capture(request))
+        .thenThrow(new StatsUnsupportedTargetException(StatsTargetType.TABLE, request));
 
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).isEmpty();
-    ArgumentCaptor<StatsCaptureRequest> candidateCaptor =
-        ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    verify(registry, Mockito.atLeastOnce()).candidates(candidateCaptor.capture());
-    assertThat(candidateCaptor.getAllValues())
-        .extracting(StatsCaptureRequest::executionMode)
-        .contains(StatsExecutionMode.SYNC);
+    verify(registry, never()).candidates(any());
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
   }
 
@@ -367,16 +361,14 @@ class StatsOrchestratorTest {
 
   private static StatsCaptureRequest request(
       StatsExecutionMode mode, StatsTarget target, long snapshotId) {
-    return new StatsCaptureRequest(
-        ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
-        snapshotId,
-        target,
-        Set.of(),
-        Set.of(),
-        mode,
-        "iceberg",
-        "corr",
-        false);
+    return StatsCaptureRequest.builder(
+            ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+            snapshotId,
+            target)
+        .executionMode(mode)
+        .connectorType("iceberg")
+        .correlationId("corr")
+        .build();
   }
 
   private static TargetStatsRecord tableRecord(StatsCaptureRequest request) {

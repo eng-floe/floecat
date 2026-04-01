@@ -181,7 +181,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
             != ai.floedb.floecat.connector.rpc.AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
       return CredentialResolverSupport.apply(base, auth.getCredentials());
     }
-    if (auth == null || auth.getScheme().isBlank() || "none".equalsIgnoreCase(auth.getScheme())) {
+    if (auth.getScheme().isBlank() || "none".equalsIgnoreCase(auth.getScheme())) {
       return base;
     }
     return credentialResolver

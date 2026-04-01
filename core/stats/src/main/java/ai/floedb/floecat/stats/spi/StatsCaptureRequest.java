@@ -50,6 +50,10 @@ public record StatsCaptureRequest(
     boolean samplingRequested,
     Optional<Duration> latencyBudget) {
 
+  public static Builder builder(ResourceId tableId, long snapshotId, StatsTarget target) {
+    return new Builder(tableId, snapshotId, target);
+  }
+
   public StatsCaptureRequest {
     tableId = Objects.requireNonNull(tableId, "tableId");
     if (snapshotId < 0L) {
@@ -90,5 +94,74 @@ public record StatsCaptureRequest(
         correlationId,
         samplingRequested,
         Optional.empty());
+  }
+
+  /** Builder to avoid fragile positional argument calls. */
+  public static final class Builder {
+    private final ResourceId tableId;
+    private final long snapshotId;
+    private final StatsTarget target;
+    private Set<String> columnSelectors = Set.of();
+    private Set<StatsKind> requestedKinds = Set.of();
+    private StatsExecutionMode executionMode = StatsExecutionMode.SYNC;
+    private String connectorType = "";
+    private String correlationId = "";
+    private boolean samplingRequested;
+    private Optional<Duration> latencyBudget = Optional.empty();
+
+    private Builder(ResourceId tableId, long snapshotId, StatsTarget target) {
+      this.tableId = tableId;
+      this.snapshotId = snapshotId;
+      this.target = target;
+    }
+
+    public Builder columnSelectors(Set<String> columnSelectors) {
+      this.columnSelectors = columnSelectors == null ? Set.of() : Set.copyOf(columnSelectors);
+      return this;
+    }
+
+    public Builder requestedKinds(Set<StatsKind> requestedKinds) {
+      this.requestedKinds = requestedKinds == null ? Set.of() : Set.copyOf(requestedKinds);
+      return this;
+    }
+
+    public Builder executionMode(StatsExecutionMode executionMode) {
+      this.executionMode = executionMode;
+      return this;
+    }
+
+    public Builder connectorType(String connectorType) {
+      this.connectorType = connectorType == null ? "" : connectorType;
+      return this;
+    }
+
+    public Builder correlationId(String correlationId) {
+      this.correlationId = correlationId == null ? "" : correlationId;
+      return this;
+    }
+
+    public Builder samplingRequested(boolean samplingRequested) {
+      this.samplingRequested = samplingRequested;
+      return this;
+    }
+
+    public Builder latencyBudget(Optional<Duration> latencyBudget) {
+      this.latencyBudget = latencyBudget == null ? Optional.empty() : latencyBudget;
+      return this;
+    }
+
+    public StatsCaptureRequest build() {
+      return new StatsCaptureRequest(
+          tableId,
+          snapshotId,
+          target,
+          columnSelectors,
+          requestedKinds,
+          executionMode,
+          connectorType,
+          correlationId,
+          samplingRequested,
+          latencyBudget);
+    }
   }
 }

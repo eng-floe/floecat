@@ -935,16 +935,13 @@ public class ReconcilerService {
       }
 
       StatsCaptureRequest request =
-          new StatsCaptureRequest(
-              tableId,
-              snapshotId,
-              StatsTargetIdentity.tableTarget(),
-              includeSelectors,
-              Set.of(),
-              StatsExecutionMode.ASYNC,
-              connectorTypeFor(connectorKind),
-              ctx.correlationId(),
-              false);
+          StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
+              .columnSelectors(includeSelectors)
+              .requestedKinds(Set.of())
+              .executionMode(StatsExecutionMode.ASYNC)
+              .connectorType(connectorTypeFor(connectorKind))
+              .correlationId(ctx.correlationId())
+              .build();
       Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
       if (captured.isPresent()) {
         // statsProcessed counts successful capture attempts per snapshot, not number of persisted
@@ -1013,16 +1010,13 @@ public class ReconcilerService {
       }
 
       StatsCaptureRequest request =
-          new StatsCaptureRequest(
-              tableId,
-              snapshotId,
-              StatsTargetIdentity.tableTarget(),
-              includeSelectors,
-              Set.of(),
-              StatsExecutionMode.ASYNC,
-              connectorType,
-              ctx.correlationId(),
-              false);
+          StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
+              .columnSelectors(includeSelectors)
+              .requestedKinds(Set.of())
+              .executionMode(StatsExecutionMode.ASYNC)
+              .connectorType(connectorType)
+              .correlationId(ctx.correlationId())
+              .build();
       Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
       if (captured.isPresent()) {
         // statsProcessed counts successful capture attempts per snapshot, not number of persisted

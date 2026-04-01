@@ -72,16 +72,12 @@ class StatsStoreOverrideTest {
     statsStore.putTargetStats(columnRecord);
 
     var request =
-        new StatsCaptureRequest(
-            tableId,
-            snapshotId,
-            StatsTargetIdentity.columnTarget(1L),
-            Set.of(),
-            Set.of(StatsKind.NULL_COUNT),
-            StatsExecutionMode.SYNC,
-            "iceberg",
-            "test-corr",
-            false);
+        StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.columnTarget(1L))
+            .requestedKinds(Set.of(StatsKind.NULL_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("test-corr")
+            .build();
 
     var result = orchestrator.resolve(request);
 

@@ -30,7 +30,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -41,16 +40,14 @@ class StatsCaptureControlPlaneAdapterTest {
     StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
     StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
     StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build(),
-            42L,
-            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
-            Set.of(),
-            Set.of(),
-            StatsExecutionMode.ASYNC,
-            "iceberg",
-            "corr-1",
-            false);
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build(),
+                42L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .correlationId("corr-1")
+            .build();
     StatsCaptureResult expected =
         StatsCaptureResult.forRecord(
             "test",
