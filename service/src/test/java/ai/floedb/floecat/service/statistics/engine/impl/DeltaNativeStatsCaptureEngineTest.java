@@ -97,14 +97,14 @@ class DeltaNativeStatsCaptureEngineTest {
     TargetStatsRecord tableRecord =
         TargetStatsRecord.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(77L)
+            .setSnapshotId(0L)
             .setTarget(tableTarget)
             .setTable(TableValueStats.newBuilder().setRowCount(21L).build())
             .build();
     TargetStatsRecord columnRecord =
         TargetStatsRecord.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(77L)
+            .setSnapshotId(0L)
             .setTarget(columnTarget)
             .setScalar(ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
             .build();
@@ -112,7 +112,7 @@ class DeltaNativeStatsCaptureEngineTest {
         .thenReturn(
             List.of(
                 new FloecatConnector.SnapshotBundle(
-                    77L,
+                    0L,
                     0L,
                     0L,
                     List.of(tableRecord, columnRecord),
@@ -125,7 +125,7 @@ class DeltaNativeStatsCaptureEngineTest {
                     java.util.Map.of())));
 
     StatsCaptureRequest request =
-        StatsCaptureRequest.builder(tableId, 77L, tableTarget)
+        StatsCaptureRequest.builder(tableId, 0L, tableTarget)
             .columnSelectors(Set.of("c9"))
             .requestedKinds(Set.of(StatsKind.ROW_COUNT))
             .executionMode(StatsExecutionMode.SYNC)
@@ -139,7 +139,7 @@ class DeltaNativeStatsCaptureEngineTest {
     assertThat(result.get().record().getTable()).isEqualTo(tableRecord.getTable());
     verify(statsStore)
         .putTargetStats(
-            org.mockito.ArgumentMatchers.argThat(r -> r.hasTable() && r.getSnapshotId() == 77L));
+            org.mockito.ArgumentMatchers.argThat(r -> r.hasTable() && r.getSnapshotId() == 0L));
     verify(statsStore)
         .putTargetStats(
             org.mockito.ArgumentMatchers.argThat(

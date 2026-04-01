@@ -209,7 +209,31 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void asyncMissWithNonPositiveSnapshotDoesNotEnqueue() {
+  void asyncMissWithZeroSnapshotAndNoCandidatesDoesNotEnqueue() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request =
+        request(
+            StatsExecutionMode.ASYNC,
+            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            0L);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(registry.candidates(any())).thenReturn(List.of());
+
+    Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
+
+    assertThat(resolved).isEmpty();
+    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+  }
+
+  @Test
+  void asyncMissWithZeroSnapshotCanEnqueue() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -225,11 +249,19 @@ class StatsOrchestratorTest {
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.empty());
     when(registry.candidates(any())).thenReturn(List.of(Mockito.mock(StatsCaptureEngine.class)));
+    when(tableRepository.getById(request.tableId()))
+        .thenReturn(Optional.of(tableWithUpstream(request.tableId())));
 
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).isEmpty();
-    verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
+    verify(jobStore)
+        .enqueue(
+            Mockito.eq(request.tableId().getAccountId()),
+            Mockito.eq("conn-1"),
+            Mockito.eq(false),
+            Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
+            any());
   }
 
   @Test

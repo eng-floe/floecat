@@ -86,7 +86,8 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
 
   @Override
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    if (request.snapshotId() <= 0L) {
+    // Delta tables can legitimately use snapshot id 0.
+    if (request.snapshotId() < 0L) {
       return Optional.empty();
     }
     try {
