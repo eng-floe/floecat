@@ -95,7 +95,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void syncMissEvaluatesAsyncCandidatesForEnqueuePolicy() {
+  void syncMissEvaluatesCaptureSupportBeforeEnqueuePolicy() {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -114,8 +114,10 @@ class StatsOrchestratorTest {
     assertThat(resolved).isEmpty();
     ArgumentCaptor<StatsCaptureRequest> candidateCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    verify(registry).candidates(candidateCaptor.capture());
-    assertThat(candidateCaptor.getValue().executionMode()).isEqualTo(StatsExecutionMode.ASYNC);
+    verify(registry, Mockito.atLeastOnce()).candidates(candidateCaptor.capture());
+    assertThat(candidateCaptor.getAllValues())
+        .extracting(StatsCaptureRequest::executionMode)
+        .contains(StatsExecutionMode.SYNC);
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
   }
 

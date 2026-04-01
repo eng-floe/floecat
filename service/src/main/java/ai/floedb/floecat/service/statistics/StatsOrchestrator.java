@@ -36,10 +36,17 @@ import java.util.Optional;
 import org.jboss.logging.Logger;
 
 /**
- * Central stats resolution coordinator for query-time reads.
+ * Central stats orchestration coordinator.
  *
- * <p>Resolves from store first, optionally performs synchronous capture, and enqueues async
- * follow-up when data is still missing.
+ * <p>This class serves two roles:
+ *
+ * <ul>
+ *   <li>query-time resolution policy via {@link #resolve(StatsCaptureRequest)}
+ *   <li>explicit capture execution via {@link #capture(StatsCaptureRequest)}
+ * </ul>
+ *
+ * <p>Resolution is store-first, then optional synchronous capture, then async enqueue fallback when
+ * data is still missing.
  */
 @ApplicationScoped
 public class StatsOrchestrator {
@@ -64,7 +71,7 @@ public class StatsOrchestrator {
   }
 
   /**
-   * Unified stats resolution path.
+   * Unified query-time resolution path.
    *
    * <p>Order: persisted store hit, then sync capture for SYNC requests, then async enqueue fallback
    * for misses that have at least one registry-capable ASYNC engine candidate.
@@ -81,21 +88,17 @@ public class StatsOrchestrator {
     // PR10 insertion point: after enqueue below, wait up to latency budget and re-read store.
     boolean enqueueEligible = true;
     if (request.executionMode() == StatsExecutionMode.SYNC) {
-      try {
-        Optional<TargetStatsRecord> captured =
-            statsEngineRegistry.capture(request).map(StatsCaptureResult::record);
-        if (captured.isPresent()) {
-          return captured;
-        }
-      } catch (StatsUnsupportedTargetException unsupported) {
+      Optional<TargetStatsRecord> captured = capture(request).map(StatsCaptureResult::record);
+      if (captured.isPresent()) {
+        return captured;
+      }
+      if (!isCaptureSupported(request)) {
         enqueueEligible = false;
-        LOG.debugf(
-            "Stats target not supported for capture table=%s snapshot=%s target=%s",
-            request.tableId(), request.snapshotId(), unsupported.targetType());
       }
     }
 
-    // Miss fallback: schedule async stats-only capture when registry advertises ASYNC support.
+    // Miss fallback: schedule table-scoped async stats-only capture for the requested snapshot
+    // when the registry advertises ASYNC support for the requested target.
     if (enqueueEligible) {
       tryEnqueueAsyncCapture(request);
     }
@@ -157,6 +160,23 @@ public class StatsOrchestrator {
                 request.samplingRequested(),
                 request.latencyBudget());
     List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(asyncRequest);
+    return candidates != null && !candidates.isEmpty();
+  }
+
+  /** Executes one capture attempt via the shared registry-backed control plane. */
+  public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+    try {
+      return statsEngineRegistry.capture(request);
+    } catch (StatsUnsupportedTargetException unsupported) {
+      LOG.debugf(
+          "Stats target not supported for capture table=%s snapshot=%s target=%s",
+          request.tableId(), request.snapshotId(), unsupported.targetType());
+      return Optional.empty();
+    }
+  }
+
+  private boolean isCaptureSupported(StatsCaptureRequest request) {
+    List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(request);
     return candidates != null && !candidates.isEmpty();
   }
 }
