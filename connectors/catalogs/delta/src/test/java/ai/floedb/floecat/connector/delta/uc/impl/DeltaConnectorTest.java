@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
 class DeltaConnectorTest {
 
   @Test
-  void enumerateSnapshotsWithStatsReturnsAvailableVersionsForFullRescan() {
+  void enumerateSnapshotsHonorsExplicitTargetVersions() {
     Snapshot latest = snapshot(7L, 7000L);
     Snapshot v3 = snapshot(3L, 3000L);
     Snapshot v5 = snapshot(5L, 5000L);
@@ -53,12 +53,11 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshotsWithStats(
+        connector.enumerateSnapshots(
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            Set.of(),
-            new FloecatConnector.SnapshotEnumerationOptions(false, true, Set.of()));
+            new FloecatConnector.SnapshotEnumerationOptions(true, Set.of(), Set.of(3L, 5L)));
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -69,7 +68,7 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void enumerateSnapshotsWithStatsReturnsAllUnknownVersionsForIncrementalRuns() {
+  void enumerateSnapshotsReturnsAllUnknownVersionsForIncrementalRuns() {
     Snapshot latest = snapshot(5L, 5000L);
     Table table =
         new StubTable(
@@ -85,12 +84,11 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshotsWithStats(
+        connector.enumerateSnapshots(
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            Set.of(),
-            new FloecatConnector.SnapshotEnumerationOptions(false, false, Set.of(1L, 4L)));
+            new FloecatConnector.SnapshotEnumerationOptions(false, Set.of(1L, 4L), Set.of()));
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -163,6 +161,20 @@ class DeltaConnectorTest {
             .toList();
     assertEquals(1, checks.size(), "duplicate key should produce exactly one CHECK constraint");
     assertEquals("amount >= 1", checks.get(0).getCheckExpression(), "snapshot expression wins");
+  }
+
+  @Test
+  void captureSnapshotTargetStatsReturnsEmptyForUnknownSnapshot() {
+    Snapshot latest = snapshot(7L, 7000L);
+    Table table = new StubTable(latest, Map.of(7L, latest));
+
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+
+    List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> stats =
+        connector.captureSnapshotTargetStats(
+            "ns", "tbl", ResourceId.getDefaultInstance(), 999L, Set.of());
+
+    assertTrue(stats.isEmpty(), "unknown snapshot should return empty stats");
   }
 
   private static Snapshot snapshot(long version, long timestampMs) {

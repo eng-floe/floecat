@@ -40,12 +40,14 @@ Databricks SQL execution, and custom file readers for S3.
   filters to `data_source_format == DELTA`.
 - `describe(namespace, table)` – Fetches table metadata from Unity Catalog, reads the Delta schema via
   Delta Kernel, and returns a `TableDescriptor` containing location, partition keys, and properties.
-- `enumerateSnapshotsWithStats(...)` – Iterates Delta snapshots, optionally samples Parquet files to
-  produce NDV stats (`SamplingNdvProvider`, `ParquetNdvProvider`), and emits `SnapshotBundle`s with
-  per-file stats (row count/size plus per-column metrics when available). In incremental mode, the
+- `enumerateSnapshots(...)` – Iterates Delta snapshots and emits `SnapshotBundle`s for snapshot
+  lineage/metadata. In incremental mode, the
   connector enumerates all Delta versions that Floecat has not already ingested. When
   `SnapshotEnumerationOptions.targetSnapshotIds` is supplied, enumeration is limited to that
   explicit version set even when `fullRescan=true`.
+- `captureSnapshotTargetStats(...)` – Captures table/column/file stats for one snapshot and optional
+  selector scope, optionally sampling Parquet files for NDV (`SamplingNdvProvider`,
+  `ParquetNdvProvider`).
 
 ## Important Internal Details
 
@@ -88,8 +90,10 @@ ConnectorFactory.create(cfg)
       → Configure Unity Catalog HTTP and optional SQL client when needed
   → listNamespaces/listTables via Unity Catalog REST
   → describe via REST + Delta Kernel schema inspection
-  → enumerateSnapshotsWithStats
-      → Delta Kernel Snapshot → Parquet stats engine → SnapshotBundle (table/column/file stats)
+  → enumerateSnapshots
+      → Delta Kernel snapshot lineage
+  → captureSnapshotTargetStats
+      → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
   → plan
       → DeltaPlanner traverses _delta_log → ScanBundle entries for data/delete files
 ```

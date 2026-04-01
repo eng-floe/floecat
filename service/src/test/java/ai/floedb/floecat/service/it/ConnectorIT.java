@@ -255,7 +255,7 @@ public class ConnectorIT {
             .get(0)
             .getResourceId();
 
-    var fileStats = listCurrentFileStats(tbl, 100);
+    var fileStats = awaitCurrentFileStats(tbl, 100, Duration.ofSeconds(30));
 
     assertEquals(3, fileStats.size(), "expected 3 files");
 
@@ -326,7 +326,7 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
             .orElseThrow();
 
-    var fileStats = listCurrentFileStats(table.getResourceId(), 200);
+    var fileStats = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
 
     assertTrue(fileStats.size() > 0, "expected file stats for iceberg fixture");
     boolean hasSeq =
@@ -378,7 +378,10 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
-    assertTrue(fullJob.statsProcessed > 0, "expected full reconcile to process stats");
+    assertEquals(
+        0L,
+        fullJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
 
     var catId =
         catalogs
@@ -481,14 +484,16 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one new snapshot");
-    assertTrue(
-        incrementalJob.statsProcessed > 0, "incremental should capture stats for the new snapshot");
+    assertEquals(
+        0L,
+        incrementalJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
     assertEquals(
         2,
         snaps.count(table.getResourceId()),
         "expected second snapshot after incremental reconcile");
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
         fileResp.size() > 0, "expected current snapshot file stats after incremental reconcile");
   }
@@ -569,15 +574,16 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one delete snapshot");
-    assertTrue(
-        incrementalJob.statsProcessed > 0,
-        "incremental should capture stats for the delete snapshot");
+    assertEquals(
+        0L,
+        incrementalJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
     assertEquals(
         3,
         snaps.count(table.getResourceId()),
         "expected third snapshot after incremental reconcile");
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
         fileResp.stream().anyMatch(f -> f.getFileContent() == FileContent.FC_POSITION_DELETES),
         "expected current snapshot to expose a position delete file");
@@ -630,7 +636,10 @@ public class ConnectorIT {
         job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
     assertTrue(
         job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
-    assertTrue(job.statsProcessed > 0, "expected complex fixture reconcile to generate stats");
+    assertEquals(
+        0L,
+        job.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
@@ -643,7 +652,7 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_types")
             .orElseThrow();
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
 
     assertFalse(fileResp.isEmpty(), "expected file stats for complex iceberg fixture");
 
@@ -953,19 +962,17 @@ public class ConnectorIT {
       assertTrue(td.schemaJson().contains("\"items\""));
       assertTrue(td.schemaJson().contains("\"attrs\""));
 
-      var onlyIds =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("#1", "#4", "#9"));
+      ResourceId tableId =
+          ResourceId.newBuilder()
+              .setAccountId("t")
+              .setId("tbl")
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
 
       var cs1 =
-          onlyIds.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats("db", "events", tableId, 1L, Set.of("#1", "#4", "#9"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -985,19 +992,11 @@ public class ConnectorIT {
       assertEquals(Set.of(1L, 4L, 9L), ids1);
       assertEquals(Set.of("id", "user.id", "items.element.qty"), names1);
 
-      var onlyNames =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("user.name", "attrs.value"));
-
       var cs2 =
-          onlyNames.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats(
+                  "db", "events", tableId, 1L, Set.of("user.name", "attrs.value"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -1017,19 +1016,11 @@ public class ConnectorIT {
       assertEquals(Set.of(5L, 12L), ids2);
       assertEquals(Set.of("user.name", "attrs.value"), names2);
 
-      var mixed =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("#2", "items.element.sku"));
-
       var cs3 =
-          mixed.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats(
+                  "db", "events", tableId, 1L, Set.of("#2", "items.element.sku"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -1049,19 +1040,10 @@ public class ConnectorIT {
       assertEquals(Set.of(2L, 8L), ids3);
       assertEquals(Set.of("ts", "items.element.sku"), names3);
 
-      var allCols =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Collections.emptySet());
-
       long allColsCount =
-          allCols.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats("db", "events", tableId, 1L, Collections.emptySet())
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()

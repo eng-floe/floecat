@@ -26,7 +26,8 @@ creates jobs in the reconciler’s store.
   6. Supports explicit capture modes:
      - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
      - `STATS_ONLY`: writes stats only.
-     - `METADATA_AND_STATS`: ingests both metadata and stats in one pass.
+     - `METADATA_AND_STATS`: ingests metadata/snapshots/constraints, then enqueues scoped
+       `STATS_ONLY` follow-up jobs for discovered snapshots.
 - **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors).
 - **`NameParts`** – Utility for parsing namespace/table names.
@@ -44,8 +45,9 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Destination binding** – When reconciling, the service ensures the connector’s declared
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
-- **Statistics ingestion** – Target stats (including file targets) are streamed one request per
-  item via `PutTargetStats`, keeping a single idempotency key per table/snapshot.
+- **Statistics ingestion** – Stats persistence is centralized behind the stats control-plane
+  (`StatsCaptureControlPlane` / orchestrator). `STATS_ONLY` runs route capture through registry
+  engines; `METADATA_AND_STATS` schedules those captures asynchronously via follow-up jobs.
 - **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
   `PutTableConstraints` after snapshot/stats handling.
   - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
@@ -89,8 +91,10 @@ Connector StartCapture → ReconcileJobStore.enqueue
           → Connectors.GetConnector → ConnectorConfig
           → Ensure destination catalog/namespace/table
           → ConnectorFactory.create + try-with-resources
-              → listTables / describe / enumerateSnapshotsWithStats
-              → ingest snapshots/stats via service RPCs
+              → listTables / describe / enumerateSnapshots
+              → ingest metadata/snapshots/constraints
+              → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
+              → (for STATS_ONLY) capture via stats control-plane/engine registry
           → Update connector destination IDs if missing
       → markSucceeded or markFailed
 ```

@@ -32,13 +32,13 @@ specializing discovery and catalog wiring.
 - `listTables(namespace)` – Uses REST or Glue discovery depending on the selected source.
 - `describe(namespace, table)` – Loads the table, serialises the Iceberg schema to JSON via
   `SchemaParser.toJson`, captures partition keys, and returns table properties.
-- `enumerateSnapshotsWithStats(...)` – Iterates Iceberg snapshots, loads table/column stats using
-  the configured `StatsEngine` and NDV providers, and emits `SnapshotBundle`s including upstream
-  timestamps, parent IDs, stats payloads, per-file stats (row count/size plus per-column metrics),
-  sequence numbers, manifest lists, and summary maps.
+- `enumerateSnapshots(...)` – Iterates Iceberg snapshots and emits `SnapshotBundle`s with upstream
+  timestamps, parent IDs, sequence numbers, manifest lists, and summary maps.
   When invoked with incremental `SnapshotEnumerationOptions`, the connector walks back from the
   current snapshot through the parent chain and stops once it reaches a snapshot already known to
   Floecat, returning only the newly discovered lineage.
+- `captureSnapshotTargetStats(...)` – Captures table/column/file stats for one snapshot (optionally
+  selector-scoped), using the configured `StatsEngine` and NDV providers.
 
 ## Important Internal Details
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,
@@ -75,9 +75,10 @@ ConnectorFactory.create(cfg)
       → Choose REST/Glue/filesystem connector based on options
       → Initialize RESTCatalog (and Glue filter when needed)
   → listNamespaces/listTables/describe
-  → enumerateSnapshotsWithStats
-      → For each snapshot load Table, StatsEngine pulls Parquet stats (table/column + per-file),
-        NDV provider merges sketches
+  → enumerateSnapshots
+      → For each snapshot load Table metadata lineage
+  → captureSnapshotTargetStats
+      → StatsEngine pulls Parquet stats (table/column + per-file), NDV provider merges sketches
       → plan
       → Build TableScan, collect FileScanTask -> ScanBundle
 ```
@@ -146,8 +147,9 @@ To extend behavior:
     --props external.table-name=trino_test
   ```
 - **Reconciliation** – `ReconcilerService` iterates Iceberg tables, uses `describe` to create or
-  update Floecat Table records (storing schema JSON + upstream ref), then calls
-  `enumerateSnapshotsWithStats` to ingest snapshots and `plan` when acquiring scan bundles.
+  update Floecat Table records (storing schema JSON + upstream ref), ingests snapshot lineage via
+  `enumerateSnapshots`, then routes stats capture through the stats control plane (native engine
+  uses `captureSnapshotTargetStats`).
 
 ## Cross-References
 - SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)

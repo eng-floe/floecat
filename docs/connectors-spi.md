@@ -2,8 +2,8 @@
 
 ## Overview
 `core/connectors/spi/` defines the contract that every upstream metadata connector must implement. The
-SPI abstracts discovery of namespaces/tables, enumeration of snapshots with statistics (table,
-column, and file-level), enumeration of physical files for a snapshot, and authentication adapters. It
+SPI abstracts discovery of namespaces/tables, snapshot enumeration, targeted snapshot-stat capture
+(table/column/file), enumeration of physical files for a snapshot, and authentication adapters. It
 also packages shared tooling for column statistics, file statistics, and NDV estimation.
 
 Connectors implement `FloecatConnector` and typically wrap an upstream catalog API (Iceberg REST,
@@ -17,12 +17,11 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   - `listTables(namespaceFq)`.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, and properties.
-  - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
-    Connectors may also receive `SnapshotEnumerationOptions`, which carries:
-    - `includeStatistics`
-    - `fullRescan`
-    - `knownSnapshotIds`
-    This lets connectors short-circuit incremental runs instead of always scanning full upstream history.
+  - `enumerateSnapshots(...)` → `SnapshotBundle`s containing per-snapshot metadata.
+    Connectors receive `SnapshotEnumerationOptions` with `fullRescan`, `knownSnapshotIds`, and
+    optional `targetSnapshotIds` for scoped enumeration.
+  - `captureSnapshotTargetStats(...)` → targeted stats capture for one snapshot and optional selector
+    hints (`#<column_id>` and/or connector-native names/paths).
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -99,7 +98,8 @@ interface FloecatConnector extends Closeable {
   List<String> listNamespaces();
   List<String> listTables(String namespaceFq);
   TableDescriptor describe(String namespaceFq, String tableName);
-  List<SnapshotBundle> enumerateSnapshotsWithStats(...);
+  List<SnapshotBundle> enumerateSnapshots(...);
+  List<TargetStatsRecord> captureSnapshotTargetStats(...);
 }
 ```
 For incremental reconcile, the runtime now passes the set of already-ingested destination snapshot ids
@@ -108,7 +108,7 @@ only newly discovered snapshots. The reconciler still applies a destination-side
 `TableDescriptor`, `SnapshotBundle`, and `ScanBundle` are immutable records; connectors populate them
 with canonical metadata that the reconciler ingests. `SnapshotBundle.fileStats` is optional but
 should be populated when Parquet footers or upstream metadata can provide per-file row counts, sizes,
-and per-column stats. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
+and per-column stats for planner scan paths. Snapshot bundles also carry manifest-list URIs, sequence numbers, and summary
 maps so downstream APIs can mirror Iceberg’s REST contract.
 
 `ConnectorConfig` encodes:
@@ -142,7 +142,8 @@ ConnectorFactory.create(ConnectorConfig)
   → FloecatConnector (opens upstream clients, auth providers)
       → listNamespaces/listTables → service repo ensures namespace/table existence
       → describe → Table specs persisted with upstream references
-      → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
+      → enumerateSnapshots (metadata only)
+      → captureSnapshotTargetStats (stats capture per snapshot/selector scope)
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the
@@ -161,8 +162,9 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
   from RPC input, invokes `ConnectorFactory.create`, calls `listNamespaces()` to ensure the upstream
   responds, then closes the connector.
 - **Reconciliation run** – `ReconcilerService` constructs a connector inside a try-with-resources
-  block, iterates `listTables`, calls `enumerateSnapshotsWithStats`, and writes the returned
-  `SnapshotBundle`s (table stats + column stats) through the service’s gRPC API.
+  block, iterates `listTables`, calls `enumerateSnapshots` for metadata/snapshot ingestion, and
+  routes stats capture through the stats control plane (which uses
+  `captureSnapshotTargetStats` in native engines).
 - **Query lifecycle** – `QueryService.FetchScanBundle` fetch file lists pinned to the requested snapshot
 directly from table and file statistics stored in the catalog (via TableStatisticsService).
 

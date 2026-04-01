@@ -37,7 +37,7 @@ class FloecatConnectorCompatibilityTest {
 
     FloecatConnector.SnapshotBundle bundle =
         new FloecatConnector.SnapshotBundle(
-            10L, 0L, 0L, List.of(), "", null, 0L, null, java.util.Map.of(), 0, java.util.Map.of());
+            10L, 0L, 0L, "", null, 0L, null, java.util.Map.of(), 0, java.util.Map.of());
     Optional<?> fromBundle = connector.snapshotConstraints("ns", "tbl", tableId, bundle);
     assertTrue(fromBundle.isEmpty());
   }
@@ -71,10 +71,20 @@ class FloecatConnectorCompatibilityTest {
     }
 
     @Override
-    public List<SnapshotBundle> enumerateSnapshotsWithStats(
+    public List<SnapshotBundle> enumerateSnapshots(
         String namespaceFq,
         String tableName,
         ResourceId destinationTableId,
+        SnapshotEnumerationOptions options) {
+      return List.of();
+    }
+
+    @Override
+    public List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> captureSnapshotTargetStats(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
         Set<String> includeColumns) {
       return List.of();
     }
