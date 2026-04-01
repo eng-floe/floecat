@@ -22,6 +22,7 @@ import ai.floedb.floecat.connector.common.ndv.NdvProvider;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -197,20 +198,20 @@ final class IcebergPlanner implements Planner<Integer> {
       Type type = idToIceType.get(id);
       Object decoded = null;
       try {
+        ByteBuffer value = column.getValue();
+        if (isEmptyBoundValue(value)) {
+          logSkippedBound(id, type, "empty bound payload");
+          continue;
+        }
         if (type != null) {
-          ByteBuffer value = column.getValue();
-          if (isEmptyBoundValue(value)) {
-            logSkippedBound(id, type, "empty bound payload");
-            continue;
-          }
           decoded = Conversions.fromByteBuffer(type, value);
         } else {
-          ByteBuffer dup = column.getValue().duplicate();
+          ByteBuffer dup = value.duplicate();
           byte[] bytes = new byte[dup.remaining()];
           dup.get(bytes);
           decoded = new String(bytes, StandardCharsets.UTF_8);
         }
-      } catch (RuntimeException e) {
+      } catch (IllegalArgumentException | BufferUnderflowException e) {
         logSkippedBound(id, type, e.getClass().getSimpleName() + ": " + e.getMessage());
         continue;
       }

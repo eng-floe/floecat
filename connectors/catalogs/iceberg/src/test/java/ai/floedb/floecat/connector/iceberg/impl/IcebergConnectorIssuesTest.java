@@ -33,7 +33,7 @@ class IcebergConnectorIssuesTest {
 
   @Test
   void skipsMalformedBoundsFromTpcdsSfoneFixture() {
-    TestS3Fixtures.seedFixturesOnce();
+    TestS3Fixtures.seedTpcdsSfoneFixtureOnce();
 
     var props = new HashMap<String, String>();
     props.putAll(
