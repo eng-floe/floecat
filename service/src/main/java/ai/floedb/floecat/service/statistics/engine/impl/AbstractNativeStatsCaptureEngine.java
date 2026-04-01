@@ -126,7 +126,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                 String.join(".", upstream.getNamespacePathList()),
                 upstream.getTableDisplayName(),
                 request.tableId(),
-                Set.of(),
+                request.columnSelectors(),
                 new FloecatConnector.SnapshotEnumerationOptions(
                     true, false, Set.of(), snapshotFilter));
         Optional<FloecatConnector.SnapshotBundle> bundle =

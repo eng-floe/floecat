@@ -118,6 +118,7 @@ public final class StatsProviderFactory {
                 tableId,
                 snapshotId,
                 StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+                Set.of(),
                 // Empty requested kinds means "accept any available stat family".
                 Set.of(),
                 Set.of(),
@@ -143,6 +144,7 @@ public final class StatsProviderFactory {
                 tableId,
                 snapshotId,
                 StatsTargetIdentity.columnTarget(columnId),
+                Set.of(),
                 // Empty requested kinds means "accept any available stat family".
                 Set.of(),
                 Set.of(),

@@ -372,6 +372,7 @@ class StatsOrchestratorTest {
         snapshotId,
         target,
         Set.of(),
+        Set.of(),
         mode,
         "iceberg",
         "corr",

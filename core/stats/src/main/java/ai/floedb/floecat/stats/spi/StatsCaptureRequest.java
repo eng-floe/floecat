@@ -34,6 +34,9 @@ import java.util.Set;
  *
  * <p>{@code correlationId} is optional but should be populated by caller-facing services to keep
  * engine routing logs traceable.
+ *
+ * <p>{@code columnSelectors} carries optional connector-native selector hints (for example column
+ * names) for scoped capture in reconciliation/control-plane workflows.
  */
 public record StatsCaptureRequest(
     ResourceId tableId,

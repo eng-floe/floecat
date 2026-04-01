@@ -153,6 +153,7 @@ public class StatsOrchestrator {
                 request.tableId(),
                 request.snapshotId(),
                 request.target(),
+                request.columnSelectors(),
                 request.requestedKinds(),
                 StatsExecutionMode.ASYNC,
                 request.connectorType(),

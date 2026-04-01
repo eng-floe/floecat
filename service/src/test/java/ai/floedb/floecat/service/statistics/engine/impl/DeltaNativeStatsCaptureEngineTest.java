@@ -118,6 +118,7 @@ class DeltaNativeStatsCaptureEngineTest {
             tableId,
             77L,
             requested,
+            Set.of("c9"),
             Set.of(StatsKind.NULL_COUNT),
             StatsExecutionMode.SYNC,
             "delta",
@@ -141,6 +142,13 @@ class DeltaNativeStatsCaptureEngineTest {
     assertThat(result.get().record().getMetadata().getPropertiesMap())
         .containsEntry("method", "connector_native")
         .containsEntry("engine_id", DeltaNativeStatsCaptureEngine.ENGINE_ID);
+    verify(floecatConnector)
+        .enumerateSnapshotsWithStats(
+            any(),
+            any(),
+            any(),
+            org.mockito.ArgumentMatchers.argThat(selectors -> selectors.contains("c9")),
+            any());
     verify(statsStore)
         .putTargetStats(
             org.mockito.ArgumentMatchers.argThat(
@@ -167,6 +175,7 @@ class DeltaNativeStatsCaptureEngineTest {
             StatsTarget.newBuilder()
                 .setColumn(ColumnStatsTarget.newBuilder().setColumnId(9L))
                 .build(),
+            Set.of(),
             Set.of(),
             StatsExecutionMode.SYNC,
             "delta",
@@ -255,6 +264,7 @@ class DeltaNativeStatsCaptureEngineTest {
             tableId,
             77L,
             fileTarget,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT, StatsKind.TOTAL_BYTES),
             StatsExecutionMode.SYNC,
             "delta",

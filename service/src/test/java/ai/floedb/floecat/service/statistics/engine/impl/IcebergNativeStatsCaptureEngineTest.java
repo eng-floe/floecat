@@ -132,6 +132,7 @@ class IcebergNativeStatsCaptureEngineTest {
             tableId,
             101L,
             tableTarget,
+            Set.of("c7"),
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "iceberg",
@@ -155,6 +156,9 @@ class IcebergNativeStatsCaptureEngineTest {
     assertThat(result.get().record().getMetadata().getPropertiesMap())
         .containsEntry("method", "connector_native")
         .containsEntry("engine_id", IcebergNativeStatsCaptureEngine.ENGINE_ID);
+    verify(floecatConnector)
+        .enumerateSnapshotsWithStats(
+            any(), any(), any(), argThat(selectors -> selectors.contains("c7")), any());
     verify(statsStore, times(1))
         .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
     verify(statsStore, times(1))
@@ -247,6 +251,7 @@ class IcebergNativeStatsCaptureEngineTest {
             tableId,
             101L,
             fileTarget,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT, StatsKind.TOTAL_BYTES),
             StatsExecutionMode.SYNC,
             "iceberg",

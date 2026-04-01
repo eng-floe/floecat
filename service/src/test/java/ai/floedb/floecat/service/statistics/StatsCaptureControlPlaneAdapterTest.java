@@ -46,6 +46,7 @@ class StatsCaptureControlPlaneAdapterTest {
             42L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
+            Set.of(),
             StatsExecutionMode.ASYNC,
             "iceberg",
             "corr-1",

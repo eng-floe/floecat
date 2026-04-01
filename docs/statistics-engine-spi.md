@@ -45,6 +45,12 @@ Current target support in native engines:
 
 `EXPRESSION` capture engines are future work.
 
+`StatsCaptureRequest.columnSelectors`:
+
+- optional connector-native selector hints for scoped table/column/file capture
+- used to preserve selector-scoped reconcile behavior while routing through orchestrator/control
+  plane
+
 Default store:
 
 - `StatsRepository` (default OSS `StatsStore` implementation)

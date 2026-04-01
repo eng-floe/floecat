@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ class StatsCaptureRequestTest {
             ResourceId.newBuilder().setAccountId("a").setId("t").build(),
             0L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            Set.of("c1"),
             Set.of(),
             Set.of(),
             StatsExecutionMode.SYNC,
@@ -98,5 +100,26 @@ class StatsCaptureRequestTest {
                     Optional.of(Duration.ZERO)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("latencyBudget");
+  }
+
+  @Test
+  void columnSelectorsAreCopied() {
+    HashSet<String> selectors = new HashSet<>();
+    selectors.add("id");
+    StatsCaptureRequest req =
+        new StatsCaptureRequest(
+            ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+            1L,
+            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            selectors,
+            Set.of(),
+            StatsExecutionMode.ASYNC,
+            "iceberg",
+            "corr-5",
+            false);
+    selectors.add("name");
+    assertThat(req.columnSelectors()).containsExactly("id");
+    assertThatThrownBy(() -> req.columnSelectors().add("x"))
+        .isInstanceOf(UnsupportedOperationException.class);
   }
 }

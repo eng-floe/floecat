@@ -366,6 +366,7 @@ public class ReconcilerService {
                     knownSnapshotIds,
                     enumerationKnownSnapshotIds,
                     targetSnapshotIds,
+                    includeSelectors,
                     cancelCheck,
                     progressOut,
                     scanned,
@@ -408,6 +409,7 @@ public class ReconcilerService {
                   includeCoreMetadata,
                   includeStats,
                   fullRescan,
+                  includeSelectors,
                   cancelCheck,
                   progressOut,
                   sourceNsFq,
@@ -883,6 +885,7 @@ public class ReconcilerService {
       boolean includeCoreMetadata,
       boolean includeStats,
       boolean fullRescan,
+      Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
       String sourceNs,
@@ -937,6 +940,7 @@ public class ReconcilerService {
               tableId,
               snapshotId,
               StatsTargetIdentity.tableTarget(),
+              includeSelectors,
               Set.of(),
               StatsExecutionMode.ASYNC,
               connectorTypeFor(connectorKind),
@@ -964,6 +968,7 @@ public class ReconcilerService {
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
+      Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
       long scanned,
@@ -980,7 +985,8 @@ public class ReconcilerService {
             tableId,
             fullRescan,
             enumerationKnownSnapshotIds,
-            targetSnapshotIds);
+            targetSnapshotIds,
+            includeSelectors);
     if (snapshotIds.isEmpty()) {
       return new IngestCounts(0L, 0L);
     }
@@ -1011,6 +1017,7 @@ public class ReconcilerService {
               tableId,
               snapshotId,
               StatsTargetIdentity.tableTarget(),
+              includeSelectors,
               Set.of(),
               StatsExecutionMode.ASYNC,
               connectorType,
@@ -1033,7 +1040,8 @@ public class ReconcilerService {
       ResourceId tableId,
       boolean fullRescan,
       Set<Long> enumerationKnownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
+      Set<Long> targetSnapshotIds,
+      Set<String> includeSelectors) {
     if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
       return new LinkedHashSet<>(targetSnapshotIds);
     }
@@ -1042,7 +1050,7 @@ public class ReconcilerService {
             sourceNs,
             sourceTable,
             tableId,
-            Set.of(),
+            includeSelectors == null ? Set.of() : includeSelectors,
             new FloecatConnector.SnapshotEnumerationOptions(
                 false, fullRescan, enumerationKnownSnapshotIds, Set.of()));
     Set<Long> snapshotIds = new LinkedHashSet<>();
