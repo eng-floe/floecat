@@ -50,8 +50,8 @@ import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.reconciler.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
-import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
@@ -108,7 +108,7 @@ public class ReconcilerService {
   @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
-  @Inject Instance<StatsCaptureEngine> statsCaptureEngines;
+  @Inject Instance<StatsCaptureControlPlane> statsCaptureControlPlane;
 
   /** Opens a connector from a resolved configuration. */
   @FunctionalInterface
@@ -356,7 +356,7 @@ public class ReconcilerService {
                           ctx, destTableId, snapshotId, includeSelectors));
           if (captureMode == CaptureMode.STATS_ONLY) {
             IngestCounts ingestCounts =
-                captureStatsOnlyViaEngines(
+                captureStatsOnlyViaControlPlane(
                     ctx,
                     destTableId,
                     connector,
@@ -954,7 +954,7 @@ public class ReconcilerService {
     return new IngestCounts(snapshotsProcessed, statsProcessed);
   }
 
-  private IngestCounts captureStatsOnlyViaEngines(
+  private IngestCounts captureStatsOnlyViaControlPlane(
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
@@ -1016,7 +1016,7 @@ public class ReconcilerService {
               connectorType,
               ctx.correlationId(),
               false);
-      Optional<StatsCaptureResult> captured = captureViaEngineCandidates(request);
+      Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
       if (captured.isPresent()) {
         // Engines may persist multiple records for a table-target capture; count successful
         // attempts.
@@ -1058,24 +1058,20 @@ public class ReconcilerService {
     return snapshotIds;
   }
 
-  private Optional<StatsCaptureResult> captureViaEngineCandidates(StatsCaptureRequest request) {
-    if (statsCaptureEngines == null) {
+  private Optional<StatsCaptureResult> captureViaControlPlane(StatsCaptureRequest request) {
+    if (statsCaptureControlPlane == null || statsCaptureControlPlane.isUnsatisfied()) {
       return Optional.empty();
     }
-    List<StatsCaptureEngine> candidates =
-        statsCaptureEngines.stream()
-            .filter(engine -> engine.supports(request))
-            .sorted(
-                java.util.Comparator.comparingInt(StatsCaptureEngine::priority)
-                    .thenComparing(StatsCaptureEngine::id))
-            .toList();
-    for (StatsCaptureEngine engine : candidates) {
-      Optional<StatsCaptureResult> captured = engine.capture(request);
-      if (captured.isPresent()) {
-        return captured;
-      }
+    try {
+      return statsCaptureControlPlane.get().capture(request);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Stats control-plane capture failed for table=%s snapshot=%s",
+          request.tableId(),
+          request.snapshotId());
+      return Optional.empty();
     }
-    return Optional.empty();
   }
 
   private static String connectorTypeFor(ConnectorConfig.Kind kind) {
