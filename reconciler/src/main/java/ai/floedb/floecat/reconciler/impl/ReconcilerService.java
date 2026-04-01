@@ -50,11 +50,17 @@ import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
+import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -102,6 +108,7 @@ public class ReconcilerService {
   @Inject ReconcilerBackend backend;
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
+  @Inject Instance<StatsCaptureEngine> statsCaptureEngines;
 
   /** Opens a connector from a resolved configuration. */
   @FunctionalInterface
@@ -347,6 +354,37 @@ public class ReconcilerService {
                   snapshotId ->
                       isStatsCaptureCompleteForScope(
                           ctx, destTableId, snapshotId, includeSelectors));
+          if (captureMode == CaptureMode.STATS_ONLY) {
+            IngestCounts ingestCounts =
+                captureStatsOnlyViaEngines(
+                    ctx,
+                    destTableId,
+                    connector,
+                    sourceNsFq,
+                    srcTable,
+                    fullRescan,
+                    knownSnapshotIds,
+                    enumerationKnownSnapshotIds,
+                    targetSnapshotIds,
+                    cancelCheck,
+                    progressOut,
+                    scanned,
+                    changed,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed,
+                    resolved.kind());
+            snapshotsProcessed += ingestCounts.snapshotsProcessed;
+            statsProcessed += ingestCounts.statsProcessed;
+            progressOut.onProgress(
+                scanned,
+                changed,
+                errors,
+                snapshotsProcessed,
+                statsProcessed,
+                "Finished table " + sourceNsFq + "." + srcTable);
+            continue;
+          }
           var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq,
@@ -365,8 +403,8 @@ public class ReconcilerService {
                   ctx,
                   destTableId,
                   connector,
+                  resolved.kind(),
                   bundles,
-                  includeSelectors,
                   includeCoreMetadata,
                   includeStats,
                   fullRescan,
@@ -840,8 +878,8 @@ public class ReconcilerService {
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
+      ConnectorConfig.Kind connectorKind,
       List<FloecatConnector.SnapshotBundle> bundles,
-      Set<String> includeSelectors,
       boolean includeCoreMetadata,
       boolean includeStats,
       boolean fullRescan,
@@ -894,38 +932,160 @@ public class ReconcilerService {
         continue;
       }
 
-      List<TargetStatsRecord> outRecords = new ArrayList<>();
-
-      var statsIn = snapshotBundle.targetStats();
-      if (statsIn != null && !statsIn.isEmpty()) {
-        for (TargetStatsRecord raw : statsIn) {
-          if (raw == null || !raw.hasTarget()) {
-            continue;
-          }
-          TargetStatsRecord normalized =
-              raw.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-
-          if (includeSelectors != null
-              && !includeSelectors.isEmpty()
-              && normalized.hasScalar()
-              && normalized.getTarget().hasColumn()
-              && !matchesSelector(normalized, includeSelectors)) {
-            continue;
-          }
-
-          outRecords.add(normalized);
-        }
-      }
-
-      if (!outRecords.isEmpty()) {
-        backend.putTargetStats(ctx, outRecords);
-        statsProcessed += outRecords.size();
+      StatsCaptureRequest request =
+          new StatsCaptureRequest(
+              tableId,
+              snapshotId,
+              StatsTargetIdentity.tableTarget(),
+              Set.of(),
+              StatsExecutionMode.ASYNC,
+              connectorTypeFor(connectorKind),
+              ctx.correlationId(),
+              false);
+      Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
+      if (captured.isPresent()) {
+        // Capture may persist multiple rows; keep per-snapshot success accounting here.
+        statsProcessed++;
       }
 
       maybeIngestSnapshotConstraints(
           ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed);
+  }
+
+  private IngestCounts captureStatsOnlyViaEngines(
+      ReconcileContext ctx,
+      ResourceId tableId,
+      FloecatConnector connector,
+      String sourceNs,
+      String sourceTable,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Set<Long> enumerationKnownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessedBase,
+      long statsProcessedBase,
+      ConnectorConfig.Kind connectorKind) {
+    Set<Long> snapshotIds =
+        discoverSnapshotIdsForStatsCapture(
+            connector,
+            sourceNs,
+            sourceTable,
+            tableId,
+            fullRescan,
+            enumerationKnownSnapshotIds,
+            targetSnapshotIds);
+    if (snapshotIds.isEmpty()) {
+      return new IngestCounts(0L, 0L);
+    }
+
+    long snapshotsProcessed = 0L;
+    long statsProcessed = 0L;
+    String connectorType = connectorTypeFor(connectorKind);
+    for (long snapshotId : snapshotIds) {
+      ensureNotCancelled(cancelRequested);
+      progress.onProgress(
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessedBase + snapshotsProcessed,
+          statsProcessedBase + statsProcessed,
+          "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
+      snapshotsProcessed++;
+
+      if (!fullRescan
+          && knownSnapshotIds != null
+          && knownSnapshotIds.contains(snapshotId)
+          && backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
+        continue;
+      }
+
+      StatsCaptureRequest request =
+          new StatsCaptureRequest(
+              tableId,
+              snapshotId,
+              StatsTargetIdentity.tableTarget(),
+              Set.of(),
+              StatsExecutionMode.ASYNC,
+              connectorType,
+              ctx.correlationId(),
+              false);
+      Optional<StatsCaptureResult> captured = captureViaEngineCandidates(request);
+      if (captured.isPresent()) {
+        // Engines may persist multiple records for a table-target capture; count successful
+        // attempts.
+        statsProcessed++;
+      }
+    }
+    return new IngestCounts(snapshotsProcessed, statsProcessed);
+  }
+
+  private Set<Long> discoverSnapshotIdsForStatsCapture(
+      FloecatConnector connector,
+      String sourceNs,
+      String sourceTable,
+      ResourceId tableId,
+      boolean fullRescan,
+      Set<Long> enumerationKnownSnapshotIds,
+      Set<Long> targetSnapshotIds) {
+    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
+      return new LinkedHashSet<>(targetSnapshotIds);
+    }
+    List<FloecatConnector.SnapshotBundle> discovered =
+        connector.enumerateSnapshotsWithStats(
+            sourceNs,
+            sourceTable,
+            tableId,
+            Set.of(),
+            new FloecatConnector.SnapshotEnumerationOptions(
+                false, fullRescan, enumerationKnownSnapshotIds, Set.of()));
+    Set<Long> snapshotIds = new LinkedHashSet<>();
+    if (discovered == null) {
+      return snapshotIds;
+    }
+    for (FloecatConnector.SnapshotBundle bundle : discovered) {
+      if (bundle == null || bundle.snapshotId() < 0) {
+        continue;
+      }
+      snapshotIds.add(bundle.snapshotId());
+    }
+    return snapshotIds;
+  }
+
+  private Optional<StatsCaptureResult> captureViaEngineCandidates(StatsCaptureRequest request) {
+    if (statsCaptureEngines == null) {
+      return Optional.empty();
+    }
+    List<StatsCaptureEngine> candidates =
+        statsCaptureEngines.stream()
+            .filter(engine -> engine.supports(request))
+            .sorted(
+                java.util.Comparator.comparingInt(StatsCaptureEngine::priority)
+                    .thenComparing(StatsCaptureEngine::id))
+            .toList();
+    for (StatsCaptureEngine engine : candidates) {
+      Optional<StatsCaptureResult> captured = engine.capture(request);
+      if (captured.isPresent()) {
+        return captured;
+      }
+    }
+    return Optional.empty();
+  }
+
+  private static String connectorTypeFor(ConnectorConfig.Kind kind) {
+    return switch (kind) {
+      case ICEBERG -> "iceberg";
+      case GLUE -> "glue";
+      case DELTA -> "delta";
+      case UNITY -> "unity";
+      default -> "";
+    };
   }
 
   private void maybeIngestSnapshotConstraints(
