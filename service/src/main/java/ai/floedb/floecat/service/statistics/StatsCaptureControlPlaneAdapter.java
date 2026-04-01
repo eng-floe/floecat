@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.service.statistics;
 
-import ai.floedb.floecat.reconciler.spi.StatsCaptureControlPlane;
+import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import jakarta.enterprise.context.ApplicationScoped;

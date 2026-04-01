@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.reconciler.spi;
+package ai.floedb.floecat.stats.spi;
 
-import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import java.util.Optional;
 
 /**

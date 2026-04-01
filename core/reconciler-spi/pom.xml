@@ -39,10 +39,5 @@
       <artifactId>floecat-connectors-spi</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-stats</artifactId>
-      <version>${project.version}</version>
-    </dependency>
   </dependencies>
 </project>
