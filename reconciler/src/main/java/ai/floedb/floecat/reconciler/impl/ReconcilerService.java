@@ -23,7 +23,6 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -948,7 +947,8 @@ public class ReconcilerService {
               false);
       Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
       if (captured.isPresent()) {
-        // Capture may persist multiple rows; keep per-snapshot success accounting here.
+        // statsProcessed counts successful capture attempts per snapshot, not number of persisted
+        // target records.
         statsProcessed++;
       }
 
@@ -1025,8 +1025,8 @@ public class ReconcilerService {
               false);
       Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
       if (captured.isPresent()) {
-        // Engines may persist multiple records for a table-target capture; count successful
-        // attempts.
+        // statsProcessed counts successful capture attempts per snapshot, not number of persisted
+        // target records.
         statsProcessed++;
       }
     }
@@ -1161,27 +1161,6 @@ public class ReconcilerService {
         upstream.properties());
   }
 
-  private static boolean matchesSelector(TargetStatsRecord record, Set<String> selectors) {
-    if (selectors == null || selectors.isEmpty()) {
-      return true;
-    }
-
-    if (!record.hasTarget() || !record.getTarget().hasColumn()) {
-      return true;
-    }
-
-    if (record.hasScalar() && selectors.contains(record.getScalar().getDisplayName())) {
-      return true;
-    }
-
-    long columnId = record.getTarget().getColumn().getColumnId();
-    if (selectors.contains("#" + columnId)) {
-      return true;
-    }
-
-    return false;
-  }
-
   private static String rootCauseMessage(Throwable t) {
     if (t == null) {
       return "unknown error";
@@ -1311,6 +1290,8 @@ public class ReconcilerService {
   }
 
   public static final class Result {
+    // statsProcessed reports successful capture attempts per snapshot. Engines may persist multiple
+    // target records for a single successful capture attempt.
     public final long scanned, changed, errors, snapshotsProcessed, statsProcessed;
     public final Exception error;
 
