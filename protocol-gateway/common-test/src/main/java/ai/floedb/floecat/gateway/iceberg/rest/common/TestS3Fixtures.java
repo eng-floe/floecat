@@ -34,10 +34,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -61,18 +63,20 @@ public final class TestS3Fixtures {
   private static final Path MODULE_RELATIVE = Path.of("protocol-gateway", "common-test");
   private static final Path FIXTURE_ROOT = resolveFixtureRoot("iceberg-fixtures");
   private static final Path SIMPLE_ROOT = FIXTURE_ROOT.resolve("simple");
+  private static final Path TPCDS_SFONE_ROOT = FIXTURE_ROOT.resolve("tpcds_sfone");
   private static final Path TARGET_ROOT = resolveTargetRoot();
   private static final Path STAGE_ROOT = TARGET_ROOT.resolve("staged-fixtures");
   private static final String BUCKET = "yb-iceberg-tpcds";
   private static final String PREFIX = "trino_test";
+  private static final String TPCDS_SFONE_BUCKET = "dev-testing-datasets-153499698604-us-east-1-an";
   private static final String USE_AWS_FIXTURES_PROP = "floecat.fixtures.use-aws-s3";
   private static final String FORCE_RESEED_PROP = "floecat.fixtures.force-reseed";
-  private static final String SEEDED_MARKER_PROP = "floecat.fixtures.iceberg.seeded";
+  private static final String SEEDED_MARKER_PROP = "floecat.fixtures.iceberg.seeded-sets";
   private static final String STAGE_BUCKET = "staged-fixtures";
   private static final int MAX_DELETE_PREFIX_PAGES = 10_000;
   private static final Duration S3_VERIFY_TIMEOUT = Duration.ofSeconds(90);
   private static final Duration S3_VERIFY_POLL_INTERVAL = Duration.ofMillis(500);
-  private static volatile boolean seeded;
+  private static final Set<String> seededFixtureNames = new LinkedHashSet<>();
   private static final Object SEED_LOCK = new Object();
 
   private record FixtureSet(String name, Path sourceRoot, String bucket, String prefix) {}
@@ -81,7 +85,14 @@ public final class TestS3Fixtures {
       new FixtureSet("simple", SIMPLE_ROOT, BUCKET, PREFIX);
   private static final FixtureSet COMPLEX_SET =
       new FixtureSet("complex", FIXTURE_ROOT.resolve("complex"), "floecat", "sales/us/trino_types");
-  private static final List<FixtureSet> FIXTURE_SETS = List.of(SIMPLE_SET, COMPLEX_SET);
+  private static final FixtureSet TPCDS_SFONE_SET =
+      new FixtureSet(
+          "tpcds_sfone",
+          TPCDS_SFONE_ROOT,
+          TPCDS_SFONE_BUCKET,
+          "floe_test.db/tpcds_sfone/catalog_returns");
+  private static final List<FixtureSet> DEFAULT_FIXTURE_SETS = List.of(SIMPLE_SET, COMPLEX_SET);
+  private static final List<FixtureSet> ISSUE_FIXTURE_SETS = List.of(TPCDS_SFONE_SET);
 
   private TestS3Fixtures() {}
 
@@ -93,6 +104,11 @@ public final class TestS3Fixtures {
   public static String bucketUri(String relativePath) {
     String suffix = relativePath == null ? "" : relativePath.replaceFirst("^/", "");
     return "s3://" + BUCKET + "/" + PREFIX + (suffix.isEmpty() ? "" : "/" + suffix);
+  }
+
+  public static String tpcdsSfoneUri(String relativePath) {
+    String suffix = relativePath == null ? "" : relativePath.replaceFirst("^/+", "");
+    return "s3://" + TPCDS_SFONE_BUCKET + "/" + suffix;
   }
 
   private static Path bucketPath(String bucket) {
@@ -112,47 +128,48 @@ public final class TestS3Fixtures {
   }
 
   public static void seedFixtures() {
-    if (useAwsFixtures()) {
-      seedFixturesToS3();
-    } else {
-      seedFixturesLocal();
-    }
+    seedFixtures(DEFAULT_FIXTURE_SETS);
   }
 
   public static void seedFixturesOnce() {
-    if (!Boolean.getBoolean(FORCE_RESEED_PROP)
-        && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
+    seedFixturesOnce(DEFAULT_FIXTURE_SETS);
+  }
+
+  public static void seedTpcdsSfoneFixtureOnce() {
+    seedFixturesOnce(ISSUE_FIXTURE_SETS);
+  }
+
+  private static void seedFixturesOnce(List<FixtureSet> fixtureSets) {
+    if (!Boolean.getBoolean(FORCE_RESEED_PROP) && areFixturesSeeded(fixtureSets)) {
       return;
     }
     synchronized (SEED_LOCK) {
-      if (!Boolean.getBoolean(FORCE_RESEED_PROP)
-          && (seeded || Boolean.getBoolean(SEEDED_MARKER_PROP))) {
+      if (!Boolean.getBoolean(FORCE_RESEED_PROP) && areFixturesSeeded(fixtureSets)) {
         return;
       }
-      LOG.info("Seeding Iceberg test fixtures");
+      LOG.info("Seeding Iceberg test fixtures: " + fixtureSetNames(fixtureSets));
       if (useAwsFixtures()) {
-        seedFixturesToS3();
-        verifyS3FixturesReady();
+        seedFixturesToS3(fixtureSets);
+        verifyS3FixturesReady(fixtureSets);
       } else {
         System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
         try {
-          if (!needsReseed() && !Boolean.getBoolean(FORCE_RESEED_PROP)) {
-            seeded = true;
+          if (!needsReseed(fixtureSets) && !Boolean.getBoolean(FORCE_RESEED_PROP)) {
+            markFixturesSeeded(fixtureSets);
             return;
           }
-          seedFixturesLocal();
+          seedFixturesLocal(fixtureSets);
         } catch (IOException e) {
           throw new RuntimeException("Failed to seed fixture bucket", e);
         }
       }
-      seeded = true;
-      System.setProperty(SEEDED_MARKER_PROP, Boolean.TRUE.toString());
+      markFixturesSeeded(fixtureSets);
       LOG.info("Iceberg test fixture seeding completed");
     }
   }
 
-  private static boolean needsReseed() throws IOException {
-    for (FixtureSet set : FIXTURE_SETS) {
+  private static boolean needsReseed(List<FixtureSet> fixtureSets) throws IOException {
+    for (FixtureSet set : fixtureSets) {
       Path targetRoot = bucketPath(set.bucket).resolve(Path.of(set.prefix));
       if (!Files.exists(targetRoot.resolve("metadata"))
           || !Files.exists(targetRoot.resolve("data"))) {
@@ -260,10 +277,10 @@ public final class TestS3Fixtures {
     return "s3://" + STAGE_BUCKET + "/" + namespace + "/" + table + suffix;
   }
 
-  private static void seedFixturesLocal() {
+  private static void seedFixturesLocal(List<FixtureSet> fixtureSets) {
     System.setProperty("fs.floecat.test-root", TARGET_ROOT.toAbsolutePath().toString());
     var buckets = new LinkedHashSet<Path>();
-    for (FixtureSet set : FIXTURE_SETS) {
+    for (FixtureSet set : fixtureSets) {
       buckets.add(bucketPath(set.bucket));
     }
     try {
@@ -272,7 +289,7 @@ public final class TestS3Fixtures {
           deleteRecursive(bucket);
         }
       }
-      for (FixtureSet set : FIXTURE_SETS) {
+      for (FixtureSet set : fixtureSets) {
         Path target = bucketPath(set.bucket).resolve(Path.of(set.prefix));
         Files.createDirectories(target);
         copyRecursive(set.sourceRoot, target);
@@ -328,9 +345,17 @@ public final class TestS3Fixtures {
     }
   }
 
-  private static void seedFixturesToS3() {
+  private static void seedFixtures(List<FixtureSet> fixtureSets) {
+    if (useAwsFixtures()) {
+      seedFixturesToS3(fixtureSets);
+    } else {
+      seedFixturesLocal(fixtureSets);
+    }
+  }
+
+  private static void seedFixturesToS3(List<FixtureSet> fixtureSets) {
     try (S3Client s3 = buildS3Client()) {
-      for (FixtureSet set : FIXTURE_SETS) {
+      for (FixtureSet set : fixtureSets) {
         ensureBucketExists(s3, set.bucket);
         deletePrefix(s3, set.bucket, normalizeKey(set.prefix));
         uploadDirectoryToS3(s3, set.sourceRoot, set.bucket, normalizeKey(set.prefix));
@@ -580,11 +605,11 @@ public final class TestS3Fixtures {
 
   private record S3Location(String bucket, String key) {}
 
-  private static void verifyS3FixturesReady() {
+  private static void verifyS3FixturesReady(List<FixtureSet> fixtureSets) {
     Instant deadline = Instant.now().plus(S3_VERIFY_TIMEOUT);
     try (S3Client s3 = buildS3Client()) {
       while (Instant.now().isBefore(deadline)) {
-        if (allFixtureMarkersExist(s3)) {
+        if (allFixtureMarkersExist(s3, fixtureSets)) {
           return;
         }
         try {
@@ -599,8 +624,8 @@ public final class TestS3Fixtures {
         "Timed out waiting for S3 fixture readiness after " + S3_VERIFY_TIMEOUT.toSeconds() + "s");
   }
 
-  private static boolean allFixtureMarkersExist(S3Client s3) {
-    for (FixtureSet set : FIXTURE_SETS) {
+  private static boolean allFixtureMarkersExist(S3Client s3, List<FixtureSet> fixtureSets) {
+    for (FixtureSet set : fixtureSets) {
       String markerPrefix = normalizeKey(set.prefix) + "metadata/";
       ListObjectsV2Response response =
           s3.listObjectsV2(
@@ -616,6 +641,34 @@ public final class TestS3Fixtures {
     // Ensure stage bucket API is responsive and bucket exists.
     s3.listObjectsV2(ListObjectsV2Request.builder().bucket(STAGE_BUCKET).maxKeys(1).build());
     return true;
+  }
+
+  private static boolean areFixturesSeeded(List<FixtureSet> fixtureSets) {
+    Set<String> requested = fixtureSetNames(fixtureSets);
+    return seededFixtureNames.containsAll(requested)
+        || seededFixtureNamesFromProperty().containsAll(requested);
+  }
+
+  private static void markFixturesSeeded(List<FixtureSet> fixtureSets) {
+    seededFixtureNames.addAll(fixtureSetNames(fixtureSets));
+    System.setProperty(SEEDED_MARKER_PROP, String.join(",", seededFixtureNames));
+  }
+
+  private static Set<String> fixtureSetNames(List<FixtureSet> fixtureSets) {
+    return fixtureSets.stream()
+        .map(FixtureSet::name)
+        .collect(Collectors.toCollection(LinkedHashSet::new));
+  }
+
+  private static Set<String> seededFixtureNamesFromProperty() {
+    String marker = System.getProperty(SEEDED_MARKER_PROP, "");
+    if (marker.isBlank()) {
+      return Set.of();
+    }
+    return java.util.Arrays.stream(marker.split(","))
+        .map(String::trim)
+        .filter(name -> !name.isEmpty())
+        .collect(Collectors.toCollection(LinkedHashSet::new));
   }
 
   private static Optional<Path> findModuleRoot() {
