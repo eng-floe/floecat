@@ -28,6 +28,8 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
+import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -42,7 +44,7 @@ import org.jboss.logging.Logger;
  *
  * <ul>
  *   <li>query-time resolution policy via {@link #resolve(StatsCaptureRequest)}
- *   <li>explicit capture execution via {@link #capture(StatsCaptureRequest)}
+ *   <li>explicit capture execution via {@link #trigger(StatsCaptureRequest)}
  * </ul>
  *
  * <p>Resolution is store-first, then optional synchronous capture, then async enqueue fallback when
@@ -77,30 +79,35 @@ public class StatsOrchestrator {
    * for misses that have at least one registry-capable ASYNC engine candidate.
    */
   public Optional<TargetStatsRecord> resolve(StatsCaptureRequest request) {
-    // Fast path: authoritative persisted read.
-    Optional<TargetStatsRecord> stored =
-        statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
+    Optional<TargetStatsRecord> stored = readStore(request);
     if (stored.isPresent()) {
       return stored;
     }
 
-    // PR6 behavior: for SYNC requests, attempt one inline capture pass before queue fallback.
-    // PR10 insertion point: after enqueue below, wait up to latency budget and re-read store.
-    boolean enqueueEligible = true;
     if (request.executionMode() == StatsExecutionMode.SYNC) {
+      // PR6 behavior: for SYNC requests, attempt one inline capture pass before queue fallback.
+      // PR10 insertion point: after enqueue, wait up to latency budget and re-read store.
       CaptureAttempt attempt = captureAttempt(request);
       if (attempt.result().isPresent()) {
         return attempt.result().map(StatsCaptureResult::record);
       }
-      enqueueEligible = attempt.supported();
+      maybeEnqueue(request, attempt.supported());
+      return Optional.empty();
     }
-
-    // Miss fallback: schedule table-scoped async stats-only capture for the requested snapshot
-    // when the registry advertises ASYNC support for the requested target.
-    if (enqueueEligible) {
-      tryEnqueueAsyncCapture(request);
-    }
+    maybeEnqueue(request, true);
     return Optional.empty();
+  }
+
+  private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
+    // Fast path: authoritative persisted read.
+    return statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  private void maybeEnqueue(StatsCaptureRequest request, boolean enqueueEligible) {
+    if (!enqueueEligible) {
+      return;
+    }
+    tryEnqueueAsyncCapture(request);
   }
 
   private void tryEnqueueAsyncCapture(StatsCaptureRequest request) {
@@ -108,7 +115,8 @@ public class StatsOrchestrator {
     if (request.snapshotId() < 0L) {
       return;
     }
-    if (!isAsyncCapturableByRegistry(request)) {
+    StatsCaptureRequest asyncRequest = toAsyncRequest(request);
+    if (!hasAsyncCandidates(asyncRequest)) {
       return;
     }
     try {
@@ -143,26 +151,44 @@ public class StatsOrchestrator {
     }
   }
 
-  private boolean isAsyncCapturableByRegistry(StatsCaptureRequest request) {
-    StatsCaptureRequest asyncRequest =
-        request.executionMode() == StatsExecutionMode.ASYNC
-            ? request
-            : StatsCaptureRequest.builder(request.tableId(), request.snapshotId(), request.target())
-                .columnSelectors(request.columnSelectors())
-                .requestedKinds(request.requestedKinds())
-                .executionMode(StatsExecutionMode.ASYNC)
-                .connectorType(request.connectorType())
-                .correlationId(request.correlationId())
-                .samplingRequested(request.samplingRequested())
-                .latencyBudget(request.latencyBudget())
-                .build();
+  private StatsCaptureRequest toAsyncRequest(StatsCaptureRequest request) {
+    if (request.executionMode() == StatsExecutionMode.ASYNC) {
+      return request;
+    }
+    return StatsCaptureRequest.builder(request.tableId(), request.snapshotId(), request.target())
+        .columnSelectors(request.columnSelectors())
+        .requestedKinds(request.requestedKinds())
+        .executionMode(StatsExecutionMode.ASYNC)
+        .connectorType(request.connectorType())
+        .correlationId(request.correlationId())
+        .samplingRequested(request.samplingRequested())
+        .latencyBudget(request.latencyBudget())
+        .build();
+  }
+
+  private boolean hasAsyncCandidates(StatsCaptureRequest asyncRequest) {
     List<StatsCaptureEngine> candidates = statsEngineRegistry.candidates(asyncRequest);
     return candidates != null && !candidates.isEmpty();
   }
 
-  /** Executes one capture attempt via the shared registry-backed control plane. */
-  public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    return captureAttempt(request).result();
+  /**
+   * Executes one explicit trigger attempt through the registry.
+   *
+   * <p>This path does not perform store-read short-circuiting and does not enqueue fallback work.
+   * It is intended for control-plane callers that explicitly request capture now.
+   */
+  public StatsTriggerResult trigger(StatsCaptureRequest request) {
+    CaptureAttempt attempt = captureAttempt(request);
+    StatsTriggerResult result;
+    if (attempt.result().isPresent()) {
+      result = StatsTriggerResult.captured(attempt.result().get());
+    } else if (!attempt.supported()) {
+      result = StatsTriggerResult.uncapturable("target unsupported");
+    } else {
+      result = StatsTriggerResult.uncapturable("no capture result");
+    }
+    logTriggerOutcome(request, result);
+    return result;
   }
 
   private CaptureAttempt captureAttempt(StatsCaptureRequest request) {
@@ -177,4 +203,16 @@ public class StatsOrchestrator {
   }
 
   private record CaptureAttempt(Optional<StatsCaptureResult> result, boolean supported) {}
+
+  private void logTriggerOutcome(StatsCaptureRequest request, StatsTriggerResult result) {
+    if (result.outcome() == StatsTriggerOutcome.CAPTURED) {
+      LOG.debugf(
+          "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
+          result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+      return;
+    }
+    LOG.warnf(
+        "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
+        result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+  }
 }

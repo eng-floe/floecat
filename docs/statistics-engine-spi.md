@@ -61,7 +61,7 @@ Service wiring:
 - `StatsEngineRegistry` handles capability/priority engine selection for compute capture.
 - `StatsCaptureControlPlane` is the explicit capture entrypoint for control-plane callers
   (for example reconciler `STATS_ONLY` routing); current service implementation delegates to
-  `StatsOrchestrator.capture(request)`.
+  `StatsOrchestrator.trigger(request)`.
 - Public read/list RPCs remain `StatsStore` authoritative reads.
 
 Authoritative model:
@@ -134,10 +134,10 @@ Current enqueue policy:
 
 The registry is selection-only and does not merge multi-engine outputs.
 
-`StatsCaptureControlPlane.capture(request)`:
+`StatsCaptureControlPlane.trigger(request)`:
 
 1. serves as the explicit capture control-plane entrypoint (non-query callers)
-2. in service runtime, delegates to `StatsOrchestrator.capture(request)`
+2. in service runtime, delegates to `StatsOrchestrator.trigger(request)`
 3. executes one registry-routed capture attempt (no store-read short-circuit, no enqueue fallback)
 
 Result model:

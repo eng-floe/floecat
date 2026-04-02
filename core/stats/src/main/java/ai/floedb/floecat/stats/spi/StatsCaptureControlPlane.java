@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.stats.spi;
 
-import java.util.Optional;
-
 /**
  * Control-plane entrypoint for explicit stats capture requests.
  *
@@ -26,6 +24,17 @@ import java.util.Optional;
  */
 public interface StatsCaptureControlPlane {
 
-  /** Executes one capture attempt for the provided request. */
-  Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
+  /**
+   * Executes one capture trigger attempt for the provided request.
+   *
+   * <p>Implementations should return:
+   *
+   * <ul>
+   *   <li>{@code CAPTURED} when a capture payload was produced
+   *   <li>{@code QUEUED} when work was accepted for deferred execution
+   *   <li>{@code UNCAPTURABLE} when request/engine capabilities do not match
+   *   <li>{@code DEGRADED} for runtime/transient failures
+   * </ul>
+   */
+  StatsTriggerResult trigger(StatsCaptureRequest request);
 }
