@@ -37,6 +37,7 @@ class StatsCaptureRequestTest {
             0L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
+            Set.of(),
             StatsExecutionMode.SYNC,
             "",
             false);
@@ -54,6 +55,7 @@ class StatsCaptureRequestTest {
                         .setTable(TableStatsTarget.getDefaultInstance())
                         .build(),
                     Set.of(),
+                    Set.of(),
                     StatsExecutionMode.SYNC,
                     "",
                     false))
@@ -69,6 +71,7 @@ class StatsCaptureRequestTest {
             1L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
+            Set.of(),
             StatsExecutionMode.SYNC,
             "",
             false,
@@ -83,6 +86,7 @@ class StatsCaptureRequestTest {
                     StatsTarget.newBuilder()
                         .setTable(TableStatsTarget.getDefaultInstance())
                         .build(),
+                    Set.of(),
                     Set.of(),
                     StatsExecutionMode.SYNC,
                     "",

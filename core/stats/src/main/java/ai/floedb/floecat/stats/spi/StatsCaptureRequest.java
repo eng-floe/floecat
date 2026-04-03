@@ -28,11 +28,15 @@ import java.util.Set;
  *
  * <p>{@code snapshotId} accepts non-negative values. A value of {@code 0} is reserved for
  * unresolved/current-snapshot flows and may be resolved upstream before execution.
+ *
+ * <p>{@code columnSelectors} allows scoped capture requests to declare the set of relevant columns
+ * in one request (for example destination column IDs or source column names).
  */
 public record StatsCaptureRequest(
     ResourceId tableId,
     long snapshotId,
     StatsTarget target,
+    Set<String> columnSelectors,
     Set<StatsStatisticKind> requestedKinds,
     StatsExecutionMode executionMode,
     String connectorType,
@@ -45,6 +49,7 @@ public record StatsCaptureRequest(
       throw new IllegalArgumentException("snapshotId must be non-negative");
     }
     target = Objects.requireNonNull(target, "target");
+    columnSelectors = Set.copyOf(Objects.requireNonNull(columnSelectors, "columnSelectors"));
     requestedKinds = Set.copyOf(Objects.requireNonNull(requestedKinds, "requestedKinds"));
     executionMode = Objects.requireNonNull(executionMode, "executionMode");
     connectorType = connectorType == null ? "" : connectorType.trim().toLowerCase();
@@ -63,6 +68,7 @@ public record StatsCaptureRequest(
       ResourceId tableId,
       long snapshotId,
       StatsTarget target,
+      Set<String> columnSelectors,
       Set<StatsStatisticKind> requestedKinds,
       StatsExecutionMode executionMode,
       String connectorType,
@@ -71,6 +77,7 @@ public record StatsCaptureRequest(
         tableId,
         snapshotId,
         target,
+        columnSelectors,
         requestedKinds,
         executionMode,
         connectorType,

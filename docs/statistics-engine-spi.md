@@ -104,6 +104,8 @@ Payload model:
 - `StatsCaptureResult` carries a single typed `StatsCaptureValue`.
 - Column and expression payloads share `StatsValueSummary` to avoid duplicated metric schemas.
 - `StatsCaptureRequest` is intentionally target-native: one request resolves one concrete target.
+  The request also carries `columnSelectors` so one reconcile/capture request can scope work to
+  multiple relevant columns in that target context.
   Scope-level orchestration may issue multiple requests for a table/snapshot, and engines may still
   persist additional related records from a single source read when available.
 

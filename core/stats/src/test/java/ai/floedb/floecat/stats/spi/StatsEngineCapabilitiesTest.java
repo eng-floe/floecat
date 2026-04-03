@@ -62,6 +62,7 @@ class StatsEngineCapabilitiesTest {
             1L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
+            Set.of(),
             StatsExecutionMode.SYNC,
             " iceberg ",
             false);
@@ -88,6 +89,7 @@ class StatsEngineCapabilitiesTest {
             ResourceId.newBuilder().setAccountId("a").setId("t").build(),
             1L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            Set.of(),
             Set.of(StatsStatisticKind.NDV),
             StatsExecutionMode.SYNC,
             "",

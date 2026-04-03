@@ -96,6 +96,7 @@ class StatsEngineRegistryTest {
             StatsTarget.newBuilder()
                 .setFile(FileStatsTarget.newBuilder().setFilePath("/data/file.parquet").build())
                 .build(),
+            Set.of(),
             Set.of(StatsStatisticKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
@@ -167,6 +168,7 @@ class StatsEngineRegistryTest {
             ResourceId.newBuilder().setAccountId("a").setId("t").build(),
             0L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            Set.of(),
             Set.of(StatsStatisticKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
@@ -197,6 +199,7 @@ class StatsEngineRegistryTest {
         ResourceId.newBuilder().setAccountId("a").setId("t").build(),
         100L,
         StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+        Set.of(),
         Set.of(StatsStatisticKind.ROW_COUNT),
         StatsExecutionMode.SYNC,
         "",
