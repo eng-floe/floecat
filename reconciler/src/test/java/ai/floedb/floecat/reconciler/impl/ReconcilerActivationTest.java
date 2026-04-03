@@ -19,10 +19,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
 
-class ReconcilerBackendAnnotationTest {
+class ReconcilerActivationTest {
+
   @Test
-  void remoteBackendIsNotBuildTimeGated() {
-    assertThat(GrpcReconcilerBackend.class.getAnnotations())
+  void schedulerIsNotBuildTimeGated() {
+    assertThat(ReconcilerScheduler.class.getAnnotations())
+        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
+  }
+
+  @Test
+  void defaultExecutorIsNotBuildTimeGated() {
+    assertThat(DefaultReconcileExecutor.class.getAnnotations())
+        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
+  }
+
+  @Test
+  void remotePollerIsNotBuildTimeGated() {
+    assertThat(RemoteReconcileExecutorPoller.class.getAnnotations())
         .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
   }
 }

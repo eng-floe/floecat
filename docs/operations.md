@@ -55,6 +55,33 @@ Flags:
 
 ## Observability & Operations
 
+### Reconciler deployment modes
+
+The reconciler can now run in three shapes from the same artifact:
+
+- **All-in-one**: default profile; public APIs, durable queue ownership, and local executor polling stay in one runtime.
+- **Control plane**: `QUARKUS_PROFILE=reconciler-control`; owns the queue, automatic enqueue, public reconcile APIs, and executor-control RPCs.
+- **Executor plane**: `QUARKUS_PROFILE=reconciler-executor`; disables local queue ownership and automatic scheduling, then leases work remotely from the control plane over gRPC.
+
+Key reconciler mode flags live in `service/src/main/resources/application.properties`:
+
+```properties
+floecat.reconciler.scheduler.enabled
+floecat.reconciler.remote-executor.enabled
+floecat.reconciler.executor.default.enabled
+floecat.reconciler.backend
+floecat.reconciler.authorization.header
+floecat.reconciler.authorization.token
+```
+
+Recommended split deployment:
+
+- Control plane: `QUARKUS_PROFILE=reconciler-control`
+- Executor plane: `QUARKUS_PROFILE=reconciler-executor`
+- Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
+
+To scale executors horizontally, add more executor-plane instances. They greedily lease eligible jobs from the shared durable queue, so no leader election is required at the executor layer.
+
 - **Logging** – JSON console logs plus rotating files under `log/`. Audit logs route gRPC request
   summaries to `log/audit.json`; see [`docs/log.md`](log.md).
 - **Metrics** – Micrometer/Prometheus exporters expose gRPC, storage, and GC metrics at the

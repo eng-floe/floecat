@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs.impl;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import io.quarkus.arc.properties.IfBuildProperty;
@@ -39,6 +40,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
+  private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
   private final ConcurrentLinkedQueue<String> ready = new ConcurrentLinkedQueue<>();
   private final Set<String> leased = ConcurrentHashMap.newKeySet();
 
@@ -48,7 +50,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       String connectorId,
       boolean fullRescan,
       CaptureMode captureMode,
-      ReconcileScope scope) {
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId) {
     String id = UUID.randomUUID().toString();
     createdAtMs.put(id, System.currentTimeMillis());
     var job =
@@ -67,8 +71,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             captureMode,
             0,
             0,
-            scope);
+            scope,
+            executionPolicy,
+            "");
     jobs.put(id, job);
+    pinnedExecutors.put(id, pinnedExecutorId == null ? "" : pinnedExecutorId.trim());
     ready.add(id);
     return id;
   }
@@ -147,8 +154,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public Optional<LeasedJob> leaseNext() {
-    for (; ; ) {
+  public Optional<LeasedJob> leaseNext(LeaseRequest request) {
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    int attempts = Math.max(1, ready.size());
+    for (int i = 0; i < attempts; i++) {
       String jobId = ready.poll();
       if (jobId == null) {
         return Optional.empty();
@@ -164,6 +173,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         continue;
       }
 
+      if (!effective.matches(job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""))) {
+        ready.add(jobId);
+        continue;
+      }
+
       if (leased.add(jobId)) {
         String leaseEpoch = UUID.randomUUID().toString();
         leaseEpochs.put(jobId, leaseEpoch);
@@ -175,9 +189,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.fullRescan,
                 job.captureMode,
                 job.scope,
-                leaseEpoch));
+                job.executionPolicy,
+                leaseEpoch,
+                pinnedExecutors.getOrDefault(jobId, ""),
+                job.executorId));
       }
     }
+    return Optional.empty();
   }
 
   @Override
@@ -193,7 +211,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void markRunning(String jobId, String leaseEpoch, long startedAtMs) {
+  public void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId) {
     jobs.computeIfPresent(
         jobId,
         (id, job) -> {
@@ -215,7 +233,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               job.snapshotsProcessed,
               job.statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              executorId);
         });
   }
 
@@ -255,7 +275,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               snapshotsProcessed,
               statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              job.executorId);
         });
   }
 
@@ -279,6 +301,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -294,7 +317,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               snapshotsProcessed,
               statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              job.executorId);
         });
   }
 
@@ -320,6 +345,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -335,7 +361,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               snapshotsProcessed,
               statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              job.executorId);
         });
   }
 
@@ -368,10 +396,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 job.captureMode,
                 job.snapshotsProcessed,
                 job.statsProcessed,
-                job.scope);
+                job.scope,
+                job.executionPolicy,
+                job.executorId);
           }
           leased.remove(id);
           leaseEpochs.remove(id);
+          pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -387,7 +418,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               job.snapshotsProcessed,
               job.statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              job.executorId);
         });
     var current = jobs.get(jobId);
     if (current == null) {
@@ -431,6 +464,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
           leased.remove(id);
           leaseEpochs.remove(id);
           ready.remove(id);
+          pinnedExecutors.remove(id);
           return new ReconcileJob(
               job.jobId,
               job.accountId,
@@ -446,7 +480,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               job.captureMode,
               snapshotsProcessed,
               statsProcessed,
-              job.scope);
+              job.scope,
+              job.executionPolicy,
+              job.executorId);
         });
   }
 

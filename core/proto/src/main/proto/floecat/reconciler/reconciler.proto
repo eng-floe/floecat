@@ -37,6 +37,20 @@ enum CaptureMode {
   CM_STATS_ONLY = 3;
 }
 
+enum ExecutionClass {
+  EC_UNSPECIFIED = 0;
+  EC_DEFAULT = 1;
+  EC_INTERACTIVE = 2;
+  EC_BATCH = 3;
+  EC_HEAVY = 4;
+}
+
+message ExecutionPolicy {
+  ExecutionClass execution_class = 1;
+  string lane = 2;
+  map<string, string> attributes = 3;
+}
+
 message CaptureNowRequest {
   CaptureScope scope = 1;
   CaptureMode mode = 2;
@@ -53,10 +67,99 @@ message StartCaptureRequest {
   CaptureScope scope = 1;
   CaptureMode mode = 2;
   bool full_rescan = 3;
+  ExecutionPolicy execution_policy = 4;
 }
 
 message StartCaptureResponse {
   string job_id = 1;
+}
+
+message LeasedReconcileJob {
+  string job_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 2;
+  CaptureMode mode = 3;
+  bool full_rescan = 4;
+  CaptureScope scope = 5;
+  string lease_epoch = 6;
+  ExecutionPolicy execution_policy = 7;
+  string pinned_executor_id = 8;
+  string executor_id = 9;
+}
+
+message LeaseReconcileJobRequest {
+  string executor_id = 1;
+  repeated ExecutionClass execution_classes = 2;
+  repeated string lanes = 3;
+}
+
+message LeaseReconcileJobResponse {
+  bool found = 1;
+  LeasedReconcileJob job = 2;
+}
+
+message RenewReconcileLeaseRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+}
+
+message RenewReconcileLeaseResponse {
+  bool renewed = 1;
+  bool cancellation_requested = 2;
+}
+
+message StartLeasedReconcileJobRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string executor_id = 3;
+}
+
+message StartLeasedReconcileJobResponse {}
+
+message ReportReconcileProgressRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  uint64 tables_scanned = 3;
+  uint64 tables_changed = 4;
+  uint64 errors = 5;
+  uint64 snapshots_processed = 6;
+  uint64 stats_processed = 7;
+  string message = 8;
+}
+
+message ReportReconcileProgressResponse {
+  bool lease_valid = 1;
+  bool cancellation_requested = 2;
+}
+
+enum ReconcileCompletionState {
+  RCS_UNSPECIFIED = 0;
+  RCS_SUCCEEDED = 1;
+  RCS_FAILED = 2;
+  RCS_CANCELLED = 3;
+}
+
+message CompleteLeasedReconcileJobRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  ReconcileCompletionState state = 3;
+  uint64 tables_scanned = 4;
+  uint64 tables_changed = 5;
+  uint64 errors = 6;
+  uint64 snapshots_processed = 7;
+  uint64 stats_processed = 8;
+  string message = 9;
+}
+
+message CompleteLeasedReconcileJobResponse {
+  bool accepted = 1;
+}
+
+message GetReconcileCancellationRequest {
+  string job_id = 1;
+}
+
+message GetReconcileCancellationResponse {
+  bool cancellation_requested = 1;
 }
 
 message GetReconcileJobRequest {
@@ -77,6 +180,8 @@ message GetReconcileJobResponse {
   uint64 snapshots_processed = 11;
   uint64 stats_processed = 12;
   uint64 duration_ms = 13;
+  ExecutionPolicy execution_policy = 14;
+  string executor_id = 15;
 }
 
 message ListReconcileJobsRequest {
@@ -142,4 +247,17 @@ service ReconcileControl {
   rpc GetReconcilerSettings(GetReconcilerSettingsRequest) returns (GetReconcilerSettingsResponse);
   rpc UpdateReconcilerSettings(UpdateReconcilerSettingsRequest)
       returns (UpdateReconcilerSettingsResponse);
+}
+
+service ReconcileExecutorControl {
+  rpc LeaseReconcileJob(LeaseReconcileJobRequest) returns (LeaseReconcileJobResponse);
+  rpc RenewReconcileLease(RenewReconcileLeaseRequest) returns (RenewReconcileLeaseResponse);
+  rpc StartLeasedReconcileJob(StartLeasedReconcileJobRequest)
+      returns (StartLeasedReconcileJobResponse);
+  rpc ReportReconcileProgress(ReportReconcileProgressRequest)
+      returns (ReportReconcileProgressResponse);
+  rpc CompleteLeasedReconcileJob(CompleteLeasedReconcileJobRequest)
+      returns (CompleteLeasedReconcileJobResponse);
+  rpc GetReconcileCancellation(GetReconcileCancellationRequest)
+      returns (GetReconcileCancellationResponse);
 }

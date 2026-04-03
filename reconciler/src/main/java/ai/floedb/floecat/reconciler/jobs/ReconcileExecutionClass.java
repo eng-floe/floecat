@@ -13,16 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package ai.floedb.floecat.reconciler.impl;
 
-import static org.assertj.core.api.Assertions.assertThat;
+package ai.floedb.floecat.reconciler.jobs;
 
-import org.junit.jupiter.api.Test;
+public enum ReconcileExecutionClass {
+  DEFAULT,
+  INTERACTIVE,
+  BATCH,
+  HEAVY;
 
-class ReconcilerBackendAnnotationTest {
-  @Test
-  void remoteBackendIsNotBuildTimeGated() {
-    assertThat(GrpcReconcilerBackend.class.getAnnotations())
-        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
+  public static ReconcileExecutionClass fromString(String value) {
+    if (value == null || value.isBlank()) {
+      return DEFAULT;
+    }
+    try {
+      return ReconcileExecutionClass.valueOf(value.trim().toUpperCase());
+    } catch (IllegalArgumentException ignored) {
+      return DEFAULT;
+    }
   }
 }

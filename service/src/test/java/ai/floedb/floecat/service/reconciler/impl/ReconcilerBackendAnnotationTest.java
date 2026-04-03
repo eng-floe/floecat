@@ -17,16 +17,12 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.quarkus.arc.properties.IfBuildProperty;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerBackendAnnotationTest {
   @Test
-  void localBackendEnablesIfMissing() {
-    IfBuildProperty annotation = DirectReconcilerBackend.class.getAnnotation(IfBuildProperty.class);
-    assertThat(annotation).isNotNull();
-    assertThat(annotation.name()).isEqualTo("floecat.reconciler.backend");
-    assertThat(annotation.stringValue()).isEqualTo("local");
-    assertThat(annotation.enableIfMissing()).isTrue();
+  void directBackendIsNotBuildTimeGated() {
+    assertThat(DirectReconcilerBackend.class.getAnnotations())
+        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
   }
 }

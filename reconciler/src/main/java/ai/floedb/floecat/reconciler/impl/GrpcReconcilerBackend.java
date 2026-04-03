@@ -77,10 +77,10 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
-import io.quarkus.arc.properties.IfBuildProperty;
 import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Typed;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -91,8 +91,8 @@ import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-@IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "remote")
 @ApplicationScoped
+@Typed(GrpcReconcilerBackend.class)
 public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);

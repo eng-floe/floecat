@@ -63,6 +63,54 @@ make compose-up COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localsta
 make compose-down COMPOSE_ENV_FILE=./env.localstack-oidc COMPOSE_PROFILES=localstack-oidc
 ```
 
+### Split reconciler mode
+
+The same service image can now run as a control-plane node or as a remote executor node.
+
+Run a control plane plus one executor node:
+
+```bash
+QUARKUS_PROFILE_SERVICE=reconciler-control \
+FLOECAT_ENV_FILE=./env.localstack \
+COMPOSE_PROFILES=localstack,reconciler-executor \
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Run a control plane plus three executor nodes:
+
+```bash
+QUARKUS_PROFILE_SERVICE=reconciler-control \
+FLOECAT_ENV_FILE=./env.localstack \
+COMPOSE_PROFILES=localstack,reconciler-executor \
+docker compose -f docker/docker-compose.yml up -d --scale executor=3
+```
+
+Notes:
+
+- For a true split deployment, run `service` as the control plane by setting
+  `QUARKUS_PROFILE_SERVICE=reconciler-control`. The compose file pins `executor` to
+  `QUARKUS_PROFILE_EXECUTOR=reconciler-executor` by default. That keeps the public APIs,
+  durable queue ownership, and automatic scheduling on the `service` container while disabling
+  local execution there.
+- `executor` uses the same image but sets:
+  `FLOECAT_RECONCILER_SCHEDULER_ENABLED=false`,
+  `FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED=true`,
+  `FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED=true`,
+  `FLOECAT_RECONCILER_BACKEND=remote`,
+  and `FLOECAT_RECONCILER_AUTO_ENABLED=false`.
+- `docker compose --scale executor=3` starts three identical executor replicas. Each replica
+  connects to `service:9100`, leases work independently, and heartbeats/completes jobs through
+  the control-plane RPCs. No executor leader election is required.
+- Both services must share the same blob/kv backend configuration.
+- If your control plane requires an authorization token for remote reconciler calls, set `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN` in the env file or shell before `docker compose up`.
+
+In Kubernetes or another orchestrator, the equivalent shape is:
+
+- 1 `service` replica with `QUARKUS_PROFILE=reconciler-control`
+- 3 executor replicas with `QUARKUS_PROFILE=reconciler-executor`
+- Shared durable blob/kv configuration for all 4 pods
+- Executor gRPC client target pointed at the control-plane service DNS name and port
+
 Interactive CLI in a container:
 
 ```bash
@@ -125,6 +173,11 @@ Common configuration knobs:
   plus `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_ENDPOINT` and
   `FLOECAT_GATEWAY_STORAGE_CREDENTIAL_PROPERTIES_S3_PATH_STYLE_ACCESS` for non-default endpoints.
 - **Seed/fixtures**: `FLOECAT_SEED_ENABLED`, `FLOECAT_SEED_MODE`, `FLOECAT_FIXTURES_USE_AWS_S3`.
+- **Reconciler split deployment**:
+  `FLOECAT_RECONCILER_SCHEDULER_ENABLED`, `FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED`,
+  `FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED`, `FLOECAT_RECONCILER_BACKEND`,
+  `FLOECAT_RECONCILER_AUTHORIZATION_HEADER`, `FLOECAT_RECONCILER_AUTHORIZATION_TOKEN`,
+  `QUARKUS_PROFILE_SERVICE`, `QUARKUS_PROFILE_EXECUTOR`.
 
 Where variables are consumed (all `FLOECAT_*`):
 

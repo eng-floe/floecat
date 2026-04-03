@@ -13,16 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package ai.floedb.floecat.reconciler.impl;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import java.util.Objects;
 
-import org.junit.jupiter.api.Test;
+record RemoteLeasedJob(ReconcileJobStore.LeasedJob lease) {
+  RemoteLeasedJob {
+    lease = Objects.requireNonNull(lease, "lease");
+  }
 
-class ReconcilerBackendAnnotationTest {
-  @Test
-  void remoteBackendIsNotBuildTimeGated() {
-    assertThat(GrpcReconcilerBackend.class.getAnnotations())
-        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
+  enum CompletionState {
+    SUCCEEDED,
+    FAILED,
+    CANCELLED
   }
 }

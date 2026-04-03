@@ -17,17 +17,36 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 public interface ReconcileJobStore {
+  default String enqueue(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileExecutionPolicy.defaults(),
+        "");
+  }
+
   String enqueue(
       String accountId,
       String connectorId,
       boolean fullRescan,
       CaptureMode captureMode,
-      ReconcileScope scope);
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId);
 
   Optional<ReconcileJob> get(String accountId, String jobId);
 
@@ -40,11 +59,15 @@ public interface ReconcileJobStore {
 
   QueueStats queueStats();
 
-  Optional<LeasedJob> leaseNext();
+  default Optional<LeasedJob> leaseNext() {
+    return leaseNext(LeaseRequest.all());
+  }
+
+  Optional<LeasedJob> leaseNext(LeaseRequest request);
 
   boolean renewLease(String jobId, String leaseEpoch);
 
-  void markRunning(String jobId, String leaseEpoch, long startedAtMs);
+  void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId);
 
   void markProgress(
       String jobId,
@@ -107,6 +130,8 @@ public interface ReconcileJobStore {
     public final long snapshotsProcessed;
     public final long statsProcessed;
     public final ReconcileScope scope;
+    public final ReconcileExecutionPolicy executionPolicy;
+    public final String executorId;
 
     public ReconcileJob(
         String jobId,
@@ -123,7 +148,9 @@ public interface ReconcileJobStore {
         CaptureMode captureMode,
         long snapshotsProcessed,
         long statsProcessed,
-        ReconcileScope scope) {
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String executorId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -139,6 +166,9 @@ public interface ReconcileJobStore {
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
+      this.executionPolicy =
+          executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+      this.executorId = executorId == null ? "" : executorId;
     }
   }
 
@@ -149,7 +179,10 @@ public interface ReconcileJobStore {
     public final boolean fullRescan;
     public final CaptureMode captureMode;
     public final ReconcileScope scope;
+    public final ReconcileExecutionPolicy executionPolicy;
     public final String leaseEpoch;
+    public final String pinnedExecutorId;
+    public final String executorId;
 
     public LeasedJob(
         String jobId,
@@ -158,14 +191,21 @@ public interface ReconcileJobStore {
         boolean fullRescan,
         CaptureMode captureMode,
         ReconcileScope scope,
-        String leaseEpoch) {
+        ReconcileExecutionPolicy executionPolicy,
+        String leaseEpoch,
+        String pinnedExecutorId,
+        String executorId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
       this.fullRescan = fullRescan;
       this.captureMode = captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode;
       this.scope = scope == null ? ReconcileScope.empty() : scope;
+      this.executionPolicy =
+          executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
       this.leaseEpoch = leaseEpoch == null ? "" : leaseEpoch;
+      this.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId;
+      this.executorId = executorId == null ? "" : executorId;
     }
   }
 
@@ -190,6 +230,64 @@ public interface ReconcileJobStore {
       this.running = Math.max(0L, running);
       this.cancelling = Math.max(0L, cancelling);
       this.oldestQueuedCreatedAtMs = Math.max(0L, oldestQueuedCreatedAtMs);
+    }
+  }
+
+  final class LeaseRequest {
+    public final Set<ReconcileExecutionClass> executionClasses;
+    public final Set<String> lanes;
+    public final Set<String> executorIds;
+
+    public LeaseRequest(
+        Set<ReconcileExecutionClass> executionClasses, Set<String> lanes, Set<String> executorIds) {
+      this.executionClasses =
+          executionClasses == null
+              ? Set.of()
+              : EnumSet.copyOf(
+                  executionClasses.isEmpty()
+                      ? EnumSet.noneOf(ReconcileExecutionClass.class)
+                      : executionClasses);
+      this.lanes =
+          lanes == null
+              ? Set.of()
+              : lanes.stream()
+                  .map(lane -> lane == null ? "" : lane.trim())
+                  .collect(java.util.stream.Collectors.toUnmodifiableSet());
+      this.executorIds =
+          executorIds == null
+              ? Set.of()
+              : executorIds.stream()
+                  .map(executorId -> executorId == null ? "" : executorId.trim())
+                  .filter(executorId -> !executorId.isEmpty())
+                  .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    public static LeaseRequest all() {
+      return new LeaseRequest(Set.of(), Set.of(), Set.of());
+    }
+
+    public static LeaseRequest of(
+        Set<ReconcileExecutionClass> executionClasses, Set<String> lanes) {
+      return new LeaseRequest(executionClasses, lanes, Set.of());
+    }
+
+    public static LeaseRequest of(
+        Set<ReconcileExecutionClass> executionClasses, Set<String> lanes, Set<String> executorIds) {
+      return new LeaseRequest(executionClasses, lanes, executorIds);
+    }
+
+    public boolean matches(ReconcileExecutionPolicy policy, String pinnedExecutorId) {
+      ReconcileExecutionPolicy effective =
+          policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+      boolean classMatches =
+          executionClasses.isEmpty() || executionClasses.contains(effective.executionClass());
+      boolean laneMatches = lanes.isEmpty() || lanes.contains(effective.lane());
+      String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
+      boolean executorMatches =
+          effectivePinnedExecutorId.isEmpty()
+              || executorIds.isEmpty()
+              || executorIds.contains(effectivePinnedExecutorId);
+      return classMatches && laneMatches && executorMatches;
     }
   }
 }

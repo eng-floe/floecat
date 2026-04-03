@@ -24,6 +24,8 @@ import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -183,7 +185,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             connectorId.getId(),
                             request.getFullRescan(),
                             mapCaptureMode(request.getMode()),
-                            scopeFromRequest(request));
+                            scopeFromRequest(request),
+                            executionPolicyFromRequest(request),
+                            "");
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.START_CAPTURE,
                         "start_capture",
@@ -249,6 +253,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         .setSnapshotsProcessed(job.snapshotsProcessed)
                         .setStatsProcessed(job.statsProcessed)
                         .setDurationMs(durationMs(job))
+                        .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
+                        .setExecutorId(job.executorId)
                         .build();
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
@@ -597,6 +603,41 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setSnapshotsProcessed(job.snapshotsProcessed)
         .setStatsProcessed(job.statsProcessed)
         .setDurationMs(durationMs(job))
+        .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
+        .setExecutorId(job.executorId)
+        .build();
+  }
+
+  private static ReconcileExecutionPolicy executionPolicyFromRequest(StartCaptureRequest request) {
+    if (request == null || !request.hasExecutionPolicy()) {
+      return ReconcileExecutionPolicy.defaults();
+    }
+    var policy = request.getExecutionPolicy();
+    return ReconcileExecutionPolicy.of(
+        switch (policy.getExecutionClass()) {
+          case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
+          case EC_BATCH -> ReconcileExecutionClass.BATCH;
+          case EC_HEAVY -> ReconcileExecutionClass.HEAVY;
+          case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
+        },
+        policy.getLane(),
+        policy.getAttributesMap());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
+      ReconcileExecutionPolicy policy) {
+    ReconcileExecutionPolicy effective =
+        policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+    return ai.floedb.floecat.reconciler.rpc.ExecutionPolicy.newBuilder()
+        .setExecutionClass(
+            switch (effective.executionClass()) {
+              case INTERACTIVE -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_INTERACTIVE;
+              case BATCH -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_BATCH;
+              case HEAVY -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_HEAVY;
+              case DEFAULT -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_DEFAULT;
+            })
+        .setLane(effective.lane())
+        .putAllAttributes(effective.attributes())
         .build();
   }
 
