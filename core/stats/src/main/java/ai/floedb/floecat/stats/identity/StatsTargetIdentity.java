@@ -151,13 +151,19 @@ public final class StatsTargetIdentity {
   }
 
   public static StatsTarget fileTarget(String filePath) {
+    String normalized = filePath(filePath);
+    return StatsTarget.newBuilder()
+        .setFile(FileStatsTarget.newBuilder().setFilePath(normalized).build())
+        .build();
+  }
+
+  /** Canonical file-path normalization for file stats targets. */
+  public static String filePath(String filePath) {
     String normalized = Objects.requireNonNull(filePath, "filePath").trim();
     if (normalized.isEmpty()) {
       throw new IllegalArgumentException("filePath must not be blank");
     }
-    return StatsTarget.newBuilder()
-        .setFile(FileStatsTarget.newBuilder().setFilePath(normalized).build())
-        .build();
+    return normalized;
   }
 
   public static StatsTarget expressionTarget(EngineExpressionStatsTarget target) {

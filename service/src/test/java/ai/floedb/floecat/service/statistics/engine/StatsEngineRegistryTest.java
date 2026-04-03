@@ -71,7 +71,8 @@ class StatsEngineRegistryTest {
             1,
             StatsEngineCapabilities.builder()
                 .targetTypes(Set.of(StatsTargetType.COLUMN))
-                .statisticKinds(Set.of(StatsStatisticKind.NDV))
+                .statisticKindsByTarget(
+                    Map.of(StatsTargetType.COLUMN, Set.of(StatsStatisticKind.NDV)))
                 .executionModes(Set.of(StatsExecutionMode.SYNC))
                 .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                 .snapshotAware(true)
@@ -105,7 +106,8 @@ class StatsEngineRegistryTest {
             1,
             StatsEngineCapabilities.builder()
                 .targetTypes(Set.of(StatsTargetType.COLUMN))
-                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .statisticKindsByTarget(
+                    Map.of(StatsTargetType.COLUMN, Set.of(StatsStatisticKind.ROW_COUNT)))
                 .executionModes(Set.of(StatsExecutionMode.SYNC))
                 .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                 .snapshotAware(true)
@@ -117,7 +119,8 @@ class StatsEngineRegistryTest {
             2,
             StatsEngineCapabilities.builder()
                 .targetTypes(Set.of(StatsTargetType.FILE))
-                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .statisticKindsByTarget(
+                    Map.of(StatsTargetType.FILE, Set.of(StatsStatisticKind.ROW_COUNT)))
                 .executionModes(Set.of(StatsExecutionMode.SYNC))
                 .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                 .snapshotAware(true)
@@ -139,7 +142,8 @@ class StatsEngineRegistryTest {
             1,
             StatsEngineCapabilities.builder()
                 .targetTypes(Set.of(StatsTargetType.TABLE))
-                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .statisticKindsByTarget(
+                    Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
                 .executionModes(Set.of(StatsExecutionMode.SYNC))
                 .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                 .snapshotAware(false)
@@ -173,7 +177,8 @@ class StatsEngineRegistryTest {
             1,
             StatsEngineCapabilities.builder()
                 .targetTypes(Set.of(StatsTargetType.TABLE))
-                .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+                .statisticKindsByTarget(
+                    Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
                 .executionModes(Set.of(StatsExecutionMode.SYNC))
                 .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                 .snapshotAware(false)
@@ -201,7 +206,7 @@ class StatsEngineRegistryTest {
   private static StatsEngineCapabilities tableOnlyCaps() {
     return StatsEngineCapabilities.builder()
         .targetTypes(Set.of(StatsTargetType.TABLE))
-        .statisticKinds(Set.of(StatsStatisticKind.ROW_COUNT))
+        .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
         .executionModes(Set.of(StatsExecutionMode.SYNC))
         .samplingSupport(Set.of(StatsSamplingSupport.NONE))
         .snapshotAware(true)

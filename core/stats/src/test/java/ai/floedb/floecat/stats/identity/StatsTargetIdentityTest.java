@@ -99,4 +99,10 @@ class StatsTargetIdentityTest {
             StatsTargetIdentity.identityHashHex(
                 StatsTargetIdentity.fileTarget("/data/file.parquet")));
   }
+
+  @Test
+  void filePathNormalizesWhitespace() {
+    assertThat(StatsTargetIdentity.filePath(" /data/file.parquet "))
+        .isEqualTo("/data/file.parquet");
+  }
 }

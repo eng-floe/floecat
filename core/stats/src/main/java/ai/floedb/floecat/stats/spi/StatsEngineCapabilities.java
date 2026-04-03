@@ -16,32 +16,44 @@
 
 package ai.floedb.floecat.stats.spi;
 
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /** Capability descriptor for a stats capture engine. */
 public record StatsEngineCapabilities(
     Set<String> connectors,
     Set<StatsTargetType> targetTypes,
-    Set<StatsStatisticKind> statisticKinds,
+    Map<StatsTargetType, Set<StatsStatisticKind>> statisticKindsByTarget,
     Set<StatsExecutionMode> executionModes,
     Set<StatsSamplingSupport> samplingSupport,
     boolean snapshotAware) {
 
   public StatsEngineCapabilities {
-    connectors = Set.copyOf(Objects.requireNonNull(connectors, "connectors"));
+    connectors = normalizeConnectors(connectors);
     targetTypes = Set.copyOf(Objects.requireNonNull(targetTypes, "targetTypes"));
-    statisticKinds = Set.copyOf(Objects.requireNonNull(statisticKinds, "statisticKinds"));
+    statisticKindsByTarget = normalizeStatisticKindsByTarget(statisticKindsByTarget);
+    if (!targetTypes.containsAll(statisticKindsByTarget.keySet())) {
+      throw new IllegalArgumentException(
+          "statisticKindsByTarget contains target types not declared in targetTypes");
+    }
+    if (!statisticKindsByTarget.keySet().containsAll(targetTypes)) {
+      throw new IllegalArgumentException(
+          "statisticKindsByTarget must declare supported kinds for each targetType");
+    }
     executionModes = Set.copyOf(Objects.requireNonNull(executionModes, "executionModes"));
     samplingSupport = Set.copyOf(Objects.requireNonNull(samplingSupport, "samplingSupport"));
   }
 
   public boolean supports(StatsCaptureRequest request) {
     Objects.requireNonNull(request, "request");
+    StatsTargetType targetType = StatsTargetType.from(request.target());
     if (request.snapshotId() > 0L && !snapshotAware) {
       return false;
     }
-    if (!targetTypes.contains(StatsTargetType.from(request.target()))) {
+    if (!targetTypes.contains(targetType)) {
       return false;
     }
     if (!executionModes.contains(request.executionMode())) {
@@ -53,13 +65,17 @@ public record StatsEngineCapabilities(
       return false;
     }
     if (!request.requestedKinds().isEmpty()
-        && !statisticKinds.containsAll(request.requestedKinds())) {
+        && !supportedKindsFor(targetType).containsAll(request.requestedKinds())) {
       return false;
     }
     if (request.samplingRequested() && samplingSupport.equals(Set.of(StatsSamplingSupport.NONE))) {
       return false;
     }
     return true;
+  }
+
+  public Set<StatsStatisticKind> supportedKindsFor(StatsTargetType targetType) {
+    return statisticKindsByTarget.getOrDefault(Objects.requireNonNull(targetType), Set.of());
   }
 
   public static Builder builder() {
@@ -69,7 +85,7 @@ public record StatsEngineCapabilities(
   public static final class Builder {
     private Set<String> connectors = Set.of();
     private Set<StatsTargetType> targetTypes = Set.of();
-    private Set<StatsStatisticKind> statisticKinds = Set.of();
+    private Map<StatsTargetType, Set<StatsStatisticKind>> statisticKindsByTarget = Map.of();
     private Set<StatsExecutionMode> executionModes = Set.of(StatsExecutionMode.SYNC);
     private Set<StatsSamplingSupport> samplingSupport = Set.of(StatsSamplingSupport.NONE);
     private boolean snapshotAware = true;
@@ -77,7 +93,7 @@ public record StatsEngineCapabilities(
     private Builder() {}
 
     public Builder connectors(Set<String> connectors) {
-      this.connectors = Set.copyOf(connectors);
+      this.connectors = normalizeConnectors(connectors);
       return this;
     }
 
@@ -86,8 +102,9 @@ public record StatsEngineCapabilities(
       return this;
     }
 
-    public Builder statisticKinds(Set<StatsStatisticKind> statisticKinds) {
-      this.statisticKinds = Set.copyOf(statisticKinds);
+    public Builder statisticKindsByTarget(
+        Map<StatsTargetType, Set<StatsStatisticKind>> statisticKindsByTarget) {
+      this.statisticKindsByTarget = normalizeStatisticKindsByTarget(statisticKindsByTarget);
       return this;
     }
 
@@ -108,7 +125,32 @@ public record StatsEngineCapabilities(
 
     public StatsEngineCapabilities build() {
       return new StatsEngineCapabilities(
-          connectors, targetTypes, statisticKinds, executionModes, samplingSupport, snapshotAware);
+          connectors,
+          targetTypes,
+          statisticKindsByTarget,
+          executionModes,
+          samplingSupport,
+          snapshotAware);
     }
+  }
+
+  private static Set<String> normalizeConnectors(Set<String> connectors) {
+    return Set.copyOf(
+        Objects.requireNonNull(connectors, "connectors").stream()
+            .map(Objects::requireNonNull)
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .map(s -> s.toLowerCase(Locale.ROOT))
+            .collect(Collectors.toSet()));
+  }
+
+  private static Map<StatsTargetType, Set<StatsStatisticKind>> normalizeStatisticKindsByTarget(
+      Map<StatsTargetType, Set<StatsStatisticKind>> statisticKindsByTarget) {
+    return Map.copyOf(
+        Objects.requireNonNull(statisticKindsByTarget, "statisticKindsByTarget").entrySet().stream()
+            .collect(
+                Collectors.toMap(
+                    e -> Objects.requireNonNull(e.getKey(), "targetType"),
+                    e -> Set.copyOf(Objects.requireNonNull(e.getValue(), "statisticKinds")))));
   }
 }

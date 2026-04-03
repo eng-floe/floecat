@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStats;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
@@ -40,19 +41,26 @@ import java.util.Set;
 public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
 
   private static final String ENGINE_ID = "persisted_stats";
+  private static final Set<StatsStatisticKind> TABLE_STATISTIC_KINDS =
+      Set.of(
+          StatsStatisticKind.ROW_COUNT,
+          StatsStatisticKind.FILE_COUNT,
+          StatsStatisticKind.TOTAL_BYTES);
+  private static final Set<StatsStatisticKind> VALUE_STATISTIC_KINDS =
+      Set.of(
+          StatsStatisticKind.NULL_COUNT,
+          StatsStatisticKind.NDV,
+          StatsStatisticKind.MIN_MAX,
+          StatsStatisticKind.HISTOGRAM);
   private static final StatsEngineCapabilities CAPABILITIES =
       StatsEngineCapabilities.builder()
           .connectors(Set.of()) // empty = all connectors
           .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN, StatsTargetType.FILE))
-          .statisticKinds(
-              Set.of(
-                  StatsStatisticKind.ROW_COUNT,
-                  StatsStatisticKind.FILE_COUNT,
-                  StatsStatisticKind.TOTAL_BYTES,
-                  StatsStatisticKind.NULL_COUNT,
-                  StatsStatisticKind.NDV,
-                  StatsStatisticKind.MIN_MAX,
-                  StatsStatisticKind.HISTOGRAM))
+          .statisticKindsByTarget(
+              Map.of(
+                  StatsTargetType.TABLE, TABLE_STATISTIC_KINDS,
+                  StatsTargetType.COLUMN, VALUE_STATISTIC_KINDS,
+                  StatsTargetType.FILE, VALUE_STATISTIC_KINDS))
           .executionModes(Set.of(StatsExecutionMode.SYNC, StatsExecutionMode.ASYNC))
           .samplingSupport(Set.of(StatsSamplingSupport.NONE))
           .snapshotAware(true)
@@ -94,6 +102,9 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
 
   private Optional<StatsCaptureResult> captureTable(
       StatsCaptureRequest request, StatsTarget target) {
+    if (!supportsRequestedKinds(request.requestedKinds(), TABLE_STATISTIC_KINDS)) {
+      return Optional.empty();
+    }
     Optional<TableStats> table =
         statsRepository.getTableStats(request.tableId(), request.snapshotId());
     if (table.isEmpty()) {
@@ -106,6 +117,9 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
 
   private Optional<StatsCaptureResult> captureColumn(
       StatsCaptureRequest request, StatsTarget target) {
+    if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {
+      return Optional.empty();
+    }
     long columnId = target.getColumn().getColumnId();
     Optional<ColumnStats> column =
         statsRepository.getColumnStats(request.tableId(), request.snapshotId(), columnId);
@@ -119,13 +133,23 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
 
   private Optional<StatsCaptureResult> captureFile(
       StatsCaptureRequest request, StatsTarget target) {
-    String filePath = target.getFile().getFilePath();
+    if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {
+      return Optional.empty();
+    }
+    String filePath = StatsTargetIdentity.filePath(target.getFile().getFilePath());
+    StatsTarget normalizedTarget = StatsTargetIdentity.fileTarget(filePath);
     Optional<FileColumnStats> file =
         statsRepository.getFileColumnStats(request.tableId(), request.snapshotId(), filePath);
     if (file.isEmpty()) {
       return Optional.empty();
     }
     return Optional.of(
-        StatsCaptureResult.forFile(ENGINE_ID, target, file.get(), Map.of("source", "repository")));
+        StatsCaptureResult.forFile(
+            ENGINE_ID, normalizedTarget, file.get(), Map.of("source", "repository")));
+  }
+
+  private static boolean supportsRequestedKinds(
+      Set<StatsStatisticKind> requestedKinds, Set<StatsStatisticKind> supportedKinds) {
+    return requestedKinds.isEmpty() || supportedKinds.containsAll(requestedKinds);
   }
 }

@@ -69,10 +69,16 @@ Each `StatsCaptureEngine` advertises:
 
 - supported connectors (`connectors`)
 - supported target types (`TABLE`, `FILE`, `COLUMN`, `EXPRESSION`)
-- supported statistic kinds (`ROW_COUNT`, `NDV`, ...)
+- supported statistic kinds per target (`statisticKindsByTarget`)
 - supported execution modes (`SYNC`, `ASYNC`)
 - sampling support (`NONE`, `RANDOM_ROW_GROUP`, `METADATA_GUIDED`)
 - snapshot awareness
+
+Kind routing note:
+
+- `StatsEngineCapabilities.statisticKindsByTarget` is target-specific.
+- Engine selection checks requested kinds against the map entry for the requested target type.
+- Engines should provide a mapping entry for each declared target type.
 
 `StatsEngineRegistry` uses these capabilities plus `priority()` to select candidate engines in
 order.
@@ -97,6 +103,9 @@ Payload model:
 
 - `StatsCaptureResult` carries a single typed `StatsCaptureValue`.
 - Column and expression payloads share `StatsValueSummary` to avoid duplicated metric schemas.
+- `StatsCaptureRequest` is intentionally target-native: one request resolves one concrete target.
+  Scope-level orchestration may issue multiple requests for a table/snapshot, and engines may still
+  persist additional related records from a single source read when available.
 
 ## How to add a new engine
 
