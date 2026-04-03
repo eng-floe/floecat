@@ -26,6 +26,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 public final class RolePermissions {
   public static final String PLATFORM_ADMIN_ROLE = "platform-admin";
   public static final String INIT_ACCOUNT_ROLE = "init-account";
+  public static final String DELETE_ACCOUNT_ROLE = "delete-account";
   public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
   private static final List<String> READ_PERMS =
       List.of("account.read", "catalog.read", "namespace.read", "table.read", "view.read");
@@ -41,8 +42,10 @@ public final class RolePermissions {
           "view.read",
           "view.write",
           "connector.manage",
-          "system-objects.read");
-  private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
+          "system-objects.read",
+          "account.delete");
+  private static final List<String> PLATFORM_PERMS =
+      List.of("account.read", "account.write", "account.delete");
   private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
@@ -53,6 +56,7 @@ public final class RolePermissions {
           "namespace.read",
           "namespace.write",
           "connector.create");
+  private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
 
   private RolePermissions() {}
 
@@ -82,6 +86,9 @@ public final class RolePermissions {
           break;
         case INIT_ACCOUNT_ROLE:
           perms.addAll(INIT_ACCOUNT_PERMS);
+          break;
+        case DELETE_ACCOUNT_ROLE:
+          perms.addAll(DELETE_ACCOUNT_PERMS);
           break;
         default:
           break;

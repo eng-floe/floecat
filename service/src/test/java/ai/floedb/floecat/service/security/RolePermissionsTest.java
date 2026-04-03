@@ -37,7 +37,8 @@ class RolePermissionsTest {
           "view.read",
           "view.write",
           "connector.manage",
-          "system-objects.read");
+          "system-objects.read",
+          "account.delete");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
           "account.read",
@@ -47,7 +48,9 @@ class RolePermissionsTest {
           "namespace.read",
           "namespace.write",
           "connector.create");
-  private static final List<String> PLATFORM_PERMS = List.of("account.read", "account.write");
+  private static final List<String> DELETE_ACCOUNT_PERMS = List.of("account.delete");
+  private static final List<String> PLATFORM_PERMS =
+      List.of("account.read", "account.write", "account.delete");
 
   @Test
   void defaultRoleGrantsReadPermissions() {
@@ -101,5 +104,13 @@ class RolePermissionsTest {
         RolePermissions.permissionsForRoles(List.of(RolePermissions.INIT_ACCOUNT_ROLE), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(INIT_ACCOUNT_PERMS);
+  }
+
+  @Test
+  void deleteAccountRoleGrantsCleanupPermissions() {
+    var permissions =
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.DELETE_ACCOUNT_ROLE), false);
+
+    assertThat(permissions).containsExactlyInAnyOrderElementsOf(DELETE_ACCOUNT_PERMS);
   }
 }
