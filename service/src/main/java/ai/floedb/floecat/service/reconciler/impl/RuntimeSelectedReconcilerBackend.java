@@ -140,7 +140,8 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
-    return delegate.ensureView(ctx, spec, idempotencyKey);
+  public EnsureViewResult ensureViewDetailed(
+      ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    return delegate.ensureViewDetailed(ctx, spec, idempotencyKey);
   }
 }

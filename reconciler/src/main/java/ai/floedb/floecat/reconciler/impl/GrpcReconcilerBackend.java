@@ -511,20 +511,49 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+  public EnsureViewResult ensureViewDetailed(
+      ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
     CreateViewRequest.Builder request = CreateViewRequest.newBuilder().setSpec(spec);
     if (idempotencyKey != null && !idempotencyKey.isBlank()) {
       request.setIdempotency(IdempotencyKey.newBuilder().setKey(idempotencyKey).build());
     }
     try {
-      return view(ctx).createView(request.build()).getView().getResourceId();
+      ResourceId viewId = view(ctx).createView(request.build()).getView().getResourceId();
+      return new EnsureViewResult(viewId, true);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.ALREADY_EXISTS) {
-        // View already exists without a matching idempotency key; treat as success.
-        return ResourceId.getDefaultInstance();
+        return new EnsureViewResult(resolveExistingViewId(ctx, spec), false);
       }
       throw e;
     }
+  }
+
+  private ResourceId resolveExistingViewId(ReconcileContext ctx, ViewSpec spec) {
+    String normalizedName = NameRefNormalizer.normalizeDisplayName(spec.getDisplayName());
+    String token = "";
+    while (true) {
+      var response =
+          view(ctx)
+              .listViews(
+                  ai.floedb.floecat.catalog.rpc.ListViewsRequest.newBuilder()
+                      .setNamespaceId(spec.getNamespaceId())
+                      .setPage(
+                          PageRequest.newBuilder().setPageSize(200).setPageToken(token).build())
+                      .build());
+      for (var view : response.getViewsList()) {
+        if (normalizedName.equals(NameRefNormalizer.normalizeDisplayName(view.getDisplayName()))) {
+          return view.getResourceId();
+        }
+      }
+      String nextToken = response.getPage().getNextPageToken();
+      if (nextToken == null || nextToken.isBlank()) {
+        break;
+      }
+      token = nextToken;
+    }
+    throw new IllegalStateException(
+        "View already exists but could not be resolved by normalized name: "
+            + spec.getDisplayName());
   }
 
   @Override
@@ -677,13 +706,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
             .setTableDisplayName(descriptor.sourceTable())
             .setFormat(toTableFormat(descriptor.connectorFormat()))
             .setColumnIdAlgorithm(descriptor.columnIdAlgorithm());
-    if (descriptor.sourceNamespace() != null && !descriptor.sourceNamespace().isBlank()) {
-      for (String seg : descriptor.sourceNamespace().split("\\.")) {
-        if (!seg.isBlank()) {
-          builder.addNamespacePath(seg);
-        }
-      }
-    }
+    builder.addAllNamespacePath(
+        NameRefNormalizer.normalizeNamespacePath(descriptor.sourceNamespace()));
     if (descriptor.partitionKeys() != null) {
       builder.addAllPartitionKeys(descriptor.partitionKeys());
     }

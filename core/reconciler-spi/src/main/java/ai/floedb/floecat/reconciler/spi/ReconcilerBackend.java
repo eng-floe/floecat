@@ -78,13 +78,21 @@ public interface ReconcilerBackend {
   /**
    * Creates a view with the given spec if it does not already exist. The idempotency key is used
    * for deduplication across reconciler runs: if a prior call succeeded with the same key, the
-   * existing view is returned without modification. Returns the resource ID of the newly-created
-   * view, or {@link ResourceId#getDefaultInstance()} if the view already exists (idempotent match
-   * or name conflict).
+   * existing view is returned without modification.
    *
    * <p>Note: existing views are <em>not</em> updated on re-sync; this is a create-only operation.
    */
-  ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey);
+  default ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    return ensureViewDetailed(ctx, spec, idempotencyKey).resourceId();
+  }
+
+  EnsureViewResult ensureViewDetailed(ReconcileContext ctx, ViewSpec spec, String idempotencyKey);
+
+  record EnsureViewResult(ResourceId resourceId, boolean created) {
+    public EnsureViewResult {
+      resourceId = resourceId == null ? ResourceId.getDefaultInstance() : resourceId;
+    }
+  }
 
   record TableSpecDescriptor(
       String namespaceFq,

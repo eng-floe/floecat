@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import org.junit.jupiter.api.Test;
 
 class GrpcReconcilerBackendTest {
@@ -184,5 +185,30 @@ class GrpcReconcilerBackendTest {
         .isEqualTo(ForeignKeyMatchOption.FK_MATCH_OPTION_UNSPECIFIED);
     assertThat(emitted.getUpdateRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
     assertThat(emitted.getDeleteRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
+  }
+
+  @Test
+  void normalizeNamespacePathTrimsCollapsesAndDropsBlankSegments() {
+    assertThat(NameRefNormalizer.normalizeNamespacePath("  parent . \u2003 child  .   "))
+        .containsExactly("parent", "child");
+  }
+
+  @Test
+  void normalizeDisplayNameMatchesNameRefNormalization() {
+    assertThat(NameRefNormalizer.normalizeDisplayName("  orders\u2003view  "))
+        .isEqualTo("orders view");
+
+    NameRef normalized =
+        NameRefNormalizer.normalize(
+            NameRef.newBuilder()
+                .setCatalog("  cat  ")
+                .addPath(" parent ")
+                .addPath("\u2003child ")
+                .setName("  orders\u2003view ")
+                .build());
+
+    assertThat(normalized.getCatalog()).isEqualTo("cat");
+    assertThat(normalized.getPathList()).containsExactly("parent", "child");
+    assertThat(normalized.getName()).isEqualTo("orders view");
   }
 }

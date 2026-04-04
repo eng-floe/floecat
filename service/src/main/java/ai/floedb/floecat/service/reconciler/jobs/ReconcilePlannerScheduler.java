@@ -21,6 +21,8 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
@@ -193,6 +195,16 @@ public class ReconcilePlannerScheduler {
     return plannerCursor;
   }
 
+  ReconcileExecutionPolicy autoExecutionPolicy() {
+    var cfg = ConfigProvider.getConfig();
+    return ReconcileExecutionPolicy.of(
+        ReconcileExecutionClass.fromString(
+            cfg.getOptionalValue("floecat.reconciler.auto.execution-class", String.class)
+                .orElse("DEFAULT")),
+        cfg.getOptionalValue("floecat.reconciler.auto.execution-lane", String.class).orElse(""),
+        java.util.Map.of());
+  }
+
   long nowMs() {
     return System.currentTimeMillis();
   }
@@ -235,12 +247,14 @@ public class ReconcilePlannerScheduler {
     }
 
     try {
-      jobs.enqueue(
+      jobs.enqueuePlan(
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),
           fullRescan,
           CaptureMode.METADATA_AND_STATS,
-          ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty());
+          ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+          autoExecutionPolicy(),
+          "");
       lastEnqueueMs.put(key, now);
       observePlannerEnqueue("enqueued", mode, null);
     } catch (RuntimeException e) {

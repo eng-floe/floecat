@@ -31,8 +31,10 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
@@ -82,6 +84,9 @@ class ReconcileExecutorControlImplTest {
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
                     "lease-1",
                     "remote-executor",
+                    "",
+                    ReconcileJobKind.EXEC_CONNECTOR,
+                    ReconcileTableTask.empty(),
                     "")));
 
     var response =

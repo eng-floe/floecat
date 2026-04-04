@@ -30,6 +30,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -131,26 +132,41 @@ public class ReconcilerScheduler {
       return;
     }
     try {
-      ReconcileJobStore.LeaseRequest leaseRequest = executorRegistry.leaseRequest();
       while (reserveWorkerSlot()) {
-        Optional<ReconcileJobStore.LeasedJob> leaseOpt;
+        Optional<LeaseAssignment> assignmentOpt;
         try {
-          leaseOpt = jobs.leaseNext(leaseRequest);
+          assignmentOpt = leaseNextAssignment();
         } catch (Exception e) {
           inFlight.decrementAndGet();
           LOG.errorf(e, "leaseNext() threw unexpectedly; releasing worker slot");
           return;
         }
-        var lease = leaseOpt.orElse(null);
-        if (lease == null) {
+        var assignment = assignmentOpt.orElse(null);
+        if (assignment == null) {
           inFlight.decrementAndGet();
           return;
         }
-        submitLease(lease);
+        submitLease(assignment);
       }
     } finally {
       polling.set(false);
     }
+  }
+
+  private Optional<LeaseAssignment> leaseNextAssignment() {
+    for (ReconcileExecutor executor : executorRegistry.orderedExecutors()) {
+      Optional<ReconcileJobStore.LeasedJob> lease =
+          jobs.leaseNext(
+              ReconcileJobStore.LeaseRequest.of(
+                  executor.supportedExecutionClasses(),
+                  executor.supportedLanes(),
+                  Set.of(executor.id()),
+                  executor.supportedJobKinds()));
+      if (lease.isPresent()) {
+        return Optional.of(new LeaseAssignment(executor, lease.get()));
+      }
+    }
+    return Optional.empty();
   }
 
   private boolean reserveWorkerSlot() {
@@ -165,7 +181,7 @@ public class ReconcilerScheduler {
     }
   }
 
-  private void submitLease(ReconcileJobStore.LeasedJob lease) {
+  private void submitLease(LeaseAssignment assignment) {
     ExecutorService executor = workers;
     if (executor == null) {
       inFlight.decrementAndGet();
@@ -175,7 +191,7 @@ public class ReconcilerScheduler {
       executor.submit(
           () -> {
             try {
-              runLease(lease);
+              runLease(assignment);
             } finally {
               inFlight.decrementAndGet();
             }
@@ -187,6 +203,19 @@ public class ReconcilerScheduler {
   }
 
   void runLease(ReconcileJobStore.LeasedJob lease) {
+    ReconcileExecutor executor =
+        executorRegistry
+            .executorFor(lease)
+            .orElseThrow(
+                () ->
+                    new IllegalStateException(
+                        "No reconcile executor available for lease " + lease.jobId));
+    runLease(new LeaseAssignment(executor, lease));
+  }
+
+  private void runLease(LeaseAssignment assignment) {
+    ReconcileExecutor executor = assignment.executor();
+    ReconcileJobStore.LeasedJob lease = assignment.lease();
     cancellations.register(lease.jobId, Thread.currentThread());
     long started = System.currentTimeMillis();
     long leaseMs =
@@ -208,6 +237,7 @@ public class ReconcilerScheduler {
     boolean[] cancellationRequested = {false};
     AtomicBoolean leaseValid = new AtomicBoolean(true);
     AtomicBoolean interrupted = new AtomicBoolean(false);
+    ProgressSnapshot progress = new ProgressSnapshot();
     BooleanSupplier heartbeat =
         () -> {
           if (!leaseValid.get()) {
@@ -247,13 +277,6 @@ public class ReconcilerScheduler {
       return;
     }
     try {
-      ReconcileExecutor executor =
-          executorRegistry
-              .executorFor(lease)
-              .orElseThrow(
-                  () ->
-                      new IllegalStateException(
-                          "No reconcile executor available for lease " + lease.jobId));
       jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), executor.id());
       jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, "Running reconcile");
       BooleanSupplier shouldStop =
@@ -282,6 +305,8 @@ public class ReconcilerScheduler {
                     if (!heartbeat.getAsBoolean()) {
                       return;
                     }
+                    progress.update(
+                        scanned, changed, errors, snapshotsProcessed, statsProcessed, message);
                     jobs.markProgress(
                         lease.jobId,
                         lease.leaseEpoch,
@@ -378,26 +403,108 @@ public class ReconcilerScheduler {
     } catch (Exception e) {
       if (!leaseValid.get()) {
         long now = System.currentTimeMillis();
-        emitOutcome(lease, "lease_lost", now - started, 0, 0, 0, 0, 0, "lease_lost");
+        emitOutcome(
+            lease,
+            "lease_lost",
+            now - started,
+            progress.scanned,
+            progress.changed,
+            progress.errors,
+            progress.snapshotsProcessed,
+            progress.statsProcessed,
+            "lease_lost");
       } else {
         boolean cancelledOnError = cancelRequested.getAsBoolean();
         if (cancelledOnError) {
           long now = System.currentTimeMillis();
-          jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0);
-          emitOutcome(lease, "cancelled", now - started, 0, 0, 0, 0, 0, null);
+          jobs.markCancelled(
+              lease.jobId,
+              lease.leaseEpoch,
+              now,
+              progress.message.isBlank() ? "Cancelled" : progress.message,
+              progress.scanned,
+              progress.changed,
+              progress.errors,
+              progress.snapshotsProcessed,
+              progress.statsProcessed);
+          emitOutcome(
+              lease,
+              "cancelled",
+              now - started,
+              progress.scanned,
+              progress.changed,
+              progress.errors,
+              progress.snapshotsProcessed,
+              progress.statsProcessed,
+              null);
         } else if (Thread.currentThread().isInterrupted() || interrupted.get()) {
           long now = System.currentTimeMillis();
-          emitOutcome(lease, "interrupted", now - started, 0, 0, 0, 0, 0, "interrupted");
+          emitOutcome(
+              lease,
+              "interrupted",
+              now - started,
+              progress.scanned,
+              progress.changed,
+              progress.errors,
+              progress.snapshotsProcessed,
+              progress.statsProcessed,
+              "interrupted");
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
-          emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e), msg);
+          long errorCount = Math.max(1L, progress.errors);
+          jobs.markFailed(
+              lease.jobId,
+              lease.leaseEpoch,
+              now,
+              msg,
+              progress.scanned,
+              progress.changed,
+              errorCount,
+              progress.snapshotsProcessed,
+              progress.statsProcessed);
+          emitOutcome(
+              lease,
+              "failed",
+              now - started,
+              progress.scanned,
+              progress.changed,
+              errorCount,
+              progress.snapshotsProcessed,
+              progress.statsProcessed,
+              normalizeReason(e),
+              msg);
         }
       }
     } finally {
       cancellations.unregister(lease.jobId, Thread.currentThread());
       Thread.interrupted();
+    }
+  }
+
+  private record LeaseAssignment(ReconcileExecutor executor, ReconcileJobStore.LeasedJob lease) {}
+
+  private static final class ProgressSnapshot {
+    long scanned;
+    long changed;
+    long errors;
+    long snapshotsProcessed;
+    long statsProcessed;
+    String message = "";
+
+    void update(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        String message) {
+      this.scanned = scanned;
+      this.changed = changed;
+      this.errors = errors;
+      this.snapshotsProcessed = snapshotsProcessed;
+      this.statsProcessed = statsProcessed;
+      this.message = message == null ? "" : message;
     }
   }
 

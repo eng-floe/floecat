@@ -70,6 +70,9 @@ public interface FloecatConnector extends Closeable {
     return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
   }
 
+  /** Plans table-scoped reconcile work for this connector. */
+  List<PlannedTableTask> planTableTasks(TablePlanningRequest request);
+
   /**
    * Returns per-snapshot constraints for a table snapshot, if available.
    *
@@ -127,6 +130,38 @@ public interface FloecatConnector extends Closeable {
         boolean includeStatistics, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
           includeStatistics, false, knownSnapshotIds, targetSnapshotIds);
+    }
+  }
+
+  record TablePlanningRequest(
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationNamespaceFq,
+      String destinationTableDisplayHint,
+      List<List<String>> destinationNamespacePaths,
+      String destinationTableDisplayName) {
+    public TablePlanningRequest {
+      destinationNamespacePaths =
+          destinationNamespacePaths == null
+              ? List.of()
+              : destinationNamespacePaths.stream()
+                  .filter(path -> path != null && !path.isEmpty())
+                  .map(List::copyOf)
+                  .toList();
+    }
+  }
+
+  record PlannedTableTask(
+      String sourceNamespaceFq, String sourceTable, String destinationTableDisplayName) {
+    public PlannedTableTask {
+      sourceNamespaceFq = sourceNamespaceFq == null ? "" : sourceNamespaceFq;
+      sourceTable = sourceTable == null ? "" : sourceTable;
+      destinationTableDisplayName =
+          destinationTableDisplayName == null ? "" : destinationTableDisplayName;
+    }
+
+    public PlannedTableTask(String sourceNamespaceFq, String sourceTable) {
+      this(sourceNamespaceFq, sourceTable, "");
     }
   }
 

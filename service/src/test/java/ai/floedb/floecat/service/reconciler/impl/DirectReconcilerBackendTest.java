@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -26,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -45,6 +47,7 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
+import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -65,6 +68,7 @@ class DirectReconcilerBackendTest {
   private FakeCatalogRepository catalogRepo;
   private FakeNamespaceRepository namespaceRepo;
   private FakeTableRepository tableRepo;
+  private FakeViewRepository viewRepo;
   private SnapshotTestSupport.FakeSnapshotRepository snapshotRepo;
   private StatsRepository statsRepository;
   private SnapshotHelper snapshotHelper;
@@ -81,6 +85,7 @@ class DirectReconcilerBackendTest {
     catalogRepo = new FakeCatalogRepository();
     namespaceRepo = new FakeNamespaceRepository();
     tableRepo = new FakeTableRepository();
+    viewRepo = new FakeViewRepository();
     snapshotRepo = new SnapshotTestSupport.FakeSnapshotRepository();
     statsRepository =
         StatsRepository.forTesting(new InMemoryPointerStore(), new InMemoryBlobStore(), 64, 200, 5);
@@ -91,6 +96,7 @@ class DirectReconcilerBackendTest {
     backend.catalogRepo = catalogRepo;
     backend.namespaceRepo = namespaceRepo;
     backend.tableRepo = tableRepo;
+    backend.viewRepo = viewRepo;
     backend.snapshotRepo = snapshotRepo;
     backend.statsRepository = statsRepository;
     backend.snapshotHelper = snapshotHelper;
@@ -161,6 +167,7 @@ class DirectReconcilerBackendTest {
     assertThat(table.getDisplayName()).isEqualTo("orders");
     assertThat(table.getSchemaJson()).isEqualTo("{}");
     assertThat(table.getUpstream().getConnectorId().getId()).isEqualTo(connectorId.getId());
+    assertThat(table.getUpstream().getNamespacePathList()).containsExactly("source", "ns");
   }
 
   @Test
@@ -240,6 +247,103 @@ class DirectReconcilerBackendTest {
 
     Table updated = tableRepo.getById(tableId).orElseThrow();
     assertThat(updated).isEqualTo(before);
+  }
+
+  @Test
+  void ensureTableValidatesNormalizedDisplayName() {
+    TableSpecDescriptor invalidDescriptor =
+        new TableSpecDescriptor(
+            "parent",
+            "\u2003\u2003",
+            "{}",
+            Map.of(),
+            List.of(),
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            ConnectorFormat.CF_ICEBERG,
+            connectorId,
+            "uri",
+            "source.ns",
+            "source_table");
+
+    assertThatThrownBy(
+            () -> backend.ensureTable(ctx, namespaceId, referenceNameRef(), invalidDescriptor))
+        .isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void ensureViewReturnsExistingResourceIdWithoutMarkingCreated() {
+    var spec =
+        ai.floedb.floecat.catalog.rpc.ViewSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .setSql("select 1")
+            .setDialect("spark")
+            .addOutputColumns(
+                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder().setName("c1").setOrdinal(1))
+            .build();
+
+    ResourceId existingId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT)
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("view-1")
+            .build();
+    viewRepo.put(
+        View.newBuilder()
+            .setResourceId(existingId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders_view")
+            .setSql("select 1")
+            .setDialect("spark")
+            .addOutputColumns(
+                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder().setName("c1").setOrdinal(1))
+            .build(),
+        MutationMeta.newBuilder().setPointerVersion(1).setEtag("v1").build());
+
+    var existing = backend.ensureViewDetailed(ctx, spec, "parent.child.orders_view");
+
+    assertThat(existing.created()).isFalse();
+    assertThat(existing.resourceId()).isEqualTo(existingId);
+  }
+
+  @Test
+  void ensureViewMatchesExistingIdUsingSharedNormalization() {
+    var spec =
+        ai.floedb.floecat.catalog.rpc.ViewSpec.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("  orders\u2003view  ")
+            .setSql("select 1")
+            .setDialect("spark")
+            .addOutputColumns(
+                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder().setName("c1").setOrdinal(1))
+            .build();
+
+    ResourceId existingId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT)
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("view-normalized")
+            .build();
+    viewRepo.put(
+        View.newBuilder()
+            .setResourceId(existingId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders view")
+            .setSql("select 1")
+            .setDialect("spark")
+            .addOutputColumns(
+                ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder().setName("c1").setOrdinal(1))
+            .build(),
+        MutationMeta.newBuilder().setPointerVersion(1).setEtag("v1").build());
+
+    var existing = backend.ensureViewDetailed(ctx, spec, "parent.child.orders_view");
+
+    assertThat(existing.created()).isFalse();
+    assertThat(existing.resourceId()).isEqualTo(existingId);
   }
 
   @Test

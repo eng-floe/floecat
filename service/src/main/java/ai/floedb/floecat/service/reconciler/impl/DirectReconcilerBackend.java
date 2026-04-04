@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
@@ -159,8 +160,8 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
                         corrId, NAMESPACE, Map.of("namespace_id", namespaceId.getId())));
 
     var catalogId = namespace.getCatalogId();
-    String displayName = mustNonEmpty(descriptor.displayName(), "table.display_name", corrId);
-    String normalized = normalizeName(displayName);
+    String normalized =
+        mustNonEmpty(normalizeName(descriptor.displayName()), "table.display_name", corrId);
     Map<String, String> properties =
         descriptor.properties() != null ? descriptor.properties() : Map.of();
     List<String> partitionKeys =
@@ -197,7 +198,8 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+  public EnsureViewResult ensureViewDetailed(
+      ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
     String corrId = ctx.correlationId();
     String accountId = ctx.principal().getAccountId();
     var namespace =
@@ -209,11 +211,11 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
                         corrId, NAMESPACE, Map.of("namespace_id", spec.getNamespaceId().getId())));
     String catalogId = namespace.getCatalogId().getId();
     String namespaceId = spec.getNamespaceId().getId();
-    String normalized = normalizeName(spec.getDisplayName());
+    String normalized = NameRefNormalizer.normalizeDisplayName(spec.getDisplayName());
 
     var existing = viewRepo.getByName(accountId, catalogId, namespaceId, normalized);
     if (existing.isPresent()) {
-      return ResourceId.getDefaultInstance(); // already exists — idempotent
+      return new EnsureViewResult(existing.get().getResourceId(), false);
     }
 
     var view =
@@ -230,7 +232,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
             .putAllProperties(spec.getPropertiesMap())
             .build();
     viewRepo.create(view);
-    return view.getResourceId();
+    return new EnsureViewResult(view.getResourceId(), true);
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor, List<String> partitionKeys) {
@@ -242,13 +244,8 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
             .setFormat(toTableFormat(descriptor.connectorFormat()))
             .setColumnIdAlgorithm(descriptor.columnIdAlgorithm());
 
-    if (descriptor.sourceNamespace() != null && !descriptor.sourceNamespace().isBlank()) {
-      for (String seg : descriptor.sourceNamespace().split("\\.")) {
-        if (!seg.isBlank()) {
-          builder.addNamespacePath(seg);
-        }
-      }
-    }
+    builder.addAllNamespacePath(
+        NameRefNormalizer.normalizeNamespacePath(descriptor.sourceNamespace()));
     builder.addAllPartitionKeys(partitionKeys);
     return builder.build();
   }
@@ -258,13 +255,12 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     if (tableRef == null) {
       return Optional.empty();
     }
+    NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
     String accountId = ctx.principal().getAccountId();
-    String catalogName = tableRef.getCatalog();
+    String catalogName = normalizedTable.getCatalog();
     if (catalogName == null || catalogName.isBlank()) {
       return Optional.empty();
     }
-
-    catalogName = normalizeName(catalogName);
 
     var catalogOpt = catalogRepo.getByName(accountId, catalogName);
     if (catalogOpt.isEmpty()) {
@@ -272,7 +268,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     }
     String catalogId = catalogOpt.get().getResourceId().getId();
 
-    List<String> path = new ArrayList<>(normalizedSegments(tableRef.getPathList()));
+    List<String> path = new ArrayList<>(normalizedTable.getPathList());
     if (path.isEmpty()) {
       return Optional.empty();
     }
@@ -283,13 +279,12 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
     }
     ResourceId namespaceId = namespaceOpt.get().getResourceId();
 
-    String tableName = tableRef.getName();
+    String tableName = normalizedTable.getName();
     if (tableName == null || tableName.isBlank()) {
       return Optional.empty();
     }
-    String normalized = normalizeName(tableName);
 
-    var table = tableRepo.getByName(accountId, catalogId, namespaceId.getId(), normalized);
+    var table = tableRepo.getByName(accountId, catalogId, namespaceId.getId(), tableName);
     return table.map(Table::getResourceId);
   }
 

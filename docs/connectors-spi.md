@@ -15,6 +15,8 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
   - `format()` → `ConnectorFormat` (ICEBERG, DELTA, etc.).
   - `listNamespaces()`.
   - `listTables(namespaceFq)`.
+  - `planTableTasks(...)` → connector-owned planning hook that emits table-scoped reconcile work.
+    Connectors are responsible for upstream table discovery and scope application during planning.
   - `describe(namespaceFq, tableName)` → `TableDescriptor` with location, schema JSON, partition
     keys, and properties.
   - `enumerateSnapshotsWithStats(...)` → `SnapshotBundle`s containing per-snapshot table/column/file stats.
@@ -98,6 +100,7 @@ interface FloecatConnector extends Closeable {
   ConnectorFormat format();
   List<String> listNamespaces();
   List<String> listTables(String namespaceFq);
+  List<PlannedTableTask> planTableTasks(TablePlanningRequest request);
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshotsWithStats(...);
 }
@@ -139,14 +142,15 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
 ```
 ConnectorFactory.create(ConnectorConfig)
   → FloecatConnector (opens upstream clients, auth providers)
-      → listNamespaces/listTables → service repo ensures namespace/table existence
+      → planTableTasks/listTables → reconciler derives executable table tasks
       → describe → Table specs persisted with upstream references
       → enumerateSnapshotsWithStats → StatsRepository writes Table/Column/File stats per snapshot
   ← close() cleans up HTTP/S3/DB connections
 ```
 `ConnectorFactory.create` is invoked both in `ConnectorsImpl.validate` (short-lived) and in the
 reconciler (long-running); connectors must tolerate repeated instantiation and release resources in
-`close()`.
+`close()`. Planning is now part of the connector contract rather than reconciler-owned fallback
+logic.
 
 ## Configuration & Extensibility
 - To add a new connector type, implement `FloecatConnector` plus a factory and annotate it so CDI can
@@ -160,8 +164,9 @@ reconciler (long-running); connectors must tolerate repeated instantiation and r
   from RPC input, invokes `ConnectorFactory.create`, calls `listNamespaces()` to ensure the upstream
   responds, then closes the connector.
 - **Reconciliation run** – `ReconcilerService` constructs a connector inside a try-with-resources
-  block, iterates `listTables`, calls `enumerateSnapshotsWithStats`, and writes the returned
-  `SnapshotBundle`s (table stats + column stats) through the service’s gRPC API.
+  block, asks the connector to plan table tasks, then executes each task by calling
+  `describe` and `enumerateSnapshotsWithStats`, writing the returned `SnapshotBundle`s (table
+  stats + column stats) through the service’s gRPC API.
 - **Query lifecycle** – `QueryService.FetchScanBundle` fetch file lists pinned to the requested snapshot
 directly from table and file statistics stored in the catalog (via TableStatisticsService).
 

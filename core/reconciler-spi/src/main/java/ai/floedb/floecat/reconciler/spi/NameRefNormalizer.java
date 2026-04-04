@@ -32,16 +32,31 @@ public final class NameRefNormalizer {
     if (ref.hasResourceId()) {
       builder.setResourceId(ref.getResourceId());
     }
-    String catalog = normalizeSegment(ref.getCatalog());
+    String catalog = normalizeDisplayName(ref.getCatalog());
     if (!catalog.isBlank()) {
       builder.setCatalog(catalog);
     }
     builder.addAllPath(normalizePath(ref.getPathList()));
-    String name = normalizeSegment(ref.getName());
+    String name = normalizeDisplayName(ref.getName());
     if (!name.isBlank()) {
       builder.setName(name);
     }
     return builder.build();
+  }
+
+  public static String normalizeDisplayName(String input) {
+    if (input == null) {
+      return "";
+    }
+    String normalized = Normalizer.normalize(input.strip(), Normalizer.Form.NFKC);
+    return normalized.replaceAll("\\s+", " ");
+  }
+
+  public static List<String> normalizeNamespacePath(String namespaceFq) {
+    if (namespaceFq == null || namespaceFq.isBlank()) {
+      return List.of();
+    }
+    return normalizePath(List.of(namespaceFq.split("\\.")));
   }
 
   private static List<String> normalizePath(List<String> segments) {
@@ -53,19 +68,11 @@ public final class NameRefNormalizer {
       if (segment == null) {
         continue;
       }
-      String value = normalizeSegment(segment);
+      String value = normalizeDisplayName(segment);
       if (!value.isBlank()) {
         normalized.add(value);
       }
     }
     return normalized;
-  }
-
-  private static String normalizeSegment(String input) {
-    if (input == null) {
-      return "";
-    }
-    String normalized = Normalizer.normalize(input.trim(), Normalizer.Form.NFKC);
-    return normalized.replaceAll("\\s+", " ");
   }
 }

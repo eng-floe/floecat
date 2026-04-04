@@ -26,8 +26,10 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -62,9 +64,11 @@ import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -180,13 +184,13 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                     Map.of("id", connectorId.getId())));
 
                     var jobId =
-                        jobs.enqueue(
+                        jobs.enqueuePlan(
                             connectorId.getAccountId(),
                             connectorId.getId(),
                             request.getFullRescan(),
                             mapCaptureMode(request.getMode()),
                             scopeFromRequest(request),
-                            executionPolicyFromRequest(request),
+                            mapExecutionPolicy(request.getExecutionPolicy()),
                             "");
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.START_CAPTURE,
@@ -233,29 +237,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                                         correlationId,
                                         GeneratedErrorMessages.MessageKey.JOB,
                                         Map.of("id", request.getJobId())));
+                    job = aggregateIfPlanJob(principalContext.getAccountId(), job);
 
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB, "get_reconcile_job", "success", null);
-                    return GetReconcileJobResponse.newBuilder()
-                        .setJobId(job.jobId)
-                        .setConnectorId(job.connectorId)
-                        .setState(toProtoState(job.state))
-                        .setMessage(job.message == null ? "" : job.message)
-                        .setStartedAt(Timestamps.fromMillis(job.startedAtMs))
-                        .setFinishedAt(
-                            job.finishedAtMs == 0
-                                ? Timestamps.fromMillis(0)
-                                : Timestamps.fromMillis(job.finishedAtMs))
-                        .setTablesScanned(job.tablesScanned)
-                        .setTablesChanged(job.tablesChanged)
-                        .setErrors(job.errors)
-                        .setFullRescan(job.fullRescan)
-                        .setSnapshotsProcessed(job.snapshotsProcessed)
-                        .setStatsProcessed(job.statsProcessed)
-                        .setDurationMs(durationMs(job))
-                        .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
-                        .setExecutorId(job.executorId)
-                        .build();
+                    return toResponse(job);
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
                         ServiceMetrics.Reconcile.GET_JOB,
@@ -304,7 +290,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         ServiceMetrics.Reconcile.LIST_JOBS, "list_reconcile_jobs", "success", null);
                     var builder = ListReconcileJobsResponse.newBuilder();
                     for (var job : page.jobs) {
-                      builder.addJobs(toResponse(job));
+                      builder.addJobs(
+                          toResponse(aggregateIfPlanJob(principalContext.getAccountId(), job)));
                     }
                     builder.setPage(
                         PageResponse.newBuilder()
@@ -349,6 +336,17 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                           GeneratedErrorMessages.MessageKey.JOB,
                           Map.of("id", request.getJobId()));
                     }
+                    var cancelledJob = cancelled.get();
+                    cancelChildJobs(
+                        principalContext.getAccountId(), cancelledJob, request.getReason());
+                    cancelled =
+                        jobs.get(principalContext.getAccountId(), request.getJobId())
+                            .map(job -> aggregateIfPlanJob(principalContext.getAccountId(), job))
+                            .or(
+                                () ->
+                                    Optional.of(
+                                        aggregateIfPlanJob(
+                                            principalContext.getAccountId(), cancelledJob)));
                     if ("JS_CANCELLING".equals(cancelled.get().state)) {
                       cancellations.requestCancel(cancelled.get().jobId);
                     }
@@ -510,6 +508,39 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return request == null ? ReconcileScope.empty() : scopeFromCaptureScope(request.getScope());
   }
 
+  private static ReconcileExecutionPolicy mapExecutionPolicy(
+      ai.floedb.floecat.reconciler.rpc.ExecutionPolicy policy) {
+    if (policy == null) {
+      return ReconcileExecutionPolicy.defaults();
+    }
+    return ReconcileExecutionPolicy.of(
+        switch (policy.getExecutionClass()) {
+          case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
+          case EC_BATCH -> ReconcileExecutionClass.BATCH;
+          case EC_HEAVY -> ReconcileExecutionClass.HEAVY;
+          case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
+        },
+        policy.getLane(),
+        policy.getAttributesMap());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
+      ReconcileExecutionPolicy policy) {
+    ReconcileExecutionPolicy effective =
+        policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+    return ai.floedb.floecat.reconciler.rpc.ExecutionPolicy.newBuilder()
+        .setExecutionClass(
+            switch (effective.executionClass()) {
+              case INTERACTIVE -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_INTERACTIVE;
+              case BATCH -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_BATCH;
+              case HEAVY -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_HEAVY;
+              case DEFAULT -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_DEFAULT;
+            })
+        .setLane(effective.lane())
+        .putAllAttributes(effective.attributes())
+        .build();
+  }
+
   private static ReconcileScope scopeFromCaptureScope(CaptureScope scope) {
     if (scope == null) {
       return ReconcileScope.empty();
@@ -585,6 +616,133 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     };
   }
 
+  private ReconcileJobStore.ReconcileJob aggregateIfPlanJob(
+      String accountId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+      return job;
+    }
+    List<ReconcileJobStore.ReconcileJob> children = childJobsFor(accountId, job);
+    if (children.isEmpty()) {
+      return job;
+    }
+
+    String state = aggregateState(job, children);
+    String message =
+        children.stream()
+            .filter(child -> child.message != null && !child.message.isBlank())
+            .filter(child -> !"JS_SUCCEEDED".equals(child.state))
+            .map(child -> child.jobId + ": " + child.message)
+            .findFirst()
+            .orElse(job.message);
+    long startedAtMs =
+        children.stream()
+            .mapToLong(child -> child.startedAtMs)
+            .filter(v -> v > 0L)
+            .min()
+            .orElse(job.startedAtMs);
+    long finishedAtMs =
+        isTerminalState(state)
+            ? children.stream()
+                .mapToLong(child -> child.finishedAtMs)
+                .max()
+                .orElse(job.finishedAtMs)
+            : 0L;
+    long tablesScanned = children.stream().mapToLong(child -> child.tablesScanned).sum();
+    long tablesChanged = children.stream().mapToLong(child -> child.tablesChanged).sum();
+    long errors = children.stream().mapToLong(child -> child.errors).sum();
+    long snapshotsProcessed = children.stream().mapToLong(child -> child.snapshotsProcessed).sum();
+    long statsProcessed = children.stream().mapToLong(child -> child.statsProcessed).sum();
+    String executorId =
+        children.stream()
+            .map(child -> child.executorId == null ? "" : child.executorId)
+            .filter(v -> !v.isBlank())
+            .findFirst()
+            .orElse(job.executorId);
+
+    return new ReconcileJobStore.ReconcileJob(
+        job.jobId,
+        job.accountId,
+        job.connectorId,
+        state,
+        message,
+        startedAtMs,
+        finishedAtMs,
+        tablesScanned,
+        tablesChanged,
+        errors,
+        job.fullRescan,
+        job.captureMode,
+        snapshotsProcessed,
+        statsProcessed,
+        job.scope,
+        job.executionPolicy,
+        executorId,
+        job.jobKind,
+        job.tableTask,
+        job.parentJobId);
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> childJobsFor(
+      String accountId, ReconcileJobStore.ReconcileJob planJob) {
+    if (planJob == null || planJob.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+      return List.of();
+    }
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String nextToken = "";
+    do {
+      var page = jobs.list(accountId, 200, nextToken, planJob.connectorId, Set.of());
+      for (var candidate : page.jobs) {
+        if (planJob.jobId.equals(candidate.parentJobId)) {
+          out.add(candidate);
+        }
+      }
+      nextToken = page.nextPageToken;
+    } while (nextToken != null && !nextToken.isBlank());
+    return List.copyOf(out);
+  }
+
+  private void cancelChildJobs(
+      String accountId, ReconcileJobStore.ReconcileJob job, String reason) {
+    if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+      return;
+    }
+    for (var child : childJobsFor(accountId, job)) {
+      var cancelled = jobs.cancel(accountId, child.jobId, reason);
+      if (cancelled.isPresent() && "JS_CANCELLING".equals(cancelled.get().state)) {
+        cancellations.requestCancel(cancelled.get().jobId);
+      }
+    }
+  }
+
+  private static String aggregateState(
+      ReconcileJobStore.ReconcileJob planJob, List<ReconcileJobStore.ReconcileJob> children) {
+    if (children.stream().anyMatch(child -> "JS_CANCELLING".equals(child.state))) {
+      return "JS_CANCELLING";
+    }
+    if (children.stream().anyMatch(child -> "JS_RUNNING".equals(child.state))) {
+      return "JS_RUNNING";
+    }
+    if (children.stream().anyMatch(child -> "JS_QUEUED".equals(child.state))) {
+      return "JS_QUEUED";
+    }
+    if (children.stream().anyMatch(child -> "JS_FAILED".equals(child.state))) {
+      return "JS_FAILED";
+    }
+    if (children.stream().anyMatch(child -> "JS_CANCELLED".equals(child.state))) {
+      return "JS_CANCELLED";
+    }
+    if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
+      return planJob.state;
+    }
+    return "JS_SUCCEEDED";
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
+  }
+
   private static GetReconcileJobResponse toResponse(ReconcileJobStore.ReconcileJob job) {
     return GetReconcileJobResponse.newBuilder()
         .setJobId(job.jobId)
@@ -604,40 +762,29 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setStatsProcessed(job.statsProcessed)
         .setDurationMs(durationMs(job))
         .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
-        .setExecutorId(job.executorId)
+        .setExecutorId(job.executorId == null ? "" : job.executorId)
+        .setKind(toProtoJobKind(job.jobKind))
+        .setParentJobId(job.parentJobId == null ? "" : job.parentJobId)
+        .setTableTask(toProtoTableTask(job.tableTask))
         .build();
   }
 
-  private static ReconcileExecutionPolicy executionPolicyFromRequest(StartCaptureRequest request) {
-    if (request == null || !request.hasExecutionPolicy()) {
-      return ReconcileExecutionPolicy.defaults();
-    }
-    var policy = request.getExecutionPolicy();
-    return ReconcileExecutionPolicy.of(
-        switch (policy.getExecutionClass()) {
-          case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
-          case EC_BATCH -> ReconcileExecutionClass.BATCH;
-          case EC_HEAVY -> ReconcileExecutionClass.HEAVY;
-          case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
-        },
-        policy.getLane(),
-        policy.getAttributesMap());
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileJobKind toProtoJobKind(
+      ReconcileJobKind jobKind) {
+    return switch (jobKind == null ? ReconcileJobKind.EXEC_CONNECTOR : jobKind) {
+      case PLAN_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_PLAN_CONNECTOR;
+      case EXEC_TABLE -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_TABLE;
+      case EXEC_CONNECTOR -> ai.floedb.floecat.reconciler.rpc.ReconcileJobKind.RJK_EXEC_CONNECTOR;
+    };
   }
 
-  private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
-      ReconcileExecutionPolicy policy) {
-    ReconcileExecutionPolicy effective =
-        policy == null ? ReconcileExecutionPolicy.defaults() : policy;
-    return ai.floedb.floecat.reconciler.rpc.ExecutionPolicy.newBuilder()
-        .setExecutionClass(
-            switch (effective.executionClass()) {
-              case INTERACTIVE -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_INTERACTIVE;
-              case BATCH -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_BATCH;
-              case HEAVY -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_HEAVY;
-              case DEFAULT -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_DEFAULT;
-            })
-        .setLane(effective.lane())
-        .putAllAttributes(effective.attributes())
+  private static ai.floedb.floecat.reconciler.rpc.ReconcileTableTask toProtoTableTask(
+      ReconcileTableTask tableTask) {
+    ReconcileTableTask effective = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+    return ai.floedb.floecat.reconciler.rpc.ReconcileTableTask.newBuilder()
+        .setSourceNamespace(effective.sourceNamespace())
+        .setSourceTable(effective.sourceTable())
+        .setDestinationTableDisplayName(effective.destinationTableDisplayName())
         .build();
   }
 

@@ -19,9 +19,12 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.EnumSet;
+import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Default executor that preserves the existing in-process ReconcilerService execution path. */
@@ -50,6 +53,18 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<ReconcileJobKind> supportedJobKinds() {
+    return EnumSet.of(ReconcileJobKind.EXEC_CONNECTOR, ReconcileJobKind.EXEC_TABLE);
+  }
+
+  @Override
+  public boolean supports(ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob lease) {
+    return lease != null
+        && (lease.jobKind == ReconcileJobKind.EXEC_CONNECTOR
+            || lease.jobKind == ReconcileJobKind.EXEC_TABLE);
+  }
+
+  @Override
   public ExecutionResult execute(ExecutionContext context) {
     var lease = context.lease();
     var connectorId =
@@ -74,6 +89,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
             lease.scope,
             lease.captureMode,
             null,
+            lease.tableTask,
             context.shouldStop(),
             context.progressListener()::onProgress);
 

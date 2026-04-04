@@ -25,8 +25,10 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -82,6 +84,9 @@ class RemoteReconcileExecutorPollerTest {
                 ReconcileExecutionPolicy.defaults(),
                 "lease-1",
                 "",
+                "",
+                ReconcileJobKind.EXEC_CONNECTOR,
+                ReconcileTableTask.empty(),
                 ""));
 
     when(client.lease(eq(executor)))
@@ -110,5 +115,74 @@ class RemoteReconcileExecutorPollerTest {
 
     assertTrue(completed.await(5, TimeUnit.SECONDS));
     verify(client).start(lease, "default_reconciler");
+  }
+
+  @Test
+  void pollOnceCompletesFailureWithLastReportedProgress() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch completed = new CountDownLatch(1);
+    ReconcileExecutor executor =
+        new ReconcileExecutor() {
+          @Override
+          public String id() {
+            return "default_reconciler";
+          }
+
+          @Override
+          public ExecutionResult execute(ExecutionContext context) {
+            context.progressListener().onProgress(5, 3, 0, 7, 11, "working");
+            throw new RuntimeException("boom");
+          }
+        };
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = ConfigProvider.getConfig();
+    poller.remoteExecutorEnabled = true;
+    poller.init();
+
+    RemoteLeasedJob lease =
+        new RemoteLeasedJob(
+            new ReconcileJobStore.LeasedJob(
+                "job-1",
+                "acct",
+                "connector-1",
+                false,
+                CaptureMode.METADATA_AND_STATS,
+                ReconcileScope.empty(),
+                ReconcileExecutionPolicy.defaults(),
+                "lease-1",
+                "",
+                "",
+                ReconcileJobKind.EXEC_CONNECTOR,
+                ReconcileTableTask.empty(),
+                ""));
+
+    when(client.lease(eq(executor)))
+        .thenReturn(java.util.Optional.of(lease), java.util.Optional.empty());
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.reportProgress(any(), eq(5L), eq(3L), eq(0L), eq(7L), eq(11L), eq("working")))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.complete(
+            any(),
+            eq(RemoteLeasedJob.CompletionState.FAILED),
+            eq(5L),
+            eq(3L),
+            eq(1L),
+            eq(7L),
+            eq(11L),
+            eq("RuntimeException: boom")))
+        .thenAnswer(
+            invocation -> {
+              completed.countDown();
+              return new RemoteReconcileExecutorClient.CompletionResult(true);
+            });
+
+    poller.pollOnce();
+
+    assertTrue(completed.await(5, TimeUnit.SECONDS));
   }
 }

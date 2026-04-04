@@ -91,7 +91,8 @@ Notes:
   `QUARKUS_PROFILE_SERVICE=reconciler-control`. The compose file pins `executor` to
   `QUARKUS_PROFILE_EXECUTOR=reconciler-executor` by default. That keeps the public APIs,
   durable queue ownership, and automatic scheduling on the `service` container while disabling
-  local execution there.
+  local table execution there. In this default split profile the planner remains on the control
+  plane, and remote executor replicas lease only executable table work.
 - `executor` uses the same image but sets:
   `FLOECAT_RECONCILER_SCHEDULER_ENABLED=false`,
   `FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED=true`,

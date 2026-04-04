@@ -166,6 +166,7 @@ public class RemoteReconcileExecutorPoller {
     AtomicBoolean leaseValid = new AtomicBoolean(true);
     AtomicBoolean cancellationRequested = new AtomicBoolean(false);
     AtomicBoolean interrupted = new AtomicBoolean(false);
+    ProgressSnapshot progress = new ProgressSnapshot();
 
     BooleanSupplier heartbeat =
         () -> {
@@ -216,6 +217,7 @@ public class RemoteReconcileExecutorPoller {
                     if (!leaseValid.get()) {
                       return;
                     }
+                    progress.update(scanned, changed, errors, snapshotsProcessed, statsProcessed);
                     RemoteReconcileExecutorClient.LeaseHeartbeat response =
                         client.reportProgress(
                             remoteLease,
@@ -273,16 +275,18 @@ public class RemoteReconcileExecutorPoller {
           Math.max(0L, System.currentTimeMillis() - started));
     } catch (Exception e) {
       if (leaseValid.get() && !interrupted.get()) {
+        long errorCount =
+            cancellationRequested.get() ? progress.errors : Math.max(1L, progress.errors);
         completeIfPossible(
             remoteLease,
             cancellationRequested.get()
                 ? RemoteLeasedJob.CompletionState.CANCELLED
                 : RemoteLeasedJob.CompletionState.FAILED,
-            0,
-            0,
-            cancellationRequested.get() ? 0 : 1,
-            0,
-            0,
+            progress.scanned,
+            progress.changed,
+            errorCount,
+            progress.snapshotsProcessed,
+            progress.statsProcessed,
             describeFailure(e));
       }
       LOG.errorf(
@@ -321,6 +325,23 @@ public class RemoteReconcileExecutorPoller {
       return t.getClass().getSimpleName();
     }
     return t.getClass().getSimpleName() + ": " + msg;
+  }
+
+  private static final class ProgressSnapshot {
+    long scanned;
+    long changed;
+    long errors;
+    long snapshotsProcessed;
+    long statsProcessed;
+
+    void update(
+        long scanned, long changed, long errors, long snapshotsProcessed, long statsProcessed) {
+      this.scanned = scanned;
+      this.changed = changed;
+      this.errors = errors;
+      this.snapshotsProcessed = snapshotsProcessed;
+      this.statsProcessed = statsProcessed;
+    }
   }
 
   record LeaseAssignment(ReconcileExecutor executor, RemoteLeasedJob lease) {}

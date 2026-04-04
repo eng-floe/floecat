@@ -44,6 +44,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import com.google.protobuf.ByteString;
@@ -101,6 +102,250 @@ class ReconcilerServiceTest {
     assertThat(result.errors).isEqualTo(1);
     assertThat(result.error).isInstanceOf(IllegalStateException.class);
     assertThat(result.error.getMessage()).contains("Connector not ACTIVE");
+  }
+
+  @Test
+  void planTableTasksDelegatesPlanningToConnector() {
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return activeConnector();
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            return "dest_ns";
+          }
+        };
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
+                assertThat(request.sourceNamespaceFq()).isEqualTo("src_cat.src_ns");
+                assertThat(request.destinationNamespaceFq()).isEqualTo("dest_ns");
+                assertThat(request.destinationNamespacePaths()).isEmpty();
+                return List.of(new PlannedTableTask("planned_ns", "planned_table"));
+              }
+            };
+
+    var tasks = service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null);
+
+    assertThat(tasks).containsExactly(ReconcileTableTask.of("planned_ns", "planned_table"));
+  }
+
+  @Test
+  void reconcilePreservesAccumulatedSummariesWhenOuterFailureOccurs() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-outer-failure")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return activeConnector();
+          }
+
+          @Override
+          public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+            return "dest_cat";
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            return "dest_ns";
+          }
+
+          @Override
+          public ResourceId ensureTable(
+              ReconcileContext ctx,
+              ResourceId namespaceId,
+              NameRef table,
+              TableSpecDescriptor descriptor) {
+            return tableId;
+          }
+
+          @Override
+          public void updateConnectorDestination(
+              ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+        };
+
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                return List.of("tbl");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    namespaceFq,
+                    tableName,
+                    "s3://bucket/path",
+                    "{\"type\":\"struct\",\"fields\":[]}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    Map.of());
+              }
+
+              @Override
+              public List<SnapshotBundle> enumerateSnapshotsWithStats(
+                  String namespaceFq,
+                  String tableName,
+                  ResourceId destinationTableId,
+                  Set<String> includeColumns,
+                  SnapshotEnumerationOptions options) {
+                return List.of();
+              }
+
+              @Override
+              public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String namespaceFq) {
+                throw new RuntimeException("view-list-fail");
+              }
+
+              @Override
+              public void close() {
+                throw new RuntimeException("close-fail");
+              }
+            };
+
+    var result = service.reconcile(principal, connectorId, false, null);
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage()).contains("close-fail");
+    assertThat(result.error.getMessage())
+        .contains("listViewDescriptors(src_cat.src_ns): RuntimeException: view-list-fail");
+  }
+
+  @Test
+  void reconcileSkipProgressRetainsCurrentCounters() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-skip-progress")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return activeConnector();
+          }
+
+          @Override
+          public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+            return "dest_cat";
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            return "dest_ns";
+          }
+
+          @Override
+          public ResourceId ensureTable(
+              ReconcileContext ctx,
+              ResourceId namespaceId,
+              NameRef table,
+              TableSpecDescriptor descriptor) {
+            return tableId;
+          }
+
+          @Override
+          public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+            return Set.of(42L);
+          }
+
+          @Override
+          public void updateConnectorDestination(
+              ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+        };
+
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of()) {
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                return List.of("tbl");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    namespaceFq,
+                    tableName,
+                    "s3://bucket/path",
+                    "{\"type\":\"struct\",\"fields\":[]}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    Map.of());
+              }
+
+              @Override
+              public List<SnapshotBundle> enumerateSnapshotsWithStats(
+                  String namespaceFq,
+                  String tableName,
+                  ResourceId destinationTableId,
+                  Set<String> includeColumns,
+                  SnapshotEnumerationOptions options) {
+                return List.of(
+                    new SnapshotBundle(
+                        42L,
+                        0L,
+                        Instant.now().toEpochMilli(),
+                        null,
+                        List.of(),
+                        List.of(),
+                        null,
+                        null,
+                        0L,
+                        null,
+                        Map.of(),
+                        0,
+                        Map.of()));
+              }
+            };
+
+    var progressEvents = new ArrayList<String>();
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            false,
+            null,
+            ReconcilerService.CaptureMode.METADATA_ONLY,
+            null,
+            () -> false,
+            (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) ->
+                progressEvents.add(
+                    scanned
+                        + "|"
+                        + changed
+                        + "|"
+                        + errors
+                        + "|"
+                        + snapshotsProcessed
+                        + "|"
+                        + statsProcessed
+                        + "|"
+                        + message));
+
+    assertThat(result.ok()).isTrue();
+    assertThat(progressEvents)
+        .anySatisfy(
+            event -> {
+              assertThat(event)
+                  .contains("1|0|0|0|0|Incremental reconcile skipped 1 already-ingested snapshots");
+            });
   }
 
   @Test
@@ -961,7 +1206,8 @@ class ReconcilerServiceTest {
     }
 
     @Override
-    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    public ReconcilerBackend.EnsureViewResult ensureViewDetailed(
+        ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       throw new UnsupportedOperationException();
     }
   }
@@ -1242,7 +1488,12 @@ class ReconcilerServiceTest {
             boolean.class,
             Set.class,
             Set.class,
-            ReconcilerService.ProgressListener.class);
+            ReconcilerService.ProgressListener.class,
+            long.class,
+            long.class,
+            long.class,
+            long.class,
+            long.class);
     method.setAccessible(true);
     return method.invoke(
         service,
@@ -1252,7 +1503,12 @@ class ReconcilerServiceTest {
         includeStats,
         existingSnapshotIds,
         targetSnapshotIds,
-        (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
+        (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {},
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
   }
 
   private static Object invokeKnownSnapshotIdsForEnumeration(
@@ -1406,11 +1662,12 @@ class ReconcilerServiceTest {
     var capturingBackend =
         new ViewCapturingBackend(activeConnector()) {
           @Override
-          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+          public ReconcilerBackend.EnsureViewResult ensureViewDetailed(
+              ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
             if ("dest_ns.bad_view".equals(idempotencyKey)) {
               throw new RuntimeException("backend error for " + spec.getDisplayName());
             }
-            return super.ensureView(ctx, spec, idempotencyKey);
+            return super.ensureViewDetailed(ctx, spec, idempotencyKey);
           }
         };
     service.backend = capturingBackend;
@@ -1440,14 +1697,16 @@ class ReconcilerServiceTest {
             "{\"type\":\"struct\",\"fields\":"
                 + "[{\"name\":\"x\",\"type\":\"int\",\"nullable\":false}]}");
 
-    // ensureView returns getDefaultInstance() — signals ALREADY_EXISTS.
+    // ensureView returns the existing ID and marks the operation as not-created.
     var capturingBackend =
         new ViewCapturingBackend(activeConnector()) {
           @Override
-          public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+          public ReconcilerBackend.EnsureViewResult ensureViewDetailed(
+              ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
             capturedViews.add(spec);
             capturedIdempotencyKeys.add(idempotencyKey);
-            return ResourceId.getDefaultInstance(); // empty id → already exists
+            return new ReconcilerBackend.EnsureViewResult(
+                ResourceId.newBuilder().setId("existing-view").build(), false);
           }
         };
     service.backend = capturingBackend;
@@ -1496,6 +1755,130 @@ class ReconcilerServiceTest {
     assertThat(capturingBackend.capturedViews.get(0).getDisplayName()).isEqualTo("revenue_view");
   }
 
+  @Test
+  void tableTaskExecutionSkipsViewPassAndConnectorDestinationUpdate() {
+    class CapturingBackend extends DefaultBackend {
+      int ensuredTables = 0;
+      int ensuredViews = 0;
+      int destinationUpdates = 0;
+
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeConnector();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "dest_cat";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "dest_ns";
+      }
+
+      @Override
+      public ResourceId ensureTable(
+          ReconcileContext ctx,
+          ResourceId namespaceId,
+          NameRef table,
+          TableSpecDescriptor descriptor) {
+        ensuredTables++;
+        return ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-" + ensuredTables)
+            .build();
+      }
+
+      @Override
+      public boolean statsAlreadyCaptured(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+        return false;
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId ignoredConnectorId, DestinationTarget destination) {
+        destinationUpdates++;
+      }
+
+      @Override
+      public ReconcilerBackend.EnsureViewResult ensureViewDetailed(
+          ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+        ensuredViews++;
+        return new ReconcilerBackend.EnsureViewResult(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_VIEW)
+                .setId("view-" + ensuredViews)
+                .build(),
+            true);
+      }
+    }
+
+    FloecatConnector.ViewDescriptor viewDesc =
+        new FloecatConnector.ViewDescriptor(
+            "src_cat.src_ns",
+            "revenue_view",
+            "SELECT amount FROM sales",
+            "spark",
+            List.of("src_ns"),
+            "{\"type\":\"struct\",\"fields\":"
+                + "[{\"name\":\"amount\",\"type\":\"double\",\"nullable\":true}]}");
+
+    var backend = new CapturingBackend();
+    service.backend = backend;
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of(viewDesc)) {
+              @Override
+              public List<String> listTables(String namespaceFq) {
+                return List.of("table_a", "table_b");
+              }
+
+              @Override
+              public TableDescriptor describe(String namespaceFq, String tableName) {
+                return new TableDescriptor(
+                    namespaceFq,
+                    tableName,
+                    "s3://bucket/path",
+                    "{\"type\":\"struct\",\"fields\":[]}",
+                    List.of(),
+                    ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                    Map.of());
+              }
+
+              @Override
+              public List<SnapshotBundle> enumerateSnapshotsWithStats(
+                  String namespaceFq,
+                  String tableName,
+                  ResourceId destinationTableId,
+                  Set<String> includeColumns,
+                  SnapshotEnumerationOptions options) {
+                return List.of();
+              }
+            };
+
+    var result =
+        service.reconcile(
+            principal,
+            connectorId,
+            true,
+            null,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            null,
+            ReconcileTableTask.of("src_cat.src_ns", "table_a", "shared_dest"),
+            () -> false,
+            (s, c, e, sp, stp, m) -> {});
+
+    assertThat(result.ok()).isTrue();
+    assertThat(result.scanned).isEqualTo(1);
+    assertThat(backend.ensuredTables).isEqualTo(1);
+    assertThat(backend.ensuredViews).isEqualTo(0);
+    assertThat(backend.destinationUpdates).isEqualTo(0);
+  }
+
   /** A minimal {@link Connector} proto configured as CS_ACTIVE with source + destination. */
   private Connector activeConnector() {
     ResourceId destCatalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
@@ -1516,8 +1899,9 @@ class ReconcilerServiceTest {
   }
 
   /**
-   * Backend that tracks {@link #ensureView} calls and provides enough plumbing for the view pass to
-   * run end-to-end (no table snapshots needed since FakeConnector returns empty tables list).
+   * Backend that tracks {@link #ensureViewDetailed} calls and provides enough plumbing for the view
+   * pass to run end-to-end (no table snapshots needed since FakeConnector returns empty tables
+   * list).
    */
   private static class ViewCapturingBackend extends DefaultBackend {
     private final Connector connector;
@@ -1544,10 +1928,12 @@ class ReconcilerServiceTest {
     }
 
     @Override
-    public ResourceId ensureView(ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
+    public ReconcilerBackend.EnsureViewResult ensureViewDetailed(
+        ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       capturedViews.add(spec);
       capturedIdempotencyKeys.add(idempotencyKey);
-      return ResourceId.newBuilder().setId("view-1").build();
+      return new ReconcilerBackend.EnsureViewResult(
+          ResourceId.newBuilder().setId("view-1").build(), true);
     }
 
     @Override
@@ -1585,6 +1971,11 @@ class ReconcilerServiceTest {
 
     @Override
     public List<String> listTables(String namespaceFq) {
+      return List.of();
+    }
+
+    @Override
+    public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
       return List.of();
     }
 

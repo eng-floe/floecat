@@ -762,11 +762,6 @@ guard-container-owner:
 	@test -n "$(CONTAINER_OWNER)" || (echo "CONTAINER_OWNER is required (example: CONTAINER_OWNER=eng-floe)"; exit 1)
 
 docker-service:
-	@if [ "$(DOCKER_SERVICE_STORAGE)" = "aws" ] && { [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; }; then \
-	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set when DOCKER_SERVICE_STORAGE=aws"; \
-	  echo "Example: make docker DOCKER_SERVICE_STORAGE=aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table"; \
-	  exit 1; \
-	fi
 	@echo "==> [DOCKER] service (jib -> docker daemon)"
 	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
@@ -775,7 +770,6 @@ docker-service:
 	  -Dquarkus.jib.base-jvm-image=$(JIB_BASE_IMAGE) \
 	  $(if $(JIB_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_PLATFORMS)) \
 	  -Dquarkus.container-image.image=floecat-service:local \
-	  $(DOCKER_SERVICE_STORAGE_PROPS) \
 	  package
 
 docker-iceberg-rest:
@@ -803,11 +797,6 @@ docker-cli:
 docker-publish: guard-container-owner docker-publish-service docker-publish-iceberg-rest docker-publish-cli
 
 docker-publish-service:
-	@if [ "$(DOCKER_SERVICE_STORAGE)" = "aws" ] && { [ -z "$(REAL_AWS_BUCKET)" ] || [ -z "$(REAL_AWS_TABLE)" ]; }; then \
-	  echo "ERROR: REAL_AWS_BUCKET and REAL_AWS_TABLE must be set when DOCKER_SERVICE_STORAGE=aws"; \
-	  echo "Example: make docker-publish DOCKER_SERVICE_STORAGE=aws REAL_AWS_BUCKET=my-bucket REAL_AWS_TABLE=my-table CONTAINER_OWNER=eng-floe"; \
-	  exit 1; \
-	fi
 	@echo "==> [DOCKER] publish service (jib -> registry)"
 	$(MVN) -f ./pom.xml -pl service -am -DskipTests \
 	  -DskipUTs=true -DskipITs=true \
@@ -818,7 +807,6 @@ docker-publish-service:
 	  $(if $(JIB_IMAGE_PLATFORMS),-Dquarkus.jib.platforms=$(JIB_IMAGE_PLATFORMS)) \
 	  -Dquarkus.container-image.image=$(CONTAINER_REGISTRY)/$(CONTAINER_OWNER)/floecat-service:$(CONTAINER_TAG) \
 	  $(if $(CONTAINER_EXTRA_TAGS),-Dquarkus.container-image.additional-tags=$(CONTAINER_EXTRA_TAGS)) \
-	  $(DOCKER_SERVICE_STORAGE_PROPS) \
 	  package
 
 docker-publish-iceberg-rest:

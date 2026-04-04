@@ -20,8 +20,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.List;
 import java.util.Map;
@@ -153,6 +155,9 @@ class ReconcileExecutorRegistryTest {
         executionPolicy,
         "lease-1",
         pinnedExecutorId,
+        "",
+        ReconcileJobKind.EXEC_CONNECTOR,
+        ReconcileTableTask.empty(),
         "");
   }
 

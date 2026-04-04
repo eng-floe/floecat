@@ -60,6 +60,11 @@ class FloecatConnectorDefaultChainTest {
     }
 
     @Override
+    public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
+      return List.of();
+    }
+
+    @Override
     public TableDescriptor describe(String namespaceFq, String tableName) {
       throw new UnsupportedOperationException();
     }

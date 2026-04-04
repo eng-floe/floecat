@@ -481,7 +481,7 @@ public abstract class BaseServiceImpl {
       return "";
     }
 
-    String t = Normalizer.normalize(in.trim(), Normalizer.Form.NFKC);
+    String t = Normalizer.normalize(in.strip(), Normalizer.Form.NFKC);
     t = t.replaceAll("\\s+", " ");
     return t;
   }

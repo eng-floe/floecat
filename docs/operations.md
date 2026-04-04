@@ -69,6 +69,10 @@ Key reconciler mode flags live in `service/src/main/resources/application.proper
 floecat.reconciler.scheduler.enabled
 floecat.reconciler.remote-executor.enabled
 floecat.reconciler.executor.default.enabled
+floecat.reconciler.executor.planner.enabled
+floecat.reconciler.auto.execution-class
+floecat.reconciler.auto.execution-lane
+floecat.reconciler.auto.pinned-executor-id
 floecat.reconciler.backend
 floecat.reconciler.authorization.header
 floecat.reconciler.authorization.token

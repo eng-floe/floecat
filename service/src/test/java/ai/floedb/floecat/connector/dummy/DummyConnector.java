@@ -93,6 +93,46 @@ public final class DummyConnector implements FloecatConnector {
   }
 
   @Override
+  public List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
+    if (request == null
+        || request.sourceNamespaceFq() == null
+        || request.sourceNamespaceFq().isBlank()) {
+      throw new IllegalArgumentException("source namespace is required");
+    }
+    if (!matchesNamespaceFilter(
+        request.destinationNamespaceFq(), request.destinationNamespacePaths())) {
+      throw new IllegalArgumentException("requested scope does not match destination namespace");
+    }
+
+    List<String> sourceTables =
+        request.sourceTable() != null && !request.sourceTable().isBlank()
+            ? List.of(request.sourceTable())
+            : listTables(request.sourceNamespaceFq());
+    String destinationTableHint =
+        request.destinationTableDisplayHint() != null
+                && !request.destinationTableDisplayHint().isBlank()
+            ? request.destinationTableDisplayHint()
+            : null;
+    String destinationTableFilter =
+        request.destinationTableDisplayName() != null
+                && !request.destinationTableDisplayName().isBlank()
+            ? request.destinationTableDisplayName()
+            : null;
+
+    List<PlannedTableTask> planned = new ArrayList<>();
+    for (String sourceTable : sourceTables) {
+      String destinationTableName =
+          destinationTableHint != null ? destinationTableHint : sourceTable;
+      if (destinationTableFilter != null && !destinationTableFilter.equals(destinationTableName)) {
+        continue;
+      }
+      planned.add(
+          new PlannedTableTask(request.sourceNamespaceFq(), sourceTable, destinationTableName));
+    }
+    return List.copyOf(planned);
+  }
+
+  @Override
   public TableDescriptor describe(String namespaceFq, String tableName) {
     String schemaJson =
         """
@@ -271,4 +311,20 @@ public final class DummyConnector implements FloecatConnector {
 
   @Override
   public void close() {}
+
+  private static boolean matchesNamespaceFilter(
+      String namespaceFq, List<List<String>> destinationNamespacePaths) {
+    if (destinationNamespacePaths == null || destinationNamespacePaths.isEmpty()) {
+      return true;
+    }
+    if (namespaceFq == null || namespaceFq.isBlank()) {
+      return false;
+    }
+    for (List<String> path : destinationNamespacePaths) {
+      if (String.join(".", path).equals(namespaceFq)) {
+        return true;
+      }
+    }
+    return false;
+  }
 }

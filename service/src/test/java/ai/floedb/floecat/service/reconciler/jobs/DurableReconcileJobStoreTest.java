@@ -25,9 +25,11 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -109,6 +111,39 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDedupesEquivalentExecutionPolicyAttributesRegardlessOfMapOrder() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1"));
+    java.util.LinkedHashMap<String, String> ordered = new java.util.LinkedHashMap<>();
+    ordered.put("tier", "gold");
+    ordered.put("pool", "etl");
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", ordered),
+            "");
+    java.util.LinkedHashMap<String, String> reordered = new java.util.LinkedHashMap<>();
+    reordered.put("pool", "etl");
+    reordered.put("tier", "gold");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", reordered),
+            "");
+
+    assertEquals(first, second);
+  }
+
+  @Test
   void leaseNextFiltersByExecutionPolicy() {
     store.init();
 
@@ -177,6 +212,75 @@ class DurableReconcileJobStoreTest {
 
     assertEquals(jobId, lease.jobId);
     assertEquals("remote-b", lease.pinnedExecutorId);
+  }
+
+  @Test
+  void leaseNextRespectsPinnedExecutorIdForPlannerJobs() {
+    store.init();
+
+    String plannerJobId =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "planner-b");
+
+    var lease =
+        store.leaseNext(
+            ReconcileJobStore.LeaseRequest.of(
+                java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                java.util.Set.of(""),
+                java.util.Set.of("planner-a"),
+                java.util.EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR)));
+
+    assertTrue(lease.isEmpty());
+
+    var matchingLease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                    java.util.Set.of(""),
+                    java.util.Set.of("planner-b"),
+                    java.util.EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR)))
+            .orElseThrow();
+
+    assertEquals(plannerJobId, matchingLease.jobId);
+    assertEquals("planner-b", matchingLease.pinnedExecutorId);
+    assertEquals(ReconcileJobKind.PLAN_CONNECTOR, matchingLease.jobKind);
+  }
+
+  @Test
+  void enqueueTableExecutionDoesNotDedupeAcrossParentJobs() {
+    store.init();
+
+    String first =
+        store.enqueueTableExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileTableTask.of("ns", "table_a"),
+            ReconcileExecutionPolicy.defaults(),
+            "plan-1",
+            "");
+    String second =
+        store.enqueueTableExecution(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileTableTask.of("ns", "table_a"),
+            ReconcileExecutionPolicy.defaults(),
+            "plan-2",
+            "");
+
+    assertNotEquals(first, second);
   }
 
   @Test
@@ -314,6 +418,48 @@ class DurableReconcileJobStoreTest {
     var seen = List.of(firstPage.jobs.get(0).jobId, secondPage.jobs.get(0).jobId);
     assertTrue(seen.contains(first));
     assertTrue(seen.contains(second));
+  }
+
+  @Test
+  void listPaginationDoesNotDuplicateEntriesAcrossMultiplePages() {
+    store.init();
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of(List.of("ns1")), "t1", List.of()));
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of(List.of("ns2")), "t2", List.of()));
+    String third =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.of(List.of(List.of("ns3")), "t3", List.of()));
+
+    var page1 = store.list(ACCOUNT_ID, 1, "", CONNECTOR_ID, java.util.Set.of());
+    var page2 = store.list(ACCOUNT_ID, 1, page1.nextPageToken, CONNECTOR_ID, java.util.Set.of());
+    var page3 = store.list(ACCOUNT_ID, 1, page2.nextPageToken, CONNECTOR_ID, java.util.Set.of());
+
+    assertEquals(1, page1.jobs.size());
+    assertEquals(1, page2.jobs.size());
+    assertEquals(1, page3.jobs.size());
+
+    java.util.Set<String> seen =
+        java.util.Set.of(page1.jobs.get(0).jobId, page2.jobs.get(0).jobId, page3.jobs.get(0).jobId);
+    assertEquals(3, seen.size());
+    assertTrue(seen.contains(first));
+    assertTrue(seen.contains(second));
+    assertTrue(seen.contains(third));
   }
 
   @Test

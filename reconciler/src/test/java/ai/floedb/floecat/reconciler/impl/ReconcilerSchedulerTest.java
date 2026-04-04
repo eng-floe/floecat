@@ -23,7 +23,10 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import java.util.EnumSet;
 import java.util.Optional;
@@ -52,9 +55,11 @@ class ReconcilerSchedulerTest {
 
     var executor = mock(ReconcileExecutor.class);
     when(executor.enabled()).thenReturn(true);
+    when(executor.id()).thenReturn("test-executor");
     when(executor.supportedExecutionClasses())
         .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
     when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
+    when(executor.supportedJobKinds()).thenReturn(EnumSet.allOf(ReconcileJobKind.class));
 
     var scheduler = new ReconcilerScheduler();
     // jobs is package-private (@Inject with no access modifier)
@@ -71,6 +76,75 @@ class ReconcilerSchedulerTest {
   }
 
   @Test
+  void pollOnceLeasesPerExecutorCapabilitiesInsteadOfUnioningThem() {
+    var jobStore = mock(ReconcileJobStore.class);
+
+    var localExecutor = mock(ReconcileExecutor.class);
+    when(localExecutor.enabled()).thenReturn(true);
+    when(localExecutor.id()).thenReturn("local");
+    when(localExecutor.supportedExecutionClasses())
+        .thenReturn(EnumSet.of(ReconcileExecutionClass.DEFAULT));
+    when(localExecutor.supportedLanes()).thenReturn(java.util.Set.of(""));
+    when(localExecutor.supportedJobKinds()).thenReturn(EnumSet.of(ReconcileJobKind.EXEC_CONNECTOR));
+
+    var remoteExecutor = mock(ReconcileExecutor.class);
+    when(remoteExecutor.enabled()).thenReturn(true);
+    when(remoteExecutor.id()).thenReturn("remote");
+    when(remoteExecutor.supportedExecutionClasses())
+        .thenReturn(EnumSet.of(ReconcileExecutionClass.HEAVY));
+    when(remoteExecutor.supportedLanes()).thenReturn(java.util.Set.of("remote"));
+    when(remoteExecutor.supportedJobKinds()).thenReturn(EnumSet.of(ReconcileJobKind.EXEC_TABLE));
+
+    var remoteLease =
+        new ReconcileJobStore.LeasedJob(
+            "job-remote",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+            "lease-remote",
+            "",
+            "",
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("ns", "table_a"),
+            "");
+
+    when(jobStore.leaseNext(
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.executionClasses.equals(
+                            EnumSet.of(ReconcileExecutionClass.DEFAULT))
+                        && request.lanes.equals(java.util.Set.of(""))
+                        && request.executorIds.equals(java.util.Set.of("local"))
+                        && request.jobKinds.equals(EnumSet.of(ReconcileJobKind.EXEC_CONNECTOR)))))
+        .thenReturn(Optional.empty());
+    when(jobStore.leaseNext(
+            org.mockito.ArgumentMatchers.argThat(
+                request ->
+                    request != null
+                        && request.executionClasses.equals(
+                            EnumSet.of(ReconcileExecutionClass.HEAVY))
+                        && request.lanes.equals(java.util.Set.of("remote"))
+                        && request.executorIds.equals(java.util.Set.of("remote"))
+                        && request.jobKinds.equals(EnumSet.of(ReconcileJobKind.EXEC_TABLE)))))
+        .thenReturn(Optional.of(remoteLease), Optional.empty());
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry =
+        new ReconcileExecutorRegistry(java.util.List.of(localExecutor, remoteExecutor));
+    scheduler.schedulerEnabled = true;
+
+    scheduler.pollOnce();
+
+    verify(jobStore, times(4)).leaseNext(org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
   void runLeaseDispatchesThroughExecutorRegistry() {
     var jobStore = mock(ReconcileJobStore.class);
     var executor = mock(ReconcileExecutor.class);
@@ -80,6 +154,7 @@ class ReconcilerSchedulerTest {
     when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
     when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
     when(executor.id()).thenReturn("default_reconciler");
     var registry = new ReconcileExecutorRegistry(java.util.List.of(executor));
@@ -104,6 +179,9 @@ class ReconcilerSchedulerTest {
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
             "",
+            "",
+            ReconcileJobKind.EXEC_CONNECTOR,
+            ReconcileTableTask.empty(),
             "");
 
     when(executor.execute(org.mockito.ArgumentMatchers.any()))
@@ -138,5 +216,68 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  @Test
+  void runLeasePreservesReportedProgressWhenExecutorThrows() {
+    var jobStore = mock(ReconcileJobStore.class);
+    var executor = mock(ReconcileExecutor.class);
+    when(executor.enabled()).thenReturn(true);
+    when(executor.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
+    when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsJobKind(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.id()).thenReturn("default_reconciler");
+    var registry = new ReconcileExecutorRegistry(java.util.List.of(executor));
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = registry;
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.config = mock(Config.class);
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "",
+            ReconcileJobKind.EXEC_CONNECTOR,
+            ReconcileTableTask.empty(),
+            "");
+
+    when(executor.execute(org.mockito.ArgumentMatchers.any()))
+        .thenAnswer(
+            invocation -> {
+              ReconcileExecutor.ExecutionContext context = invocation.getArgument(0);
+              context.progressListener().onProgress(5, 3, 0, 7, 11, "working");
+              throw new RuntimeException("boom");
+            });
+
+    scheduler.runLease(lease);
+
+    verify(jobStore)
+        .markFailed(
+            org.mockito.ArgumentMatchers.eq("job-1"),
+            org.mockito.ArgumentMatchers.eq("lease-1"),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.contains("RuntimeException"),
+            org.mockito.ArgumentMatchers.eq(5L),
+            org.mockito.ArgumentMatchers.eq(3L),
+            org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq(7L),
+            org.mockito.ArgumentMatchers.eq(11L));
   }
 }
