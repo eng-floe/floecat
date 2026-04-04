@@ -139,13 +139,17 @@ import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.ExecutionClass;
+import ai.floedb.floecat.reconciler.rpc.ExecutionPolicy;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
+import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
@@ -662,8 +666,11 @@ public class Shell implements Runnable {
              [--mode metadata-only|metadata-and-stats|stats-only]
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]
              [--snapshot-ids id1,id2,...]
+             [--execution-class default|interactive|batch|heavy] [--lane <name>] [--exec-attr k=v ...]
          connector job <jobId>
-         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
+         connector job <jobId> [--children] [--json] [--verbose]   # --children shows table jobs
+         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--children] [--json] [--verbose]
+             # default shows top-level jobs only; use --children for table jobs
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
@@ -1728,6 +1735,31 @@ public class Shell implements Runnable {
     return (kind == null) ? all : all.stream().filter(c -> c.getKind() == kind).toList();
   }
 
+  private List<GetReconcileJobResponse> listReconcileJobs(
+      String connectorId, List<JobState> states, int pageSize) {
+    return collectPages(
+        pageSize,
+        page -> {
+          var req = ListReconcileJobsRequest.newBuilder().setPage(page);
+          if (connectorId != null && !connectorId.isBlank()) {
+            req.setConnectorId(connectorId);
+          }
+          for (JobState state : states) {
+            if (state != JobState.JS_UNSPECIFIED) {
+              req.addStates(state);
+            }
+          }
+          return reconcileControl.listReconcileJobs(req.build());
+        },
+        ListReconcileJobsResponse::getJobsList,
+        resp -> resp.hasPage() ? resp.getPage().getNextPageToken() : "");
+  }
+
+  private List<GetReconcileJobResponse> listReconcileJobsForConnector(
+      String connectorId, int pageSize) {
+    return listReconcileJobs(connectorId, List.of(), pageSize);
+  }
+
   private void cmdConnectorCrud(List<String> args) {
     if (args.isEmpty()) {
       out.println(
@@ -2087,7 +2119,9 @@ public class Shell implements Runnable {
               "usage: connector trigger <display_name|id> [--full]"
                   + " [--mode metadata-only|metadata-and-stats|stats-only]"
                   + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]"
-                  + " [--snapshot-ids id1,id2,...]");
+                  + " [--snapshot-ids id1,id2,...]"
+                  + " [--execution-class default|interactive|batch|heavy] [--lane <name>]"
+                  + " [--exec-attr k=v ...]");
           return;
         }
         boolean full = args.contains("--full");
@@ -2098,6 +2132,10 @@ public class Shell implements Runnable {
             csvList(Quotes.unquote(parseStringFlag(args, "--dest-cols", "")));
         List<Long> snapshotIds =
             parseSnapshotIds(Quotes.unquote(parseStringFlag(args, "--snapshot-ids", "")));
+        ExecutionClass executionClass =
+            parseExecutionClass(Quotes.unquote(parseStringFlag(args, "--execution-class", "")));
+        String lane = Quotes.unquote(parseStringFlag(args, "--lane", ""));
+        Map<String, String> executionAttrs = parseKeyValueList(args, "--exec-attr");
         ResourceId connectorId = resolveConnectorId(Quotes.unquote(args.get(1)));
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
         if (!destNs.isBlank()) {
@@ -2112,50 +2150,127 @@ public class Shell implements Runnable {
         if (!snapshotIds.isEmpty()) {
           scope.addAllDestinationSnapshotIds(snapshotIds);
         }
-        var resp =
-            reconcileControl.startCapture(
-                StartCaptureRequest.newBuilder()
-                    .setScope(scope.build())
-                    .setMode(mode)
-                    .setFullRescan(full)
-                    .build());
+        ExecutionPolicy.Builder executionPolicy = ExecutionPolicy.newBuilder();
+        if (executionClass != ExecutionClass.EC_UNSPECIFIED) {
+          executionPolicy.setExecutionClass(executionClass);
+        }
+        if (!lane.isBlank()) {
+          executionPolicy.setLane(lane);
+        }
+        if (!executionAttrs.isEmpty()) {
+          executionPolicy.putAllAttributes(executionAttrs);
+        }
+        StartCaptureRequest.Builder request =
+            StartCaptureRequest.newBuilder()
+                .setScope(scope.build())
+                .setMode(mode)
+                .setFullRescan(full);
+        if (executionPolicy.getExecutionClass() != ExecutionClass.EC_UNSPECIFIED
+            || !executionPolicy.getLane().isBlank()
+            || !executionPolicy.getAttributesMap().isEmpty()) {
+          request.setExecutionPolicy(executionPolicy.build());
+        }
+        var resp = reconcileControl.startCapture(request.build());
         out.println(resp.getJobId());
       }
       case "job" -> {
         if (args.size() < 2) {
-          out.println("usage: connector job <jobId>");
+          out.println("usage: connector job <jobId> [--children] [--json] [--verbose]");
           return;
         }
+        boolean showChildren = hasFlag(args, "--children");
+        boolean json = hasFlag(args, "--json");
+        boolean verbose = hasFlag(args, "--verbose");
         var resp =
             reconcileControl.getReconcileJob(
                 GetReconcileJobRequest.newBuilder().setJobId(Quotes.unquote(args.get(1))).build());
-        printReconcileJob(resp);
+        if (json) {
+          if (showChildren && isTopLevelReconcileJob(resp)) {
+            List<GetReconcileJobResponse> children =
+                listReconcileJobsForConnector(resp.getConnectorId(), DEFAULT_PAGE_SIZE).stream()
+                    .filter(job -> resp.getJobId().equals(job.getParentJobId()))
+                    .toList();
+            List<GetReconcileJobResponse> all = new ArrayList<>(1 + children.size());
+            all.add(resp);
+            all.addAll(children);
+            printJsonArray(all);
+          } else {
+            printJson(resp);
+          }
+          return;
+        }
+        printReconcileJob(resp, verbose);
+        if (showChildren && isTopLevelReconcileJob(resp)) {
+          List<GetReconcileJobResponse> children =
+              listReconcileJobsForConnector(resp.getConnectorId(), DEFAULT_PAGE_SIZE).stream()
+                  .filter(job -> resp.getJobId().equals(job.getParentJobId()))
+                  .toList();
+          for (GetReconcileJobResponse child : children) {
+            printReconcileJobSummary(child, verbose);
+          }
+        } else if (isTopLevelReconcileJob(resp)) {
+          out.println("tip: use --children to show table jobs");
+        }
       }
       case "jobs" -> {
         int pageSize = parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
         String connectorRef = Quotes.unquote(parseStringFlag(args, "--connector", ""));
         String stateArg = Quotes.unquote(parseStringFlag(args, "--state", ""));
-        var req = ListReconcileJobsRequest.newBuilder();
-        req.setPage(PageRequest.newBuilder().setPageSize(pageSize).build());
-        if (!connectorRef.isBlank()) {
-          req.setConnectorId(rid(resolveConnectorId(connectorRef)));
-        }
+        boolean showChildren = hasFlag(args, "--children");
+        boolean json = hasFlag(args, "--json");
+        boolean verbose = hasFlag(args, "--verbose");
+        String connectorId = connectorRef.isBlank() ? "" : rid(resolveConnectorId(connectorRef));
+        List<JobState> states = new ArrayList<>();
         for (String token : csvList(stateArg)) {
           JobState state = parseJobState(token);
           if (state != JobState.JS_UNSPECIFIED) {
-            req.addStates(state);
+            states.add(state);
           }
         }
-        var resp = reconcileControl.listReconcileJobs(req.build());
-        if (resp.getJobsList().isEmpty()) {
+        List<GetReconcileJobResponse> jobs = listReconcileJobs(connectorId, states, pageSize);
+        if (jobs.isEmpty()) {
           out.println("no reconcile jobs");
           return;
         }
-        for (GetReconcileJobResponse job : resp.getJobsList()) {
-          printReconcileJobSummary(job);
+        Map<String, List<GetReconcileJobResponse>> childrenByParent =
+            jobs.stream()
+                .filter(job -> !job.getParentJobId().isBlank())
+                .collect(Collectors.groupingBy(GetReconcileJobResponse::getParentJobId));
+        List<GetReconcileJobResponse> topLevelJobs =
+            jobs.stream().filter(this::isTopLevelReconcileJob).toList();
+        if (json) {
+          if (showChildren) {
+            List<GetReconcileJobResponse> all = new ArrayList<>();
+            for (GetReconcileJobResponse job : topLevelJobs) {
+              all.add(job);
+              all.addAll(childrenByParent.getOrDefault(job.getJobId(), List.of()));
+            }
+            printJsonArray(all);
+          } else {
+            printJsonArray(topLevelJobs);
+          }
+          return;
         }
-        if (resp.hasPage() && !resp.getPage().getNextPageToken().isBlank()) {
-          out.println("next_page_token=" + resp.getPage().getNextPageToken());
+        if (!verbose) {
+          out.printf(
+              "%-8s  %-8s  %-11s  %8s  %-20s  %s%n",
+              "JOB", "STATE", "MODE", "DURATION", "TABLES", "MESSAGE");
+        }
+        for (GetReconcileJobResponse job : topLevelJobs) {
+          printReconcileJobSummary(job, verbose);
+          printReconcileChildSummary(childrenByParent.get(job.getJobId()));
+          if (showChildren) {
+            if (!verbose && !childrenByParent.getOrDefault(job.getJobId(), List.of()).isEmpty()) {
+              out.printf("  %-8s  %-32s  %8s  %s%n", "STATE", "TABLE", "DURATION", "MESSAGE");
+            }
+            for (GetReconcileJobResponse child :
+                childrenByParent.getOrDefault(job.getJobId(), List.of())) {
+              printReconcileJobSummary(child, verbose);
+            }
+          }
+        }
+        if (!showChildren && !childrenByParent.isEmpty()) {
+          out.println("tip: use --children to show table jobs");
         }
       }
       case "cancel" -> {
@@ -2172,7 +2287,7 @@ public class Shell implements Runnable {
                     .build());
         out.println("cancelled=" + resp.getCancelled());
         if (resp.hasJob()) {
-          printReconcileJob(resp.getJob());
+          printReconcileJob(resp.getJob(), false);
         }
       }
       case "settings" -> cmdReconcilerSettings(args.subList(1, args.size()));
@@ -3449,6 +3564,23 @@ public class Shell implements Runnable {
     }
   }
 
+  private void printJsonArray(List<? extends com.google.protobuf.MessageOrBuilder> messages) {
+    out.println("[");
+    for (int i = 0; i < messages.size(); i++) {
+      try {
+        out.print(jsonPrinter().print(messages.get(i)));
+      } catch (InvalidProtocolBufferException e) {
+        throw new IllegalArgumentException("failed to render protobuf as json", e);
+      }
+      if (i + 1 < messages.size()) {
+        out.println(",");
+      } else {
+        out.println();
+      }
+    }
+    out.println("]");
+  }
+
   private JsonFormat.Printer jsonPrinter() {
     return JsonFormat.printer().includingDefaultValueFields();
   }
@@ -3927,54 +4059,409 @@ public class Shell implements Runnable {
     };
   }
 
-  private void printReconcileJobSummary(GetReconcileJobResponse job) {
-    out.printf(
-        "job_id=%s connector_id=%s state=%s mode=%s duration_ms=%d scanned=%d changed=%d"
-            + " snapshots=%d stats=%d errors=%d%n",
-        job.getJobId(),
-        job.getConnectorId(),
-        job.getState().name(),
-        job.getFullRescan() ? "full" : "incremental",
-        job.getDurationMs(),
-        job.getTablesScanned(),
-        job.getTablesChanged(),
-        job.getSnapshotsProcessed(),
-        job.getStatsProcessed(),
-        job.getErrors());
-    if (job.getMessage() != null && !job.getMessage().isBlank()) {
-      out.println("message: " + job.getMessage());
+  private ExecutionClass parseExecutionClass(String s) {
+    if (s == null || s.isBlank()) {
+      return ExecutionClass.EC_UNSPECIFIED;
     }
+    return switch (s.trim().toUpperCase(Locale.ROOT).replace('-', '_')) {
+      case "DEFAULT", "EC_DEFAULT" -> ExecutionClass.EC_DEFAULT;
+      case "INTERACTIVE", "EC_INTERACTIVE" -> ExecutionClass.EC_INTERACTIVE;
+      case "BATCH", "EC_BATCH" -> ExecutionClass.EC_BATCH;
+      case "HEAVY", "EC_HEAVY" -> ExecutionClass.EC_HEAVY;
+      default -> throw new IllegalArgumentException("invalid execution class: " + s);
+    };
   }
 
-  private void printReconcileJob(GetReconcileJobResponse job) {
+  private void printReconcileJobSummary(GetReconcileJobResponse job, boolean verbose) {
+    if (verbose) {
+      printReconcileJobSummaryVerbose(job);
+      return;
+    }
+    if (isTopLevelReconcileJob(job)) {
+      out.printf(
+          "%-8s  %-8s  %-11s  %8s  %-20s  %s%n",
+          shortJobId(job.getJobId()),
+          formatJobStateCompact(job.getState()),
+          job.getFullRescan() ? "full" : "incremental",
+          formatDurationCompact(job.getDurationMs()),
+          formatTableSummary(job),
+          summarizeJobMessage(job.getMessage()));
+      String message = summarizeJobMessage(job.getMessage());
+      if (message.isBlank() && job.getErrors() > 0) {
+        out.println("  message: failed");
+      }
+      return;
+    }
+
     out.printf(
-        "job_id=%s connector_id=%s state=%s mode=%s started=%s finished=%s duration_ms=%d"
-            + " scanned=%d changed=%d snapshots=%d stats=%d errors=%d%n",
-        job.getJobId(),
-        job.getConnectorId(),
-        job.getState().name(),
+        "  %-8s  %-32s  %8s",
+        formatJobStateCompact(job.getState()),
+        formatTableTaskDisplay(job),
+        formatDurationCompact(job.getDurationMs()));
+    String message = summarizeChildJobMessage(job);
+    if (!message.isBlank()) {
+      out.print("  " + message);
+    }
+    out.println();
+  }
+
+  private void printReconcileJob(GetReconcileJobResponse job, boolean verbose) {
+    if (verbose) {
+      printReconcileJobVerbose(job);
+      return;
+    }
+    out.printf("job: %s%n", job.getJobId());
+    out.printf("  connector: %s%n", job.getConnectorId());
+    out.printf(
+        "  state: %s%n  kind: %s%n  mode: %s%n  duration: %s%n",
+        formatJobStateCompact(job.getState()),
+        formatJobKind(job.getKind()),
         job.getFullRescan() ? "full" : "incremental",
+        formatDurationCompact(job.getDurationMs()));
+    out.printf(
+        "  started: %s%n  finished: %s%n  scanned: %d  changed: %d  snapshots: %d  stats: %d  errors: %d%n",
         ts(job.getStartedAt()),
         ts(job.getFinishedAt()),
-        job.getDurationMs(),
         job.getTablesScanned(),
         job.getTablesChanged(),
         job.getSnapshotsProcessed(),
         job.getStatsProcessed(),
         job.getErrors());
+    if (hasInterestingRouting(job)) {
+      out.println("  routing: " + summarizeRouting(job));
+    }
     if (job.getMessage() != null && !job.getMessage().isBlank()) {
       var lines = splitErrorLines(job.getMessage());
       if (lines.isEmpty()) {
-        out.println("message: " + job.getMessage());
+        out.println("  message: " + job.getMessage());
       } else if (lines.size() == 1) {
-        out.println("message: " + lines.get(0));
+        out.println("  message: " + lines.get(0));
       } else {
-        out.println("message:");
+        out.println("  message:");
+        for (String line : lines) {
+          out.println("    - " + line);
+        }
+      }
+    }
+  }
+
+  private void printReconcileJobSummaryVerbose(GetReconcileJobResponse job) {
+    out.printf(
+        "job_id=%s connector_id=%s state=%s kind=%s mode=%s duration_ms=%d scanned=%d changed=%d snapshots=%d stats=%d errors=%d%n",
+        job.getJobId(),
+        job.getConnectorId(),
+        formatJobState(job.getState()),
+        formatJobKind(job.getKind()),
+        job.getFullRescan() ? "full" : "incremental",
+        job.getDurationMs(),
+        job.getTablesScanned(),
+        job.getTablesChanged(),
+        job.getSnapshotsProcessed(),
+        job.getStatsProcessed(),
+        job.getErrors());
+    out.println("routing: " + summarizeRoutingVerbose(job));
+    String message = summarizeJobMessage(job.getMessage());
+    if (!message.isBlank()) {
+      out.println("message: " + message);
+    }
+  }
+
+  private void printReconcileJobVerbose(GetReconcileJobResponse job) {
+    printReconcileJobSummaryVerbose(job);
+    out.printf("started_at=%s finished_at=%s%n", ts(job.getStartedAt()), ts(job.getFinishedAt()));
+    if (job.getMessage() != null && !job.getMessage().isBlank()) {
+      var lines = splitErrorLines(job.getMessage());
+      if (lines.size() > 1) {
+        out.println("message_detail:");
         for (String line : lines) {
           out.println("  - " + line);
         }
       }
     }
+  }
+
+  private String summarizeRoutingVerbose(GetReconcileJobResponse job) {
+    String parent =
+        job.getParentJobId() == null || job.getParentJobId().isBlank() ? "-" : job.getParentJobId();
+    String executor =
+        job.getExecutorId() == null || job.getExecutorId().isBlank() ? "-" : job.getExecutorId();
+    String table = job.hasTableTask() ? formatTableTaskShort(job) : "-";
+    return "parent_job_id="
+        + parent
+        + " executor_id="
+        + executor
+        + " policy="
+        + formatExecutionPolicy(job.getExecutionPolicy())
+        + " table="
+        + table;
+  }
+
+  private String formatJobKind(ReconcileJobKind kind) {
+    if (kind == null || kind == ReconcileJobKind.RJK_UNSPECIFIED) {
+      return "unspecified";
+    }
+    return kind.name().replace("RJK_", "").toLowerCase(Locale.ROOT);
+  }
+
+  private String formatJobStateCompact(JobState state) {
+    if (state == null || state == JobState.JS_UNSPECIFIED) {
+      return "unknown";
+    }
+    return switch (state) {
+      case JS_SUCCEEDED -> "done";
+      case JS_FAILED -> "failed";
+      case JS_QUEUED -> "queued";
+      case JS_RUNNING -> "running";
+      case JS_CANCELLING -> "stopping";
+      case JS_CANCELLED -> "stopped";
+      default -> "unknown";
+    };
+  }
+
+  private String formatJobState(JobState state) {
+    if (state == null || state == JobState.JS_UNSPECIFIED) {
+      return "unspecified";
+    }
+    return state.name().replace("JS_", "").toLowerCase(Locale.ROOT);
+  }
+
+  private String formatExecutionPolicy(ExecutionPolicy policy) {
+    if (policy == null) {
+      return "";
+    }
+    List<String> parts = new ArrayList<>();
+    if (policy.getExecutionClass() != ExecutionClass.EC_UNSPECIFIED) {
+      parts.add(
+          "class=" + policy.getExecutionClass().name().replace("EC_", "").toLowerCase(Locale.ROOT));
+    }
+    if (!policy.getLane().isBlank()) {
+      parts.add("lane=" + policy.getLane());
+    }
+    if (!policy.getAttributesMap().isEmpty()) {
+      String attrs =
+          policy.getAttributesMap().entrySet().stream()
+              .map(e -> e.getKey() + "=" + e.getValue())
+              .collect(Collectors.joining(","));
+      parts.add("attrs=" + attrs);
+    }
+    return String.join(" ", parts);
+  }
+
+  private String formatTableTask(GetReconcileJobResponse job) {
+    if (!job.hasTableTask()) {
+      return "";
+    }
+    var tableTask = job.getTableTask();
+    if (tableTask.getSourceTable().isBlank()
+        && tableTask.getSourceNamespace().isBlank()
+        && tableTask.getDestinationTableDisplayName().isBlank()) {
+      return "";
+    }
+    String source =
+        tableTask.getSourceNamespace().isBlank()
+            ? tableTask.getSourceTable()
+            : tableTask.getSourceNamespace() + "." + tableTask.getSourceTable();
+    if (tableTask.getDestinationTableDisplayName().isBlank()) {
+      return source;
+    }
+    return source + "->" + tableTask.getDestinationTableDisplayName();
+  }
+
+  private boolean isTopLevelReconcileJob(GetReconcileJobResponse job) {
+    return job.getParentJobId().isBlank();
+  }
+
+  private void printReconcileChildSummary(List<GetReconcileJobResponse> children) {
+    if (children == null || children.isEmpty()) {
+      return;
+    }
+    Map<JobState, Long> counts =
+        children.stream()
+            .collect(
+                Collectors.groupingBy(
+                    GetReconcileJobResponse::getState, LinkedHashMap::new, Collectors.counting()));
+    String summary =
+        List.of(
+                JobState.JS_RUNNING,
+                JobState.JS_QUEUED,
+                JobState.JS_SUCCEEDED,
+                JobState.JS_FAILED,
+                JobState.JS_CANCELLING,
+                JobState.JS_CANCELLED)
+            .stream()
+            .filter(state -> counts.getOrDefault(state, 0L) > 0)
+            .map(state -> counts.get(state) + " " + formatJobStateCompact(state))
+            .collect(Collectors.joining(", "));
+    if (!summary.isBlank()) {
+      out.println("children: " + summary);
+    }
+  }
+
+  private String summarizeRouting(GetReconcileJobResponse job) {
+    List<String> parts = new ArrayList<>();
+    if (!job.getParentJobId().isBlank()) {
+      parts.add("parent=" + shortJobId(job.getParentJobId()));
+    }
+    if (!job.getExecutorId().isBlank() && !"default_reconciler".equals(job.getExecutorId())) {
+      parts.add("executor=" + job.getExecutorId());
+    }
+    String executionPolicy = formatExecutionPolicy(job.getExecutionPolicy());
+    if (!executionPolicy.isBlank() && !"class=default".equals(executionPolicy)) {
+      parts.add("policy=" + executionPolicy);
+    }
+    String tableTask = formatTableTask(job);
+    if (!tableTask.isBlank()) {
+      parts.add("table=" + tableTask);
+    }
+    return String.join(" ", parts);
+  }
+
+  private boolean hasInterestingRouting(GetReconcileJobResponse job) {
+    if (!job.getParentJobId().isBlank()) {
+      return true;
+    }
+    if (!job.getExecutorId().isBlank() && !"default_reconciler".equals(job.getExecutorId())) {
+      return true;
+    }
+    String executionPolicy = formatExecutionPolicy(job.getExecutionPolicy());
+    if (!executionPolicy.isBlank() && !"class=default".equals(executionPolicy)) {
+      return true;
+    }
+    return !formatTableTask(job).isBlank();
+  }
+
+  private String summarizeJobMessage(String msg) {
+    List<String> lines = splitErrorLines(msg);
+    if (lines.isEmpty()) {
+      return "";
+    }
+    String first =
+        lines
+            .get(0)
+            .replace("RuntimeException: ", "")
+            .replace("Partial failure (errors=1):", "partial failure")
+            .replace("Processing table ", "");
+    if (lines.size() == 1) {
+      return simplifyJobMessage(first);
+    }
+    String second = lines.get(1);
+    if (second.startsWith("ns=") || second.startsWith("grpc=")) {
+      return simplifyJobMessage(first + " " + second);
+    }
+    return simplifyJobMessage(first);
+  }
+
+  private String formatTableTaskShort(GetReconcileJobResponse job) {
+    String tableTask = formatTableTask(job);
+    if (tableTask.isBlank()) {
+      return formatJobKind(job.getKind());
+    }
+    return tableTask;
+  }
+
+  private String formatTableTaskDisplay(GetReconcileJobResponse job) {
+    if (!job.hasTableTask()) {
+      return formatJobKind(job.getKind());
+    }
+    var tableTask = job.getTableTask();
+    String source = tableTask.getSourceTable();
+    String dest = tableTask.getDestinationTableDisplayName();
+    if (!dest.isBlank()) {
+      if (source.isBlank() || source.equals(dest)) {
+        return dest;
+      }
+      return source + "->" + dest;
+    }
+    if (!source.isBlank()) {
+      return source;
+    }
+    return formatJobKind(job.getKind());
+  }
+
+  private String formatTableSummary(GetReconcileJobResponse job) {
+    long done = job.getTablesChanged();
+    long total = job.getTablesScanned();
+    long failed = job.getErrors();
+    if (failed > 0) {
+      return "%d done, %d failed".formatted(done, failed);
+    }
+    if (total > done) {
+      return "%d done, %d queued".formatted(done, total - done);
+    }
+    return "%d done".formatted(done);
+  }
+
+  private String summarizeChildJobMessage(GetReconcileJobResponse job) {
+    if (job.getState() == JobState.JS_SUCCEEDED) {
+      return "";
+    }
+    String msg = summarizeJobMessage(job.getMessage());
+    if (!msg.isBlank()) {
+      return msg;
+    }
+    return switch (job.getState()) {
+      case JS_QUEUED -> "queued";
+      case JS_RUNNING -> "running";
+      case JS_FAILED -> "failed";
+      case JS_CANCELLING -> "stopping";
+      case JS_CANCELLED -> "stopped";
+      default -> "";
+    };
+  }
+
+  private String simplifyJobMessage(String msg) {
+    if (msg == null || msg.isBlank()) {
+      return "";
+    }
+    String simplified =
+        msg.replace("BadRequestException: ", "")
+            .replace("Malformed request: ", "")
+            .replace("The specified key does not exist.", "key does not exist")
+            .replace("partial failure ", "")
+            .trim();
+    int tableIdx = simplified.indexOf("table=");
+    if (tableIdx >= 0) {
+      int valueStart = tableIdx + "table=".length();
+      int valueEnd = simplified.indexOf(' ', valueStart);
+      if (valueEnd < 0) {
+        valueEnd = simplified.length();
+      }
+      String table = simplified.substring(valueStart, valueEnd);
+      int dot = table.lastIndexOf('.');
+      if (dot >= 0 && dot + 1 < table.length()) {
+        table = table.substring(dot + 1);
+      }
+      String remainder = simplified.substring(valueEnd).trim();
+      while (remainder.startsWith(":")) {
+        remainder = remainder.substring(1).trim();
+      }
+      simplified = table + (remainder.isBlank() ? "" : ": " + remainder);
+    }
+    return simplified;
+  }
+
+  private static String shortJobId(String jobId) {
+    if (jobId == null || jobId.isBlank()) {
+      return "-";
+    }
+    return jobId.length() <= 8 ? jobId : jobId.substring(0, 8);
+  }
+
+  private static String formatDurationCompact(long durationMs) {
+    if (durationMs <= 0) {
+      return "0s";
+    }
+    long totalSeconds = durationMs / 1000;
+    long seconds = totalSeconds % 60;
+    long minutes = (totalSeconds / 60) % 60;
+    long hours = totalSeconds / 3600;
+    if (hours > 0) {
+      return "%dh%02dm".formatted(hours, minutes);
+    }
+    if (minutes > 0) {
+      return "%dm%02ds".formatted(minutes, seconds);
+    }
+    return "%ds".formatted(seconds);
   }
 
   private void printReconcilerSettings(GetReconcilerSettingsResponse settings) {
