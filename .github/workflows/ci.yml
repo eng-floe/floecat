@@ -192,6 +192,8 @@ jobs:
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs" \
+          FLOECAT_REST_LOG_REQUEST_BODY=true \
+          FLOECAT_REST_LOG_COMMIT_TRAFFIC=true \
           make compose-smoke 2>&1 | tee "$SMOKE_LOG"
 
       - name: Upload Docker Smoke Artifacts
