@@ -75,6 +75,7 @@ public final class InboundCallContextHelper {
   private final boolean validateAccount;
   private final Optional<String> sessionHeader;
   private final Optional<String> authorizationHeader;
+  private final Optional<String> devAccountHeader;
   private final AuthMode authMode;
   private final String accountClaimName;
   private final String roleClaimName;
@@ -87,6 +88,7 @@ public final class InboundCallContextHelper {
       boolean validateAccount,
       Optional<String> sessionHeader,
       Optional<String> authorizationHeader,
+      Optional<String> devAccountHeader,
       String authMode,
       String accountClaimName,
       String roleClaimName) {
@@ -95,6 +97,7 @@ public final class InboundCallContextHelper {
     this.validateAccount = validateAccount;
     this.sessionHeader = sessionHeader.filter(h -> !h.isBlank());
     this.authorizationHeader = authorizationHeader.filter(h -> !h.isBlank());
+    this.devAccountHeader = devAccountHeader.filter(h -> !h.isBlank());
     this.authMode = AuthMode.fromString(authMode);
     this.accountClaimName = accountClaimName;
     this.roleClaimName = roleClaimName;
@@ -169,7 +172,7 @@ public final class InboundCallContextHelper {
 
   private ResolvedPrincipal resolvePrincipal(Function<String, String> h, String queryIdHeader) {
     return switch (authMode) {
-      case DEV -> new ResolvedPrincipal(devContext(), "");
+      case DEV -> new ResolvedPrincipal(devContext(h), "");
       case OIDC -> {
         if (this.sessionHeader.isPresent()) {
           ensureOidcConfigured("session");
@@ -422,17 +425,43 @@ public final class InboundCallContextHelper {
   //  Dev mode
   // -------------------------------------------------------------------------
 
-  private PrincipalContext devContext() {
-    String displayName = "t-0001";
+  private PrincipalContext devContext(Function<String, String> headerReader) {
     String id =
-        accountRepository
-            .getByName(displayName)
-            .map(account -> account.getResourceId().getId())
-            .orElseGet(this::firstAccountIdOrRandom);
+        readHeaderValue(headerReader, devAccountHeader)
+            .map(this::resolveDevAccountId)
+            .orElseGet(this::defaultDevAccountId);
     PrincipalContext.Builder builder =
         PrincipalContext.newBuilder().setAccountId(id).setSubject("dev-user").setLocale("en");
     RolePermissions.permissionsForRoles(List.of(), true).forEach(builder::addPermissions);
     return builder.build();
+  }
+
+  private String resolveDevAccountId(String token) {
+    String value = token.trim();
+    if (value.isEmpty()) {
+      return defaultDevAccountId();
+    }
+    if (looksLikeUuid(value)) {
+      validateAccount(value);
+      return value;
+    }
+
+    return accountRepository
+        .getByName(value)
+        .map(account -> account.getResourceId().getId())
+        .orElseThrow(
+            () ->
+                Status.UNAUTHENTICATED
+                    .withDescription("invalid or unknown account: " + value)
+                    .asRuntimeException());
+  }
+
+  private String defaultDevAccountId() {
+    String displayName = "t-0001";
+    return accountRepository
+        .getByName(displayName)
+        .map(account -> account.getResourceId().getId())
+        .orElseGet(this::firstAccountIdOrRandom);
   }
 
   private String firstAccountIdOrRandom() {
@@ -475,6 +504,15 @@ public final class InboundCallContextHelper {
 
   private static boolean isBlank(String s) {
     return s == null || s.isBlank();
+  }
+
+  private static boolean looksLikeUuid(String value) {
+    try {
+      UUID.fromString(value);
+      return true;
+    } catch (IllegalArgumentException ignored) {
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------

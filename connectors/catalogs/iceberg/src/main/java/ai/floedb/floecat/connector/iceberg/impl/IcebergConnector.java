@@ -970,7 +970,7 @@ public abstract class IcebergConnector implements FloecatConnector {
 
   static boolean parseNdvEnabled(Map<String, String> options) {
     if (options != null) {
-      String v = options.getOrDefault("stats.ndv.enabled", "true");
+      String v = options.getOrDefault("stats.ndv.enabled", "false");
       return !v.equalsIgnoreCase("false");
     }
     return false;

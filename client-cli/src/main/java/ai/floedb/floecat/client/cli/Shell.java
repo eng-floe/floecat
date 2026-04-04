@@ -244,6 +244,11 @@ public class Shell implements Runnable {
   String sessionHeaderName;
 
   @CommandLine.Option(
+      names = {"--account-header"},
+      description = "Account header name for dev mode (default: x-floe-account)")
+  String accountHeaderName;
+
+  @CommandLine.Option(
       names = {"--oidc-token-url"},
       description = "OIDC token endpoint URL (or set FLOECAT_OIDC_TOKEN_URL)")
   String oidcTokenUrl;
@@ -705,6 +710,9 @@ public class Shell implements Runnable {
     }
     if (sessionHeaderName == null || sessionHeaderName.isBlank()) {
       sessionHeaderName = "x-floe-session";
+    }
+    if (accountHeaderName == null || accountHeaderName.isBlank()) {
+      accountHeaderName = "x-floe-account";
     }
     if (currentAccountId == null || currentAccountId.isBlank()) {
       currentAccountId = accountId;
@@ -4183,6 +4191,12 @@ public class Shell implements Runnable {
           if (!session.isBlank()) {
             headers.put(
                 Metadata.Key.of(sessionHeaderName, Metadata.ASCII_STRING_MARSHALLER), session);
+          }
+
+          String account = currentAccountId == null ? "" : currentAccountId.trim();
+          if (!account.isBlank()) {
+            headers.put(
+                Metadata.Key.of(accountHeaderName, Metadata.ASCII_STRING_MARSHALLER), account);
           }
 
           super.start(responseListener, headers);
