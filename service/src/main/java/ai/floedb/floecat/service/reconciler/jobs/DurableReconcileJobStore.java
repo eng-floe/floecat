@@ -58,6 +58,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   private static final int FALLBACK_SCAN_MAX_PAGES = 200;
   private static final int CAS_MAX = 16;
+  private static final String LIST_TOKEN_V1_PREFIX = "v1:";
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -239,7 +240,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String connectorId,
       java.util.Set<String> states) {
     int limit = Math.max(1, pageSize);
-    String token = pageToken == null ? "" : pageToken;
+    ListCursor cursor = decodeListCursor(pageToken);
+    String token = cursor.storeToken();
+    int skip = cursor.skip();
     List<ReconcileJob> out = new java.util.ArrayList<>(limit);
     String nextToken = "";
     while (out.size() < limit) {
@@ -250,7 +253,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointers.isEmpty()) {
         break;
       }
-      for (int i = 0; i < pointers.size(); i++) {
+      int startIndex = Math.min(skip, pointers.size());
+      skip = 0;
+      for (int i = startIndex; i < pointers.size(); i++) {
         Pointer ptr = pointers.get(i);
         var rec = readRecord(ptr);
         if (rec.isEmpty()) {
@@ -266,7 +271,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         out.add(job);
         if (out.size() >= limit) {
           boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
-          nextToken = hasMore ? ptr.getKey() : "";
+          if (!hasMore) {
+            nextToken = "";
+          } else if (i + 1 < pointers.size()) {
+            nextToken = encodeListCursor(token, i + 1);
+          } else {
+            nextToken = next.toString();
+          }
           break;
         }
       }
@@ -1040,15 +1051,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           continue;
         }
 
-        if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
-          continue;
-        }
-
         var readyTarget = decodeReadyPointerTarget(candidate.getKey());
         if (readyTarget == null) {
           continue;
         }
         if (!matchesLeaseRequest(readyTarget.canonicalPointerKey(), request)) {
+          continue;
+        }
+        if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
           continue;
         }
         var leased = leaseCanonical(readyTarget.canonicalPointerKey(), candidate.getKey(), nowMs);
@@ -1465,6 +1475,43 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private record ReadyPointerTarget(String canonicalPointerKey) {}
+
+  private record ListCursor(String storeToken, int skip) {}
+
+  private static ListCursor decodeListCursor(String pageToken) {
+    if (pageToken == null || pageToken.isBlank()) {
+      return new ListCursor("", 0);
+    }
+    if (!pageToken.startsWith(LIST_TOKEN_V1_PREFIX)) {
+      return new ListCursor(pageToken, 0);
+    }
+    try {
+      String decoded =
+          new String(
+              Base64.getUrlDecoder().decode(pageToken.substring(LIST_TOKEN_V1_PREFIX.length())),
+              StandardCharsets.UTF_8);
+      int separator = decoded.indexOf('\n');
+      if (separator < 0) {
+        return new ListCursor(decoded, 0);
+      }
+      String storeToken = decoded.substring(0, separator);
+      int skip = Integer.parseInt(decoded.substring(separator + 1));
+      return new ListCursor(storeToken, Math.max(0, skip));
+    } catch (RuntimeException e) {
+      return new ListCursor(pageToken, 0);
+    }
+  }
+
+  private static String encodeListCursor(String storeToken, int skip) {
+    if (skip <= 0) {
+      return storeToken == null ? "" : storeToken;
+    }
+    String payload = (storeToken == null ? "" : storeToken) + "\n" + skip;
+    return LIST_TOKEN_V1_PREFIX
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+  }
 
   static final class StoredReconcileJob {
     public String jobId;
