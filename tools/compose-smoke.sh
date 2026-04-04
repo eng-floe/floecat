@@ -101,6 +101,7 @@ wait_for_connector_job() {
   local attempt
   local out
   local state
+  local normalized_state
 
   if [ -z "$job_id" ]; then
     echo "[FAIL] $label missing reconcile job id"
@@ -111,12 +112,22 @@ wait_for_connector_job() {
     out=$(run_cli_script "$compose_cmd" "account t-0001
 connector job $job_id
 quit")
-    state=$(printf "%s\n" "$out" | sed -n 's/.*state=\([A-Z_]*\).*/\1/p' | head -n1)
-    if [ "$state" = "JS_SUCCEEDED" ]; then
+    state=$(
+      printf "%s\n" "$out" \
+        | sed -n \
+            -e 's/.*state=\([A-Z_]*\).*/\1/p' \
+            -e 's/^[[:space:]]*state:[[:space:]]*\([[:alnum:]_-]*\).*/\1/p' \
+        | head -n1
+    )
+    normalized_state=$(printf "%s" "${state:-}" | tr '[:lower:]-' '[:upper:]_')
+    if [ "$normalized_state" = "JS_SUCCEEDED" ] || [ "$normalized_state" = "DONE" ]; then
       echo "[PASS] $label job succeeded ($job_id)"
       return 0
     fi
-    if [ "$state" = "JS_FAILED" ] || [ "$state" = "JS_CANCELLED" ]; then
+    if [ "$normalized_state" = "JS_FAILED" ] \
+      || [ "$normalized_state" = "JS_CANCELLED" ] \
+      || [ "$normalized_state" = "FAILED" ] \
+      || [ "$normalized_state" = "STOPPED" ]; then
       echo "$out"
       echo "[FAIL] $label job terminal state=$state ($job_id)"
       return 1
