@@ -90,6 +90,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   private static final Set<String> ACCOUNT_MUTABLE_PATHS = Set.of("display_name", "description");
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
+  private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
 
   @Override
   public Uni<ListAccountsResponse> listAccounts(ListAccountsRequest request) {
@@ -440,53 +441,84 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
 
   private void cleanupAccountResources(ResourceId accountId) {
     var accountKey = accountId.getId();
-    cleanupConnectors(accountKey);
-    cleanupCatalogs(accountKey);
+    var summary = new AccountCleanupSummary(accountKey);
+    CLEANUP_LOG.infof("account_delete_cleanup_start account_id=%s", accountKey);
+    try {
+      cleanupConnectors(accountKey, summary);
+      cleanupCatalogs(accountKey, summary);
+      CLEANUP_LOG.infof(
+          "account_delete_cleanup_complete account_id=%s connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d snapshot_prefix_deletes=%d",
+          summary.accountId,
+          summary.connectorsDeleted,
+          summary.credentialsDeleted,
+          summary.catalogsDeleted,
+          summary.namespacesDeleted,
+          summary.tablesDeleted,
+          summary.viewsDeleted,
+          summary.snapshotPrefixesDeleted);
+    } catch (RuntimeException e) {
+      CLEANUP_LOG.errorf(e, "account_delete_cleanup_failed account_id=%s", accountKey);
+      throw e;
+    }
   }
 
-  private void cleanupConnectors(String accountId) {
+  private void cleanupConnectors(String accountId, AccountCleanupSummary summary) {
     for (var connector :
         listAllPages((token, next) -> connectorRepo.list(accountId, 200, token, next))) {
       var connectorId = connector.getResourceId();
+      CLEANUP_LOG.infof(
+          "account_delete_cleanup_connector account_id=%s connector_id=%s",
+          accountId, connectorId.getId());
       connectorRepo.delete(connectorId);
       credentialResolver.delete(accountId, connectorId.getId());
+      summary.connectorsDeleted++;
+      summary.credentialsDeleted++;
     }
   }
 
-  private void cleanupCatalogs(String accountId) {
+  private void cleanupCatalogs(String accountId, AccountCleanupSummary summary) {
     for (var catalog :
         listAllPages((token, next) -> catalogRepo.list(accountId, 200, token, next))) {
-      cleanupCatalog(catalog);
+      cleanupCatalog(catalog, summary);
     }
   }
 
-  private void cleanupCatalog(Catalog catalog) {
+  private void cleanupCatalog(Catalog catalog, AccountCleanupSummary summary) {
     var catalogId = catalog.getResourceId();
+    CLEANUP_LOG.infof(
+        "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
+        catalogId.getAccountId(), catalogId.getId());
     var namespaces =
         new ArrayList<>(namespaceRepo.listIds(catalogId.getAccountId(), catalogId.getId()));
     namespaces.sort(Comparator.comparingInt(this::namespaceDepth).reversed());
     for (var namespaceId : namespaces) {
-      cleanupNamespace(namespaceId);
+      cleanupNamespace(namespaceId, summary);
     }
     catalogRepo.delete(catalogId);
     metadataGraph.invalidate(catalogId);
+    summary.catalogsDeleted++;
   }
 
-  private void cleanupNamespace(ResourceId namespaceId) {
+  private void cleanupNamespace(ResourceId namespaceId, AccountCleanupSummary summary) {
     var namespace = namespaceRepo.getById(namespaceId).orElse(null);
     if (namespace == null) {
       metadataGraph.invalidate(namespaceId);
       return;
     }
-    cleanupViews(namespace);
-    cleanupTables(namespace);
+    CLEANUP_LOG.infof(
+        "account_delete_cleanup_namespace account_id=%s namespace_id=%s catalog_id=%s",
+        namespaceId.getAccountId(), namespaceId.getId(), namespace.getCatalogId().getId());
+    cleanupViews(namespace, summary);
+    cleanupTables(namespace, summary);
     namespaceRepo.delete(namespaceId);
     metadataGraph.invalidate(namespaceId);
     markerStore.bumpCatalogMarker(namespace.getCatalogId());
     bumpParentNamespaceMarkers(namespace);
+    summary.namespacesDeleted++;
   }
 
-  private void cleanupTables(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
+  private void cleanupTables(
+      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
     for (var table :
         listAllPages(
             (token, next) ->
@@ -497,11 +529,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     200,
                     token,
                     next))) {
-      cleanupTable(table);
+      cleanupTable(table, summary);
     }
   }
 
-  private void cleanupViews(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
+  private void cleanupViews(
+      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
     for (var view :
         listAllPages(
             (token, next) ->
@@ -513,8 +546,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     token,
                     next))) {
       var viewId = view.getResourceId();
+      CLEANUP_LOG.infof(
+          "account_delete_cleanup_view account_id=%s namespace_id=%s view_id=%s",
+          viewId.getAccountId(), namespace.getResourceId().getId(), viewId.getId());
       viewRepo.delete(viewId);
       metadataGraph.invalidate(viewId);
+      summary.viewsDeleted++;
     }
   }
 
@@ -535,16 +572,25 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     }
   }
 
-  private void cleanupTable(ai.floedb.floecat.catalog.rpc.Table table) {
+  private void cleanupTable(
+      ai.floedb.floecat.catalog.rpc.Table table, AccountCleanupSummary summary) {
     var tableId = table.getResourceId();
+    CLEANUP_LOG.infof(
+        "account_delete_cleanup_table account_id=%s namespace_id=%s table_id=%s",
+        tableId.getAccountId(), table.getNamespaceId().getId(), tableId.getId());
     tableRepo.delete(tableId);
     metadataGraph.invalidate(tableId);
     markerStore.bumpNamespaceMarker(table.getNamespaceId());
-    purgeSnapshotsAndStats(tableId);
+    purgeSnapshotsAndStats(tableId, summary);
+    summary.tablesDeleted++;
   }
 
-  private void purgeSnapshotsAndStats(ResourceId tableId) {
+  private void purgeSnapshotsAndStats(ResourceId tableId, AccountCleanupSummary summary) {
+    CLEANUP_LOG.infof(
+        "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
+        tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+    summary.snapshotPrefixesDeleted++;
   }
 
   private void bumpParentNamespaceMarkers(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
@@ -556,6 +602,21 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           .getByPath(catalogId.getAccountId(), catalogId.getId(), parentPath)
           .map(ai.floedb.floecat.catalog.rpc.Namespace::getResourceId)
           .ifPresent(markerStore::bumpNamespaceMarker);
+    }
+  }
+
+  private static final class AccountCleanupSummary {
+    private final String accountId;
+    private int connectorsDeleted;
+    private int credentialsDeleted;
+    private int catalogsDeleted;
+    private int namespacesDeleted;
+    private int tablesDeleted;
+    private int viewsDeleted;
+    private int snapshotPrefixesDeleted;
+
+    private AccountCleanupSummary(String accountId) {
+      this.accountId = accountId;
     }
   }
 
