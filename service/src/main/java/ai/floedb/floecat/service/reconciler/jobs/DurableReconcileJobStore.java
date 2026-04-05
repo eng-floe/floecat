@@ -1502,41 +1502,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return new String(canonicalizer.bytes(), StandardCharsets.UTF_8);
   }
 
-  private static ListCursor decodeListCursor(String pageToken) {
-    if (pageToken == null || pageToken.isBlank()) {
-      return new ListCursor("", 0);
-    }
-    if (!pageToken.startsWith(LIST_TOKEN_V1_PREFIX)) {
-      return new ListCursor(pageToken, 0);
-    }
-    try {
-      String decoded =
-          new String(
-              Base64.getUrlDecoder().decode(pageToken.substring(LIST_TOKEN_V1_PREFIX.length())),
-              StandardCharsets.UTF_8);
-      int separator = decoded.indexOf('\n');
-      if (separator < 0) {
-        return new ListCursor(decoded, 0);
-      }
-      String storeToken = decoded.substring(0, separator);
-      int skip = Integer.parseInt(decoded.substring(separator + 1));
-      return new ListCursor(storeToken, Math.max(0, skip));
-    } catch (RuntimeException e) {
-      return new ListCursor(pageToken, 0);
-    }
-  }
-
-  private static String encodeListCursor(String storeToken, int skip) {
-    if (skip <= 0) {
-      return storeToken == null ? "" : storeToken;
-    }
-    String payload = (storeToken == null ? "" : storeToken) + "\n" + skip;
-    return LIST_TOKEN_V1_PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
-  }
-
   private static String hashValue(String value) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -1604,6 +1569,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             .withoutPadding()
             .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
   }
+
   static final class StoredReconcileJob {
     public String jobId;
     public String accountId;

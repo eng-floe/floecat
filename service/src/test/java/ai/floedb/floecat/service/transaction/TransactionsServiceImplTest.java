@@ -996,7 +996,7 @@ class TransactionsServiceImplTest {
                     .setKey(targetKey)
                     .setBlobUri(tableBlobUri)
                     .setVersion(7L)
-            .build()));
+                    .build()));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
     when(intentRepo.getByTarget(accountId, targetKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))
