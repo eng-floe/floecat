@@ -341,7 +341,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void loadCurrentMetadataFallsBackToSnapshotPropertyOnMismatchOrError() {
+  void loadCurrentMetadataPrefersCurrentSnapshotAndOnlyFallsBackOnError() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
         Table.newBuilder()
@@ -370,11 +370,8 @@ class TableGatewaySupportTest {
 
     IcebergMetadata loaded = support.loadCurrentMetadata(table);
 
-    assertEquals("t-99", loaded.getTableUuid());
-    ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
-    verify(grpcClient, times(2)).getSnapshot(captor.capture());
-    assertEquals(tableId, captor.getAllValues().get(1).getTableId());
-    assertEquals(99L, captor.getAllValues().get(1).getSnapshot().getSnapshotId());
+    assertEquals("t-11", loaded.getTableUuid());
+    verify(grpcClient, times(1)).getSnapshot(any());
 
     when(grpcClient.getSnapshot(any()))
         .thenThrow(Status.UNAVAILABLE.asRuntimeException())
@@ -388,6 +385,10 @@ class TableGatewaySupportTest {
                 .build());
     IcebergMetadata recovered = support.loadCurrentMetadata(table);
     assertEquals("t-99", recovered.getTableUuid());
+    ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
+    verify(grpcClient, times(3)).getSnapshot(captor.capture());
+    assertEquals(tableId, captor.getAllValues().get(2).getTableId());
+    assertEquals(99L, captor.getAllValues().get(2).getSnapshot().getSnapshotId());
   }
 
   @Test

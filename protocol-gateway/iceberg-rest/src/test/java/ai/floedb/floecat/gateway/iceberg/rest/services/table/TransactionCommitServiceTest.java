@@ -983,6 +983,61 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(materializationService, never())
         .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTable()
+                                    && "s3://meta/original/00002.metadata.json"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("metadata-location")))));
+  }
+
+  @Test
+  void commitWithInvalidExplicitMetadataLocationReturnsValidationError() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("metadata-location", "s3://meta/original/00002.metadata.json")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+
+    Response response =
+        service.commit(
+            "pref",
+            "idem",
+            requestWithSetMetadataLocationAndAddSnapshot("not a uri", 123L),
+            tableSupport);
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+    verify(materializationService, never())
+        .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(grpcClient, never()).prepareTransaction(any());
   }
 
   @Test

@@ -146,6 +146,31 @@ public final class TableMetadataViews {
       return this;
     }
 
+    public Builder refs(Map<String, Object> value) {
+      this.refs = value;
+      return this;
+    }
+
+    public Builder snapshotLog(List<Map<String, Object>> value) {
+      this.snapshotLog = value;
+      return this;
+    }
+
+    public Builder metadataLog(List<Map<String, Object>> value) {
+      this.metadataLog = value;
+      return this;
+    }
+
+    public Builder statistics(List<Map<String, Object>> value) {
+      this.statistics = value;
+      return this;
+    }
+
+    public Builder partitionStatistics(List<Map<String, Object>> value) {
+      this.partitionStatistics = value;
+      return this;
+    }
+
     public Builder snapshots(List<Map<String, Object>> value) {
       this.snapshots = value;
       return this;
