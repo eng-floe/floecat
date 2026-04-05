@@ -191,6 +191,7 @@ jobs:
           SMOKE_LOG="$DEBUG_DIR/docker-smoke.log"
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
+          COMPOSE_SMOKE_DUCKDB_IMAGE=duckdb/duckdb:1.4.4 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs" \
           make compose-smoke 2>&1 | tee "$SMOKE_LOG"
 
