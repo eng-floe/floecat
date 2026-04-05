@@ -349,7 +349,14 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
   @Override
   public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return statsRepository.getTableStats(tableId, snapshotId).isPresent();
+    var tableStats = statsRepository.getTableStats(tableId, snapshotId).orElse(null);
+    if (tableStats == null) {
+      return false;
+    }
+    if (tableStats.getDataFileCount() <= 0) {
+      return true;
+    }
+    return statsRepository.countFileStats(tableId, snapshotId) > 0;
   }
 
   @Override
