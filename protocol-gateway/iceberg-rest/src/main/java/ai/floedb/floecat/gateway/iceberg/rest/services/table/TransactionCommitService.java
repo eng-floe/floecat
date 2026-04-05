@@ -32,6 +32,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
@@ -57,6 +58,7 @@ import io.grpc.protobuf.StatusProto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -587,6 +589,10 @@ public class TransactionCommitService {
     }
     String requestedLocation =
         CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
+    if (requestedLocation != null && !isValidExplicitMetadataLocation(requestedLocation)) {
+      return new PreMaterializedTable(
+          plannedTable, IcebergErrorResponses.validation("metadata-location must be a valid URI"));
+    }
     boolean skipMaterialization = requestedLocation != null;
     // Materialize metadata for every commit so metadata-location advances atomically with table
     // state, including snapshot-mutating updates.
@@ -623,7 +629,11 @@ public class TransactionCommitService {
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {
-      return new PreMaterializedTable(canonicalizedTable, null);
+      return new PreMaterializedTable(
+          canonicalizedTable.toBuilder()
+              .putProperties(MetadataLocationUtil.PRIMARY_KEY, requestedLocation)
+              .build(),
+          null);
     }
     MaterializeMetadataResult result =
         materializationService.materializeMetadata(
@@ -645,6 +655,22 @@ public class TransactionCommitService {
     }
     return new PreMaterializedTable(
         canonicalizedTable.toBuilder().putProperties("metadata-location", location).build(), null);
+  }
+
+  private boolean isValidExplicitMetadataLocation(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return false;
+    }
+    try {
+      URI uri = URI.create(metadataLocation);
+      if (uri.getScheme() == null || uri.getScheme().isBlank()) {
+        return false;
+      }
+      String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
+      return directory != null && !directory.isBlank();
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
   }
 
   private SnapshotChangePlan planAtomicSnapshotChanges(

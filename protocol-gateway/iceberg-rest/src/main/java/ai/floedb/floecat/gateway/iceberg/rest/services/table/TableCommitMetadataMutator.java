@@ -273,8 +273,7 @@ public class TableCommitMetadataMutator {
         merged.isEmpty() ? List.of() : List.copyOf(merged.values());
     Long requestSequence = parsed.maxSnapshotSequenceNumber();
     Long snapshotSequence = maxSequenceFromSnapshots(updatedSnapshots);
-    Long existingSequence = metadata.lastSequenceNumber();
-    Long maxSequence = maxNonNull(snapshotSequence, requestSequence, existingSequence);
+    Long maxSequence = maxNonNull(snapshotSequence, requestSequence);
     Integer formatVersion =
         normalizeFormatVersionForSnapshots(metadata.formatVersion(), requestSequence);
     Map<String, String> props =
@@ -282,6 +281,7 @@ public class TableCommitMetadataMutator {
             ? new LinkedHashMap<>()
             : new LinkedHashMap<>(metadata.properties());
     Long currentSnapshotId = desiredCurrentSnapshotId(metadata, parsed, updatedSnapshots, props);
+    Map<String, Object> refs = mergeSnapshotRefs(metadata.refs(), parsed, currentSnapshotId);
     if (maxSequence != null && maxSequence > 0) {
       props.put("last-sequence-number", Long.toString(maxSequence));
     }
@@ -304,6 +304,11 @@ public class TableCommitMetadataMutator {
         metadata.schemas(),
         metadata.partitionSpecs(),
         metadata.sortOrders(),
+        refs,
+        metadata.snapshotLog(),
+        metadata.metadataLog(),
+        metadata.statistics(),
+        metadata.partitionStatistics(),
         updatedSnapshots);
   }
 
@@ -353,6 +358,52 @@ public class TableCommitMetadataMutator {
       List<Map<String, Object>> partitionSpecs,
       List<Map<String, Object>> sortOrders,
       List<Map<String, Object>> snapshots) {
+    return copyMetadata(
+        base,
+        formatVersion,
+        location,
+        metadataLocation,
+        properties,
+        lastColumnId,
+        currentSchemaId,
+        defaultSpecId,
+        lastPartitionId,
+        defaultSortOrderId,
+        currentSnapshotId,
+        lastSequenceNumber,
+        schemas,
+        partitionSpecs,
+        sortOrders,
+        base.refs(),
+        base.snapshotLog(),
+        base.metadataLog(),
+        base.statistics(),
+        base.partitionStatistics(),
+        snapshots);
+  }
+
+  private TableMetadataView copyMetadata(
+      TableMetadataView base,
+      Integer formatVersion,
+      String location,
+      String metadataLocation,
+      Map<String, String> properties,
+      Integer lastColumnId,
+      Integer currentSchemaId,
+      Integer defaultSpecId,
+      Integer lastPartitionId,
+      Integer defaultSortOrderId,
+      Long currentSnapshotId,
+      Long lastSequenceNumber,
+      List<Map<String, Object>> schemas,
+      List<Map<String, Object>> partitionSpecs,
+      List<Map<String, Object>> sortOrders,
+      Map<String, Object> refs,
+      List<Map<String, Object>> snapshotLog,
+      List<Map<String, Object>> metadataLog,
+      List<Map<String, Object>> statistics,
+      List<Map<String, Object>> partitionStatistics,
+      List<Map<String, Object>> snapshots) {
     return TableMetadataViews.copy(base)
         .formatVersion(formatVersion)
         .location(location)
@@ -368,6 +419,11 @@ public class TableCommitMetadataMutator {
         .schemas(schemas)
         .partitionSpecs(partitionSpecs)
         .sortOrders(sortOrders)
+        .refs(refs)
+        .snapshotLog(snapshotLog)
+        .metadataLog(metadataLog)
+        .statistics(statistics)
+        .partitionStatistics(partitionStatistics)
         .snapshots(snapshots)
         .build();
   }
@@ -450,18 +506,66 @@ public class TableCommitMetadataMutator {
       CommitUpdateInspector.Parsed parsed,
       List<Map<String, Object>> updatedSnapshots,
       Map<String, String> props) {
-    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
-    if (propertyCurrentSnapshotId != null && propertyCurrentSnapshotId >= 0) {
-      return propertyCurrentSnapshotId;
-    }
     Long requestedMainRefSnapshotId = parsed == null ? null : parsed.requestedMainRefSnapshotId();
     if (requestedMainRefSnapshotId != null && requestedMainRefSnapshotId >= 0) {
       return requestedMainRefSnapshotId;
+    }
+    Long propertyCurrentSnapshotId = parseLong(props.get("current-snapshot-id"));
+    if (propertyCurrentSnapshotId != null && propertyCurrentSnapshotId >= 0) {
+      return propertyCurrentSnapshotId;
     }
     if (metadata.currentSnapshotId() == null) {
       return latestSnapshotId(updatedSnapshots);
     }
     return metadata.currentSnapshotId();
+  }
+
+  private Map<String, Object> mergeSnapshotRefs(
+      Map<String, Object> existingRefs,
+      CommitUpdateInspector.Parsed parsed,
+      Long currentSnapshotId) {
+    Map<String, Object> refs = new LinkedHashMap<>();
+    if (existingRefs != null && !existingRefs.isEmpty()) {
+      refs.putAll(existingRefs);
+    }
+    if (parsed != null) {
+      for (CommitUpdateInspector.SnapshotRefMutation mutation : parsed.snapshotRefMutations()) {
+        if (mutation == null) {
+          continue;
+        }
+        String refName = mutation.refName();
+        if (refName == null || refName.isBlank()) {
+          continue;
+        }
+        if (mutation.remove()) {
+          refs.remove(refName);
+          continue;
+        }
+        Long snapshotId = mutation.snapshotId();
+        if (snapshotId == null || snapshotId < 0) {
+          continue;
+        }
+        Map<String, Object> ref = new LinkedHashMap<>();
+        ref.put("snapshot-id", snapshotId);
+        ref.put(
+            "type",
+            mutation.type() == null || mutation.type().isBlank() ? "branch" : mutation.type());
+        if (mutation.maxRefAgeMs() != null) {
+          ref.put("max-ref-age-ms", mutation.maxRefAgeMs());
+        }
+        if (mutation.maxSnapshotAgeMs() != null) {
+          ref.put("max-snapshot-age-ms", mutation.maxSnapshotAgeMs());
+        }
+        if (mutation.minSnapshotsToKeep() != null) {
+          ref.put("min-snapshots-to-keep", mutation.minSnapshotsToKeep());
+        }
+        refs.put(refName, Map.copyOf(ref));
+      }
+    }
+    if (currentSnapshotId != null && currentSnapshotId >= 0) {
+      refs.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
+    }
+    return Map.copyOf(refs);
   }
 
   private Long latestSnapshotId(List<Map<String, Object>> snapshots) {

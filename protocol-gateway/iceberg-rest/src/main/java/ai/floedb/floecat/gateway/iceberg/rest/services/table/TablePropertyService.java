@@ -417,6 +417,7 @@ public class TablePropertyService {
     syncLongProperty(props, "current-snapshot-id", metadata.currentSnapshotId());
     putStringProperty(props, "table-uuid", metadata.tableUuid());
     putStringProperty(props, "location", metadata.location());
+    syncRefProperty(props, metadata.refs());
     return plannedTable.toBuilder().clearProperties().putAllProperties(props).build();
   }
 
@@ -450,6 +451,39 @@ public class TablePropertyService {
       return;
     }
     props.put(key, Long.toString(value));
+  }
+
+  private void syncRefProperty(Map<String, String> props, Map<String, Object> refs) {
+    if (props == null) {
+      return;
+    }
+    if (refs == null || refs.isEmpty()) {
+      props.remove(RefPropertyUtil.PROPERTY_KEY);
+      return;
+    }
+    Map<String, Map<String, Object>> encoded = new LinkedHashMap<>();
+    refs.forEach(
+        (name, value) -> {
+          if (name == null || name.isBlank() || !(value instanceof Map<?, ?> rawRef)) {
+            return;
+          }
+          Map<String, Object> ref = new LinkedHashMap<>();
+          rawRef.forEach(
+              (k, v) -> {
+                if (k instanceof String key && v != null) {
+                  ref.put(key, v);
+                }
+              });
+          if (!ref.isEmpty()) {
+            encoded.put(name, Map.copyOf(ref));
+          }
+        });
+    String encodedRefs = RefPropertyUtil.encode(encoded);
+    if (encodedRefs == null || encodedRefs.isBlank()) {
+      props.remove(RefPropertyUtil.PROPERTY_KEY);
+      return;
+    }
+    props.put(RefPropertyUtil.PROPERTY_KEY, encodedRefs);
   }
 
   // TableMappingUtil provides asString.

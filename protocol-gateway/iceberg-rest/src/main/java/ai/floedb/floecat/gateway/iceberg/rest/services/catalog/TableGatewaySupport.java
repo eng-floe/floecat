@@ -363,14 +363,7 @@ public class TableGatewaySupport {
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
-      var snapshot = response.getSnapshot();
-      Long propertySnapshotId = propertyLong(table.getPropertiesMap(), "current-snapshot-id");
-      if (propertySnapshotId != null
-          && propertySnapshotId > 0
-          && snapshot.getSnapshotId() != propertySnapshotId) {
-        return loadSnapshotById(table.getResourceId(), propertySnapshotId);
-      }
-      return SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
+      return SnapshotMetadataUtil.parseSnapshotMetadata(response.getSnapshot());
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }
