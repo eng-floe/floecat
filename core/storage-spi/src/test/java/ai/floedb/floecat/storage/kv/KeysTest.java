@@ -80,4 +80,12 @@ public class KeysTest {
         "/accounts/acct%20id/tx-outbox/dead-letter/0000000000000000123/table%20id/tx%20id",
         Keys.tableCommitOutboxDeadLetterPointer(123L, "acct id", "table id", "tx id"));
   }
+
+  @Test
+  void transactionDeleteSentinelUriUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/transactions/tx%20id/delete/%2Faccounts%2Facct%2520id%2Ftables%2Ftable%2520id%2Fsnapshots%2Fby-id%2F0000000000000000007",
+        Keys.transactionDeleteSentinelUri(
+            "acct id", "tx id", Keys.snapshotPointerById("acct id", "table id", 7L)));
+  }
 }

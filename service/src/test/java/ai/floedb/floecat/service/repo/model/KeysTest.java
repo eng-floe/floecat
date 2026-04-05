@@ -52,4 +52,12 @@ class KeysTest {
         "/accounts/acct%20id/tables/table%20id/snapshots/0000000000000000007/stats/constraints",
         Keys.snapshotConstraintsStatsPointer("acct id", "table id", 7L));
   }
+
+  @Test
+  void transactionDeleteSentinelUriUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/transactions/tx%20id/delete/%2Faccounts%2Facct%2520id%2Ftables%2Ftable%2520id%2Fsnapshots%2Fby-id%2F0000000000000000007",
+        Keys.transactionDeleteSentinelUri(
+            "acct id", "tx id", Keys.snapshotPointerById("acct id", "table id", 7L)));
+  }
 }

@@ -61,6 +61,7 @@ import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -79,6 +80,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -2774,6 +2776,72 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NOT_FOUND.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
+  }
+
+  @Test
+  void commitWithRemoveSnapshotsDeletesSnapshotPointersTransactionally() {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    AtomicReference<PrepareTransactionRequest> prepared = new AtomicReference<>();
+    when(grpcClient.prepareTransaction(any()))
+        .thenAnswer(
+            invocation -> {
+              PrepareTransactionRequest request = invocation.getArgument(0);
+              prepared.set(request);
+              return PrepareTransactionResponse.newBuilder()
+                  .setTransaction(
+                      Transaction.newBuilder()
+                          .setTxId("tx-1")
+                          .setState(TransactionState.TS_PREPARED))
+                  .build();
+            });
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+    when(grpcClient.getSnapshot(any()))
+        .thenReturn(
+            ai.floedb.floecat.catalog.rpc.GetSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setSnapshotId(123L)
+                        .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(456L)))
+                .build());
+
+    Response response =
+        service.commit("pref", "idem", requestWithRemoveSnapshots(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    PrepareTransactionRequest request = prepared.get();
+    assertEquals(
+        2L,
+        request.getChangesList().stream()
+            .filter(
+                change ->
+                    change.hasTargetPointerKey()
+                        && change.getTargetPointerKey().contains("/snapshots/")
+                        && change.hasIntendedBlobUri())
+            .count());
+    assertEquals(
+        2L,
+        request.getChangesList().stream()
+            .filter(
+                change ->
+                    change.hasTargetPointerKey()
+                        && change.getTargetPointerKey().contains("/snapshots/")
+                        && change.getIntendedBlobUri().contains("/delete/"))
+            .count());
   }
 
   private TransactionCommitRequest request() {

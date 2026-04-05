@@ -49,6 +49,7 @@ import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import com.google.protobuf.FieldMask;
@@ -96,6 +97,7 @@ public class ConnectorIT {
   @Inject NamespaceRepository namespaces;
   @Inject TableRepository tables;
   @Inject SnapshotRepository snaps;
+  @Inject StatsRepository statsRepository;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -419,6 +421,109 @@ public class ConnectorIT {
     assertEquals(0L, incrementalJob.snapshotsProcessed, "incremental should find no new snapshots");
     assertEquals(0L, incrementalJob.statsProcessed, "incremental should process no new stats");
     assertEquals(snapshotCountAfterFull, snaps.count(table.getResourceId()));
+  }
+
+  @Test
+  void icebergFixtureIncrementalReconcileBackfillsMissingStatsForExistingSnapshot()
+      throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-backfill-stats", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-backfill-stats")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put(
+        "external.metadata-location",
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-backfill-stats")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(TestS3Fixtures.bucketUri(null))
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var fullJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(fullJob);
+    assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
+    assertTrue(fullJob.fullRescan);
+    assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
+    assertTrue(fullJob.statsProcessed > 0, "expected full reconcile to process stats");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-backfill-stats")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    long currentSnapshotId =
+        snaps.getCurrentSnapshot(table.getResourceId()).orElseThrow().getSnapshotId();
+    assertTrue(currentSnapshotId > 0, "expected a current snapshot after full reconcile");
+    assertTrue(
+        statsRepository.deleteAllStatsForSnapshot(table.getResourceId(), currentSnapshotId),
+        "expected stats deletion for current snapshot to succeed");
+
+    var emptyFileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(currentSnapshotId).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+    assertEquals(
+        0,
+        emptyFileResp.getFileColumnsCount(),
+        "expected current snapshot file stats to be absent before backfill");
+
+    var incrementalJob = runReconcile(conn.getResourceId(), false);
+    assertNotNull(incrementalJob);
+    assertEquals(
+        "JS_SUCCEEDED", incrementalJob.state, () -> "job failed: " + incrementalJob.message);
+    assertFalse(incrementalJob.fullRescan);
+    assertTrue(
+        incrementalJob.snapshotsProcessed > 0,
+        "incremental should revisit existing snapshot when stats are missing");
+    assertTrue(
+        incrementalJob.statsProcessed > 0,
+        "incremental should regenerate stats for existing snapshot when missing");
+
+    var restoredFileResp =
+        statsService.listFileColumnStats(
+            ListFileColumnStatsRequest.newBuilder()
+                .setTableId(table.getResourceId())
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(currentSnapshotId).build())
+                .setPage(PageRequest.newBuilder().setPageSize(200))
+                .build());
+    assertTrue(
+        restoredFileResp.getFileColumnsCount() > 0,
+        "expected current snapshot file stats to be restored by incremental reconcile");
   }
 
   @Test

@@ -252,6 +252,50 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
+  void applyTransactionRejectsTableDeleteWhenCurrentByIdBlobTargetsDifferentTable()
+      throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String byIdKey = Keys.tablePointerById(accountId, "table-a");
+    String wrongBlobUri = "/accounts/acct/tables/table-b/table/blob.pb";
+    Table wrongTable =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId("table-b"))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId("cat-1"))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId("ns-1"))
+            .setDisplayName("orders-b")
+            .build();
+    blobs.put(wrongBlobUri, wrongTable.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(
+        byIdKey,
+        0L,
+        Pointer.newBuilder().setKey(byIdKey).setBlobUri(wrongBlobUri).setVersion(1L).build());
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, "tx-1", byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("TABLE_INTENT_TARGET_MISMATCH", outcome.errorCode());
+    assertTrue(pointers.get(byIdKey).isPresent(), "mismatched table delete must not remove by-id");
+  }
+
+  @Test
   void applyTransactionReportsNamePointerConflictWithoutPartialApply() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
