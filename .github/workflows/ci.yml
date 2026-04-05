@@ -191,6 +191,7 @@ jobs:
           SMOKE_LOG="$DEBUG_DIR/docker-smoke.log"
           mkdir -p "$DEBUG_DIR"
           LOCALSTACK_ENDPOINT=http://localstack:4566 \
+          COMPOSE_SMOKE_DUCKDB_IMAGE=duckdb/duckdb:1.4.4 \
           COMPOSE_SMOKE_SAVE_LOG_DIR="$DEBUG_DIR/compose-logs" \
           FLOECAT_REST_LOG_REQUEST_BODY=true \
           FLOECAT_REST_LOG_COMMIT_TRAFFIC=true \
