@@ -64,7 +64,6 @@ class TableCommitOutboxServiceTest {
   void processPendingNowClearsMarkerOnSuccess() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
     String pendingKey = Keys.tableCommitOutboxPendingPointer(123L, "acct-1", "tbl-1", "tx-1");
-    when(sideEffectService.pruneRemovedSnapshots(tableId, List.of(8L))).thenReturn(true);
     when(sideEffectService.runPostCommitStatsSyncAttempt(
             tableSupport, null, List.of("db"), "orders", List.of(7L)))
         .thenReturn(true);
@@ -87,7 +86,6 @@ class TableCommitOutboxServiceTest {
   void processPendingNowLeavesMarkerWhenSideEffectsFail() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
     String pendingKey = Keys.tableCommitOutboxPendingPointer(123L, "acct-1", "tbl-1", "tx-1");
-    when(sideEffectService.pruneRemovedSnapshots(tableId, List.of())).thenReturn(true);
     when(sideEffectService.runPostCommitStatsSyncAttempt(
             tableSupport, null, List.of("db"), "orders", List.of(7L)))
         .thenReturn(false);
@@ -155,7 +153,6 @@ class TableCommitOutboxServiceTest {
                     .setTableName("orders")
                     .addAddedSnapshotIds(7L)
                     .build()));
-    when(sideEffectService.pruneRemovedSnapshots(any(), anyList())).thenReturn(true);
     when(sideEffectService.runPostCommitStatsSyncAttempt(
             tableSupport, null, List.of("db"), "orders", List.of(7L)))
         .thenReturn(true);
@@ -175,7 +172,6 @@ class TableCommitOutboxServiceTest {
   void processPendingNowMovesToDeadLetterAfterMaxAttempts() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
     String pendingKey = Keys.tableCommitOutboxPendingPointer(123L, "acct-1", "tbl-1", "tx-1");
-    when(sideEffectService.pruneRemovedSnapshots(tableId, List.of())).thenReturn(true);
     when(sideEffectService.runPostCommitStatsSyncAttempt(
             tableSupport, null, List.of("db"), "orders", List.of(7L)))
         .thenReturn(false);

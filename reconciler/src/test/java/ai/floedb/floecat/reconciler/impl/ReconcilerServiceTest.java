@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.LongPredicate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -1164,22 +1165,38 @@ class ReconcilerServiceTest {
   }
 
   @Test
-  void knownSnapshotIdsForEnumerationPrunesAllIncrementalRuns() throws Exception {
+  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsForMetadataOnlyRuns() throws Exception {
     @SuppressWarnings("unchecked")
     Set<Long> metadataOnly =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, false, Set.of(10L, 11L), id -> false);
     @SuppressWarnings("unchecked")
-    Set<Long> metadataAndStats =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    @SuppressWarnings("unchecked")
-    Set<Long> statsOnly = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    @SuppressWarnings("unchecked")
-    Set<Long> fullRescan = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(true, Set.of(10L, 11L));
+    Set<Long> fullRescan =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(true, false, Set.of(10L, 11L), id -> false);
 
     assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(metadataAndStats).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(statsOnly).containsExactlyInAnyOrder(10L, 11L);
     assertThat(fullRescan).isEmpty();
+  }
+
+  @Test
+  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsWithoutStatsEnumerable() throws Exception {
+    @SuppressWarnings("unchecked")
+    Set<Long> statsOnly =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, true, Set.of(10L, 11L), id -> false);
+
+    assertThat(statsOnly).isEmpty();
+  }
+
+  @Test
+  void knownSnapshotIdsForEnumerationPrunesOnlyKnownSnapshotsWithCapturedStats() throws Exception {
+    @SuppressWarnings("unchecked")
+    Set<Long> statsOnly =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, true, Set.of(10L, 11L), id -> id == 10L);
+
+    assertThat(statsOnly).containsExactly(10L);
   }
 
   @Test
@@ -1239,12 +1256,20 @@ class ReconcilerServiceTest {
   }
 
   private static Object invokeKnownSnapshotIdsForEnumeration(
-      boolean fullRescan, Set<Long> existingSnapshotIds) throws Exception {
+      boolean fullRescan,
+      boolean includeStats,
+      Set<Long> existingSnapshotIds,
+      LongPredicate statsAlreadyCaptured)
+      throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
-            "knownSnapshotIdsForEnumeration", boolean.class, Set.class);
+            "knownSnapshotIdsForEnumeration",
+            boolean.class,
+            boolean.class,
+            Set.class,
+            LongPredicate.class);
     method.setAccessible(true);
-    return method.invoke(null, fullRescan, existingSnapshotIds);
+    return method.invoke(null, fullRescan, includeStats, existingSnapshotIds, statsAlreadyCaptured);
   }
 
   private static boolean invokeTableChanged(List<FloecatConnector.SnapshotBundle> bundles)

@@ -339,7 +339,11 @@ public class ReconcilerService {
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
-              knownSnapshotIdsForEnumeration(fullRescan, knownSnapshotIds);
+              knownSnapshotIdsForEnumeration(
+                  fullRescan,
+                  includeStats,
+                  knownSnapshotIds,
+                  snapshotId -> backend.statsAlreadyCaptured(ctx, destTableId, snapshotId));
           var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq,
@@ -801,11 +805,32 @@ public class ReconcilerService {
   }
 
   private static Set<Long> knownSnapshotIdsForEnumeration(
-      boolean fullRescan, Set<Long> knownSnapshotIds) {
+      boolean fullRescan,
+      boolean includeStats,
+      Set<Long> knownSnapshotIds,
+      LongPredicate statsAlreadyCaptured) {
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return Set.of();
     }
-    return Set.copyOf(knownSnapshotIds);
+    if (!includeStats) {
+      return Set.copyOf(knownSnapshotIds);
+    }
+    if (statsAlreadyCaptured == null) {
+      return Set.of();
+    }
+    Set<Long> fullyCaptured = new LinkedHashSet<>();
+    for (Long snapshotId : knownSnapshotIds) {
+      if (snapshotId == null || snapshotId < 0) {
+        continue;
+      }
+      if (statsAlreadyCaptured.test(snapshotId)) {
+        fullyCaptured.add(snapshotId);
+      }
+    }
+    if (fullyCaptured.isEmpty()) {
+      return Set.of();
+    }
+    return Set.copyOf(fullyCaptured);
   }
 
   private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {

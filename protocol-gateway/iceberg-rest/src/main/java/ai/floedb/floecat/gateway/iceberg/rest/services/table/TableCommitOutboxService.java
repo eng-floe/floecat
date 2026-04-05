@@ -68,8 +68,6 @@ public class TableCommitOutboxService {
       if (item == null || item.pendingKey() == null || item.pendingKey().isBlank()) {
         continue;
       }
-      boolean pruned =
-          sideEffectService.pruneRemovedSnapshots(item.tableId(), item.removedSnapshotIds());
       boolean statsCaptured =
           sideEffectService.runPostCommitStatsSyncAttempt(
               tableSupport,
@@ -77,7 +75,7 @@ public class TableCommitOutboxService {
               item.namespacePath(),
               item.tableName(),
               item.addedSnapshotIds());
-      if (pruned && statsCaptured) {
+      if (statsCaptured) {
         clearPending(item.pendingKey());
       } else {
         markPendingForRetryOrDeadLetter(

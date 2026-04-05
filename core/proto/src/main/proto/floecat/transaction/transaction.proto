@@ -116,6 +116,7 @@ message TransactionIntent {
   string blob_uri = 4;
   optional int64 expected_version = 5;
   google.protobuf.Timestamp created_at = 6;
+  optional string expected_owned_name_pointer_key = 7;
   optional string apply_error_code = 20;
   optional string apply_error_message = 21;
   optional int64 apply_error_expected_version = 22;

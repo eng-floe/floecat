@@ -59,7 +59,7 @@ class TableCommitSideEffectServiceTest {
 
     verify(tableSupport)
         .runSyncStatisticsCapture(
-            eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(true));
+            eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(false));
   }
 
   @Test
@@ -88,6 +88,6 @@ class TableCommitSideEffectServiceTest {
 
     verify(tableSupport)
         .runSyncStatisticsCapture(
-            eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(true));
+            eq(connectorId), eq(List.of("db")), eq("orders"), eq(List.of(101L, 102L)), eq(false));
   }
 }

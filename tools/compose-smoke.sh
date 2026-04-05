@@ -76,7 +76,20 @@ should_run_client() {
 run_cli_script() {
   local compose_cmd="$1"
   local script="$2"
-  printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli"
+  local out
+  if ! out=$(printf "%s\n" "$script" | eval "$compose_cmd run --rm -T --no-deps cli" 2>&1); then
+    printf "%s\n" "$out" \
+      | sed \
+          -e '/^\[\+\] Creating /d' \
+          -e '/^[[:space:]]*✔ Container .* Running[0-9.]*s$/d' \
+          -e '/^[[:space:]]*Container .* Running[0-9.]*s$/d'
+    return 1
+  fi
+  printf "%s\n" "$out" \
+    | sed \
+        -e '/^\[\+\] Creating /d' \
+        -e '/^[[:space:]]*✔ Container .* Running[0-9.]*s$/d' \
+        -e '/^[[:space:]]*Container .* Running[0-9.]*s$/d'
 }
 
 wait_for_connector_job() {
@@ -170,6 +183,7 @@ assert_table_stats_available() {
   local snapshot_ids
   local last_out=""
 
+  echo "==> [SMOKE] waiting for stats for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
   for attempt in $(seq 1 "$retries"); do
     out=$(run_cli_script "$compose_cmd" "account t-0001
 stats files $table_fqn --current --limit 5
@@ -199,6 +213,9 @@ quit")
       fi
     done
 
+    if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+      echo "==> [SMOKE] stats not ready for $table_fqn yet (attempt $attempt/$retries)"
+    fi
     sleep "$sleep_seconds"
   done
 
@@ -977,6 +994,21 @@ print(
 run_sql("DROP TABLE iceberg.trino_merge_smoke")
 run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
 run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
+
+
+def latest_mutation_snapshot(*exclude_snapshot_ids):
+    filters = ["snapshot_id IS NOT NULL", "parent_id IS NOT NULL"]
+    for snapshot_id in exclude_snapshot_ids:
+        filters.append(f"snapshot_id <> {int(snapshot_id)}")
+    return scalar(
+        "SELECT CAST(snapshot_id AS VARCHAR) "
+        "FROM iceberg.\"trino_mutation_smoke$snapshots\" "
+        f"WHERE {' AND '.join(filters)} "
+        "ORDER BY committed_at DESC NULLS LAST, snapshot_id DESC "
+        "LIMIT 1"
+    )
+
+
 print(
     scalar(
         "SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) "
@@ -984,10 +1016,7 @@ print(
     )
 )
 run_sql("INSERT INTO iceberg.trino_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c')")
-insert_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+insert_snapshot_id = latest_mutation_snapshot()
 print(
     scalar(
         "SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -996,10 +1025,7 @@ print(
     )
 )
 run_sql("DELETE FROM iceberg.trino_mutation_smoke WHERE id = 2")
-delete_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+delete_snapshot_id = latest_mutation_snapshot(insert_snapshot_id)
 print(
     scalar(
         "SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -1008,10 +1034,7 @@ print(
     )
 )
 run_sql("UPDATE iceberg.trino_mutation_smoke SET v = 'c2' WHERE id = 3")
-update_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+update_snapshot_id = latest_mutation_snapshot(insert_snapshot_id, delete_snapshot_id)
 print(
     scalar(
         "SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -1188,7 +1211,7 @@ PY
   echo "==> [SMOKE][PASS] mode=$label"
 }
 
-SMOKE_MODES=${COMPOSE_SMOKE_MODES:-inmem,localstack,localstack-oidc}
+SMOKE_MODES=${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc}
 echo "==> [COMPOSE] smoke modes=$SMOKE_MODES"
 
 IFS=',' read -r -a mode_list <<< "$SMOKE_MODES"

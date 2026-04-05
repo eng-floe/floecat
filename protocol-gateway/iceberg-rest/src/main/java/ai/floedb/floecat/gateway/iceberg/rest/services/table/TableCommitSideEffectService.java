@@ -16,32 +16,28 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
-import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import java.util.List;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableCommitSideEffectService {
   private static final Logger LOG = Logger.getLogger(TableCommitSideEffectService.class);
-  @Inject SnapshotUpdateService snapshotUpdateService;
 
   public boolean runPostCommitStatsSyncAttempt(
       TableGatewaySupport tableSupport,
-      ResourceId connectorId,
+      ai.floedb.floecat.common.rpc.ResourceId connectorId,
       List<String> namespacePath,
       String tableName,
       List<Long> snapshotIds) {
     return runStatsSyncAttempt(
-        tableSupport, connectorId, namespacePath, tableName, snapshotIds, true);
+        tableSupport, connectorId, namespacePath, tableName, snapshotIds, false);
   }
 
   private boolean runStatsSyncAttempt(
       TableGatewaySupport tableSupport,
-      ResourceId connectorId,
+      ai.floedb.floecat.common.rpc.ResourceId connectorId,
       List<String> namespacePath,
       String tableName,
       List<Long> snapshotIds,
@@ -66,19 +62,6 @@ public class TableCommitSideEffectService {
           connectorId.getId(),
           namespacePath == null ? "<null>" : String.join(".", namespacePath),
           tableName);
-      return false;
-    }
-  }
-
-  public boolean pruneRemovedSnapshots(ResourceId tableId, List<Long> snapshotIds) {
-    if (tableId == null || snapshotIds == null || snapshotIds.isEmpty()) {
-      return true;
-    }
-    try {
-      snapshotUpdateService.deleteSnapshots(tableId, snapshotIds);
-      return true;
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "Snapshot prune failed tableId=%s snapshotIds=%s", tableId.getId(), snapshotIds);
       return false;
     }
   }

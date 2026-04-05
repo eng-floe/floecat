@@ -27,6 +27,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.Transaction;
@@ -591,6 +593,122 @@ class TransactionsServiceImplTest {
 
     assertEquals(TransactionState.TS_PREPARED, prepared.getState());
     verify(txRepo, never()).update(any(), anyLong());
+  }
+
+  @Test
+  void prepareTableDeleteIntentStoresExpectedOwnedNamePointerKey() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(BlobStore.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableId = "table-1";
+    String targetKey = Keys.tablePointerById(accountId, tableId);
+    String tableBlobUri = Keys.tableBlobUri(accountId, tableId, "sha");
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableId))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId("cat-1"))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId("ns-1"))
+            .setDisplayName("orders")
+            .build();
+
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
+    when(pointerStore.get(targetKey))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(targetKey)
+                    .setBlobUri(tableBlobUri)
+                    .setVersion(7L)
+                    .build()));
+    when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
+    when(intentRepo.getByTarget(accountId, targetKey)).thenReturn(Optional.empty());
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_PREPARED),
+            anyLong()))
+        .thenReturn(true);
+
+    var request =
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTableId(
+                        ResourceId.newBuilder()
+                            .setAccountId(accountId)
+                            .setId(tableId)
+                            .setKind(ResourceKind.RK_TABLE))
+                    .setIntendedBlobUri(
+                        Keys.transactionDeleteSentinelUri(accountId, txId, targetKey)))
+            .build();
+
+    Transaction prepared =
+        invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_PREPARED, prepared.getState());
+    verify(intentRepo)
+        .create(
+            argThat(
+                intent ->
+                    intent.getTargetPointerKey().equals(targetKey)
+                        && intent
+                            .getBlobUri()
+                            .equals(Keys.transactionDeleteSentinelUri(accountId, txId, targetKey))
+                        && intent
+                            .getExpectedOwnedNamePointerKey()
+                            .equals(
+                                Keys.tablePointerByName(accountId, "cat-1", "ns-1", "orders"))));
+  }
+
+  @Test
+  void intentsAlreadyAppliedTreatsTableDeleteSentinelAsAppliedWhenPointersAreCleared()
+      throws Exception {
+    var service = new TransactionsServiceImpl();
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+
+    inject(service, "pointerStore", pointerStore);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String tableId = "table-1";
+    String targetKey = Keys.tablePointerById(accountId, tableId);
+    String nameKey = Keys.tablePointerByName(accountId, "cat-1", "ns-1", "orders");
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, targetKey))
+            .setExpectedOwnedNamePointerKey(nameKey)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(pointerStore.get(targetKey)).thenReturn(Optional.empty());
+    when(pointerStore.get(nameKey)).thenReturn(Optional.empty());
+
+    Method m = TransactionsServiceImpl.class.getDeclaredMethod("intentsAlreadyApplied", List.class);
+    m.setAccessible(true);
+
+    assertTrue((Boolean) m.invoke(service, List.of(intent)));
   }
 
   @Test

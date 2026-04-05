@@ -26,6 +26,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -66,6 +67,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -1149,7 +1151,7 @@ class TransactionCommitServiceTest {
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/snapshots/"))));
-    verify(commitOutboxService).processPendingNow(eq(tableSupport), any());
+    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -1202,15 +1204,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(123L).equals(item.addedSnapshotIds())));
+    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -1835,17 +1829,7 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && "tbl-id".equals(item.tableId().getId())
-                        && List.of(123L).equals(item.addedSnapshotIds())
-                        && List.of(0L).equals(item.removedSnapshotIds())));
+    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -2433,15 +2417,7 @@ class TransactionCommitServiceTest {
                                         && change
                                             .getTargetPointerKey()
                                             .endsWith("/snapshots/by-id/0000000000000000000"))));
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(0L).equals(item.addedSnapshotIds())));
+    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -2463,6 +2439,15 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
+    when(grpcClient.getSnapshot(any()))
+        .thenReturn(
+            GetSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setSnapshotId(0L)
+                        .setUpstreamCreatedAt(Timestamps.fromMillis(123L))
+                        .build())
+                .build());
     when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
@@ -2474,15 +2459,20 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithRemoveSnapshots(0L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
+    verify(grpcClient)
+        .prepareTransaction(
             argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(0L).equals(item.removedSnapshotIds())));
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesList().stream()
+                                .filter(
+                                    change ->
+                                        change.hasTargetPointerKey()
+                                            && change.hasIntendedBlobUri()
+                                            && change.getIntendedBlobUri().contains("/delete/"))
+                                .count()
+                            == 2));
+    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test

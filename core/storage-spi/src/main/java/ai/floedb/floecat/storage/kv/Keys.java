@@ -53,6 +53,21 @@ public final class Keys {
     return new KvStore.Key(partitionKey, sortKey);
   }
 
+  public static String accountRootPrefix(String accountId) {
+    String aid = req("account_id", accountId);
+    return String.format("/accounts/%s/", encodeSegment(aid));
+  }
+
+  public static String transactionDeleteSentinelUri(
+      String accountId, String txId, String targetPointerKey) {
+    String aid = req("account_id", accountId);
+    String xid = req("tx_id", txId);
+    String key = req("target_pointer_key", targetPointerKey);
+    return String.format(
+        "/accounts/%s/transactions/%s/delete/%s",
+        encodeSegment(aid), encodeSegment(xid), encodeSegment(key));
+  }
+
   public static String snapshotPointerById(String accountId, String tableId, long snapshotId) {
     String aid = req("account_id", accountId);
     String tid = req("table_id", tableId);

@@ -165,6 +165,15 @@ public final class Keys {
     return String.format("/accounts/%s/transactions/%s/transaction/", encode(tid), encode(tx));
   }
 
+  public static String transactionDeleteSentinelUri(
+      String accountId, String txId, String targetPointerKey) {
+    String tid = req("account_id", accountId);
+    String tx = req("tx_id", txId);
+    String key = req("target_pointer_key", targetPointerKey);
+    return String.format(
+        "/accounts/%s/transactions/%s/delete/%s", encode(tid), encode(tx), encode(key));
+  }
+
   public static String transactionIntentPointerByTarget(String accountId, String targetPointerKey) {
     String tid = req("account_id", accountId);
     String key = req("target_pointer_key", targetPointerKey);
