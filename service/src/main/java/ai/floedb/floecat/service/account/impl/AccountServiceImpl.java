@@ -31,6 +31,7 @@ import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountResponse;
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -40,30 +41,51 @@ import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import org.jboss.logging.Logger;
 
 @GrpcService
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
   @Inject CatalogRepository catalogRepo;
+  @Inject NamespaceRepository namespaceRepo;
+  @Inject TableRepository tableRepo;
+  @Inject ConnectorRepository connectorRepo;
+  @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject UserGraph metadataGraph;
+  @Inject MarkerStore markerStore;
+  @Inject PointerStore pointerStore;
+  @Inject DefaultCredentialResolver credentialResolver;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS = Set.of("display_name", "description");
 
@@ -279,7 +301,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                 () -> {
                   final var pc = principal.get();
                   final var corr = pc.getCorrelationId();
-                  authz.require(pc, "account.write");
+                  authz.require(pc, List.of("account.write", "account.delete"));
 
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
@@ -373,7 +395,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                 () -> {
                   final var pc = principal.get();
                   final var corr = pc.getCorrelationId();
-                  authz.require(pc, "account.write");
+                  authz.require(pc, "account.delete");
 
                   var accountId = request.getAccountId();
                   ensureKind(accountId, ResourceKind.RK_ACCOUNT, "account_id", corr);
@@ -392,16 +414,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  if (catalogRepo.count(accountId.getId()) > 0) {
-                    var cur = accountRepo.getById(accountId).orElse(null);
-                    var name =
-                        (cur != null && !cur.getDisplayName().isBlank())
-                            ? cur.getDisplayName()
-                            : accountId.getId();
-                    throw GrpcErrors.conflict(
-                        corr, ACCOUNT_NOT_EMPTY, Map.of("display_name", name));
-                  }
-
                   var out =
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
@@ -412,6 +424,11 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           "account",
                           Map.of("id", accountId.getId()));
 
+                  if (out.getPointerVersion() == meta.getPointerVersion()
+                      && out.getEtag().equals(meta.getEtag())) {
+                    cleanupAccountResources(accountId);
+                  }
+
                   return DeleteAccountResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -419,6 +436,131 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private void cleanupAccountResources(ResourceId accountId) {
+    var accountKey = accountId.getId();
+    cleanupConnectors(accountKey);
+    cleanupCatalogs(accountKey);
+  }
+
+  private void cleanupConnectors(String accountId) {
+    for (var connector :
+        listAllPages((token, next) -> connectorRepo.list(accountId, 200, token, next))) {
+      var connectorId = connector.getResourceId();
+      connectorRepo.delete(connectorId);
+      credentialResolver.delete(accountId, connectorId.getId());
+    }
+  }
+
+  private void cleanupCatalogs(String accountId) {
+    for (var catalog :
+        listAllPages((token, next) -> catalogRepo.list(accountId, 200, token, next))) {
+      cleanupCatalog(catalog);
+    }
+  }
+
+  private void cleanupCatalog(Catalog catalog) {
+    var catalogId = catalog.getResourceId();
+    var namespaces =
+        new ArrayList<>(namespaceRepo.listIds(catalogId.getAccountId(), catalogId.getId()));
+    namespaces.sort(Comparator.comparingInt(this::namespaceDepth).reversed());
+    for (var namespaceId : namespaces) {
+      cleanupNamespace(namespaceId);
+    }
+    catalogRepo.delete(catalogId);
+    metadataGraph.invalidate(catalogId);
+  }
+
+  private void cleanupNamespace(ResourceId namespaceId) {
+    var namespace = namespaceRepo.getById(namespaceId).orElse(null);
+    if (namespace == null) {
+      metadataGraph.invalidate(namespaceId);
+      return;
+    }
+    cleanupViews(namespace);
+    cleanupTables(namespace);
+    namespaceRepo.delete(namespaceId);
+    metadataGraph.invalidate(namespaceId);
+    markerStore.bumpCatalogMarker(namespace.getCatalogId());
+    bumpParentNamespaceMarkers(namespace);
+  }
+
+  private void cleanupTables(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
+    for (var table :
+        listAllPages(
+            (token, next) ->
+                tableRepo.list(
+                    namespace.getResourceId().getAccountId(),
+                    namespace.getCatalogId().getId(),
+                    namespace.getResourceId().getId(),
+                    200,
+                    token,
+                    next))) {
+      cleanupTable(table);
+    }
+  }
+
+  private void cleanupViews(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
+    for (var view :
+        listAllPages(
+            (token, next) ->
+                viewRepo.list(
+                    namespace.getResourceId().getAccountId(),
+                    namespace.getCatalogId().getId(),
+                    namespace.getResourceId().getId(),
+                    200,
+                    token,
+                    next))) {
+      var viewId = view.getResourceId();
+      viewRepo.delete(viewId);
+      metadataGraph.invalidate(viewId);
+    }
+  }
+
+  private <T> List<T> listAllPages(BiFunction<String, StringBuilder, List<T>> pageLoader) {
+    var items = new ArrayList<T>();
+    var seenTokens = new HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      items.addAll(pageLoader.apply(token, next));
+      token = next.toString();
+      if (token.isBlank()) {
+        return items;
+      }
+      if (!seenTokens.add(token)) {
+        throw new IllegalStateException("stagnant page token during account cleanup: " + token);
+      }
+    }
+  }
+
+  private void cleanupTable(ai.floedb.floecat.catalog.rpc.Table table) {
+    var tableId = table.getResourceId();
+    tableRepo.delete(tableId);
+    metadataGraph.invalidate(tableId);
+    markerStore.bumpNamespaceMarker(table.getNamespaceId());
+    purgeSnapshotsAndStats(tableId);
+  }
+
+  private void purgeSnapshotsAndStats(ResourceId tableId) {
+    pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+  }
+
+  private void bumpParentNamespaceMarkers(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
+    var catalogId = namespace.getCatalogId();
+    var parents = namespace.getParentsList();
+    for (int i = 0; i < parents.size(); i++) {
+      var parentPath = parents.subList(0, i + 1);
+      namespaceRepo
+          .getByPath(catalogId.getAccountId(), catalogId.getId(), parentPath)
+          .map(ai.floedb.floecat.catalog.rpc.Namespace::getResourceId)
+          .ifPresent(markerStore::bumpNamespaceMarker);
+    }
+  }
+
+  private int namespaceDepth(ResourceId namespaceId) {
+    return namespaceRepo.getById(namespaceId).map(ns -> ns.getParentsCount()).orElse(0);
   }
 
   private Account applyAccountSpecPatch(

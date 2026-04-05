@@ -26,6 +26,9 @@ import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -33,8 +36,13 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -42,6 +50,9 @@ import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.util.List;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -54,12 +65,28 @@ class AccountMutationIT {
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
+  @GrpcClient("floecat")
+  NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
+
+  @GrpcClient("floecat")
+  TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("floecat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
+
   String accountPrefix = this.getClass().getSimpleName() + "_";
   String seedAccountId;
 
   @Inject AccountRepository accountRepository;
+  @Inject CatalogRepository catalogRepository;
+  @Inject TableRepository tableRepository;
+  @Inject ViewRepository viewRepository;
+  @Inject PointerStore ptr;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+
+  private static final Schema SIMPLE_SCHEMA =
+      new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
 
   @BeforeEach
   void resetStores() {
@@ -212,30 +239,34 @@ class AccountMutationIT {
     TestSupport.assertGrpcAndMc(
         notFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Account not found");
 
-    var delNotEmpty =
+    var seededAccountId =
+        ResourceId.newBuilder()
+            .setAccountId(seedAccountId)
+            .setId(seedAccountId)
+            .setKind(ResourceKind.RK_ACCOUNT)
+            .build();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    var delSeeded =
+        tenancy.deleteAccount(
+            DeleteAccountRequest.newBuilder()
+                .setAccountId(seededAccountId)
+                .setPrecondition(
+                    Precondition.newBuilder()
+                        .setExpectedVersion(seededMeta.getPointerVersion())
+                        .setExpectedEtag(seededMeta.getEtag())
+                        .build())
+                .build());
+    assertEquals(seededMeta.getPointerKey(), delSeeded.getMeta().getPointerKey());
+
+    var seededNotFound =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                tenancy.deleteAccount(
-                    DeleteAccountRequest.newBuilder()
-                        .setAccountId(
-                            ResourceId.newBuilder()
-                                .setAccountId(seedAccountId)
-                                .setId(seedAccountId)
-                                .setKind(ResourceKind.RK_ACCOUNT)
-                                .build())
-                        .setPrecondition(
-                            Precondition.newBuilder()
-                                .setExpectedVersion(m2.getPointerVersion())
-                                .setExpectedEtag(m2.getEtag())
-                                .build())
-                        .build()));
+                tenancy.getAccount(
+                    GetAccountRequest.newBuilder().setAccountId(seededAccountId).build()));
 
     TestSupport.assertGrpcAndMc(
-        delNotEmpty,
-        Status.Code.ABORTED,
-        ErrorCode.MC_CONFLICT,
-        "Account \"" + TestSupport.DEFAULT_SEED_ACCOUNT + "\" contains catalogs.");
+        seededNotFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "Account not found");
   }
 
   @Test
@@ -395,5 +426,112 @@ class AccountMutationIT {
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "RK_ACCOUNT");
+  }
+
+  @Test
+  void deleteAccountCleansPagedCatalogsAndTables() throws Exception {
+    var baseCatalog = TestSupport.createCatalog(catalog, accountPrefix + "cascade_base", "");
+    var namespace =
+        TestSupport.createNamespace(
+            this.namespace,
+            baseCatalog.getResourceId(),
+            "cascade_ns",
+            List.of("cascade"),
+            "namespace");
+    var schemaJson = SchemaParser.toJson(SIMPLE_SCHEMA);
+
+    for (int i = 0; i < 205; i++) {
+      TestSupport.createTable(
+          table,
+          baseCatalog.getResourceId(),
+          namespace.getResourceId(),
+          accountPrefix + "table_" + i,
+          "s3://bucket/",
+          schemaJson,
+          "table");
+    }
+
+    for (int i = 0; i < 205; i++) {
+      TestSupport.createCatalog(catalog, accountPrefix + "cascade_cat_" + i, "");
+    }
+
+    assertTrue(
+        tableRepository.count(
+                seedAccountId,
+                baseCatalog.getResourceId().getId(),
+                namespace.getResourceId().getId())
+            >= 205);
+    assertTrue(catalogRepository.count(seedAccountId) >= 206);
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, baseCatalog.getResourceId().getId(), namespace.getResourceId().getId()));
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+    assertEquals(0, ptr.countByPrefix(Keys.catalogPointerByIdPrefix(seedAccountId)));
+    assertEquals(0, ptr.countByPrefix(Keys.catalogPointerByNamePrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountDeletesViewsDuringNamespaceCleanup() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "view_cat", "");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "views_ns", List.of("cascade"), "namespace");
+
+    var createdView =
+        TestSupport.createView(
+            view,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "account_cleanup_view",
+            "SELECT 1",
+            "cleanup view");
+    assertEquals(
+        1,
+        viewRepository.count(
+            seedAccountId, cat.getResourceId().getId(), ns.getResourceId().getId()));
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    assertEquals(
+        0,
+        viewRepository.count(
+            seedAccountId, cat.getResourceId().getId(), ns.getResourceId().getId()));
+    assertTrue(
+        ptr.get(Keys.viewPointerById(seedAccountId, createdView.getResourceId().getId()))
+            .isEmpty());
+    assertEquals(0, ptr.countByPrefix(Keys.viewRootPrefix(seedAccountId)));
+  }
+
+  private ResourceId seedAccountResourceId() {
+    return ResourceId.newBuilder()
+        .setAccountId(seedAccountId)
+        .setId(seedAccountId)
+        .setKind(ResourceKind.RK_ACCOUNT)
+        .build();
   }
 }
