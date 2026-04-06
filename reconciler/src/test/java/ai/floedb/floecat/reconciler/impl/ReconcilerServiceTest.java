@@ -850,6 +850,94 @@ class ReconcilerServiceTest {
     assertThat(backend.putFileColumnStatsCalls).isZero();
   }
 
+  @Test
+  void reconcileStatsOnlyFailsWhenDestinationTableIsNotVisibleYet() {
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        ResourceId destCatalogId =
+            ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+        ResourceId destNamespaceId =
+            ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+        return Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(
+                        NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId))
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "examples";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "iceberg";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.empty();
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class StatsOnlyConnector extends FakeConnector {
+      StatsOnlyConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public ConnectorFormat format() {
+        return ConnectorFormat.CF_ICEBERG;
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("duckdb_mutation_smoke");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            "iceberg",
+            "duckdb_mutation_smoke",
+            "s3://floecat/iceberg/duckdb_mutation_smoke",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+            Map.of());
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new StatsOnlyConnector();
+
+    var result =
+        service.reconcile(
+            principal, connectorId, false, null, ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    assertThat(result.statsProcessed).isZero();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage())
+        .contains("Destination table examples.iceberg.duckdb_mutation_smoke is not visible yet");
+  }
+
   private static final class ThrowingBackend extends DefaultBackend {
     private final RuntimeException failure;
 

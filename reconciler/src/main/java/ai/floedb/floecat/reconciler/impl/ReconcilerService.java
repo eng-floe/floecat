@@ -622,7 +622,18 @@ public class ReconcilerService {
             .addAllPath(List.of(namespaceFq.split("\\.")))
             .setName(tableDisplay)
             .build();
-    return backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
+    Optional<ResourceId> tableId = backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
+    if (tableId.isPresent()) {
+      return tableId;
+    }
+    throw new ReconcileNotReadyException(
+        "Destination table "
+            + catalogName
+            + "."
+            + namespaceFq
+            + "."
+            + tableDisplay
+            + " is not visible yet for stats-only reconcile");
   }
 
   private void ensureSnapshot(
@@ -1247,6 +1258,12 @@ public class ReconcilerService {
   private static final class ReconcileCancelledException extends RuntimeException {
     private ReconcileCancelledException() {
       super("Cancelled");
+    }
+  }
+
+  private static final class ReconcileNotReadyException extends RuntimeException {
+    private ReconcileNotReadyException(String message) {
+      super(message);
     }
   }
 

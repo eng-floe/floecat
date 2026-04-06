@@ -100,6 +100,20 @@ run_cli_script() {
   local compose_cmd="$1"
   local script="$2"
   local out
+  local cli_cid=""
+  cli_cid=$(eval "$compose_cmd ps -q cli" 2>/dev/null || true)
+
+  if [ -n "$cli_cid" ]; then
+    if out=$(printf "%s\n" "$script" | eval "$compose_cmd exec -T cli java -jar /work/quarkus-run.jar --host service --port 9100" 2>&1); then
+      printf "%s\n" "$out" \
+        | sed \
+            -e '/^\[\+\] Creating /d' \
+            -e '/^[[:space:]]*✔ Container .* Running[0-9.]*s$/d' \
+            -e '/^[[:space:]]*Container .* Running[0-9.]*s$/d'
+      return 0
+    fi
+  fi
+
   if ! out=$(printf "%s\n" "$script" | eval "$compose_cmd run --rm -T --no-deps cli" 2>&1); then
     printf "%s\n" "$out" \
       | sed \
