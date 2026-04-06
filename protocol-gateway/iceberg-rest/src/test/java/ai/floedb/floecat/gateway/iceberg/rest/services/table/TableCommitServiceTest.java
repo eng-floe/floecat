@@ -43,6 +43,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import jakarta.ws.rs.core.Response;
@@ -414,6 +415,7 @@ class TableCommitServiceTest {
         ArgumentCaptor.forClass(StartCaptureRequest.class);
     verify(grpcClient).startCapture(capture.capture());
     StartCaptureRequest request = capture.getValue();
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
     assertEquals("conn-1", request.getScope().getConnectorId().getId());
     assertEquals("orders", request.getScope().getDestinationTableDisplayName());
     assertEquals(List.of(42L), request.getScope().getDestinationSnapshotIdsList());

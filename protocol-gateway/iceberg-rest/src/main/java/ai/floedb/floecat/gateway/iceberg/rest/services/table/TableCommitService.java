@@ -159,7 +159,7 @@ public class TableCommitService {
     try {
       grpcClient.startCapture(
           StartCaptureRequest.newBuilder()
-              .setMode(CaptureMode.CM_METADATA_AND_STATS)
+              .setMode(CaptureMode.CM_STATS_ONLY)
               .setScope(
                   CaptureScope.newBuilder()
                       .setConnectorId(connectorId)
