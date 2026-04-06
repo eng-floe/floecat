@@ -45,6 +45,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -213,6 +216,7 @@ public class TransactionCommitService {
                 ? Timestamps.toMillis(begin.getTransaction().getCreatedAt())
                 : clockMillis();
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
+    List<PostCommitCaptureRequest> postCommitCaptures = new ArrayList<>();
 
     if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return IcebergErrorResponses.failure(
@@ -389,6 +393,17 @@ public class TransactionCommitService {
           CommitUpdateInspector.inspectUpdates(plan.updates());
       List<Long> addedSnapshotIds = parsedUpdates.addedSnapshotIds();
       List<Long> removedSnapshotIds = parsedUpdates.removedSnapshotIds();
+      if (!addedSnapshotIds.isEmpty()
+          && connectorId != null
+          && connectorId.getId() != null
+          && !connectorId.getId().isBlank()) {
+        postCommitCaptures.add(
+            new PostCommitCaptureRequest(
+                plan.namespacePath(),
+                plan.tableName(),
+                connectorId,
+                List.copyOf(addedSnapshotIds)));
+      }
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
               .setTableId(plan.tableId())
@@ -499,6 +514,7 @@ public class TransactionCommitService {
           Response.Status.SERVICE_UNAVAILABLE);
     }
 
+    enqueuePostCommitCaptures(postCommitCaptures);
     return Response.noContent().build();
   }
 
@@ -506,6 +522,12 @@ public class TransactionCommitService {
       List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges, Response error) {}
 
   private record PreMaterializedTable(ai.floedb.floecat.catalog.rpc.Table table, Response error) {}
+
+  private record PostCommitCaptureRequest(
+      List<String> namespacePath,
+      String tableName,
+      ResourceId connectorId,
+      List<Long> snapshotIds) {}
 
   private record PlannedChange(
       List<String> namespacePath,
@@ -515,6 +537,49 @@ public class TransactionCommitService {
       ai.floedb.floecat.catalog.rpc.Table table,
       List<Map<String, Object>> updates,
       long expectedVersion) {}
+
+  private void enqueuePostCommitCaptures(List<PostCommitCaptureRequest> requests) {
+    if (requests == null || requests.isEmpty() || grpcClient == null) {
+      return;
+    }
+    for (PostCommitCaptureRequest request : requests) {
+      if (request == null
+          || request.connectorId() == null
+          || request.connectorId().getId() == null
+          || request.connectorId().getId().isBlank()
+          || request.snapshotIds() == null
+          || request.snapshotIds().isEmpty()
+          || request.namespacePath() == null
+          || request.namespacePath().isEmpty()
+          || request.tableName() == null
+          || request.tableName().isBlank()) {
+        continue;
+      }
+      try {
+        grpcClient.startCapture(
+            StartCaptureRequest.newBuilder()
+                .setMode(CaptureMode.CM_STATS_ONLY)
+                .setScope(
+                    CaptureScope.newBuilder()
+                        .setConnectorId(request.connectorId())
+                        .addDestinationNamespacePaths(
+                            ai.floedb.floecat.connector.rpc.NamespacePath.newBuilder()
+                                .addAllSegments(request.namespacePath())
+                                .build())
+                        .setDestinationTableDisplayName(request.tableName())
+                        .addAllDestinationSnapshotIds(request.snapshotIds()))
+                .build());
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Failed to enqueue post-commit reconcile for %s.%s snapshots=%s connector=%s",
+            String.join(".", request.namespacePath()),
+            request.tableName(),
+            request.snapshotIds(),
+            request.connectorId().getId());
+      }
+    }
+  }
 
   private static String firstNonBlank(String... values) {
     if (values == null) {

@@ -55,6 +55,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
@@ -161,6 +164,8 @@ class TransactionCommitServiceTest {
                       .setState(ConnectorState.CS_ACTIVE)
                       .build());
             });
+    when(grpcClient.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
   }
 
   private CommitTableResponseDto defaultCommitResponse() {
@@ -820,6 +825,61 @@ class TransactionCommitServiceTest {
                                                 .getTable()
                                                 .getPropertiesMap()
                                                 .get("metadata-location")))));
+  }
+
+  @Test
+  void commitEnqueuesSnapshotScopedStatsCaptureForAddedSnapshots() {
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    org.mockito.ArgumentCaptor<StartCaptureRequest> requestCaptor =
+        org.mockito.ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(grpcClient).startCapture(requestCaptor.capture());
+    StartCaptureRequest request = requestCaptor.getValue();
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertEquals("conn-1", request.getScope().getConnectorId().getId());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(
+        List.of("db"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
+    assertEquals(List.of(123L), request.getScope().getDestinationSnapshotIdsList());
   }
 
   @Test

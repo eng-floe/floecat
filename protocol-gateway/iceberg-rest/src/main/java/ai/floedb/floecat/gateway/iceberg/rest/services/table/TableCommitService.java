@@ -28,16 +28,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorRespo
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
-import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -48,12 +44,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableCommitService {
-  private static final Logger LOG = Logger.getLogger(TableCommitService.class);
-
   @Inject IcebergGatewayConfig config;
   @Inject TableLifecycleService tableLifecycleService;
   @Inject CommitResponseBuilder responseBuilder;
@@ -62,7 +55,6 @@ public class TableCommitService {
   @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
   @Inject StagedTableService stagedTableService;
   @Inject AccountContext accountContext;
-  @Inject GrpcServiceFacade grpcClient;
 
   public Response commit(CommitCommand command) {
     if (command == null) {
@@ -112,7 +104,6 @@ public class TableCommitService {
         tableLifecycleService.resolveTableId(
             command.catalogName(), command.namespacePath(), command.table());
     Table committedTable = tableLifecycleService.getTable(tableId);
-    maybeEnqueueSnapshotCapture(command, req, committedTable);
     TableGatewaySupport tableSupport = command.tableSupport();
     IcebergMetadata metadata = tableSupport.loadCurrentMetadata(committedTable);
 
@@ -131,54 +122,6 @@ public class TableCommitService {
     }
 
     return Response.ok(finalResponse).build();
-  }
-
-  private void maybeEnqueueSnapshotCapture(
-      CommitCommand command, TableRequests.Commit req, Table committedTable) {
-    if (grpcClient == null || command == null || req == null || committedTable == null) {
-      return;
-    }
-    CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspectUpdates(req.updates());
-    if (parsed == null || parsed.addedSnapshotIds().isEmpty()) {
-      return;
-    }
-    if (!committedTable.hasUpstream() || !committedTable.getUpstream().hasConnectorId()) {
-      return;
-    }
-    ResourceId connectorId = committedTable.getUpstream().getConnectorId();
-    if (connectorId == null || connectorId.getId().isBlank()) {
-      return;
-    }
-    if (command.namespacePath() == null || command.namespacePath().isEmpty()) {
-      return;
-    }
-    if (command.table() == null || command.table().isBlank()) {
-      return;
-    }
-
-    try {
-      grpcClient.startCapture(
-          StartCaptureRequest.newBuilder()
-              .setMode(CaptureMode.CM_STATS_ONLY)
-              .setScope(
-                  CaptureScope.newBuilder()
-                      .setConnectorId(connectorId)
-                      .addDestinationNamespacePaths(
-                          ai.floedb.floecat.connector.rpc.NamespacePath.newBuilder()
-                              .addAllSegments(command.namespacePath())
-                              .build())
-                      .setDestinationTableDisplayName(command.table())
-                      .addAllDestinationSnapshotIds(parsed.addedSnapshotIds()))
-              .build());
-    } catch (RuntimeException e) {
-      LOG.warnf(
-          e,
-          "Failed to enqueue post-commit reconcile for %s.%s snapshots=%s connector=%s",
-          command.namespace(),
-          command.table(),
-          parsed.addedSnapshotIds(),
-          connectorId.getId());
-    }
   }
 
   private Table loadCurrentTable(CommitCommand command) {
