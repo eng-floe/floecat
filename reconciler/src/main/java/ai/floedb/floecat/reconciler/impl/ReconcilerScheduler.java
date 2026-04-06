@@ -333,6 +333,30 @@ public class ReconcilerScheduler {
             null);
         return;
       }
+      if (isTerminalMissingConnectorFailure(result.message)) {
+        jobs.markCancelled(
+            lease.jobId,
+            lease.leaseEpoch,
+            finished,
+            result.message,
+            result.scanned,
+            result.changed,
+            result.errors,
+            totalSnapshots,
+            totalStats);
+        emitOutcome(
+            lease,
+            "cancelled",
+            finished - started,
+            result.scanned,
+            result.changed,
+            result.errors,
+            totalSnapshots,
+            totalStats,
+            "connector_missing",
+            result.message);
+        return;
+      }
       if (!result.ok()) {
         jobs.markFailed(
             lease.jobId,
@@ -391,8 +415,13 @@ public class ReconcilerScheduler {
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
-          emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e), msg);
+          if (isTerminalMissingConnectorFailure(msg)) {
+            jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
+            emitOutcome(lease, "cancelled", now - started, 0, 0, 1, 0, 0, "connector_missing", msg);
+          } else {
+            jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
+            emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e), msg);
+          }
         }
       }
     } finally {
@@ -434,6 +463,13 @@ public class ReconcilerScheduler {
       return cls;
     }
     return cls + ": " + msg;
+  }
+
+  private static boolean isTerminalMissingConnectorFailure(String message) {
+    if (message == null || message.isBlank()) {
+      return false;
+    }
+    return message.contains("getConnector failed:") || message.contains("Connector not found:");
   }
 
   private void emitOutcome(

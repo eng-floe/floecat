@@ -1088,9 +1088,14 @@ class TransactionCommitServiceTest {
             argThat(
                 prepare ->
                     prepare != null
-                        && prepare.getChangesCount() >= 2
+                        && prepare.getChangesCount() == 1
                         && prepare.getChangesList().stream()
                             .anyMatch(change -> change.hasTableId() && change.hasTable())
+                        && prepare.getChangesList().stream()
+                            .noneMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change.getTargetPointerKey().contains("/connectors/"))
                         && prepare.getChangesList().stream()
                             .noneMatch(
                                 change ->

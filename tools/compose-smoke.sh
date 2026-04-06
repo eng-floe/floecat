@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
 COMPOSE_SMOKE_RUN_ID=${COMPOSE_SMOKE_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}
