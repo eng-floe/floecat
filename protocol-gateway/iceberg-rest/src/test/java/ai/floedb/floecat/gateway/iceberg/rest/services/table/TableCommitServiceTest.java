@@ -36,12 +36,15 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitReque
 import ai.floedb.floecat.gateway.iceberg.rest.services.account.AccountContext;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.compat.TableFormatSupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StageState;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableEntry;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableKey;
 import ai.floedb.floecat.gateway.iceberg.rest.services.staging.StagedTableService;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import jakarta.ws.rs.core.Response;
 import java.time.Instant;
 import java.util.List;
@@ -70,6 +73,7 @@ class TableCommitServiceTest {
   private final StagedTableService stagedTableService =
       org.mockito.Mockito.mock(StagedTableService.class);
   private final AccountContext accountContext = org.mockito.Mockito.mock(AccountContext.class);
+  private final GrpcServiceFacade grpcClient = org.mockito.Mockito.mock(GrpcServiceFacade.class);
 
   @BeforeEach
   void setUp() {
@@ -81,6 +85,7 @@ class TableCommitServiceTest {
     service.tableCreateTransactionMapper = tableCreateTransactionMapper;
     service.stagedTableService = stagedTableService;
     service.accountContext = accountContext;
+    service.grpcClient = grpcClient;
 
     when(config.deltaCompat()).thenReturn(Optional.of(deltaCompatConfig));
     when(deltaCompatConfig.enabled()).thenReturn(false);
@@ -88,6 +93,8 @@ class TableCommitServiceTest {
     when(accountContext.getAccountId()).thenReturn("account-1");
     when(stagedTableService.findSingleStage(any(), any(), any(), any()))
         .thenReturn(Optional.empty());
+    when(grpcClient.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
   }
 
   @Test
@@ -354,12 +361,144 @@ class TableCommitServiceTest {
     verify(transactionCommitService, never()).commit(any(), any(), any(), any());
   }
 
+  @Test
+  void commitEnqueuesSnapshotScopedCaptureForAddedSnapshots() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("conn-1").setAccountId("account-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Table table =
+        tableRecord("cat:db:orders").toBuilder()
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenReturn(tableId);
+    when(tableLifecycleService.getTable(tableId)).thenReturn(table);
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(IcebergMetadata.getDefaultInstance());
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    CommitTableResponseDto dto =
+        new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
+    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(dto);
+
+    Response response = service.commit(command(commitWithAddedSnapshot(42L)));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    ArgumentCaptor<StartCaptureRequest> capture =
+        ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(grpcClient).startCapture(capture.capture());
+    StartCaptureRequest request = capture.getValue();
+    assertEquals("conn-1", request.getScope().getConnectorId().getId());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(List.of(42L), request.getScope().getDestinationSnapshotIdsList());
+    assertEquals(
+        List.of("db"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
+  }
+
+  @Test
+  void commitIgnoresCaptureEnqueueFailure() {
+    ResourceId connectorId =
+        ResourceId.newBuilder().setId("conn-1").setAccountId("account-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Table table =
+        tableRecord("cat:db:orders").toBuilder()
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(tableLifecycleService.resolveTableId(eq("catalog"), eq(List.of("db")), eq("orders")))
+        .thenReturn(tableId);
+    when(tableLifecycleService.getTable(tableId)).thenReturn(table);
+    when(transactionCommitService.commit(any(), any(), any(), any()))
+        .thenReturn(Response.noContent().build());
+    when(tableSupport.loadCurrentMetadata(table)).thenReturn(IcebergMetadata.getDefaultInstance());
+    when(grpcClient.startCapture(any())).thenThrow(new RuntimeException("boom"));
+
+    TableMetadataView metadataView =
+        new TableMetadataView(
+            2,
+            null,
+            null,
+            "s3://warehouse/db/orders/metadata/00001.metadata.json",
+            null,
+            Map.of(),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+    CommitTableResponseDto dto =
+        new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
+    when(responseBuilder.removedSnapshotIds(any())).thenReturn(Set.of());
+    when(responseBuilder.buildFinalResponse(any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(dto);
+
+    Response response = service.commit(command(commitWithAddedSnapshot(42L)));
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    verify(grpcClient).startCapture(any());
+  }
+
   private TableRequests.Commit emptyCommitRequest() {
     return new TableRequests.Commit(List.of(), List.of());
   }
 
   private TableRequests.Commit commitWithSingleUpdate() {
     return new TableRequests.Commit(List.of(), List.of(Map.of("action", "set-properties")));
+  }
+
+  private TableRequests.Commit commitWithAddedSnapshot(long snapshotId) {
+    return new TableRequests.Commit(
+        List.of(),
+        List.of(
+            Map.of(
+                "action",
+                "add-snapshot",
+                "snapshot",
+                Map.of(
+                    "snapshot-id",
+                    snapshotId,
+                    "timestamp-ms",
+                    1000L,
+                    "manifest-list",
+                    "s3://warehouse/db/orders/metadata/manifest.avro",
+                    "summary",
+                    Map.of("operation", "append")))));
   }
 
   private TableRequests.Create createRequest() {
