@@ -60,6 +60,8 @@ public interface IcebergGatewayConfig {
 
   Optional<String> metadataFileIoRoot();
 
+  Optional<String> selfUri();
+
   interface StorageCredentialConfig {
     Optional<String> scope();
 

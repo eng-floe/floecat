@@ -209,7 +209,7 @@ public class ReconcilerService {
     final DestinationTarget dest =
         stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
 
-    var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
+    var cfg = ConnectorConfigMapper.fromProto(stored);
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
     try (FloecatConnector connector = connectorOpener.open(resolved)) {
@@ -1204,21 +1204,6 @@ public class ReconcilerService {
     return credential
         .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
         .orElse(base);
-  }
-
-  private static ConnectorConfig applyIcebergOverrides(ConnectorConfig base) {
-    if (base.kind() != ConnectorConfig.Kind.ICEBERG) {
-      return base;
-    }
-    Map<String, String> options = new LinkedHashMap<>(base.options());
-    String external = options.get("external.metadata-location");
-    if (external == null || external.isBlank()) {
-      return base;
-    }
-    options.putIfAbsent("iceberg.source", "filesystem");
-    return options.equals(base.options())
-        ? base
-        : new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, base.auth());
   }
 
   public static final class Result {

@@ -16,7 +16,10 @@
 set -euo pipefail
 
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
-COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
+COMPOSE_SMOKE_RUN_ID=${COMPOSE_SMOKE_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}
+COMPOSE_SMOKE_SAVE_LOG_ROOT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
+COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_ROOT%/}/${COMPOSE_SMOKE_RUN_ID}
+COMPOSE_SMOKE_PERSIST_CONSOLE=${COMPOSE_SMOKE_PERSIST_CONSOLE:-true}
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
@@ -60,6 +63,25 @@ is_truthy() {
   esac
 }
 
+mkdir -p "$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT" || true
+ln -sfn "$COMPOSE_SMOKE_RUN_ID" "${COMPOSE_SMOKE_SAVE_LOG_ROOT%/}/latest" 2>/dev/null || true
+
+if [ "${COMPOSE_SMOKE_CONSOLE_TEE_INITIALIZED:-0}" != "1" ] && is_truthy "$COMPOSE_SMOKE_PERSIST_CONSOLE"; then
+  export COMPOSE_SMOKE_CONSOLE_TEE_INITIALIZED=1
+  exec > >(tee -a "$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT/compose-smoke.console.log") 2>&1
+fi
+
+cat >"$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT/run-info.env" <<EOF
+COMPOSE_SMOKE_RUN_ID=$COMPOSE_SMOKE_RUN_ID
+COMPOSE_SMOKE_SAVE_LOG_ROOT=$COMPOSE_SMOKE_SAVE_LOG_ROOT
+COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT
+COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL
+COMPOSE_SMOKE_KEEP_ON_EXIT=$COMPOSE_SMOKE_KEEP_ON_EXIT
+COMPOSE_SMOKE_CLIENTS=$COMPOSE_SMOKE_CLIENTS
+COMPOSE_SMOKE_DUCKDB_IMAGE=$COMPOSE_SMOKE_DUCKDB_IMAGE
+COMPOSE_SMOKE_PERSIST_CONSOLE=$COMPOSE_SMOKE_PERSIST_CONSOLE
+EOF
+
 should_keep_on_fail() {
   is_truthy "${COMPOSE_SMOKE_KEEP_ON_FAIL}"
 }
@@ -102,6 +124,7 @@ wait_for_connector_job() {
   local attempt
   local out
   local state
+  local message
 
   if [ -z "$job_id" ]; then
     echo "[FAIL] $label missing reconcile job id"
@@ -112,12 +135,25 @@ wait_for_connector_job() {
     out=$(run_cli_script "$compose_cmd" "account t-0001
 connector job $job_id
 quit")
-    state=$(printf "%s\n" "$out" | sed -n 's/.*state=\([A-Z_]*\).*/\1/p' | head -n1)
-    if [ "$state" = "JS_SUCCEEDED" ]; then
+    state=$(
+      printf "%s\n" "$out" \
+        | sed -n \
+            -e 's/.*state=\([A-Za-z_]*\).*/\1/p' \
+            -e 's/^[[:space:]]*state:[[:space:]]*//p' \
+        | head -n1 \
+        | tr '[:upper:]' '[:lower:]'
+    )
+    message=$(
+      printf "%s\n" "$out" \
+        | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' \
+        | head -n1 \
+        | tr '[:upper:]' '[:lower:]'
+    )
+    if [ "$state" = "js_succeeded" ] || [ "$state" = "succeeded" ] || [ "$state" = "done" ] || [ "$message" = "succeeded" ]; then
       echo "[PASS] $label job succeeded ($job_id)"
       return 0
     fi
-    if [ "$state" = "JS_FAILED" ] || [ "$state" = "JS_CANCELLED" ]; then
+    if [ "$state" = "js_failed" ] || [ "$state" = "js_cancelled" ] || [ "$state" = "failed" ] || [ "$state" = "cancelled" ] || [ "$message" = "failed" ] || [ "$message" = "cancelled" ]; then
       echo "$out"
       echo "[FAIL] $label job terminal state=$state ($job_id)"
       return 1

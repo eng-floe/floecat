@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
@@ -221,5 +222,21 @@ class TableMetadataBuilderTest {
     assertEquals("id", mapping.get(0).get("names").get(0).asText());
     assertEquals(2, mapping.get(1).get("field-id").asInt());
     assertEquals("v", mapping.get(1).get("names").get(0).asText());
+  }
+
+  @Test
+  void locationPrefersTablePropertyOverUpstreamUri() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
+            .setUpstream(UpstreamRef.newBuilder().setUri("http://iceberg-rest:9200"))
+            .putProperties("location", "s3://warehouse/db/orders")
+            .build();
+
+    TableMetadataView view =
+        TableMetadataBuilder.fromCatalog(
+            "orders", table, new LinkedHashMap<>(table.getPropertiesMap()), null, List.of());
+
+    assertEquals("s3://warehouse/db/orders", view.location());
   }
 }

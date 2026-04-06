@@ -2434,9 +2434,8 @@ class IcebergRestFixtureIT {
                 return response.getConnectorsList().stream()
                     .filter(
                         c ->
-                            table.equals(c.getPropertiesMap().get("external.table-name"))
-                                && namespace.equals(
-                                    c.getPropertiesMap().getOrDefault("external.namespace", "")))
+                            table.equals(c.getSource().getTable())
+                                && namespace.equals(String.join(".", c.getSource().getNamespace().getSegmentsList())))
                     .findFirst()
                     .orElse(null);
               });

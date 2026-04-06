@@ -38,25 +38,14 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void filesystemSourceRequiresMetadataLocation() {
+  void filesystemSourceRequiresUri() {
     var ex =
         assertThrows(
             IllegalArgumentException.class,
             () ->
                 IcebergConnectorFactory.validateOptions(
-                    IcebergConnectorFactory.IcebergSource.FILESYSTEM, ""));
-    assertTrue(ex.getMessage().contains("external.metadata-location"));
-  }
-
-  @Test
-  void externalMetadataRequiresFilesystemSource() {
-    var ex =
-        assertThrows(
-            IllegalArgumentException.class,
-            () ->
-                IcebergConnectorFactory.validateOptions(
-                    IcebergConnectorFactory.IcebergSource.REST, "s3://bucket/metadata.json"));
-    assertTrue(ex.getMessage().contains("iceberg.source=filesystem"));
+                    IcebergConnectorFactory.IcebergSource.FILESYSTEM, "", Map.of()));
+    assertTrue(ex.getMessage().contains("uri"));
   }
 
   @Test

@@ -6,7 +6,7 @@ AWS Glue. It enables Floecat to ingest schema metadata, partition specs, snapsho
 file manifests from Iceberg tables stored in S3.
 
 The implementation centres on `IcebergConnector` (abstract base) with catalog-specific subclasses
-for REST, Glue, and filesystem-backed tables. Subclasses share NDV and stats collection while
+for REST, Glue, and single-table filesystem-backed tables. Subclasses share NDV and stats collection while
 specializing discovery and catalog wiring.
 
 ## Architecture & Responsibilities
@@ -14,7 +14,8 @@ specializing discovery and catalog wiring.
   stats, and NDV logic.
 - **`IcebergRestConnector`** – REST catalog discovery via Iceberg `RESTCatalog`.
 - **`IcebergGlueConnector`** – REST catalog + Glue discovery via `GlueIcebergFilter`.
-- **`IcebergFilesystemConnector`** – Single-table connector for `external.metadata-location`.
+- **`IcebergFilesystemConnector`** – Single-table connector that opens directly from the connector
+  `uri` when `iceberg.source=filesystem`.
 - **`IcebergConnectorProvider`** – Exposes the connector via CDI so the service can instantiate it
   using URIs from `ConnectorSpec`.
 - **`IcebergPlanner`** – Implements `connector/common/Planner`, translating Iceberg `TableScan`
@@ -90,9 +91,8 @@ Connector options (part of `ConnectorSpec.properties`):
 - `io-impl` – override Iceberg IO implementation.
 - `stats.ndv.*` – enable NDV estimation (boolean), sample fraction (0−1], max Parquet files to scan.
 - `header.<name>` – send custom headers to the REST endpoint.
-- `external.metadata-location` – required for `iceberg.source=filesystem`, pointing at a single
-  Iceberg metadata JSON file. `external.namespace` and `external.table-name` override the logical
-  name when needed.
+- For `iceberg.source=filesystem`, the connector `uri` must point at a single Iceberg metadata JSON
+  file. `external.namespace` and `external.table-name` remain optional logical-name overrides.
 
 Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
 For Iceberg, the relevant types are `bearer`, `client`, `cli` (provider=aws), `token-exchange`,
@@ -134,15 +134,14 @@ To extend behavior:
     --props iceberg.source=rest \
     --props warehouse=s3://warehouse
   ```
-- **Filesystem (single table)** – CLI example using external metadata:
+- **Filesystem (single table)** – CLI example using the metadata JSON as the connector URI:
   ```bash
   connector create "Filesystem Iceberg" ICEBERG \
-    "s3://warehouse" \
+    "s3://warehouse/metadata/00001.metadata.json" \
     fixtures demo \
     --auth-scheme none \
     --dest-ns fixtures \
     --props iceberg.source=filesystem \
-    --props external.metadata-location=s3://warehouse/metadata/00001.metadata.json \
     --props external.namespace=fixtures.simple \
     --props external.table-name=trino_test
   ```

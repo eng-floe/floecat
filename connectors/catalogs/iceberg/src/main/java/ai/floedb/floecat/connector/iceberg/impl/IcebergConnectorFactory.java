@@ -63,17 +63,16 @@ final class IcebergConnectorFactory {
       }
     }
 
-    String externalMetadata = cleanOpts.get("external.metadata-location");
-    validateOptions(source, externalMetadata);
+    validateOptions(source, uri, cleanOpts);
     return switch (source) {
       case FILESYSTEM -> {
-        var loaded = IcebergConnector.loadExternalTable(externalMetadata, cleanOpts);
+        var loaded = IcebergConnector.loadExternalTable(uri, cleanOpts);
         Table table = loaded.table();
         FileIO fileIO = loaded.fileIO();
         String namespaceFq = cleanOpts.getOrDefault("external.namespace", "");
         String detectedName =
             (table.name() == null || table.name().isBlank())
-                ? IcebergConnector.deriveTableName(externalMetadata)
+                ? IcebergConnector.deriveTableName(uri)
                 : table.name();
         String tableName = cleanOpts.getOrDefault("external.table-name", detectedName);
         yield new IcebergFilesystemConnector(
@@ -187,22 +186,13 @@ final class IcebergConnectorFactory {
         default -> throw new IllegalArgumentException("Unsupported iceberg.source: " + source);
       };
     }
-    String externalMetadata = options.get("external.metadata-location");
-    if (externalMetadata != null && !externalMetadata.isBlank()) {
-      return IcebergSource.FILESYSTEM;
-    }
     return IcebergSource.GLUE;
   }
 
-  static void validateOptions(IcebergSource source, String externalMetadata) {
-    boolean hasExternal = externalMetadata != null && !externalMetadata.isBlank();
-    if (source == IcebergSource.FILESYSTEM && !hasExternal) {
-      throw new IllegalArgumentException(
-          "external.metadata-location is required for iceberg.source=filesystem");
-    }
-    if (source != IcebergSource.FILESYSTEM && hasExternal) {
-      throw new IllegalArgumentException(
-          "external.metadata-location is only valid with iceberg.source=filesystem");
+  static void validateOptions(IcebergSource source, String uri, Map<String, String> options) {
+    boolean hasFilesystemUri = uri != null && !uri.isBlank();
+    if (source == IcebergSource.FILESYSTEM && !hasFilesystemUri) {
+      throw new IllegalArgumentException("uri is required for iceberg.source=filesystem");
     }
   }
 }

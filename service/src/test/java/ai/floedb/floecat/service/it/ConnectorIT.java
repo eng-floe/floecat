@@ -296,14 +296,13 @@ public class ConnectorIT {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json");
 
     var conn =
         TestSupport.createConnector(
@@ -311,7 +310,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("fixture-iceberg-simple")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setUri(TestS3Fixtures.bucketUri(null))
+                .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -365,14 +364,13 @@ public class ConnectorIT {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json");
 
     var conn =
         TestSupport.createConnector(
@@ -380,7 +378,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("fixture-iceberg-incremental")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setUri(TestS3Fixtures.bucketUri(null))
+                .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -437,14 +435,13 @@ public class ConnectorIT {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json"));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00000-16393a9a-3433-440c-98f4-fe023ed03973.metadata.json");
 
     var conn =
         TestSupport.createConnector(
@@ -452,7 +449,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("fixture-iceberg-incremental-advance")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setUri(TestS3Fixtures.bucketUri(null))
+                .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -483,12 +480,11 @@ public class ConnectorIT {
     assertEquals(
         1, snaps.count(table.getResourceId()), "expected one snapshot after initial reconcile");
 
-    var advancedProps = new HashMap<>(conn.getPropertiesMap());
-    advancedProps.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json"));
-    conn = updateConnectorProperties(conn.getResourceId(), advancedProps);
+    conn =
+        updateConnectorUri(
+            conn.getResourceId(),
+            TestS3Fixtures.bucketUri(
+                "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json"));
 
     var incrementalJob = runReconcile(conn.getResourceId(), false);
     assertNotNull(incrementalJob);
@@ -535,14 +531,13 @@ public class ConnectorIT {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json"));
     props.put("external.namespace", "fixtures.simple");
     props.put("external.table-name", "trino_test");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00001-084f601d-8c4e-4315-8747-5152a12ad2ea.metadata.json");
 
     var conn =
         TestSupport.createConnector(
@@ -550,7 +545,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("fixture-iceberg-incremental-delete")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setUri(TestS3Fixtures.bucketUri(null))
+                .setUri(metadataLocation)
                 .setSource(source(List.of("fixtures", "simple")))
                 .setDestination(dest)
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -581,12 +576,11 @@ public class ConnectorIT {
     assertEquals(
         2, snaps.count(table.getResourceId()), "expected two snapshots after initial reconcile");
 
-    var advancedProps = new HashMap<>(conn.getPropertiesMap());
-    advancedProps.put(
-        "external.metadata-location",
-        TestS3Fixtures.bucketUri(
-            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
-    conn = updateConnectorProperties(conn.getResourceId(), advancedProps);
+    conn =
+        updateConnectorUri(
+            conn.getResourceId(),
+            TestS3Fixtures.bucketUri(
+                "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json"));
 
     var incrementalJob = runReconcile(conn.getResourceId(), false);
     assertNotNull(incrementalJob);
@@ -635,13 +629,12 @@ public class ConnectorIT {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        "s3://floecat/sales/us/trino_types/metadata/00001-d751d7ce-209e-443e-9937-c25e2a08fc29.metadata.json");
     props.put("external.namespace", "sales.us");
     props.put("external.table-name", "trino_types");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        "s3://floecat/sales/us/trino_types/metadata/00001-d751d7ce-209e-443e-9937-c25e2a08fc29.metadata.json";
 
     var conn =
         TestSupport.createConnector(
@@ -649,7 +642,7 @@ public class ConnectorIT {
             ConnectorSpec.newBuilder()
                 .setDisplayName("fixture-iceberg-complex")
                 .setKind(ConnectorKind.CK_ICEBERG)
-                .setUri("s3://floecat/sales/us/trino_types")
+                .setUri(metadataLocation)
                 .setSource(source(List.of("sales", "us")))
                 .setDestination(dest)
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
@@ -881,14 +874,13 @@ public class ConnectorIT {
     return runReconcile(rid, true);
   }
 
-  private Connector updateConnectorProperties(
-      ResourceId connectorId, java.util.Map<String, String> properties) {
+  private Connector updateConnectorUri(ResourceId connectorId, String uri) {
     return connectors
         .updateConnector(
             UpdateConnectorRequest.newBuilder()
                 .setConnectorId(connectorId)
-                .setSpec(ConnectorSpec.newBuilder().putAllProperties(properties).build())
-                .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+                .setSpec(ConnectorSpec.newBuilder().setUri(uri).build())
+                .setUpdateMask(FieldMask.newBuilder().addPaths("uri").build())
                 .build())
         .getConnector();
   }

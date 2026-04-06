@@ -1515,6 +1515,27 @@ class ReconcilerServiceTest {
         .build();
   }
 
+  private Connector activeIcebergConnector(ResourceId tableId) {
+    ResourceId destCatalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId destNamespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    return Connector.newBuilder()
+        .setResourceId(connectorId)
+        .setState(ConnectorState.CS_ACTIVE)
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setUri("http://iceberg-rest:9200")
+        .putProperties("iceberg.source", "rest")
+        .setSource(
+            SourceSelector.newBuilder()
+                .setNamespace(
+                    NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+        .setDestination(
+            DestinationTarget.newBuilder()
+                .setCatalogId(destCatalogId)
+                .setNamespaceId(destNamespaceId)
+                .setTableId(tableId))
+        .build();
+  }
+
   /**
    * Backend that tracks {@link #ensureView} calls and provides enough plumbing for the view pass to
    * run end-to-end (no table snapshots needed since FakeConnector returns empty tables list).

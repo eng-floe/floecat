@@ -177,6 +177,10 @@ public class TableGatewaySupport {
     return config.connectorIntegrationEnabled();
   }
 
+  public Optional<String> selfUri() {
+    return config.selfUri().filter(uri -> uri != null && !uri.isBlank()).map(String::trim);
+  }
+
   public void deleteConnector(ResourceId connectorId) {
     if (connectorId == null) {
       return;

@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
+import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.NamespaceRequestContext;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.TableRequestContext;
@@ -203,5 +204,63 @@ class TableLoadServiceTest {
 
     verify(tableMetadataImportService)
         .importMetadata(eq("s3://new/metadata/00003.metadata.json"), any());
+  }
+
+  @Test
+  void loadRefreshesWhenTableMetadataPointerAdvancesWithoutNewSnapshot() {
+    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("orders")
+            .putProperties(
+                "metadata-location", "s3://warehouse/orders/metadata/00002.metadata.json")
+            .putProperties("format-version", "2")
+            .build();
+    when(tableLifecycleService.getTable(tableId)).thenReturn(table);
+    when(tableSupport.loadCurrentMetadata(table))
+        .thenReturn(
+            IcebergMetadata.newBuilder()
+                .setMetadataLocation("s3://warehouse/orders/metadata/00001.metadata.json")
+                .setFormatVersion(1)
+                .addSchemas(
+                    ai.floedb.floecat.gateway.iceberg.rpc.IcebergSchema.newBuilder()
+                        .setSchemaId(0)
+                        .build())
+                .build());
+    when(tableSupport.defaultFileIoProperties()).thenReturn(Map.of());
+    when(tableMetadataImportService.importMetadata(any(), any()))
+        .thenReturn(
+            new TableMetadataImportService.ImportedMetadata(
+                null,
+                Map.of(),
+                null,
+                IcebergMetadata.newBuilder()
+                    .setMetadataLocation("s3://warehouse/orders/metadata/00002.metadata.json")
+                    .setFormatVersion(2)
+                    .build(),
+                null,
+                List.of()));
+
+    TableRequestContext context =
+        new TableRequestContext(
+            new NamespaceRequestContext(
+                new CatalogRequestContext(
+                    "pfx", "catalog", ResourceId.newBuilder().setId("cat").build()),
+                "db",
+                List.of("db"),
+                ResourceId.newBuilder().setId("cat:db").build()),
+            "orders",
+            tableId);
+
+    Response response = service.load(context, "orders", null, null, null, tableSupport);
+
+    assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    LoadTableResultDto dto = (LoadTableResultDto) response.getEntity();
+    assertNotNull(dto);
+    assertEquals(2, dto.metadata().formatVersion());
+    assertEquals("s3://warehouse/orders/metadata/00002.metadata.json", dto.metadataLocation());
+    verify(tableMetadataImportService)
+        .importMetadata(eq("s3://warehouse/orders/metadata/00002.metadata.json"), any());
   }
 }

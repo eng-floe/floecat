@@ -152,6 +152,7 @@ class TransactionCommitServiceTest {
     when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    when(tableSupport.selfUri()).thenReturn(Optional.of("http://iceberg-rest:9200"));
     when(tableSupport.getConnector(any()))
         .thenAnswer(
             invocation -> {
@@ -580,7 +581,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitAddsAtomicConnectorChangesForExistingConnectorMetadataRefresh() {
+  void commitMigratesExistingManagedConnectorToFloecatRestCatalog() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -656,11 +657,9 @@ class TransactionCommitServiceTest {
                             change -> {
                               try {
                                 Connector connector = Connector.parseFrom(change.getPayload());
-                                return "s3://floecat/iceberg/orders/metadata/00002.metadata.json"
-                                    .equals(
-                                        connector
-                                            .getPropertiesMap()
-                                            .get("external.metadata-location"));
+                                return "rest"
+                                        .equals(connector.getPropertiesMap().get("iceberg.source"))
+                                    && "http://iceberg-rest:9200".equals(connector.getUri());
                               } catch (InvalidProtocolBufferException e) {
                                 return false;
                               }

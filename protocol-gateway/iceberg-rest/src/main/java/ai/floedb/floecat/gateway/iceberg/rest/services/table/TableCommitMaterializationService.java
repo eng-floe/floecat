@@ -134,16 +134,16 @@ public class TableCommitMaterializationService {
     if (tableRecord == null) {
       return null;
     }
+    Map<String, String> props = tableRecord.getPropertiesMap();
+    String location = props.get("location");
+    if (location != null && !location.isBlank()) {
+      return location;
+    }
     if (tableRecord.hasUpstream()) {
       String uri = tableRecord.getUpstream().getUri();
       if (uri != null && !uri.isBlank()) {
         return uri;
       }
-    }
-    Map<String, String> props = tableRecord.getPropertiesMap();
-    String location = props.get("location");
-    if (location != null && !location.isBlank()) {
-      return location;
     }
     return null;
   }
