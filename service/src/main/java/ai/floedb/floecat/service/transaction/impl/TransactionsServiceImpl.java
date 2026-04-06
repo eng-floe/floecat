@@ -519,13 +519,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     for (var intent : intents) {
       var lockOwner = intentRepo.getByTarget(accountId, intent.getTargetPointerKey()).orElse(null);
       if (lockOwner == null || !applyPhaseTxn.getTxId().equals(lockOwner.getTxId())) {
-        return transitionTransactionState(
+        Transaction failed =
+            transitionTransactionState(
+                accountId,
+                applyPhaseTxn.getTxId(),
+                Set.of(TransactionState.TS_APPLYING),
+                TransactionState.TS_APPLY_FAILED_RETRYABLE,
+                now,
+                "lock ownership mismatch");
+        logCommitFailure(
             accountId,
-            applyPhaseTxn.getTxId(),
-            Set.of(TransactionState.TS_APPLYING),
-            TransactionState.TS_APPLY_FAILED_RETRYABLE,
-            now,
-            "lock ownership mismatch");
+            failed,
+            "LOCK_OWNERSHIP_MISMATCH",
+            "lock ownership mismatch during apply",
+            intents);
+        return failed;
       }
     }
 
@@ -557,23 +565,29 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         return applied;
       }
       annotateIntentApplyFailure(intents, outcome, now);
-      return transitionTransactionState(
-          accountId,
-          applyPhaseTxn.getTxId(),
-          Set.of(TransactionState.TS_APPLYING),
-          TransactionState.TS_APPLY_FAILED_CONFLICT,
-          now,
-          "cannot transition to apply_failed_conflict");
+      Transaction failed =
+          transitionTransactionState(
+              accountId,
+              applyPhaseTxn.getTxId(),
+              Set.of(TransactionState.TS_APPLYING),
+              TransactionState.TS_APPLY_FAILED_CONFLICT,
+              now,
+              "cannot transition to apply_failed_conflict");
+      logCommitFailure(accountId, failed, outcome, intents);
+      return failed;
     }
 
     annotateIntentApplyFailure(intents, outcome, now);
-    return transitionTransactionState(
-        accountId,
-        applyPhaseTxn.getTxId(),
-        Set.of(TransactionState.TS_APPLYING),
-        TransactionState.TS_APPLY_FAILED_RETRYABLE,
-        now,
-        "cannot transition to apply_failed_retryable");
+    Transaction failed =
+        transitionTransactionState(
+            accountId,
+            applyPhaseTxn.getTxId(),
+            Set.of(TransactionState.TS_APPLYING),
+            TransactionState.TS_APPLY_FAILED_RETRYABLE,
+            now,
+            "cannot transition to apply_failed_retryable");
+    logCommitFailure(accountId, failed, outcome, intents);
+    return failed;
   }
 
   private boolean intentsAlreadyApplied(List<TransactionIntent> intents) {
@@ -980,6 +994,82 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             intent.getTxId(), intent.getTargetPointerKey());
       }
     }
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      TransactionIntentApplierSupport.ApplyOutcome outcome,
+      List<TransactionIntent> intents) {
+    if (outcome == null) {
+      return;
+    }
+    logCommitFailure(
+        accountId,
+        txn,
+        outcome.errorCode(),
+        outcome.errorMessage(),
+        intents,
+        outcome.expectedVersion(),
+        outcome.actualVersion(),
+        outcome.conflictOwner());
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      String errorCode,
+      String errorMessage,
+      List<TransactionIntent> intents) {
+    logCommitFailure(accountId, txn, errorCode, errorMessage, intents, null, null, null);
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      String errorCode,
+      String errorMessage,
+      List<TransactionIntent> intents,
+      Long expectedVersion,
+      Long actualVersion,
+      String conflictOwner) {
+    LOG.warnf(
+        "transaction commit non-applied account=%s tx=%s state=%s error_code=%s error_message=%s expected_version=%s actual_version=%s conflict_owner=%s intents=%s",
+        accountId,
+        txn == null ? "" : txn.getTxId(),
+        txn == null ? TransactionState.TS_UNSPECIFIED : txn.getState(),
+        nullToEmpty(errorCode),
+        nullToEmpty(errorMessage),
+        expectedVersion,
+        actualVersion,
+        nullToEmpty(conflictOwner),
+        summarizeIntentTargets(intents));
+  }
+
+  private static String summarizeIntentTargets(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return "[]";
+    }
+    List<String> targets = new ArrayList<>(Math.min(intents.size(), 8));
+    for (var intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      String target = intent.getTargetPointerKey();
+      if (target == null || target.isBlank()) {
+        continue;
+      }
+      targets.add(target);
+      if (targets.size() == 8) {
+        break;
+      }
+    }
+    String suffix = intents.size() > targets.size() ? ",..." : "";
+    return "[" + String.join(",", targets) + suffix + "]";
+  }
+
+  private static String nullToEmpty(String value) {
+    return value == null ? "" : value;
   }
 
   private void cleanupIntents(String accountId, String txId) {

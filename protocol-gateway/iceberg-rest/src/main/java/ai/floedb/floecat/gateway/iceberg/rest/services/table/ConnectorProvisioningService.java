@@ -87,16 +87,9 @@ public class ConnectorProvisioningService {
                 "CommitStateUnknownException",
                 Response.Status.SERVICE_UNAVAILABLE));
       }
-      Connector connectorRecord =
-          migrateManagedIcebergConnector(
-              existingConnector.get(), connectorUri(tableSupport, prefix), nowTs);
-      List<ai.floedb.floecat.transaction.rpc.TxChange> connectorTxChanges =
-          connectorRecord.equals(existingConnector.get())
-              ? List.of()
-              : connectorUpsertChanges(accountId, connectorRecord);
       ai.floedb.floecat.catalog.rpc.Table enriched =
           enrichTableUpstream(table, namespacePath, tableName, existing, tableLocation);
-      return new ProvisionResult(enriched, existing, connectorTxChanges, null);
+      return new ProvisionResult(enriched, existing, List.of(), null);
     }
     if (!tableSupport.connectorIntegrationEnabled()) {
       return new ProvisionResult(table, null, List.of(), null);
@@ -263,26 +256,6 @@ public class ConnectorProvisioningService {
         .setUri(connectorUri)
         .putAllProperties(props)
         .build();
-  }
-
-  private Connector migrateManagedIcebergConnector(
-      Connector existingConnector, String connectorUri, Timestamp nowTs) {
-    if (existingConnector == null) {
-      return Connector.getDefaultInstance();
-    }
-    Connector.Builder updated = existingConnector.toBuilder().setUpdatedAt(nowTs);
-    Map<String, String> nextProperties = new LinkedHashMap<>(existingConnector.getPropertiesMap());
-    nextProperties
-        .entrySet()
-        .removeIf(entry -> entry.getKey() != null && entry.getKey().startsWith("external."));
-    nextProperties.put(ICEBERG_SOURCE, ICEBERG_SOURCE_REST);
-    updated.clearProperties().putAllProperties(nextProperties);
-    if (connectorUri != null
-        && !connectorUri.isBlank()
-        && !connectorUri.equals(existingConnector.getUri())) {
-      updated.setUri(connectorUri);
-    }
-    return updated.build();
   }
 
   private String connectorUri(TableGatewaySupport tableSupport, String prefix) {

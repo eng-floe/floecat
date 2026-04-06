@@ -19,9 +19,11 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -30,7 +32,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
@@ -55,7 +56,6 @@ class ReconcileControlImplTest {
     service.principalProvider = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
-    service.reconcilerService = mock(ReconcilerService.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
     service.settings = mock(ReconcilerSettingsStore.class);
 
@@ -122,7 +122,80 @@ class ReconcileControlImplTest {
     assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
   }
 
+  @Test
+  void captureNowEnqueuesAndWaitsForTerminalJob() {
+    when(service.jobs.enqueue(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(
+            Optional.of(job("job-1", "JS_QUEUED", 0, 0, 0, "")),
+            Optional.of(job("job-1", "JS_RUNNING", 0, 0, 0, "")),
+            Optional.of(job("job-1", "JS_SUCCEEDED", 3, 2, 1, "")));
+
+    var response =
+        service
+            .captureNow(
+                CaptureNowRequest.newBuilder()
+                    .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(3L, response.getTablesScanned());
+    assertEquals(2L, response.getTablesChanged());
+    assertEquals(1L, response.getErrors());
+    verify(service.jobs)
+        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowFailsWhenQueuedJobFails() {
+    when(service.jobs.enqueue(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_FAILED", 0, 0, 1, "boom")));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INTERNAL, ex.getStatus().getCode());
+  }
+
   private static ResourceId connectorId() {
     return ResourceId.newBuilder().setId("connector-1").setKind(ResourceKind.RK_CONNECTOR).build();
+  }
+
+  private static ReconcileJobStore.ReconcileJob job(
+      String jobId, String state, long scanned, long changed, long errors, String message) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        state,
+        message,
+        0L,
+        0L,
+        scanned,
+        changed,
+        errors,
+        false,
+        null,
+        0L,
+        0L,
+        null,
+        null,
+        "");
   }
 }

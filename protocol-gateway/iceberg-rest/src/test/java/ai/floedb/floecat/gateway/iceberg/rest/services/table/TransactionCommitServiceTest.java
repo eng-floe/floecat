@@ -556,7 +556,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitMigratesExistingManagedConnectorToFloecatRestCatalog() {
+  void commitDoesNotMutateExistingConnectorTransactionally() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -623,23 +623,17 @@ class TransactionCommitServiceTest {
             argThat(
                 prepare ->
                     prepare.getChangesList().stream()
-                        .filter(
-                            change ->
-                                change.hasTargetPointerKey()
-                                    && change.getTargetPointerKey().contains("/connectors/by-id/"))
-                        .findFirst()
-                        .map(
-                            change -> {
-                              try {
-                                Connector connector = Connector.parseFrom(change.getPayload());
-                                return "rest"
-                                        .equals(connector.getPropertiesMap().get("iceberg.source"))
-                                    && "http://iceberg-rest:9200".equals(connector.getUri());
-                              } catch (InvalidProtocolBufferException e) {
-                                return false;
-                              }
-                            })
-                        .orElse(false)));
+                            .noneMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change.getTargetPointerKey().contains("/connectors/"))
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTable()
+                                        && change.getTable().hasUpstream()
+                                        && connectorId.equals(
+                                            change.getTable().getUpstream().getConnectorId()))));
   }
 
   @Test
