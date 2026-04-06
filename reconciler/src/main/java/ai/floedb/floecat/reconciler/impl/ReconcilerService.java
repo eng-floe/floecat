@@ -361,7 +361,6 @@ public class ReconcilerService {
                   knownSnapshotIds,
                   targetSnapshotIds,
                   progressOut);
-
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
                   ctx,

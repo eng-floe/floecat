@@ -17,7 +17,11 @@
 package ai.floedb.floecat.connector.iceberg.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -104,6 +108,40 @@ class IcebergConnectorIncrementalEnumerationTest {
         (List<Snapshot>) method.invoke(connector, table, true, Set.of(), Set.of(200L));
 
     assertEquals(List.of(200L), snapshots.stream().map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void enumerateSnapshotsWithStatsFailsWhenCurrentSnapshotExistsButIncrementalEnumerationIsEmpty() {
+    Snapshot current = snapshot(300L, 3L, 3000L, 200L);
+    Table table = table(List.of(), current);
+
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            return table;
+          }
+        };
+
+    assertThrows(
+        ConnectorNotReadyException.class,
+        () ->
+            connector.enumerateSnapshotsWithStats(
+                "iceberg",
+                "duckdb_mutation_smoke",
+                ResourceId.getDefaultInstance(),
+                Set.of(),
+                FloecatConnector.SnapshotEnumerationOptions.incremental(true, Set.of())));
   }
 
   private static Snapshot snapshot(

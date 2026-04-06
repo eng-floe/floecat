@@ -40,6 +40,7 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -936,6 +937,105 @@ class ReconcilerServiceTest {
     assertThat(result.error).isNotNull();
     assertThat(result.error.getMessage())
         .contains("Destination table examples.iceberg.duckdb_mutation_smoke is not visible yet");
+  }
+
+  @Test
+  void reconcileIcebergRestStatsCaptureRetriesWhenCurrentSnapshotEnumeratesEmpty() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeIcebergConnector(tableId);
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "examples";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "iceberg";
+      }
+
+      @Override
+      public ResourceId ensureTable(
+          ReconcileContext ctx,
+          ResourceId namespaceId,
+          NameRef table,
+          TableSpecDescriptor descriptor) {
+        return tableId;
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class EmptyIcebergRestConnector extends FakeConnector {
+      EmptyIcebergRestConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public ConnectorFormat format() {
+        return ConnectorFormat.CF_ICEBERG;
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("duckdb_mutation_smoke");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            "iceberg",
+            "duckdb_mutation_smoke",
+            "s3://floecat/iceberg/duckdb_mutation_smoke",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshotsWithStats(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          Set<String> includeColumns,
+          SnapshotEnumerationOptions options) {
+        throw new ConnectorNotReadyException(
+            "Current snapshot for iceberg.duckdb_mutation_smoke is not fully observable yet");
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new EmptyIcebergRestConnector();
+
+    var result =
+        service.reconcile(
+            principal, connectorId, false, null, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    assertThat(result.statsProcessed).isZero();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage())
+        .contains("Current snapshot for iceberg.duckdb_mutation_smoke is not fully observable yet");
   }
 
   private static final class ThrowingBackend extends DefaultBackend {
