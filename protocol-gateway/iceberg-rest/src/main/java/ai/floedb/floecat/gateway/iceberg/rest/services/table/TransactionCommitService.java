@@ -43,8 +43,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
 import ai.floedb.floecat.storage.kv.Keys;
@@ -75,8 +73,6 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitService {
-  private static final int COMMIT_JOURNAL_VERSION = 1;
-  private static final int COMMIT_OUTBOX_VERSION = 1;
   private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
@@ -99,8 +95,6 @@ public class TransactionCommitService {
   @Inject TableCommitMetadataMutator metadataMutator;
   @Inject TablePropertyService tablePropertyService;
   @Inject ConnectorProvisioningService connectorProvisioningService;
-  @Inject TableCommitJournalService commitJournalService;
-  @Inject TableCommitOutboxService commitOutboxService;
   @Inject TableCommitMaterializationService materializationService;
   @Inject GrpcServiceFacade grpcClient;
 
@@ -219,7 +213,6 @@ public class TransactionCommitService {
                 ? Timestamps.toMillis(begin.getTransaction().getCreatedAt())
                 : clockMillis();
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
-    List<TableCommitOutboxService.WorkItem> outboxItems = new ArrayList<>();
 
     if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return IcebergErrorResponses.failure(
@@ -315,7 +308,6 @@ public class TransactionCommitService {
         ai.floedb.floecat.catalog.rpc.Table updated;
         boolean shouldPlan = !alreadyApplied;
         if (!shouldPlan) {
-          // TS_APPLIED replay reloads durable outbox work from the commit journal later.
           updated = persistedTable;
         } else {
           Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = () -> persistedTable;
@@ -421,38 +413,6 @@ public class TransactionCommitService {
       if (!snapshotChangePlan.txChanges().isEmpty()) {
         txChanges.addAll(snapshotChangePlan.txChanges());
       }
-
-      IcebergCommitJournalEntry journal =
-          buildCommitJournalEntry(
-              txId,
-              requestHash,
-              scopedTableId,
-              plan.namespacePath(),
-              plan.tableName(),
-              connectorId,
-              addedSnapshotIds,
-              removedSnapshotIds,
-              tableForTx,
-              txCreatedAtMs);
-      String pendingKey =
-          Keys.tableCommitOutboxPendingPointer(
-              txCreatedAtMs, accountId, scopedTableId.getId(), txId);
-      txChanges.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(
-                  Keys.tableCommitJournalPointer(accountId, scopedTableId.getId(), txId))
-              .setPayload(ByteString.copyFrom(journal.toByteArray()))
-              .build());
-      txChanges.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(pendingKey)
-              .setPayload(
-                  ByteString.copyFrom(
-                      buildCommitOutboxEntry(
-                              txId, requestHash, accountId, scopedTableId.getId(), txCreatedAtMs)
-                          .toByteArray()))
-              .build());
-      outboxItems.add(commitOutboxService.toWorkItem(pendingKey, journal));
     }
 
     boolean applied = isCommitAccepted(currentState);
@@ -490,7 +450,6 @@ public class TransactionCommitService {
                 : TransactionState.TS_UNSPECIFIED;
         if (isCommitAccepted(commitState)) {
           applied = true;
-          // Commit applied; durable outbox processing happens asynchronously.
         } else {
           if (isDeterministicFailedState(commitState)) {
             return IcebergErrorResponses.failure(
@@ -515,7 +474,6 @@ public class TransactionCommitService {
         if (isRetryableCommitAbort(commitFailure)) {
           if (waitForAppliedState(txId)) {
             applied = true;
-            // Apply eventually succeeded; durable outbox processing happens asynchronously.
           } else {
             return IcebergErrorResponses.failure(
                 "transaction commit failed",
@@ -1037,68 +995,6 @@ public class TransactionCommitService {
 
   private long clockMillis() {
     return System.currentTimeMillis();
-  }
-
-  private IcebergCommitJournalEntry buildCommitJournalEntry(
-      String txId,
-      String requestHash,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      ResourceId connectorId,
-      List<Long> addedSnapshotIds,
-      List<Long> removedSnapshotIds,
-      ai.floedb.floecat.catalog.rpc.Table table,
-      long createdAtMs) {
-    IcebergCommitJournalEntry.Builder builder =
-        IcebergCommitJournalEntry.newBuilder()
-            .setVersion(COMMIT_JOURNAL_VERSION)
-            .setTxId(txId == null ? "" : txId)
-            .setRequestHash(requestHash == null ? "" : requestHash)
-            .setCreatedAtMs(Math.max(0L, createdAtMs));
-    if (tableId != null) {
-      builder.setTableId(tableId);
-    }
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      builder.addAllNamespacePath(namespacePath);
-    }
-    if (tableName != null && !tableName.isBlank()) {
-      builder.setTableName(tableName);
-    }
-    if (connectorId != null && !connectorId.getId().isBlank()) {
-      builder.setConnectorId(connectorId);
-    }
-    if (addedSnapshotIds != null && !addedSnapshotIds.isEmpty()) {
-      builder.addAllAddedSnapshotIds(addedSnapshotIds);
-    }
-    if (removedSnapshotIds != null && !removedSnapshotIds.isEmpty()) {
-      builder.addAllRemovedSnapshotIds(removedSnapshotIds);
-    }
-    String metadataLocation = tableMetadataLocation(table);
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      builder.setMetadataLocation(metadataLocation);
-    }
-    String tableUuid = tableUuid(table);
-    if (tableUuid != null && !tableUuid.isBlank()) {
-      builder.setTableUuid(tableUuid);
-    }
-    return builder.build();
-  }
-
-  private IcebergCommitOutboxEntry buildCommitOutboxEntry(
-      String txId, String requestHash, String accountId, String tableId, long createdAtMs) {
-    return IcebergCommitOutboxEntry.newBuilder()
-        .setVersion(COMMIT_OUTBOX_VERSION)
-        .setTxId(txId == null ? "" : txId)
-        .setRequestHash(requestHash == null ? "" : requestHash)
-        .setAccountId(accountId == null ? "" : accountId)
-        .setTableId(tableId == null ? "" : tableId)
-        .setCreatedAtMs(Math.max(0L, createdAtMs))
-        .setAttemptCount(0)
-        .setNextAttemptAtMs(0L)
-        .setLastAttemptAtMs(0L)
-        .setDeadLetteredAtMs(0L)
-        .build();
   }
 
   private String firstDuplicateTableIdentifier(List<TransactionCommitRequest.TableChange> changes) {

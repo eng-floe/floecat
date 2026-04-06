@@ -29,7 +29,6 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
@@ -40,10 +39,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
-import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
@@ -429,87 +424,6 @@ public class TableGatewaySupport {
     } catch (StatusRuntimeException e) {
       return Optional.empty();
     }
-  }
-
-  public void runSyncStatisticsCapture(
-      ResourceId connectorId, List<String> namespacePath, String tableName) {
-    runSyncStatisticsCapture(connectorId, namespacePath, tableName, List.of());
-  }
-
-  public void runSyncStatisticsCapture(
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName,
-      List<Long> snapshotIds) {
-    runSyncStatisticsCapture(connectorId, namespacePath, tableName, snapshotIds, false);
-  }
-
-  public void runSyncStatisticsCapture(
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName,
-      List<Long> snapshotIds,
-      boolean fullRescan) {
-    runSyncCapture(
-        connectorId, namespacePath, tableName, snapshotIds, CaptureMode.CM_STATS_ONLY, fullRescan);
-  }
-
-  private CaptureNowResponse runSyncCapture(
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName,
-      List<Long> snapshotIds,
-      CaptureMode mode,
-      boolean fullRescan) {
-    if (connectorId == null || tableName == null || tableName.isBlank()) {
-      return CaptureNowResponse.getDefaultInstance();
-    }
-    String namespaceFq =
-        namespacePath == null || namespacePath.isEmpty() ? "" : String.join(".", namespacePath);
-    try {
-      CaptureNowRequest.Builder request =
-          CaptureNowRequest.newBuilder()
-              .setScope(captureScope(connectorId, namespacePath, tableName, snapshotIds))
-              .setMode(mode)
-              .setFullRescan(fullRescan);
-      var response = grpcClient.captureNow(request.build());
-      LOG.infof(
-          "Triggered sync statistics capture connector=%s namespace=%s table=%s scanned=%d changed=%d"
-              + " errors=%d",
-          connectorId.getId(),
-          namespaceFq,
-          tableName,
-          response.getTablesScanned(),
-          response.getTablesChanged(),
-          response.getErrors());
-      return response;
-    } catch (Throwable e) {
-      LOG.warnf(
-          e,
-          "Sync statistics capture failed for connector %s table %s",
-          connectorId.getId(),
-          tableName);
-      return CaptureNowResponse.getDefaultInstance();
-    }
-  }
-
-  private static CaptureScope captureScope(
-      ResourceId connectorId,
-      List<String> namespacePath,
-      String tableName,
-      List<Long> snapshotIds) {
-    CaptureScope.Builder builder =
-        CaptureScope.newBuilder()
-            .setConnectorId(connectorId == null ? ResourceId.getDefaultInstance() : connectorId)
-            .setDestinationTableDisplayName(tableName == null ? "" : tableName);
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      builder.addDestinationNamespacePaths(
-          NamespacePath.newBuilder().addAllSegments(namespacePath).build());
-    }
-    if (snapshotIds != null && !snapshotIds.isEmpty()) {
-      builder.addAllDestinationSnapshotIds(snapshotIds);
-    }
-    return builder.build();
   }
 
   private Map<String, String> readPrefixedConfig(String prefix) {

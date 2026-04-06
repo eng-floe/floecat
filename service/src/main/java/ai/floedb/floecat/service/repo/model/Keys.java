@@ -416,40 +416,6 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
   }
 
-  public static String tableCommitJournalPointer(String accountId, String tableId, String txId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String tx = req("tx_id", txId);
-    return String.format(
-        "/accounts/%s/tables/%s/tx-journal/%s", encode(tid), encode(tbid), encode(tx));
-  }
-
-  public static String tableCommitJournalPrefix(String accountId, String tableId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format("/accounts/%s/tables/%s/tx-journal/", encode(tid), encode(tbid));
-  }
-
-  public static String tableCommitOutboxPendingScanPrefix() {
-    return "/accounts/";
-  }
-
-  public static String tableCommitOutboxPendingPrefix(String accountId) {
-    String aid = req("account_id", accountId);
-    return String.format("/accounts/%s/tx-outbox/pending/", encode(aid));
-  }
-
-  public static String tableCommitOutboxPendingPointer(
-      long createdAtMs, String accountId, String tableId, String txId) {
-    long created = reqNonNegative("created_at_ms", createdAtMs);
-    String aid = req("account_id", accountId);
-    String tid = req("table_id", tableId);
-    String xid = req("tx_id", txId);
-    return String.format(
-        "/accounts/%s/tx-outbox/pending/%019d/%s/%s",
-        encode(aid), created, encode(tid), encode(xid));
-  }
-
   public static String snapshotBlobUri(
       String accountId, String tableId, long snapshotId, String sha256) {
     String tid = req("account_id", accountId);
