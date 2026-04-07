@@ -172,17 +172,23 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   @Test
-  void knownSnapshotIdsForEnumerationPrunesAllIncrementalRuns() {
+  void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
     Set<Long> metadataOnly =
-        ReconcilerService.knownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
+        ReconcilerService.knownSnapshotIdsForEnumeration(
+            false, false, Set.of(10L, 11L), snapshotId -> false);
     Set<Long> metadataAndStats =
-        ReconcilerService.knownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    Set<Long> statsOnly = ReconcilerService.knownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    Set<Long> fullRescan = ReconcilerService.knownSnapshotIdsForEnumeration(true, Set.of(10L, 11L));
+        ReconcilerService.knownSnapshotIdsForEnumeration(
+            false, true, Set.of(10L, 11L), snapshotId -> snapshotId == 10L);
+    Set<Long> statsOnly =
+        ReconcilerService.knownSnapshotIdsForEnumeration(
+            false, true, Set.of(10L, 11L), snapshotId -> false);
+    Set<Long> fullRescan =
+        ReconcilerService.knownSnapshotIdsForEnumeration(
+            true, true, Set.of(10L, 11L), snapshotId -> true);
 
     assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(metadataAndStats).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(statsOnly).containsExactlyInAnyOrder(10L, 11L);
+    assertThat(metadataAndStats).containsExactly(10L);
+    assertThat(statsOnly).isEmpty();
     assertThat(fullRescan).isEmpty();
   }
 

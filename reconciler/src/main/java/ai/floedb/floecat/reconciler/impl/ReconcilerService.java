@@ -810,6 +810,39 @@ public class ReconcilerService {
     return filtered;
   }
 
+  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      Set<Long> targetSnapshotIds,
+      ProgressListener progress) {
+    if (bundles == null
+        || bundles.isEmpty()
+        || targetSnapshotIds == null
+        || targetSnapshotIds.isEmpty()) {
+      return bundles == null ? List.of() : bundles;
+    }
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
+    int skipped = 0;
+    for (FloecatConnector.SnapshotBundle bundle : bundles) {
+      if (bundle == null) {
+        continue;
+      }
+      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
+        skipped++;
+        continue;
+      }
+      filtered.add(bundle);
+    }
+    if (skipped > 0) {
+      progress.onProgress(
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
+    }
+    return filtered;
+  }
   static Set<Long> knownSnapshotIdsForEnumeration(
       boolean fullRescan,
       boolean includeStats,
