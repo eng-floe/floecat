@@ -202,7 +202,15 @@ public class PlannerStatsBundleService {
         statsEngineRegistry
             .capture(
                 new StatsCaptureRequest(
-                    tableId, snapshotId, target, Set.of(), StatsExecutionMode.SYNC, "", "", false))
+                    tableId,
+                    snapshotId,
+                    target,
+                    Set.of(),
+                    Set.of(),
+                    StatsExecutionMode.SYNC,
+                    "",
+                    "",
+                    false))
             .map(ai.floedb.floecat.stats.spi.StatsCaptureResult::record);
   }
 

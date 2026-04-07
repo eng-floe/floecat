@@ -48,6 +48,13 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
       Set.of(StatsKind.ROW_COUNT, StatsKind.FILE_COUNT, StatsKind.TOTAL_BYTES);
   private static final Set<StatsKind> VALUE_STATISTIC_KINDS =
       Set.of(StatsKind.NULL_COUNT, StatsKind.NDV, StatsKind.MIN_MAX, StatsKind.HISTOGRAM);
+  private static final Set<StatsKind> FILE_STATISTIC_KINDS =
+      Set.of(
+          StatsKind.ROW_COUNT,
+          StatsKind.NULL_COUNT,
+          StatsKind.NDV,
+          StatsKind.MIN_MAX,
+          StatsKind.HISTOGRAM);
   private static final StatsCapabilities CAPABILITIES =
       StatsCapabilities.builder()
           .connectors(Set.of()) // empty = all connectors
@@ -56,7 +63,7 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
               Map.of(
                   StatsTargetType.TABLE, TABLE_STATISTIC_KINDS,
                   StatsTargetType.COLUMN, VALUE_STATISTIC_KINDS,
-                  StatsTargetType.FILE, VALUE_STATISTIC_KINDS))
+                  StatsTargetType.FILE, FILE_STATISTIC_KINDS))
           .executionModes(Set.of(StatsExecutionMode.SYNC))
           .samplingSupport(Set.of(StatsSamplingSupport.NONE))
           .snapshotAware(true)
@@ -91,8 +98,8 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
     return switch (target.getTargetCase()) {
       case TABLE -> captureTable(request);
       case COLUMN -> captureColumn(request, target);
-      case EXPRESSION -> captureExpression(request, target);
       case FILE -> captureFile(request, target);
+      case EXPRESSION -> Optional.empty();
       case TARGET_NOT_SET -> Optional.empty();
     };
   }
@@ -136,7 +143,7 @@ public class PersistedStatsCaptureEngine implements StatsCaptureEngine {
   // Result attributes include source=repository to signal persisted lookup path.
   private Optional<StatsCaptureResult> captureFile(
       StatsCaptureRequest request, StatsTarget target) {
-    if (!supportsRequestedKinds(request.requestedKinds(), VALUE_STATISTIC_KINDS)) {
+    if (!supportsRequestedKinds(request.requestedKinds(), FILE_STATISTIC_KINDS)) {
       return Optional.empty();
     }
     StatsTarget normalizedTarget = StatsTargetIdentity.fileTarget(target.getFile().getFilePath());

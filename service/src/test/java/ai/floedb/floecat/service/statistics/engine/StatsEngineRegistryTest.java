@@ -114,7 +114,8 @@ class StatsEngineRegistryTest {
             .capabilities(
                 StatsCapabilities.builder()
                     .targetTypes(Set.of(StatsTargetType.COLUMN))
-                    .statisticKinds(Set.of(StatsKind.ROW_COUNT))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                     .snapshotAware(true)

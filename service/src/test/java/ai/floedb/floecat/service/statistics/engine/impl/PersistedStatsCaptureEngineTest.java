@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.statistics.engine.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
@@ -30,8 +29,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.stats.spi.StatsTargetType;
-import com.google.protobuf.ByteString;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -58,6 +55,7 @@ class PersistedStatsCaptureEngineTest {
             tableId,
             101L,
             target,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
@@ -88,6 +86,7 @@ class PersistedStatsCaptureEngineTest {
             tableId,
             101L,
             target,
+            Set.of(),
             Set.of(StatsKind.NDV),
             StatsExecutionMode.SYNC,
             "",
@@ -118,6 +117,7 @@ class PersistedStatsCaptureEngineTest {
             tableId,
             101L,
             target,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
@@ -127,45 +127,6 @@ class PersistedStatsCaptureEngineTest {
     var result = engine.capture(request);
     assertThat(result).isPresent();
     assertThat(result.get().record()).isEqualTo(expectedRecord);
-  }
-
-  @Test
-  void capturesExpressionTargetFromRepository() {
-    StatsStore store = Mockito.mock(StatsStore.class);
-    PersistedStatsCaptureEngine engine = new PersistedStatsCaptureEngine(store);
-
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("a").setId("t").build();
-    EngineExpressionStatsTarget expressionTarget =
-        EngineExpressionStatsTarget.newBuilder()
-            .setEngineKind("duckdb")
-            .setEngineExpressionKey(ByteString.copyFromUtf8("expr-key"))
-            .build();
-    var target = StatsTargetIdentity.expressionTarget(expressionTarget);
-
-    TargetStatsRecord expectedRecord =
-        TargetStatsRecord.newBuilder()
-            .setTarget(target)
-            .setScalar(ScalarStats.newBuilder().setDisplayName("expr").setLogicalType("BIGINT"))
-            .build();
-
-    when(store.getTargetStats(tableId, 101L, target)).thenReturn(Optional.of(expectedRecord));
-
-    StatsCaptureRequest request =
-        new StatsCaptureRequest(
-            tableId,
-            101L,
-            target,
-            Set.of(StatsKind.NDV),
-            StatsExecutionMode.SYNC,
-            "",
-            "corr-expression",
-            false);
-
-    var result = engine.capture(request);
-
-    assertThat(result).isPresent();
-    assertThat(result.get().record()).isEqualTo(expectedRecord);
-    assertThat(engine.capabilities().targetTypes()).contains(StatsTargetType.EXPRESSION);
   }
 
   @Test
@@ -181,6 +142,7 @@ class PersistedStatsCaptureEngineTest {
             tableId,
             101L,
             tableTarget,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",
@@ -200,6 +162,7 @@ class PersistedStatsCaptureEngineTest {
             tableId,
             101L,
             fileTarget,
+            Set.of(),
             Set.of(StatsKind.ROW_COUNT),
             StatsExecutionMode.SYNC,
             "",

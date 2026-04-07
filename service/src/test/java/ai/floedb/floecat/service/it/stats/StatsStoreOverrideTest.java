@@ -76,6 +76,7 @@ class StatsStoreOverrideTest {
             tableId,
             snapshotId,
             StatsTargetIdentity.columnTarget(1L),
+            Set.of(),
             Set.of(StatsKind.NULL_COUNT),
             StatsExecutionMode.SYNC,
             "iceberg",

@@ -112,6 +112,7 @@ public final class StatsProviderFactory {
                 StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
                 // Empty requested kinds means "accept any available stat family".
                 Set.of(),
+                Set.of(),
                 StatsExecutionMode.SYNC,
                 // Empty connector type means no connector-based engine filtering.
                 "",
@@ -142,6 +143,7 @@ public final class StatsProviderFactory {
                 snapshotId,
                 StatsTargetIdentity.columnTarget(columnId),
                 // Empty requested kinds means "accept any available stat family".
+                Set.of(),
                 Set.of(),
                 StatsExecutionMode.SYNC,
                 // Empty connector type means no connector-based engine filtering.
