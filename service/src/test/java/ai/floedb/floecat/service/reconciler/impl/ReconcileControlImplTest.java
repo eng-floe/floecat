@@ -40,6 +40,7 @@ import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import com.google.protobuf.Duration;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
@@ -58,6 +59,8 @@ class ReconcileControlImplTest {
     service.jobs = mock(ReconcileJobStore.class);
     service.cancellations = mock(ReconcileCancellationRegistry.class);
     service.settings = mock(ReconcilerSettingsStore.class);
+    service.captureNowDefaultWait = java.time.Duration.ofSeconds(10);
+    service.captureNowMaxWait = java.time.Duration.ofSeconds(30);
 
     PrincipalContext principalContext = mock(PrincipalContext.class);
     when(service.principalProvider.get()).thenReturn(principalContext);
@@ -171,6 +174,31 @@ class ReconcileControlImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.INTERNAL, ex.getStatus().getCode());
+  }
+
+  @Test
+  void captureNowTimesOutWhenJobDoesNotFinishWithinWaitBudget() {
+    when(service.jobs.enqueue(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_QUEUED", 0, 0, 0, "")));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .setMaxWait(Duration.newBuilder().setMillis(1).build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.DEADLINE_EXCEEDED, ex.getStatus().getCode());
   }
 
   private static ResourceId connectorId() {

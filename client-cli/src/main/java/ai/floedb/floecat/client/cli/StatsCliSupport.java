@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import com.google.protobuf.Duration;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -210,7 +211,7 @@ final class StatsCliSupport {
       out.println(
           "usage: analyze <tableFQ> [--columns c1,c2,...]"
               + " [--mode metadata-only|metadata-and-stats|stats-only]"
-              + " [--snapshot-ids id1,id2,...] [--full]");
+              + " [--snapshot-ids id1,id2,...] [--full] [--wait-seconds <n>]");
       return;
     }
 
@@ -223,6 +224,10 @@ final class StatsCliSupport {
         CliUtils.parseSnapshotIds(
             Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
     boolean full = CliArgs.hasFlag(args, "--full");
+    int waitSeconds = CliArgs.parseIntFlag(args, "--wait-seconds", 10);
+    if (waitSeconds <= 0) {
+      throw new IllegalArgumentException("--wait-seconds must be greater than 0");
+    }
 
     ResourceId tableId = resolveTableId.apply(fq);
     var table =
@@ -254,6 +259,7 @@ final class StatsCliSupport {
                         .build())
                 .setMode(mode)
                 .setFullRescan(full)
+                .setMaxWait(Duration.newBuilder().setSeconds(waitSeconds).build())
                 .build());
     out.printf(
         "analyze ok table=%s scanned=%d changed=%d errors=%d%n",
