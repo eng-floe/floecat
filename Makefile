@@ -710,6 +710,11 @@ cli-run: cli
 	@echo "==> [RUN] client CLI"
 	@java -jar $(CLI_JAR) $(ARGS)
 
+.PHONY: cli-start
+cli-start:
+	@echo "==> [RUN] client CLI"
+	@java -jar $(CLI_JAR) $(ARGS)
+
 .PHONY: cli-docker-token
 cli-docker-token:
 	@echo "==> [TOKEN] client credentials via docker network"

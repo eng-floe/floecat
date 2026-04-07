@@ -18,11 +18,12 @@ package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
+import ai.floedb.floecat.client.cli.util.NameRefUtil;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.NameRef;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,91 +37,36 @@ class ShellFqQuoteTest {
     shell = new Shell();
   }
 
-  @SuppressWarnings("unchecked")
-  private <T> T invoke(Object target, String name, Class<?>[] ptypes, Object... args) {
-    try {
-      Method m = target.getClass().getDeclaredMethod(name, ptypes);
-      m.setAccessible(true);
-      return (T) m.invoke(target, args);
-    } catch (InvocationTargetException ite) {
-      Throwable cause = ite.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
-      }
-
-      if (cause instanceof Error err) {
-        throw err;
-      }
-
-      throw new RuntimeException(cause);
-    } catch (ReflectiveOperationException e) {
-      fail("Reflection failed calling " + name + ": " + e);
-      return null;
-    }
-  }
-
-  private static <T> T invokeStatic(Class<?> cls, String name, Class<?>[] ptypes, Object... args) {
-    try {
-      Method m = cls.getDeclaredMethod(name, ptypes);
-      m.setAccessible(true);
-      @SuppressWarnings("unchecked")
-      T res = (T) m.invoke(null, args);
-      return res;
-    } catch (InvocationTargetException ite) {
-      Throwable cause = ite.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
-      }
-
-      if (cause instanceof Error err) {
-        throw err;
-      }
-
-      throw new RuntimeException(cause);
-    } catch (ReflectiveOperationException e) {
-      fail("Reflection failed calling static " + name + ": " + e);
-      return null;
-    }
-  }
-
   private List<String> splitPath(String s) {
-    return invoke(shell, "splitPathRespectingQuotesAndEscapes", new Class<?>[] {String.class}, s);
+    return FQNameParserUtil.segments(s);
   }
 
   private NameRef parseTable(String fq) {
-    return invoke(shell, "nameRefForTable", new Class<?>[] {String.class}, fq);
+    return NameRefUtil.nameRefForTable(fq);
   }
 
   private NameRef parseNsLeafAsName(String s) {
-    return invoke(
-        shell, "nameRefForNamespace", new Class<?>[] {String.class, boolean.class}, s, false);
+    return NamespaceCliSupport.nameRefForNamespace(s, false);
   }
 
   private NameRef parseNsLeafInPath(String s) {
-    return invoke(
-        shell, "nameRefForNamespace", new Class<?>[] {String.class, boolean.class}, s, true);
+    return NamespaceCliSupport.nameRefForNamespace(s, true);
   }
 
   private static String quoteIfNeeded(String s) {
-    return invokeStatic(Shell.Quotes.class, "quoteIfNeeded", new Class<?>[] {String.class}, s);
+    return Quotes.quoteIfNeeded(s);
   }
 
   private static String unquoteArg(String s) {
-    return invokeStatic(Shell.Quotes.class, "unquote", new Class<?>[] {String.class}, s);
+    return Quotes.unquote(s);
   }
 
   private String joinFqQuoted(String catalog, List<String> ns, String obj) {
-    return invokeStatic(
-        Shell.class,
-        "joinFqQuoted",
-        new Class<?>[] {String.class, List.class, String.class},
-        catalog,
-        ns,
-        obj);
+    return NameRefUtil.joinFqQuoted(catalog, ns, obj);
   }
 
   private List<String> tokenize(String line) {
-    return invoke(shell, "tokenize", new Class<?>[] {String.class}, line);
+    return CliArgs.tokenize(line);
   }
 
   @Test
@@ -180,10 +126,8 @@ class ShellFqQuoteTest {
   }
 
   @Test
-  void nameRefForTablePrefixIncludesOptionalPrefixName() throws Exception {
-    Method m = Shell.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
-    m.setAccessible(true);
-    NameRef nr = (NameRef) m.invoke(shell, "cat.ns1.ns2.orders_");
+  void nameRefForTablePrefixIncludesOptionalPrefixName() {
+    NameRef nr = TableCliSupport.nameRefForTablePrefix("cat.ns1.ns2.orders_");
 
     assertEquals("cat", nr.getCatalog());
     assertEquals(List.of("ns1", "ns2"), nr.getPathList());
@@ -266,9 +210,7 @@ class ShellFqQuoteTest {
   }
 
   @Test
-  void nameRefForNamespaceLeafInPathFlagBehaves() throws Exception {
-    var m = Shell.class.getDeclaredMethod("nameRefForNamespace", String.class, boolean.class);
-    m.setAccessible(true);
+  void nameRefForNamespaceLeafInPathFlagBehaves() {
     NameRef leafAsName = parseNsLeafAsName("cat.\"a.b\".\"c d\"");
     assertEquals("cat", leafAsName.getCatalog());
     assertEquals(List.of("a.b"), leafAsName.getPathList());
@@ -281,9 +223,7 @@ class ShellFqQuoteTest {
 
   @Test
   void nameRefForTableRequiresObject() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> invoke(shell, "nameRefForTable", new Class<?>[] {String.class}, "cat.ns"));
+    assertThrows(IllegalArgumentException.class, () -> NameRefUtil.nameRefForTable("cat.ns"));
   }
 
   @Test
@@ -328,16 +268,13 @@ class ShellFqQuoteTest {
   }
 
   @Test
-  void nameRefForTablePrefixCapturesNameWhenPresentOrOmitsWhenMissing() throws Exception {
-    var m = Shell.class.getDeclaredMethod("nameRefForTablePrefix", String.class);
-    m.setAccessible(true);
-
-    NameRef withPrefix = (NameRef) m.invoke(shell, "cat.ns.orders_");
+  void nameRefForTablePrefixCapturesNameWhenPresentOrOmitsWhenMissing() {
+    NameRef withPrefix = TableCliSupport.nameRefForTablePrefix("cat.ns.orders_");
     assertEquals("cat", withPrefix.getCatalog());
     assertEquals(List.of("ns"), withPrefix.getPathList());
     assertEquals("orders_", withPrefix.getName());
 
-    NameRef withoutPrefix = (NameRef) m.invoke(shell, "cat.ns");
+    NameRef withoutPrefix = TableCliSupport.nameRefForTablePrefix("cat.ns");
     assertEquals("cat", withoutPrefix.getCatalog());
     assertEquals(List.of("ns"), withoutPrefix.getPathList());
     assertEquals("", withoutPrefix.getName());
@@ -449,7 +386,7 @@ class ShellFqQuoteTest {
     PrintStream original = System.out;
     try {
       System.setOut(new PrintStream(baos));
-      invoke(shell, "printHelp", new Class<?>[] {});
+      shell.printHelp();
     } finally {
       System.setOut(original);
     }
@@ -460,14 +397,8 @@ class ShellFqQuoteTest {
   @Test
   void analyzeWithoutArgsPrintsUsage() {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
-    PrintStream original = System.out;
-    try {
-      System.setOut(new PrintStream(baos));
-      invoke(shell, "cmdAnalyze", new Class<?>[] {List.class}, List.of());
-    } finally {
-      System.setOut(original);
-    }
-    String output = baos.toString();
-    assertTrue(output.contains("usage: analyze <tableFQ> [--columns c1,c2,...]"));
+    StatsCliSupport.handle(
+        "analyze", List.of(), new PrintStream(baos), null, null, null, null, null);
+    assertTrue(baos.toString().contains("usage: analyze <tableFQ> [--columns c1,c2,...]"));
   }
 }
