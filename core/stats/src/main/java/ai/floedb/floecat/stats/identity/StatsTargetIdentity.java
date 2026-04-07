@@ -18,6 +18,7 @@ package ai.floedb.floecat.stats.identity;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
@@ -26,13 +27,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
- * Stable identity helpers for table, column, and engine-scoped expression stats targets.
+ * Stable identity helpers for table, file, column, and engine-scoped expression stats targets.
  *
  * <p>Stability contract:
  *
  * <p>- Table identity is constant.
  *
  * <p>- Column identity is a stable function of {@code column_id}.
+ *
+ * <p>- File identity is a stable function of normalized {@code file_path}.
  *
  * <p>- Expression identity is a stable function of normalized {@code engine_kind} and opaque {@code
  * engine_expression_key} bytes only.
@@ -80,10 +83,27 @@ public final class StatsTargetIdentity {
     Objects.requireNonNull(target, "target");
     return switch (target.getTargetCase()) {
       case TABLE -> Hashing.sha256Hex(new byte[] {'T'});
+      case FILE -> fileIdentityHashHex(target.getFile());
       case COLUMN -> columnIdentityHashHex(target.getColumn());
       case EXPRESSION -> expressionIdentityHashHex(target.getExpression());
       case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
     };
+  }
+
+  /** Canonical identity hash for a file target. */
+  public static String fileIdentityHashHex(FileStatsTarget fileTarget) {
+    Objects.requireNonNull(fileTarget, "fileTarget");
+    String filePath = fileTarget.getFilePath().trim();
+    if (filePath.isEmpty()) {
+      throw new IllegalArgumentException("file_path must not be blank");
+    }
+    byte[] path = filePath.getBytes(StandardCharsets.UTF_8);
+    byte[] payload = new byte[2 + path.length];
+    int p = 0;
+    payload[p++] = 'F';
+    payload[p++] = SEP;
+    System.arraycopy(path, 0, payload, p, path.length);
+    return Hashing.sha256Hex(payload);
   }
 
   /** Canonical identity hash for a column target. */
@@ -128,6 +148,22 @@ public final class StatsTargetIdentity {
     return StatsTarget.newBuilder()
         .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId).build())
         .build();
+  }
+
+  public static StatsTarget fileTarget(String filePath) {
+    String normalized = filePath(filePath);
+    return StatsTarget.newBuilder()
+        .setFile(FileStatsTarget.newBuilder().setFilePath(normalized).build())
+        .build();
+  }
+
+  /** Canonical file-path normalization for file stats targets. */
+  public static String filePath(String filePath) {
+    String normalized = Objects.requireNonNull(filePath, "filePath").trim();
+    if (normalized.isEmpty()) {
+      throw new IllegalArgumentException("filePath must not be blank");
+    }
+    return normalized;
   }
 
   public static StatsTarget expressionTarget(EngineExpressionStatsTarget target) {
