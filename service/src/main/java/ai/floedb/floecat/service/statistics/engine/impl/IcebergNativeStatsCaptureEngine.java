@@ -28,6 +28,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
+import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -45,13 +46,14 @@ public class IcebergNativeStatsCaptureEngine extends AbstractNativeStatsCaptureE
       StatsCapabilities.builder()
           .connectors(ICEBERG_CONNECTOR_TYPES)
           .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN, StatsTargetType.FILE))
-          .statisticKinds(
-              Set.of(
-                  StatsKind.ROW_COUNT,
-                  StatsKind.FILE_COUNT,
-                  StatsKind.TOTAL_BYTES,
-                  StatsKind.NULL_COUNT,
-                  StatsKind.MIN_MAX))
+          .statisticKindsByTarget(
+              Map.of(
+                  StatsTargetType.TABLE,
+                  Set.of(StatsKind.ROW_COUNT, StatsKind.FILE_COUNT, StatsKind.TOTAL_BYTES),
+                  StatsTargetType.COLUMN,
+                  Set.of(StatsKind.NULL_COUNT, StatsKind.MIN_MAX),
+                  StatsTargetType.FILE,
+                  Set.of(StatsKind.ROW_COUNT, StatsKind.NULL_COUNT, StatsKind.MIN_MAX)))
           .executionModes(Set.of(StatsExecutionMode.SYNC, StatsExecutionMode.ASYNC))
           .samplingSupport(Set.of(StatsSamplingSupport.NONE))
           .snapshotAware(true)
