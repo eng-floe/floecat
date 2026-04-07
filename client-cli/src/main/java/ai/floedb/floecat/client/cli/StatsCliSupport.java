@@ -16,21 +16,26 @@
 
 package ai.floedb.floecat.client.cli;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
+import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
@@ -112,15 +117,20 @@ final class StatsCliSupport {
     String fq = args.get(0);
     ResourceId tableId = resolveTableId.apply(fq);
     var req =
-        GetTableStatsRequest.newBuilder()
+        GetTargetStatsRequest.newBuilder()
             .setTableId(tableId)
             .setSnapshot(
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
+            .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
             .build();
-    GetTableStatsResponse resp = statistics.getTableStats(req);
+    GetTargetStatsResponse resp = statistics.getTargetStats(req);
     if (json) {
       CliUtils.printJson(resp, out);
+      return;
+    }
+    if (!resp.hasStats() || !resp.getStats().hasTable()) {
+      out.println("No table stats found.");
       return;
     }
     printTableStats(resp.getStats(), out);
@@ -143,22 +153,33 @@ final class StatsCliSupport {
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
 
     ResourceId tableId = resolveTableId.apply(fq);
-    ListColumnStatsRequest.Builder rb =
-        ListColumnStatsRequest.newBuilder()
+    ListTargetStatsRequest.Builder rb =
+        ListTargetStatsRequest.newBuilder()
             .setTableId(tableId)
             .setSnapshot(
                 CliUtils.snapshotFromTokenOrCurrent(
-                    CliArgs.parseStringFlag(args, "--snapshot", "current")));
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")))
+            .addTargetKinds(StatsTargetKind.STK_COLUMN);
 
-    List<ColumnStats> all =
+    List<TargetStatsRecord> all =
         CliArgs.collectPages(
             pageSize,
-            pr -> statistics.listColumnStats(rb.setPage(pr).build()),
-            r -> r.getColumnsList(),
+            pr ->
+                statistics.listTargetStats(
+                    rb.setPage(
+                            PageRequest.newBuilder()
+                                .setPageSize(pr.getPageSize())
+                                .setPageToken(pr.getPageToken())
+                                .build())
+                        .build()),
+            r -> r.getRecordsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
-    if (all.size() > limit) all = all.subList(0, limit);
+    all = all.stream().filter(TargetStatsRecord::hasScalar).toList();
+    if (all.size() > limit) {
+      all = all.subList(0, limit);
+    }
     if (json) {
-      CliUtils.printJson(ListColumnStatsResponse.newBuilder().addAllColumns(all).build(), out);
+      CliUtils.printJson(ListTargetStatsResponse.newBuilder().addAllRecords(all).build(), out);
       return;
     }
     printColumnStats(all, out);
@@ -180,19 +201,28 @@ final class StatsCliSupport {
     int pageSize = Math.min(limit, DEFAULT_PAGE_SIZE);
 
     ResourceId tableId = resolveTableId.apply(fq);
-    ListFileColumnStatsRequest.Builder rb =
-        ListFileColumnStatsRequest.newBuilder()
+    ListTargetStatsRequest.Builder rb =
+        ListTargetStatsRequest.newBuilder()
             .setTableId(tableId)
             .setSnapshot(
                 CliUtils.snapshotFromTokenOrCurrent(
-                    CliArgs.parseStringFlag(args, "--snapshot", "current")));
+                    CliArgs.parseStringFlag(args, "--snapshot", "current")))
+            .addTargetKinds(StatsTargetKind.STK_FILE);
 
-    List<FileColumnStats> all =
+    List<TargetStatsRecord> all =
         CliArgs.collectPages(
             pageSize,
-            pr -> statistics.listFileColumnStats(rb.setPage(pr).build()),
-            r -> r.getFileColumnsList(),
+            pr ->
+                statistics.listTargetStats(
+                    rb.setPage(
+                            PageRequest.newBuilder()
+                                .setPageSize(pr.getPageSize())
+                                .setPageToken(pr.getPageToken())
+                                .build())
+                        .build()),
+            r -> r.getRecordsList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "");
+    all = all.stream().filter(TargetStatsRecord::hasFile).toList();
     if (all.size() > limit) {
       all = all.subList(0, limit);
     }
@@ -264,16 +294,14 @@ final class StatsCliSupport {
 
   // --- print helpers ---
 
-  private static void printTableStats(TableStats s, PrintStream out) {
+  private static void printTableStats(TargetStatsRecord record, PrintStream out) {
+    TableValueStats s = record.getTable();
     out.println("Table Stats:");
-    out.printf("  table_id:        %s%n", CliUtils.rid(s.getTableId()));
-    out.printf("  snapshot_id:     %d%n", s.getSnapshotId());
+    out.printf("  table_id:        %s%n", CliUtils.rid(record.getTableId()));
+    out.printf("  snapshot_id:     %d%n", record.getSnapshotId());
     out.printf("  row_count:       %d%n", s.getRowCount());
     out.printf("  data_file_count: %d%n", s.getDataFileCount());
     out.printf("  total_size:      %d bytes%n", s.getTotalSizeBytes());
-    if (s.hasNdv()) {
-      out.printf("  ndv:             %s%n", CliUtils.ndvToString(s.getNdv()));
-    }
     if (s.hasUpstream()) {
       out.printf(
           "  upstream:        system=%s commit=%s created=%s%n",
@@ -283,34 +311,37 @@ final class StatsCliSupport {
     }
   }
 
-  private static void printColumnStats(List<ColumnStats> cols, PrintStream out) {
+  private static void printColumnStats(List<TargetStatsRecord> cols, PrintStream out) {
     out.printf(
         "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
         "CID", "NAME", "TYPE", "VALUES", "NULLS", "NaNs", "MIN", "MAX", "NDV", "#THETA SKETCHES");
     for (var c : cols) {
+      ScalarStats scalar = c.getScalar();
+      long nullCount = scalar.hasNullCount() ? scalar.getNullCount() : 0L;
+      long nanCount = scalar.hasNanCount() ? scalar.getNanCount() : 0L;
       out.printf(
           "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
-          c.getColumnId(),
-          CliUtils.trunc(c.getColumnName(), 28),
-          CliUtils.trunc(c.getLogicalType(), 12),
-          Long.toString(c.getValueCount()),
-          Long.toString(c.getNullCount()),
-          Long.toString(c.getNanCount()),
-          CliUtils.trunc(c.getMin(), 24),
-          CliUtils.trunc(c.getMax(), 24),
-          c.hasNdv() ? CliUtils.ndvToString(c.getNdv()) : "-",
-          c.hasNdv() ? c.getNdv().getSketchesCount() : "-");
+          c.getTarget().getColumn().getColumnId(),
+          CliUtils.trunc(scalar.getDisplayName(), 28),
+          CliUtils.trunc(scalar.getLogicalType(), 12),
+          Long.toString(scalar.getValueCount()),
+          Long.toString(nullCount),
+          Long.toString(nanCount),
+          CliUtils.trunc(scalar.getMin(), 24),
+          CliUtils.trunc(scalar.getMax(), 24),
+          scalar.hasNdv() ? CliUtils.ndvToString(scalar.getNdv()) : "-",
+          scalar.hasNdv() ? scalar.getNdv().getSketchesCount() : "-");
     }
   }
 
-  private static void printFileColumnStats(List<FileColumnStats> files, PrintStream out) {
+  private static void printFileColumnStats(List<TargetStatsRecord> files, PrintStream out) {
     if (files == null || files.isEmpty()) {
       out.println("No file stats found.");
       return;
     }
     out.printf("%-4s %-10s %-12s %-20s %s%n", "IDX", "ROWS", "BYTES", "CONTENT", "PATH");
     for (int i = 0; i < files.size(); i++) {
-      FileColumnStats fs = files.get(i);
+      FileTargetStats fs = files.get(i).getFile();
       String content = fs.getFileContent().name().replaceFirst("^FC_", "");
       out.printf(
           "%-4d %-10d %-12d %-20s %s%n",
@@ -318,19 +349,24 @@ final class StatsCliSupport {
       var cols = fs.getColumnsList();
       if (!cols.isEmpty()) {
         out.println("    columns:");
-        for (ColumnStats c : cols) {
-          String ndv = c.hasNdv() ? CliUtils.ndvToString(c.getNdv()) : "-";
+        for (FileColumnStats c : cols) {
+          ScalarStats scalar = c.getScalar();
+          String ndv = scalar.hasNdv() ? CliUtils.ndvToString(scalar.getNdv()) : "-";
+          long nullCount = scalar.hasNullCount() ? scalar.getNullCount() : 0L;
+          long nanCount = scalar.hasNanCount() ? scalar.getNanCount() : 0L;
+          String columnName =
+              !scalar.getDisplayName().isBlank() ? scalar.getDisplayName() : "#" + c.getColumnId();
           out.printf(
               "      %-8s %-24s %-10s values=%-8d nulls=%-8d NaNs=%-8d min=%-20s max=%-20s"
                   + " ndv=%s%n",
               c.getColumnId(),
-              CliUtils.trunc(c.getColumnName(), 24),
-              CliUtils.trunc(c.getLogicalType(), 10),
-              c.getValueCount(),
-              c.getNullCount(),
-              c.getNanCount(),
-              CliUtils.trunc(c.getMin(), 20),
-              CliUtils.trunc(c.getMax(), 20),
+              CliUtils.trunc(columnName, 24),
+              CliUtils.trunc(scalar.getLogicalType(), 10),
+              scalar.getValueCount(),
+              nullCount,
+              nanCount,
+              CliUtils.trunc(scalar.getMin(), 20),
+              CliUtils.trunc(scalar.getMax(), 20),
               ndv);
         }
       }
