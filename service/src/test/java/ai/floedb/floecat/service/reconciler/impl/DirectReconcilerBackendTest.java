@@ -302,6 +302,21 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
+  void statsAlreadyCapturedRequiresFileStatsWhenTableReportsDataFiles() {
+    TableValueStats tableStats = TableValueStats.newBuilder().setDataFileCount(2L).build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.tableRecord(tableId, SNAPSHOT_ID, tableStats, null)));
+
+    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isFalse();
+
+    FileTargetStats fileStats = FileTargetStats.newBuilder().setFilePath("/data/file-1").build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.fileRecord(tableId, SNAPSHOT_ID, fileStats)));
+
+    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isTrue();
+  }
+
+  @Test
   void ensureTableDoesNotMutateExistingCoreState() {
     NameRef tableRef = referenceNameRef();
     Table before = tableRepo.getById(tableId).orElseThrow();

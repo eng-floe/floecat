@@ -351,14 +351,29 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   @Override
   public boolean statsAlreadyCapturedForTargetKind(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
+    if (targetKind == null || targetKind == StatsTargetKind.STK_UNSPECIFIED) {
+      return statsStore.countTargetStats(tableId, snapshotId, Optional.empty()) > 0;
+    }
+    if (targetKind == StatsTargetKind.STK_TABLE) {
+      var tableRecord =
+          statsStore
+              .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
+              .orElse(null);
+      if (tableRecord == null || !tableRecord.hasTable()) {
+        return false;
+      }
+      if (tableRecord.getTable().getDataFileCount() <= 0) {
+        return true;
+      }
+      return statsStore.countTargetStats(tableId, snapshotId, Optional.of(StatsTargetType.FILE))
+          > 0;
+    }
     Optional<StatsTargetType> targetType =
         switch (targetKind) {
-          case STK_UNSPECIFIED -> Optional.empty();
-          case STK_TABLE -> Optional.of(StatsTargetType.TABLE);
           case STK_COLUMN -> Optional.of(StatsTargetType.COLUMN);
           case STK_EXPRESSION -> Optional.of(StatsTargetType.EXPRESSION);
           case STK_FILE -> Optional.of(StatsTargetType.FILE);
-          case UNRECOGNIZED -> Optional.empty();
+          case STK_TABLE, STK_UNSPECIFIED, UNRECOGNIZED -> Optional.empty();
         };
     return statsStore.countTargetStats(tableId, snapshotId, targetType) > 0;
   }
