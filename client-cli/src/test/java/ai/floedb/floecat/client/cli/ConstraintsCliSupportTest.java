@@ -55,10 +55,7 @@ class ConstraintsCliSupportTest {
   void resolveSnapshotIdParsesSnapshotFlag() {
     long snapshotId =
         ConstraintsCliSupport.resolveSnapshotId(
-            List.of("demo.sales.users", "--snapshot", "42"),
-            tableId(),
-            null,
-            ConstraintsCliSupportTest::parseStringFlag);
+            List.of("demo.sales.users", "--snapshot", "42"), tableId(), null);
 
     assertEquals(42L, snapshotId);
   }
@@ -70,10 +67,7 @@ class ConstraintsCliSupportTest {
             IllegalArgumentException.class,
             () ->
                 ConstraintsCliSupport.resolveSnapshotId(
-                    List.of("demo.sales.users", "--snapshot", "abc"),
-                    tableId(),
-                    null,
-                    ConstraintsCliSupportTest::parseStringFlag));
+                    List.of("demo.sales.users", "--snapshot", "abc"), tableId(), null));
 
     assertEquals("snapshot_id must be a valid integer: abc", error.getMessage());
   }
@@ -85,10 +79,7 @@ class ConstraintsCliSupportTest {
             IllegalArgumentException.class,
             () ->
                 ConstraintsCliSupport.resolveSnapshotId(
-                    List.of("demo.sales.users", "--snapshot"),
-                    tableId(),
-                    null,
-                    ConstraintsCliSupportTest::parseStringFlag));
+                    List.of("demo.sales.users", "--snapshot"), tableId(), null));
 
     assertEquals("snapshot_id must be provided after --snapshot", error.getMessage());
   }
@@ -100,10 +91,7 @@ class ConstraintsCliSupportTest {
             IllegalArgumentException.class,
             () ->
                 ConstraintsCliSupport.resolveSnapshotId(
-                    List.of("demo.sales.users", "--snapshot", "--json"),
-                    tableId(),
-                    null,
-                    ConstraintsCliSupportTest::parseStringFlag));
+                    List.of("demo.sales.users", "--snapshot", "--json"), tableId(), null));
 
     assertEquals("snapshot_id must be provided after --snapshot", error.getMessage());
   }
@@ -121,9 +109,6 @@ class ConstraintsCliSupportTest {
           harness.constraintsStub,
           harness.snapshotsStub,
           ignored -> tableId(),
-          ConstraintsCliSupportTest::parseStringFlag,
-          ConstraintsCliSupportTest::parseIntFlag,
-          ConstraintsCliSupportTest::hasFlag,
           ConstraintsCliSupportTest::ignoreJson);
 
       assertEquals(1, harness.constraintsService.mergeRequests.size());
@@ -149,9 +134,6 @@ class ConstraintsCliSupportTest {
           harness.constraintsStub,
           harness.snapshotsStub,
           ignored -> tableId(),
-          ConstraintsCliSupportTest::parseStringFlag,
-          ConstraintsCliSupportTest::parseIntFlag,
-          ConstraintsCliSupportTest::hasFlag,
           ConstraintsCliSupportTest::ignoreJson);
 
       assertEquals(0, harness.constraintsService.mergeRequests.size());
@@ -175,9 +157,6 @@ class ConstraintsCliSupportTest {
           harness.constraintsStub,
           harness.snapshotsStub,
           ignored -> tableId(),
-          ConstraintsCliSupportTest::parseStringFlag,
-          ConstraintsCliSupportTest::parseIntFlag,
-          ConstraintsCliSupportTest::hasFlag,
           ConstraintsCliSupportTest::ignoreJson);
 
       MergeTableConstraintsRequest request = harness.constraintsService.mergeRequests.get(0);
@@ -201,9 +180,6 @@ class ConstraintsCliSupportTest {
           harness.constraintsStub,
           harness.snapshotsStub,
           ignored -> tableId(),
-          ConstraintsCliSupportTest::parseStringFlag,
-          ConstraintsCliSupportTest::parseIntFlag,
-          ConstraintsCliSupportTest::hasFlag,
           ConstraintsCliSupportTest::ignoreJson);
 
       assertEquals(0, harness.snapshotService.getSnapshotCalls.get());
@@ -233,9 +209,6 @@ class ConstraintsCliSupportTest {
                       harness.constraintsStub,
                       harness.snapshotsStub,
                       ignored -> tableId(),
-                      ConstraintsCliSupportTest::parseStringFlag,
-                      ConstraintsCliSupportTest::parseIntFlag,
-                      ConstraintsCliSupportTest::hasFlag,
                       ConstraintsCliSupportTest::ignoreJson));
       assertEquals("snapshot_id must be a valid integer: abc", error.getMessage());
     } finally {
@@ -267,36 +240,6 @@ class ConstraintsCliSupportTest {
     Path file = Files.createTempFile("constraints-cli-", ".json");
     Files.writeString(file, json.toString());
     return file;
-  }
-
-  private static String parseStringFlag(List<String> args, String flag, String defaultValue) {
-    for (int i = 0; i < args.size(); i++) {
-      if (!flag.equals(args.get(i))) {
-        continue;
-      }
-      if (i + 1 >= args.size()) {
-        return defaultValue;
-      }
-      return args.get(i + 1);
-    }
-    return defaultValue;
-  }
-
-  private static int parseIntFlag(List<String> args, String flag, int defaultValue) {
-    String value = parseStringFlag(args, flag, "");
-    if (value.isBlank()) {
-      return defaultValue;
-    }
-    return Integer.parseInt(value);
-  }
-
-  private static boolean hasFlag(List<String> args, String flag) {
-    for (String arg : args) {
-      if (flag.equals(arg)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private static void ignoreJson(MessageOrBuilder ignored) {}

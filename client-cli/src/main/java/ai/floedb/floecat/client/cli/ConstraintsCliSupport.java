@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
+import ai.floedb.floecat.client.cli.util.Quotes;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -47,7 +48,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.BiPredicate;
 import java.util.function.Function;
 
 final class ConstraintsCliSupport {
@@ -55,16 +55,6 @@ final class ConstraintsCliSupport {
     PUT_REPLACE,
     UPDATE_MERGE,
     ADD_APPEND
-  }
-
-  @FunctionalInterface
-  interface StringFlagParser {
-    String parse(List<String> args, String flag, String defaultValue);
-  }
-
-  @FunctionalInterface
-  interface IntFlagParser {
-    int parse(List<String> args, String flag, int defaultValue);
   }
 
   @FunctionalInterface
@@ -91,9 +81,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      IntFlagParser parseIntFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     if (args.isEmpty()) {
       out.println(USAGE);
@@ -103,18 +90,8 @@ final class ConstraintsCliSupport {
     String sub = args.get(0);
     List<String> tail = args.subList(1, args.size());
     switch (sub) {
-      case "get" ->
-          get(
-              tail,
-              out,
-              constraintsService,
-              snapshotsService,
-              parseStringFlag,
-              resolveTableId,
-              hasFlag,
-              printJson);
-      case "list" ->
-          list(tail, out, constraintsService, resolveTableId, parseIntFlag, hasFlag, printJson);
+      case "get" -> get(tail, out, constraintsService, snapshotsService, resolveTableId, printJson);
+      case "list" -> list(tail, out, constraintsService, resolveTableId, printJson);
       case "put" ->
           put(
               BundleMutationMode.PUT_REPLACE,
@@ -123,8 +100,6 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
       case "update" ->
           put(
@@ -134,8 +109,6 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
       case "add" ->
           put(
@@ -145,31 +118,12 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
-      case "delete" ->
-          delete(tail, out, constraintsService, snapshotsService, resolveTableId, parseStringFlag);
+      case "delete" -> delete(tail, out, constraintsService, snapshotsService, resolveTableId);
       case "add-one" ->
-          addOne(
-              tail,
-              out,
-              constraintsService,
-              snapshotsService,
-              resolveTableId,
-              parseStringFlag,
-              hasFlag,
-              printJson);
+          addOne(tail, out, constraintsService, snapshotsService, resolveTableId, printJson);
       case "delete-one" ->
-          deleteOne(
-              tail,
-              out,
-              constraintsService,
-              snapshotsService,
-              resolveTableId,
-              parseStringFlag,
-              hasFlag,
-              printJson);
+          deleteOne(tail, out, constraintsService, snapshotsService, resolveTableId, printJson);
       case "add-pk" ->
           addTyped(
               "add-pk",
@@ -179,8 +133,6 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
       case "add-unique" ->
           addTyped(
@@ -191,8 +143,6 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
       case "add-not-null" ->
           addTyped(
@@ -203,29 +153,11 @@ final class ConstraintsCliSupport {
               constraintsService,
               snapshotsService,
               resolveTableId,
-              parseStringFlag,
-              hasFlag,
               printJson);
       case "add-check" ->
-          addCheck(
-              tail,
-              out,
-              constraintsService,
-              snapshotsService,
-              resolveTableId,
-              parseStringFlag,
-              hasFlag,
-              printJson);
+          addCheck(tail, out, constraintsService, snapshotsService, resolveTableId, printJson);
       case "add-fk" ->
-          addFk(
-              tail,
-              out,
-              constraintsService,
-              snapshotsService,
-              resolveTableId,
-              parseStringFlag,
-              hasFlag,
-              printJson);
+          addFk(tail, out, constraintsService, snapshotsService, resolveTableId, printJson);
       default -> out.println(USAGE);
     }
   }
@@ -236,9 +168,7 @@ final class ConstraintsCliSupport {
       PrintStream out,
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
-      StringFlagParser parseStringFlag,
       Function<String, ResourceId> resolveTableId,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     if (args.isEmpty()) {
       out.println(
@@ -251,14 +181,14 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
     GetTableConstraintsResponse response =
         constraintsService.getTableConstraints(
             GetTableConstraintsRequest.newBuilder()
                 .setTableId(tableId)
                 .setSnapshotId(snapshotId)
                 .build());
-    if (hasFlag.test(args, "--json")) {
+    if (CliArgs.hasFlag(args, "--json")) {
       printJson.print(response);
       return;
     }
@@ -284,8 +214,6 @@ final class ConstraintsCliSupport {
       PrintStream out,
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       Function<String, ResourceId> resolveTableId,
-      IntFlagParser parseIntFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     if (args.isEmpty()) {
       out.println("usage: constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]");
@@ -296,14 +224,14 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    int limit = Math.max(1, parseIntFlag.parse(args, "--limit", 100));
+    int limit = Math.max(1, CliArgs.parseIntFlag(args, "--limit", 100));
     ListTableConstraintsResponse response =
         constraintsService.listTableConstraints(
             ListTableConstraintsRequest.newBuilder()
                 .setTableId(tableId)
                 .setPage(PageRequest.newBuilder().setPageSize(limit).build())
                 .build());
-    if (hasFlag.test(args, "--json")) {
+    if (CliArgs.hasFlag(args, "--json")) {
       printJson.print(response);
       return;
     }
@@ -330,21 +258,19 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     if (!hasExpectedPositionals(args, 1)) {
       out.println(usageForBundleMutation(mode));
       return;
     }
-    String file = requiredBundleFileArg(mode, args, out, parseStringFlag);
+    String file = requiredBundleFileArg(mode, args, out);
     if (file == null) {
       return;
     }
 
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    SnapshotConstraints constraints = readSnapshotConstraints(Path.of(Shell.Quotes.unquote(file)));
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    SnapshotConstraints constraints = readSnapshotConstraints(Path.of(Quotes.unquote(file)));
     switch (mode) {
       case PUT_REPLACE -> {
         PutTableConstraintsRequest.Builder request =
@@ -352,13 +278,12 @@ final class ConstraintsCliSupport {
                 .setTableId(tableId)
                 .setSnapshotId(snapshotId)
                 .setConstraints(constraints);
-        String key = parseStringFlag.parse(args, "--idempotency", "").trim();
+        String key = CliArgs.parseStringFlag(args, "--idempotency", "").trim();
         if (!key.isBlank()) {
-          request.setIdempotency(
-              IdempotencyKey.newBuilder().setKey(Shell.Quotes.unquote(key)).build());
+          request.setIdempotency(IdempotencyKey.newBuilder().setKey(Quotes.unquote(key)).build());
         }
         var response = constraintsService.putTableConstraints(request.build());
-        if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+        if (!printJsonIfRequested(args, printJson, response)) {
           printBundleMutationOk(out, response.getConstraints());
         }
       }
@@ -368,12 +293,12 @@ final class ConstraintsCliSupport {
                 .setTableId(tableId)
                 .setSnapshotId(snapshotId)
                 .setConstraints(constraints);
-        Precondition precondition = preconditionFromFlags(args, parseStringFlag);
+        Precondition precondition = preconditionFromFlags(args);
         if (precondition != null) {
           request.setPrecondition(precondition);
         }
         var response = constraintsService.mergeTableConstraints(request.build());
-        if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+        if (!printJsonIfRequested(args, printJson, response)) {
           printBundleMutationOk(out, response.getConstraints());
         }
       }
@@ -383,12 +308,12 @@ final class ConstraintsCliSupport {
                 .setTableId(tableId)
                 .setSnapshotId(snapshotId)
                 .setConstraints(constraints);
-        Precondition precondition = preconditionFromFlags(args, parseStringFlag);
+        Precondition precondition = preconditionFromFlags(args);
         if (precondition != null) {
           request.setPrecondition(precondition);
         }
         var response = constraintsService.appendTableConstraints(request.build());
-        if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+        if (!printJsonIfRequested(args, printJson, response)) {
           printBundleMutationOk(out, response.getConstraints());
         }
       }
@@ -401,8 +326,7 @@ final class ConstraintsCliSupport {
       PrintStream out,
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
-      Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag) {
+      Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println("usage: constraints delete <id|catalog.ns[.ns...].table> [--snapshot <id>]");
       return;
@@ -412,7 +336,7 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
     constraintsService.deleteTableConstraints(
         DeleteTableConstraintsRequest.newBuilder()
             .setTableId(tableId)
@@ -428,8 +352,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     if (args.isEmpty()) {
       out.println(
@@ -446,8 +368,8 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String file = parseStringFlag.parse(args, "--file", "").trim();
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    String file = CliArgs.parseStringFlag(args, "--file", "").trim();
     if (file.isBlank()) {
       out.println(
           "usage: constraints add-one <id|catalog.ns[.ns...].table> [--snapshot <id>] --file"
@@ -455,16 +377,16 @@ final class ConstraintsCliSupport {
               + " [--etag <etag>|--version <n>] [--json]");
       return;
     }
-    ConstraintDefinition constraint = readConstraintDefinition(Path.of(Shell.Quotes.unquote(file)));
+    ConstraintDefinition constraint = readConstraintDefinition(Path.of(Quotes.unquote(file)));
 
     AddTableConstraintRequest.Builder request = addRequest(tableId, snapshotId, constraint);
-    Precondition precondition = preconditionFromFlags(args, parseStringFlag);
+    Precondition precondition = preconditionFromFlags(args);
     if (precondition != null) {
       request.setPrecondition(precondition);
     }
 
     var response = constraintsService.addTableConstraint(request.build());
-    if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+    if (!printJsonIfRequested(args, printJson, response)) {
       printBundleMutationOk(out, response.getConstraints());
     }
   }
@@ -478,8 +400,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     String usage =
         "usage: constraints "
@@ -497,8 +417,8 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    String name = Quotes.unquote(args.get(1)).trim();
     if (name.isEmpty()) {
       out.println("constraint_name cannot be blank");
       return;
@@ -515,13 +435,7 @@ final class ConstraintsCliSupport {
             .addAllColumns(columnRefs(columns))
             .build();
     addConstraintAndPrint(
-        args,
-        out,
-        constraintsService,
-        parseStringFlag,
-        hasFlag,
-        printJson,
-        addRequest(tableId, snapshotId, constraint));
+        args, out, constraintsService, printJson, addRequest(tableId, snapshotId, constraint));
   }
 
   /** Adds a CHECK constraint from explicit name + expression input. */
@@ -531,8 +445,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     String usage =
         "usage: constraints add-check <id|catalog.ns[.ns...].table>"
@@ -548,9 +460,9 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
-    String expression = Shell.Quotes.unquote(args.get(2)).trim();
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    String name = Quotes.unquote(args.get(1)).trim();
+    String expression = Quotes.unquote(args.get(2)).trim();
     if (name.isEmpty() || expression.isEmpty()) {
       out.println("constraint_name and check_expression cannot be blank");
       return;
@@ -562,13 +474,7 @@ final class ConstraintsCliSupport {
             .setCheckExpression(expression)
             .build();
     addConstraintAndPrint(
-        args,
-        out,
-        constraintsService,
-        parseStringFlag,
-        hasFlag,
-        printJson,
-        addRequest(tableId, snapshotId, constraint));
+        args, out, constraintsService, printJson, addRequest(tableId, snapshotId, constraint));
   }
 
   /** Adds an FK constraint from explicit local/referenced table+column args. */
@@ -578,8 +484,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     String usage =
         "usage: constraints add-fk <id|catalog.ns[.ns...].table>"
@@ -596,10 +500,10 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String name = Shell.Quotes.unquote(args.get(1)).trim();
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    String name = Quotes.unquote(args.get(1)).trim();
     List<String> localColumns = parseColumnNames(args.get(2));
-    String referencedTableRaw = Shell.Quotes.unquote(args.get(3)).trim();
+    String referencedTableRaw = Quotes.unquote(args.get(3)).trim();
     List<String> referencedColumns = parseColumnNames(args.get(4));
     if (name.isEmpty() || referencedTableRaw.isEmpty()) {
       out.println("constraint_name and referenced_table cannot be blank");
@@ -619,13 +523,7 @@ final class ConstraintsCliSupport {
             .addAllReferencedColumns(columnRefs(referencedColumns))
             .build();
     addConstraintAndPrint(
-        args,
-        out,
-        constraintsService,
-        parseStringFlag,
-        hasFlag,
-        printJson,
-        addRequest(tableId, snapshotId, constraint));
+        args, out, constraintsService, printJson, addRequest(tableId, snapshotId, constraint));
   }
 
   private static AddTableConstraintRequest.Builder addRequest(
@@ -668,16 +566,14 @@ final class ConstraintsCliSupport {
       List<String> args,
       PrintStream out,
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson,
       AddTableConstraintRequest.Builder request) {
-    Precondition precondition = preconditionFromFlags(args, parseStringFlag);
+    Precondition precondition = preconditionFromFlags(args);
     if (precondition != null) {
       request.setPrecondition(precondition);
     }
     var response = constraintsService.addTableConstraint(request.build());
-    if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+    if (!printJsonIfRequested(args, printJson, response)) {
       printBundleMutationOk(out, response.getConstraints());
     }
   }
@@ -689,8 +585,6 @@ final class ConstraintsCliSupport {
       TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId,
-      StringFlagParser parseStringFlag,
-      BiPredicate<List<String>, String> hasFlag,
       JsonPrinter printJson) {
     String usage =
         "usage: constraints delete-one <id|catalog.ns[.ns...].table>"
@@ -704,8 +598,8 @@ final class ConstraintsCliSupport {
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService, parseStringFlag);
-    String constraintName = Shell.Quotes.unquote(args.get(1)).trim();
+    long snapshotId = resolveSnapshotId(args, tableId, snapshotsService);
+    String constraintName = Quotes.unquote(args.get(1)).trim();
     if (constraintName.isEmpty()) {
       out.println("constraint_name cannot be blank");
       return;
@@ -716,13 +610,13 @@ final class ConstraintsCliSupport {
             .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraintName(constraintName);
-    Precondition precondition = preconditionFromFlags(args, parseStringFlag);
+    Precondition precondition = preconditionFromFlags(args);
     if (precondition != null) {
       request.setPrecondition(precondition);
     }
 
     var response = constraintsService.deleteTableConstraint(request.build());
-    if (!printJsonIfRequested(args, hasFlag, printJson, response)) {
+    if (!printJsonIfRequested(args, printJson, response)) {
       printBundleMutationOk(out, response.getConstraints());
     }
   }
@@ -778,10 +672,9 @@ final class ConstraintsCliSupport {
   }
 
   /** Parses optional `--etag` / `--version` precondition flags for mutation commands. */
-  private static Precondition preconditionFromFlags(
-      List<String> args, StringFlagParser parseStringFlag) {
-    String etag = Shell.Quotes.unquote(parseStringFlag.parse(args, "--etag", "")).trim();
-    String versionRaw = Shell.Quotes.unquote(parseStringFlag.parse(args, "--version", "")).trim();
+  private static Precondition preconditionFromFlags(List<String> args) {
+    String etag = Quotes.unquote(CliArgs.parseStringFlag(args, "--etag", "")).trim();
+    String versionRaw = Quotes.unquote(CliArgs.parseStringFlag(args, "--version", "")).trim();
     if (etag.isEmpty() && versionRaw.isEmpty()) {
       return null;
     }
@@ -798,8 +691,7 @@ final class ConstraintsCliSupport {
   static long resolveSnapshotId(
       List<String> args,
       ResourceId tableId,
-      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
-      StringFlagParser parseStringFlag) {
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService) {
     int snapshotIndex = args.indexOf("--snapshot");
     if (snapshotIndex < 0) {
       return resolveCurrentSnapshotId(tableId, snapshotsService);
@@ -807,7 +699,7 @@ final class ConstraintsCliSupport {
     if (snapshotIndex + 1 >= args.size() || args.get(snapshotIndex + 1).startsWith("--")) {
       throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
     }
-    String snapshotRaw = Shell.Quotes.unquote(args.get(snapshotIndex + 1)).trim();
+    String snapshotRaw = Quotes.unquote(args.get(snapshotIndex + 1)).trim();
     if (snapshotRaw.isEmpty()) {
       throw new IllegalArgumentException("snapshot_id must be provided after --snapshot");
     }
@@ -831,10 +723,10 @@ final class ConstraintsCliSupport {
   }
 
   private static List<String> parseColumnNames(String rawColumns) {
-    String[] pieces = Shell.Quotes.unquote(rawColumns).split(",");
+    String[] pieces = Quotes.unquote(rawColumns).split(",");
     List<String> out = new ArrayList<>(pieces.length);
     for (String piece : pieces) {
-      String name = Shell.Quotes.unquote(piece.trim());
+      String name = Quotes.unquote(piece.trim());
       if (name.isEmpty()) {
         throw new IllegalArgumentException("column list contains an empty name");
       }
@@ -867,15 +759,12 @@ final class ConstraintsCliSupport {
   }
 
   private static String requiredBundleFileArg(
-      BundleMutationMode mode,
-      List<String> args,
-      PrintStream out,
-      StringFlagParser parseStringFlag) {
+      BundleMutationMode mode, List<String> args, PrintStream out) {
     if (args.isEmpty()) {
       out.println(usageForBundleMutation(mode));
       return null;
     }
-    String file = parseStringFlag.parse(args, "--file", "");
+    String file = CliArgs.parseStringFlag(args, "--file", "");
     if (file.isBlank()) {
       out.println(usageForBundleMutation(mode));
       return null;
@@ -884,11 +773,8 @@ final class ConstraintsCliSupport {
   }
 
   private static boolean printJsonIfRequested(
-      List<String> args,
-      BiPredicate<List<String>, String> hasFlag,
-      JsonPrinter printJson,
-      MessageOrBuilder response) {
-    if (hasFlag.test(args, "--json")) {
+      List<String> args, JsonPrinter printJson, MessageOrBuilder response) {
+    if (CliArgs.hasFlag(args, "--json")) {
       printJson.print(response);
       return true;
     }
