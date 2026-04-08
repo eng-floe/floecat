@@ -46,6 +46,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
@@ -191,7 +192,10 @@ public class ReconcilerService {
           1,
           0,
           0,
-          new IllegalArgumentException("getConnector failed: " + connectorId.getId(), e));
+          new ReconcileFailureException(
+              ExecutionResult.FailureKind.CONNECTOR_MISSING,
+              "getConnector failed: " + connectorId.getId(),
+              e));
     }
 
     if (stored.getState() != ConnectorState.CS_ACTIVE) {

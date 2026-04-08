@@ -85,12 +85,19 @@ public interface ReconcileExecutor {
   }
 
   final class ExecutionResult {
+    public enum FailureKind {
+      NONE,
+      CONNECTOR_MISSING,
+      INTERNAL
+    }
+
     public final long scanned;
     public final long changed;
     public final long errors;
     public final long snapshotsProcessed;
     public final long statsProcessed;
     public final boolean cancelled;
+    public final FailureKind failureKind;
     public final String message;
     public final Exception error;
 
@@ -101,6 +108,7 @@ public interface ReconcileExecutor {
         long snapshotsProcessed,
         long statsProcessed,
         boolean cancelled,
+        FailureKind failureKind,
         String message,
         Exception error) {
       this.scanned = scanned;
@@ -109,6 +117,7 @@ public interface ReconcileExecutor {
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.cancelled = cancelled;
+      this.failureKind = failureKind == null ? FailureKind.NONE : failureKind;
       this.message = message == null ? "" : message;
       this.error = error;
     }
@@ -121,7 +130,15 @@ public interface ReconcileExecutor {
         long statsProcessed,
         String message) {
       return new ExecutionResult(
-          scanned, changed, errors, snapshotsProcessed, statsProcessed, false, message, null);
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          false,
+          FailureKind.NONE,
+          message,
+          null);
     }
 
     public static ExecutionResult cancelled(
@@ -132,7 +149,15 @@ public interface ReconcileExecutor {
         long statsProcessed,
         String message) {
       return new ExecutionResult(
-          scanned, changed, errors, snapshotsProcessed, statsProcessed, true, message, null);
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          true,
+          FailureKind.NONE,
+          message,
+          null);
     }
 
     public static ExecutionResult failure(
@@ -144,7 +169,36 @@ public interface ReconcileExecutor {
         String message,
         Exception error) {
       return new ExecutionResult(
-          scanned, changed, errors, snapshotsProcessed, statsProcessed, false, message, error);
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          false,
+          FailureKind.INTERNAL,
+          message,
+          error);
+    }
+
+    public static ExecutionResult failure(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        FailureKind failureKind,
+        String message,
+        Exception error) {
+      return new ExecutionResult(
+          scanned,
+          changed,
+          errors,
+          snapshotsProcessed,
+          statsProcessed,
+          false,
+          failureKind,
+          message,
+          error);
     }
 
     public boolean ok() {

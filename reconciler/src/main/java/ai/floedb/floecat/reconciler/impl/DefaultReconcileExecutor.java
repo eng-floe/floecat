@@ -93,6 +93,7 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
           result.errors,
           result.snapshotsProcessed,
           result.statsProcessed,
+          failureKindOf(result.error),
           result.message(),
           result.error);
     }
@@ -103,5 +104,12 @@ public class DefaultReconcileExecutor implements ReconcileExecutor {
         result.snapshotsProcessed,
         result.statsProcessed,
         result.message());
+  }
+
+  private static ExecutionResult.FailureKind failureKindOf(Exception error) {
+    if (error instanceof ReconcileFailureException failure) {
+      return failure.failureKind();
+    }
+    return ExecutionResult.FailureKind.INTERNAL;
   }
 }

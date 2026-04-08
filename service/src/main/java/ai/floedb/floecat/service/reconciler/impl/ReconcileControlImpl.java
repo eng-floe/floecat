@@ -533,10 +533,13 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     Deadline grpcDeadline = grpcContext.getDeadline();
     while (true) {
       if (grpcContext.isCancelled()) {
-        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget);
-      }
-      if (System.nanoTime() >= deadlineNanos) {
-        throw captureNowTimeout(corr, waitBudget);
+        requestCaptureNowCancellation(
+            accountId,
+            jobId,
+            grpcDeadline != null && grpcDeadline.isExpired()
+                ? "capture_now timed out while waiting for completion"
+                : "capture_now caller cancelled while waiting for completion");
+        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget, true);
       }
       var job =
           jobs.get(accountId, jobId)
@@ -556,13 +559,22 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             throw new IllegalStateException(
                 "capture job cancelled"
                     + (job.message == null || job.message.isBlank() ? "" : ": " + job.message));
-        default ->
-            sleepForCaptureNowPoll(grpcContext, corr, waitBudget, grpcDeadline, deadlineNanos);
+        default -> {
+          if (System.nanoTime() >= deadlineNanos) {
+            requestCaptureNowCancellation(
+                accountId, jobId, "capture_now timed out while waiting for completion");
+            throw captureNowTimeout(corr, waitBudget, true);
+          }
+          sleepForCaptureNowPoll(
+              accountId, jobId, grpcContext, corr, waitBudget, grpcDeadline, deadlineNanos);
+        }
       }
     }
   }
 
-  private static void sleepForCaptureNowPoll(
+  private void sleepForCaptureNowPoll(
+      String accountId,
+      String jobId,
       Context grpcContext,
       String corr,
       Duration waitBudget,
@@ -572,16 +584,30 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       long remainingMillis =
           Duration.ofNanos(Math.max(0L, deadlineNanos - System.nanoTime())).toMillis();
       if (remainingMillis <= 0) {
-        throw captureNowTimeout(corr, waitBudget);
+        requestCaptureNowCancellation(
+            accountId, jobId, "capture_now timed out while waiting for completion");
+        throw captureNowTimeout(corr, waitBudget, true);
       }
       Thread.sleep(Math.min(CAPTURE_NOW_POLL_MS, remainingMillis));
       if (grpcContext.isCancelled()) {
-        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget);
+        requestCaptureNowCancellation(
+            accountId,
+            jobId,
+            grpcDeadline != null && grpcDeadline.isExpired()
+                ? "capture_now timed out while waiting for completion"
+                : "capture_now caller cancelled while waiting for completion");
+        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget, true);
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException("capture wait interrupted", e);
     }
+  }
+
+  private void requestCaptureNowCancellation(String accountId, String jobId, String reason) {
+    jobs.cancel(accountId, jobId, reason)
+        .filter(cancelled -> "JS_CANCELLING".equals(cancelled.state))
+        .ifPresent(cancelled -> cancellations.requestCancel(cancelled.jobId));
   }
 
   private Duration effectiveCaptureNowWait(CaptureNowRequest request) {
@@ -602,21 +628,29 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static StatusRuntimeException captureNowCancelledOrTimedOut(
-      String corr, Deadline grpcDeadline, Duration waitBudget) {
+      String corr, Deadline grpcDeadline, Duration waitBudget, boolean cancellationRequested) {
     if (grpcDeadline != null && grpcDeadline.isExpired()) {
-      return captureNowTimeout(corr, waitBudget);
+      return captureNowTimeout(corr, waitBudget, cancellationRequested);
     }
     return Status.CANCELLED
-        .withDescription("capture_now cancelled before completion")
+        .withDescription(
+            cancellationRequested
+                ? "capture_now cancelled before completion; cancellation was requested for the queued/running job"
+                : "capture_now cancelled before completion")
         .asRuntimeException();
   }
 
-  private static StatusRuntimeException captureNowTimeout(String corr, Duration waitBudget) {
+  private static StatusRuntimeException captureNowTimeout(
+      String corr, Duration waitBudget, boolean cancellationRequested) {
     return Status.DEADLINE_EXCEEDED
         .withDescription(
             "capture_now did not complete within "
                 + waitBudget.toSeconds()
-                + "s; use StartCapture for async execution")
+                + "s"
+                + (cancellationRequested
+                    ? "; cancellation was requested for the queued/running job"
+                    : "")
+                + "; use StartCapture for async execution")
         .asRuntimeException();
   }
 

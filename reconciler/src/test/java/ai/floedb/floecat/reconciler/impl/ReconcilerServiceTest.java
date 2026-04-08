@@ -46,6 +46,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -86,7 +87,9 @@ class ReconcilerServiceTest {
     service.backend = new ThrowingBackend(new RuntimeException("boom"));
     var result = service.reconcile(principal, connectorId, true, null);
     assertThat(result.errors).isEqualTo(1);
-    assertThat(result.error).isInstanceOf(IllegalArgumentException.class);
+    assertThat(result.error).isInstanceOf(ReconcileFailureException.class);
+    assertThat(((ReconcileFailureException) result.error).failureKind())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING);
     assertThat(result.error.getMessage()).contains("getConnector failed:");
   }
 

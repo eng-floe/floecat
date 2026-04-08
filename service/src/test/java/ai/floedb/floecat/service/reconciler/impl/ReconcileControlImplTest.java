@@ -23,6 +23,8 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -183,6 +185,8 @@ class ReconcileControlImplTest {
         .thenReturn("job-1");
     when(service.jobs.get("acct", "job-1"))
         .thenReturn(Optional.of(job("job-1", "JS_QUEUED", 0, 0, 0, "")));
+    when(service.jobs.cancel("acct", "job-1", "capture_now timed out while waiting for completion"))
+        .thenReturn(Optional.of(job("job-1", "JS_CANCELLING", 0, 0, 0, "timing out")));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -193,12 +197,43 @@ class ReconcileControlImplTest {
                         CaptureNowRequest.newBuilder()
                             .setScope(
                                 CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                            .setMaxWait(Duration.newBuilder().setMillis(1).build())
+                            .setMaxWait(
+                                Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
                             .build())
                     .await()
                     .indefinitely());
 
     assertEquals(Status.Code.DEADLINE_EXCEEDED, ex.getStatus().getCode());
+    verify(service.jobs, times(1))
+        .cancel("acct", "job-1", "capture_now timed out while waiting for completion");
+    verify(service.cancellations, times(1)).requestCancel("job-1");
+  }
+
+  @Test
+  void captureNowDoesNotRequestExecutorCancellationWhenJobAlreadyCancelledInStore() {
+    when(service.jobs.enqueue(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+    when(service.jobs.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("job-1", "JS_QUEUED", 0, 0, 0, "")));
+    when(service.jobs.cancel("acct", "job-1", "capture_now timed out while waiting for completion"))
+        .thenReturn(Optional.of(job("job-1", "JS_CANCELLED", 0, 0, 0, "cancelled")));
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .captureNow(
+                    CaptureNowRequest.newBuilder()
+                        .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                        .setMaxWait(Duration.newBuilder().setSeconds(0).setNanos(1_000_000).build())
+                        .build())
+                .await()
+                .indefinitely());
+
+    verify(service.jobs, times(1))
+        .cancel("acct", "job-1", "capture_now timed out while waiting for completion");
+    verify(service.cancellations, never()).requestCancel(anyString());
   }
 
   private static ResourceId connectorId() {

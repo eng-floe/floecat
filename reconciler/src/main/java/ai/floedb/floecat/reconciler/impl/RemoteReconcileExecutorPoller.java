@@ -87,12 +87,17 @@ public class RemoteReconcileExecutorPoller {
     }
     try {
       while (reserveWorkerSlot()) {
-        Optional<LeaseAssignment> assignment = leaseNextAssignment();
-        if (assignment.isEmpty()) {
+        try {
+          Optional<LeaseAssignment> assignment = leaseNextAssignment();
+          if (assignment.isEmpty()) {
+            inFlight.decrementAndGet();
+            return;
+          }
+          submitAssignment(assignment.get());
+        } catch (RuntimeException e) {
           inFlight.decrementAndGet();
-          return;
+          throw e;
         }
-        submitAssignment(assignment.get());
       }
     } finally {
       polling.set(false);
@@ -233,6 +238,18 @@ public class RemoteReconcileExecutorPoller {
         return;
       }
       if (result.cancelled || cancellationRequested.get()) {
+        completeIfPossible(
+            remoteLease,
+            RemoteLeasedJob.CompletionState.CANCELLED,
+            result.scanned,
+            result.changed,
+            result.errors,
+            result.snapshotsProcessed,
+            result.statsProcessed,
+            result.message);
+        return;
+      }
+      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
         completeIfPossible(
             remoteLease,
             RemoteLeasedJob.CompletionState.CANCELLED,

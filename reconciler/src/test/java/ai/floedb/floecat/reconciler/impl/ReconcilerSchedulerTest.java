@@ -139,4 +139,81 @@ class ReconcilerSchedulerTest {
             org.mockito.ArgumentMatchers.anyLong(),
             org.mockito.ArgumentMatchers.anyLong());
   }
+
+  @Test
+  void runLeaseCancelsJobWhenExecutorReturnsConnectorMissingFailure() {
+    var jobStore = mock(ReconcileJobStore.class);
+    var executor = mock(ReconcileExecutor.class);
+    when(executor.enabled()).thenReturn(true);
+    when(executor.supportedExecutionClasses())
+        .thenReturn(EnumSet.allOf(ReconcileExecutionClass.class));
+    when(executor.supportedLanes()).thenReturn(java.util.Set.of(""));
+    when(executor.supports(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsExecutionClass(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.supportsLane(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+    when(executor.id()).thenReturn("default_reconciler");
+    var registry = new ReconcileExecutorRegistry(java.util.List.of(executor));
+
+    var scheduler = new ReconcilerScheduler();
+    scheduler.jobs = jobStore;
+    scheduler.executorRegistry = registry;
+    scheduler.cancellations = new ReconcileCancellationRegistry();
+    scheduler.config = mock(Config.class);
+    when(scheduler.config.getOptionalValue(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(Long.class)))
+        .thenReturn(Optional.empty());
+
+    var lease =
+        new ReconcileJobStore.LeasedJob(
+            "job-1",
+            "acct",
+            "connector",
+            false,
+            ReconcilerService.CaptureMode.METADATA_AND_STATS,
+            ai.floedb.floecat.reconciler.jobs.ReconcileScope.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            "lease-1",
+            "",
+            "");
+
+    when(executor.execute(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(
+            ReconcileExecutor.ExecutionResult.failure(
+                0,
+                0,
+                1,
+                0,
+                0,
+                ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING,
+                "connector missing",
+                new ReconcileFailureException(
+                    ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING,
+                    "connector missing",
+                    null)));
+
+    scheduler.runLease(lease);
+
+    verify(jobStore, times(1))
+        .markCancelled(
+            org.mockito.ArgumentMatchers.eq("job-1"),
+            org.mockito.ArgumentMatchers.eq("lease-1"),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.eq("connector missing"),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.eq(0L),
+            org.mockito.ArgumentMatchers.eq(0L));
+    verify(jobStore, never())
+        .markFailed(
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong(),
+            org.mockito.ArgumentMatchers.anyLong());
+  }
 }

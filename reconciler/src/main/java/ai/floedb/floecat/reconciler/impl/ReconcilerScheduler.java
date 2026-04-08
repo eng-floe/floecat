@@ -333,7 +333,7 @@ public class ReconcilerScheduler {
             null);
         return;
       }
-      if (isTerminalMissingConnectorFailure(result.message)) {
+      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
         jobs.markCancelled(
             lease.jobId,
             lease.leaseEpoch,
@@ -415,7 +415,7 @@ public class ReconcilerScheduler {
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          if (isTerminalMissingConnectorFailure(msg)) {
+          if (failureKindOf(e) == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
             jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
             emitOutcome(lease, "cancelled", now - started, 0, 0, 1, 0, 0, "connector_missing", msg);
           } else {
@@ -465,11 +465,17 @@ public class ReconcilerScheduler {
     return cls + ": " + msg;
   }
 
-  private static boolean isTerminalMissingConnectorFailure(String message) {
-    if (message == null || message.isBlank()) {
-      return false;
+  private static ReconcileExecutor.ExecutionResult.FailureKind failureKindOf(Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.failureKind();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
     }
-    return message.contains("getConnector failed:") || message.contains("Connector not found:");
+    return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
   }
 
   private void emitOutcome(
