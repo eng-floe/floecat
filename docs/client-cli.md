@@ -15,6 +15,9 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
 - **`Shell` (top-level Picocli command)** – Boots an interactive REPL using JLine, configures history
   persistence (`~/.floecat_shell_history`), auto-completion, and command dispatch. Commands share a
   current account context and use injected blocking stubs annotated with `@GrpcClient("floecat")`.
+- **`CliCommandExecutor`** – Standalone, embeddable command dispatcher. No Quarkus, no JLine; takes
+  gRPC stubs and a `PrintStream`, tokenizes input, and routes to the appropriate `*CliSupport`
+  handler. Thread-safe and reusable across calls. See [Embedding](#embedding).
 - **Utility parsers** – `FQNameParserUtil` splits catalog.namespace.table strings into `NameRef`s;
   `CsvListParserUtil` converts `k=v` style arguments into Java maps/lists.
 - **Display helpers** – The shell formats responses into human-readable tables, summarising
@@ -76,12 +79,37 @@ reconciliation) show job IDs that can be polled via `connector job <id>`.
 
 ## Configuration & Extensibility
 
-- Build via `make cli` or run directly with `make cli-run` (delegates to `quarkus:dev`).
-- Configure the target endpoint using Quarkus client properties (default `localhost:9100`).
+- Build via `make cli`. Run with `make cli-run` (build + run) or `make cli-start` (run only, no
+  Maven rebuild — avoids triggering Quarkus live-reload on the service).
+- Configure the target endpoint using Quarkus client properties (default `localhost:9100`), or pass
+  `--host` / `--port` flags at startup.
 - Extend commands by adding nested `@Command` classes under `Shell`. Because the CLI already injects
   every gRPC stub, new commands only need to format inputs and call the stub.
 - Add new parsing helpers in `client-cli/src/main/java/ai/floedb/floecat/client/cli/util` for custom
   arg shapes.
+
+## Embedding
+
+`CliCommandExecutor` can be used directly in any JVM application without the Quarkus shell. It has
+no dependency on JLine, Picocli, or Quarkus runtime — only the gRPC stubs from `floecat-proto`.
+
+```java
+ManagedChannel channel = ManagedChannelBuilder
+    .forAddress("localhost", 9100)
+    .usePlaintext()
+    .build();
+
+CliCommandExecutor executor = CliCommandExecutor.fromChannel(channel, System.out);
+executor.execute("catalogs");
+executor.execute("tables my-catalog.my-ns");
+```
+
+`fromChannel` creates all service stubs from a single channel and uses no-op session-state
+callbacks. For full session management (e.g. `account set` / `catalog use` persisting across
+calls), use the builder directly and supply real `setAccountId` / `setCatalog` consumers.
+
+`execute` never throws — errors are written to the provided `PrintStream` and the method returns
+`false`. A single executor instance is thread-safe and may be reused across any number of calls.
 
 ## Examples & Scenarios
 

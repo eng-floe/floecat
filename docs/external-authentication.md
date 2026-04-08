@@ -31,9 +31,13 @@ The realm import defines:
 - hardcoded claim: `account_id=5eaa9cd5-7d08-3750-9457-cfe800b0b9d2` (seed account `t-0001`)
 
 Role intent:
-- `platform-admin` grants account management (`account.write`) and is intended for platform operators.
+- `platform-admin` grants platform account management (`account.write`, `account.delete`) and is
+  intended for platform operators.
 - `administrator` grants full tenant‑scoped access (catalogs/namespaces/tables/connectors) but does
-  not grant account management.
+  not grant account creation/update. It does include `account.delete`.
+- `delete-account` is an internal service role, not an IdP-facing operator role. It grants only
+  `account.delete`, and floecat performs the implied catalog/namespace/table/connector cleanup
+  internally.
 
 See [`docs/fixed-roles.md`](fixed-roles.md).
 
@@ -116,7 +120,7 @@ account list
 
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
-- `floecat.auth.platform-admin.role=platform-admin` to authorize account management.
+- `floecat.auth.platform-admin.role=platform-admin` to authorize platform account management.
 - `floecat.interceptor.session.header=x-floe-session` to enable the header.
 Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)
@@ -157,7 +161,7 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
 - Use Keycloak dev realm or another local IdP.
 - `quarkus.oidc.auth-server-url=http://127.0.0.1:12221/realms/floecat`
 - `quarkus.oidc.token.audience=floecat-client` (or `floecat-client,trino-client` if using Trino).
-- Use the IdP role `platform-admin` for account management.
+- Use the IdP role `platform-admin` for platform account management.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
 - Consider `floecat.interceptor.validate.account=false` if account ids are trusted in dev.
 
@@ -169,7 +173,7 @@ https://quarkus.io/guides/security-oidc-configuration-properties-reference
   - `quarkus.oidc.auth-server-url=https://<issuer>/realms/<realm>`
   - `quarkus.oidc.public-key=...` (offline JWT validation)
 - `quarkus.oidc.token.audience=<audience>`
-- Use the IdP role `platform-admin` for account management.
+- Use the IdP role `platform-admin` for platform account management.
 - `floecat.interceptor.authorization.header=authorization` (or `floecat.interceptor.session.header`)
 - `floecat.interceptor.validate.account=true` (recommended in prod)
 - Ensure transport security (TLS) at the edge and IdP issuer URLs use HTTPS.
@@ -182,7 +186,7 @@ of via an upstream engine session token.
 
 Configuration (service `application.properties`):
 - `quarkus.oidc.tenant-enabled=true` to opt into OIDC validation.
-- `floecat.auth.platform-admin.role=platform-admin` to authorize account management.
+- `floecat.auth.platform-admin.role=platform-admin` to authorize platform account management.
 - `floecat.interceptor.authorization.header=authorization` to enable the header.
 Seed fixture sync in OIDC mode (optional):
 - `floecat.seed.oidc.issuer=http://keycloak:8080/realms/floecat` (when running in Docker)

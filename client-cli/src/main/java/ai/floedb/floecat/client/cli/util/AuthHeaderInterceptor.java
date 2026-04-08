@@ -75,7 +75,6 @@ public final class AuthHeaderInterceptor implements ClientInterceptor {
           headers.put(
               Metadata.Key.of(accountHeaderName, Metadata.ASCII_STRING_MARSHALLER), account);
         }
-
         super.start(responseListener, headers);
       }
     };
