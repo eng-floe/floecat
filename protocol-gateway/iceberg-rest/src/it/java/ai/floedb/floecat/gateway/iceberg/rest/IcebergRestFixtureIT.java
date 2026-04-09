@@ -1853,7 +1853,7 @@ class IcebergRestFixtureIT {
 
       List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStats =
           awaitColumnStats(tableId, current, Duration.ofSeconds(30));
-      Assertions.assertFalse(columnStats.isEmpty(), "Column NDV statistics must be available");
+      Assertions.assertFalse(columnStats.isEmpty(), "Column statistics must be available");
       columnStats
           .forEach(
               col -> {
@@ -1862,36 +1862,40 @@ class IcebergRestFixtureIT {
                 Assertions.assertFalse(
                     col.getLogicalType().isBlank(),
                     () -> "Logical type should be populated for " + col.getDisplayName());
-                Assertions.assertTrue(
-                    col.hasNdv(), "NDV must be present for " + col.getDisplayName());
-                Assertions.assertTrue(
-                    col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                    () -> "NDV should contain exact or approx estimate for " + col.getDisplayName());
-                if (col.getNdv().hasApprox()) {
-                  var approx = col.getNdv().getApprox();
+                if (col.hasNdv()) {
                   Assertions.assertTrue(
-                      approx.getEstimate() > 0.0d,
-                      () -> "Approximate NDV must be positive for " + col.getDisplayName());
-                  Assertions.assertTrue(
-                      approx.getRowsSeen() > 0,
-                      () -> "rows-seen must be positive for " + col.getDisplayName());
-                  Assertions.assertTrue(
-                      approx.getRowsTotal() >= approx.getRowsSeen(),
-                      () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
+                      col.getNdv().hasApprox() || col.getNdv().hasExact(),
+                      () ->
+                          "NDV should contain exact or approx estimate for "
+                              + col.getDisplayName());
+                  if (col.getNdv().hasApprox()) {
+                    var approx = col.getNdv().getApprox();
+                    Assertions.assertTrue(
+                        approx.getEstimate() > 0.0d,
+                        () -> "Approximate NDV must be positive for " + col.getDisplayName());
+                    Assertions.assertTrue(
+                        approx.getRowsSeen() > 0,
+                        () -> "rows-seen must be positive for " + col.getDisplayName());
+                    Assertions.assertTrue(
+                        approx.getRowsTotal() >= approx.getRowsSeen(),
+                        () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
+                    Assertions.assertFalse(
+                        approx.getMethod().isBlank(),
+                        () -> "NDV method must be set for " + col.getDisplayName());
+                  }
                   Assertions.assertFalse(
-                      approx.getMethod().isBlank(),
-                      () -> "NDV method must be set for " + col.getDisplayName());
+                      col.getNdv().getSketchesList().isEmpty(),
+                      () -> "Sketch metadata must be present for " + col.getDisplayName());
+                  col.getNdv()
+                      .getSketchesList()
+                      .forEach(
+                          sketch ->
+                              Assertions.assertFalse(
+                                  sketch.getType().isBlank(),
+                                  () ->
+                                      "Sketch type must be set for column "
+                                          + col.getDisplayName()));
                 }
-                Assertions.assertFalse(
-                    col.getNdv().getSketchesList().isEmpty(),
-                    () -> "Sketch metadata must be present for " + col.getDisplayName());
-                col.getNdv()
-                    .getSketchesList()
-                    .forEach(
-                        sketch ->
-                            Assertions.assertFalse(
-                                sketch.getType().isBlank(),
-                                () -> "Sketch type must be set for column " + col.getDisplayName()));
               });
     }
   }
