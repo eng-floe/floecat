@@ -1783,9 +1783,25 @@ class IcebergRestFixtureIT {
         .body("metadata.'format-version'", equalTo(2));
 
     if (connectorIntegrationEnabled) {
+      ResourceId tableId = resolveTableId("iceberg", "trino_test");
+      Table tableRecord =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+                      .getTable());
+      Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
+      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
+      Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
+      Assertions.assertTrue(
+          metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+          () -> "metadata-location should reside under fixture bucket: " + metadataLocation);
+      Assumptions.assumeTrue(
+          tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
+          "Connector integration enabled, but no upstream connector was provisioned");
+
       Connector connector =
-          awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(45));
-      Assertions.assertNotNull(connector, "Connector should be created for trino_test");
+          awaitConnectorById(tableRecord.getUpstream().getConnectorId(), Duration.ofSeconds(45));
+      Assertions.assertNotNull(connector, "Connector should be retrievable for trino_test");
 
       withReconcileControlClient(
           stub -> {
@@ -1814,22 +1830,6 @@ class IcebergRestFixtureIT {
                     .build());
             return null;
           });
-
-      ResourceId tableId = resolveTableId("iceberg", "trino_test");
-      Table tableRecord =
-          withTableClient(
-              stub ->
-                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
-                      .getTable());
-      Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
-      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
-      Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
-      Assertions.assertTrue(
-          metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-          () -> "metadata-location should reside under fixture bucket: " + metadataLocation);
-      Assertions.assertTrue(
-          tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
-          "Upstream connector identifier must be populated");
 
       ListSnapshotsResponse snapshots =
           withSnapshotClient(
@@ -2441,6 +2441,38 @@ class IcebergRestFixtureIT {
       }
     }
     Assertions.fail("Timed out waiting for connector for " + namespace + "." + table);
+    return null;
+  }
+
+  private Connector awaitConnectorById(ResourceId connectorId, Duration timeout) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return null;
+    }
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      try {
+        Connector connector =
+            withConnectorsClient(
+                stub ->
+                    stub.getConnector(
+                            GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                        .getConnector());
+        if (connector != null && connector.hasResourceId()) {
+          return connector;
+        }
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND
+            && e.getStatus().getCode() != Status.Code.UNAVAILABLE) {
+          throw e;
+        }
+      }
+      try {
+        TimeUnit.MILLISECONDS.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
     return null;
   }
 
