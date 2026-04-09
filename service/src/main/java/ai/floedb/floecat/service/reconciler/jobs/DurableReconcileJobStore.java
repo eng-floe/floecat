@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -56,6 +58,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   private static final int FALLBACK_SCAN_MAX_PAGES = 200;
   private static final int CAS_MAX = 16;
+  private static final String LIST_TOKEN_V1_PREFIX = "v1:";
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
@@ -126,10 +129,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String connectorId,
       boolean fullRescan,
       CaptureMode captureMode,
-      ReconcileScope incomingScope) {
+      ReconcileScope incomingScope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId) {
     ReconcileScope scope = incomingScope == null ? ReconcileScope.empty() : incomingScope;
-    String laneKey = laneKey(connectorId, scope);
-    String dedupeKey = dedupeKey(accountId, connectorId, fullRescan, captureMode, scope);
+    ReconcileExecutionPolicy policy =
+        executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+    String laneKey = laneKey(scope);
+    String dedupeKey =
+        dedupeKey(accountId, connectorId, fullRescan, captureMode, scope, policy, pinnedExecutorId);
     String dedupePointerKey = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
 
     for (int attempt = 0; attempt < CAS_MAX; attempt++) {
@@ -160,6 +168,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               fullRescan,
               captureMode,
               scope,
+              policy,
+              pinnedExecutorId,
               laneKey,
               dedupeKey,
               now,
@@ -230,7 +240,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String connectorId,
       java.util.Set<String> states) {
     int limit = Math.max(1, pageSize);
-    String token = pageToken == null ? "" : pageToken;
+    ListCursor cursor = decodeListCursor(pageToken);
+    String token = cursor.storeToken();
+    int skip = cursor.skip();
     List<ReconcileJob> out = new java.util.ArrayList<>(limit);
     String nextToken = "";
     while (out.size() < limit) {
@@ -241,7 +253,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (pointers.isEmpty()) {
         break;
       }
-      for (int i = 0; i < pointers.size(); i++) {
+      int startIndex = Math.min(skip, pointers.size());
+      skip = 0;
+      for (int i = startIndex; i < pointers.size(); i++) {
         Pointer ptr = pointers.get(i);
         var rec = readRecord(ptr);
         if (rec.isEmpty()) {
@@ -257,7 +271,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         out.add(job);
         if (out.size() >= limit) {
           boolean hasMore = i + 1 < pointers.size() || next.length() > 0;
-          nextToken = hasMore ? ptr.getKey() : "";
+          if (!hasMore) {
+            nextToken = "";
+          } else if (i + 1 < pointers.size()) {
+            nextToken = encodeListCursor(token, i + 1);
+          } else {
+            nextToken = next.toString();
+          }
           break;
         }
       }
@@ -317,9 +337,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public Optional<LeasedJob> leaseNext() {
+  public Optional<LeasedJob> leaseNext(LeaseRequest request) {
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     long now = System.currentTimeMillis();
-    var leased = leaseReadyDue(now);
+    var leased = leaseReadyDue(now, effective);
     if (leased.isPresent()) {
       return leased;
     }
@@ -327,7 +348,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     // Reclaim is best-effort recovery work; do not block ready leasing on potentially expensive
     // scans.
     reclaimExpiredLeasesIfDue(now);
-    return leaseReadyDue(System.currentTimeMillis());
+    return leaseReadyDue(System.currentTimeMillis(), effective);
   }
 
   @Override
@@ -340,7 +361,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void markRunning(String jobId, String leaseEpoch, long startedAtMs) {
+  public void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId) {
     mutateByJobId(
         jobId,
         existing -> {
@@ -352,6 +373,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           if (existing.startedAtMs <= 0L) {
             existing.startedAtMs = startedAtMs;
           }
+          existing.executorId = executorId == null ? "" : executorId;
           return existing;
         });
   }
@@ -415,6 +437,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.tablesChanged = changed;
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -452,6 +475,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
           existing.lastError = message == null ? "Failed" : message;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -472,6 +496,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           long now = System.currentTimeMillis();
           existing.state = "JS_QUEUED";
           existing.message = message == null ? "Retrying" : message;
+          existing.executorId = "";
           existing.nextAttemptAtMs = now + backoffMs(existing.attempt);
           existing.finishedAtMs = 0L;
           String readyKey =
@@ -538,6 +563,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             existing.startedAtMs = now;
           }
           existing.finishedAtMs = now;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -595,6 +621,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.errors = errors;
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -873,13 +900,79 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 current.fullRescan,
                 current.captureMode(),
                 current.toScope(),
-                current.leaseEpoch));
+                current.executionPolicy(),
+                current.leaseEpoch,
+                current.pinnedExecutorId(),
+                current.executorId()));
       }
 
       blobStore.delete(nextBlobUri);
     }
 
     return Optional.empty();
+  }
+
+  private boolean tryAcquireLaneLease(StoredReconcileJob record, String blobUri, long now) {
+    if (record == null
+        || record.accountId == null
+        || record.accountId.isBlank()
+        || record.laneKey == null
+        || record.laneKey.isBlank()
+        || blobUri == null
+        || blobUri.isBlank()) {
+      return false;
+    }
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    for (int i = 0; i < CAS_MAX; i++) {
+      Pointer existing = pointerStore.get(lanePointerKey).orElse(null);
+      if (existing == null) {
+        Pointer created =
+            Pointer.newBuilder().setKey(lanePointerKey).setBlobUri(blobUri).setVersion(1L).build();
+        if (pointerStore.compareAndSet(lanePointerKey, 0L, created)) {
+          return true;
+        }
+        continue;
+      }
+      if (blobUri.equals(existing.getBlobUri())) {
+        return true;
+      }
+
+      var owner = readRecordByBlobUri(existing.getBlobUri());
+      if (owner.isPresent() && hasActiveLaneLease(owner.get(), now)) {
+        return false;
+      }
+      if (pointerStore.compareAndDelete(lanePointerKey, existing.getVersion())) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
+    if (record == null) {
+      return false;
+    }
+    if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
+      return false;
+    }
+    if (record.leaseOwner == null || record.leaseOwner.isBlank()) {
+      return false;
+    }
+    return record.leaseExpiresAtMs > now;
+  }
+
+  private void clearLaneLeaseIfOwned(StoredReconcileJob record, String expectedBlobUri) {
+    if (record == null
+        || record.accountId == null
+        || record.accountId.isBlank()
+        || record.laneKey == null
+        || record.laneKey.isBlank()
+        || expectedBlobUri == null
+        || expectedBlobUri.isBlank()) {
+      return;
+    }
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    clearPointerIfMatches(lanePointerKey, expectedBlobUri);
   }
 
   private Optional<StoredReconcileJob> loadActiveFromDedupe(String dedupePointerKey) {
@@ -963,9 +1056,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 }
 
                 boolean wasCancelling = "JS_CANCELLING".equals(record.state);
+                clearLaneLeaseIfOwned(record, record.currentBlobUri);
                 record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
                 record.message =
                     wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
+                if (!wasCancelling) {
+                  record.executorId = "";
+                }
                 record.leaseOwner = null;
                 record.leaseEpoch = null;
                 record.leaseExpiresAtMs = 0L;
@@ -1004,7 +1101,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
   }
 
-  private Optional<LeasedJob> leaseReadyDue(long nowMs) {
+  private Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
     String token = "";
     int pages = 0;
     while (true) {
@@ -1022,18 +1119,33 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           continue;
         }
 
-        if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
-          continue;
-        }
-
         var readyTarget = decodeReadyPointerTarget(candidate.getKey());
         if (readyTarget == null) {
+          continue;
+        }
+        if (!matchesLeaseRequest(readyTarget.canonicalPointerKey(), request)) {
+          continue;
+        }
+        Pointer canonicalPointer = pointerStore.get(readyTarget.canonicalPointerKey()).orElse(null);
+        if (canonicalPointer == null) {
+          continue;
+        }
+        var recordOpt = readRecord(canonicalPointer);
+        if (recordOpt.isEmpty()) {
+          continue;
+        }
+        if (!tryAcquireLaneLease(recordOpt.get(), canonicalPointer.getBlobUri(), nowMs)) {
+          continue;
+        }
+        if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
+          clearLaneLeaseIfOwned(recordOpt.get(), canonicalPointer.getBlobUri());
           continue;
         }
         var leased = leaseCanonical(readyTarget.canonicalPointerKey(), candidate.getKey(), nowMs);
         if (leased.isPresent()) {
           return leased;
         }
+        clearLaneLeaseIfOwned(recordOpt.get(), canonicalPointer.getBlobUri());
       }
 
       String nextToken = next.toString();
@@ -1064,6 +1176,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return record;
   }
 
+  private boolean matchesLeaseRequest(String canonicalPointerKey, LeaseRequest request) {
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    Pointer canonicalPointer = pointerStore.get(canonicalPointerKey).orElse(null);
+    if (canonicalPointer == null) {
+      return false;
+    }
+    var record = readRecord(canonicalPointer);
+    return record.isPresent()
+        && effective.matches(record.get().executionPolicy(), record.get().pinnedExecutorId());
+  }
+
   private ReconcileJob toPublicJob(StoredReconcileJob stored) {
     return new ReconcileJob(
         stored.jobId,
@@ -1080,7 +1203,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         stored.captureMode(),
         stored.snapshotsProcessed,
         stored.statsProcessed,
-        stored.toScope());
+        stored.toScope(),
+        stored.executionPolicy(),
+        stored.executorId());
   }
 
   private boolean upsertReadyPointer(String readyPointerKey, String blobUri) {
@@ -1189,6 +1314,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Keys.reconcileJobLookupPointerById(record.jobId), oldBlobUri, newBlobUri);
     if (record.readyPointerKey != null && !record.readyPointerKey.isBlank()) {
       replacePointerBlobUriIfMatch(record.readyPointerKey, oldBlobUri, newBlobUri);
+    }
+    if (hasActiveLaneLease(record, System.currentTimeMillis())) {
+      replacePointerBlobUriIfMatch(
+          Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey), oldBlobUri, newBlobUri);
     }
     if (record.dedupeKey != null && !record.dedupeKey.isBlank() && !isTerminalState(record.state)) {
       String dedupePointer =
@@ -1340,14 +1469,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     };
   }
 
-  private static String laneKey(String connectorId, ReconcileScope scope) {
-    String namespace =
-        scope.destinationNamespacePaths().isEmpty()
-            ? "*"
-            : String.join(".", scope.destinationNamespacePaths().get(0));
+  private static String laneKey(ReconcileScope scope) {
+    String namespaces =
+        scope.destinationNamespacePaths().stream()
+            .map(path -> String.join(".", path))
+            .sorted()
+            .reduce((a, b) -> a + "," + b)
+            .orElse("*");
     String table =
         scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
-    return connectorId + "|" + namespace + "|" + table;
+    return namespaces + "|" + table;
   }
 
   private static String dedupeKey(
@@ -1355,7 +1486,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String connectorId,
       boolean fullRescan,
       CaptureMode captureMode,
-      ReconcileScope scope) {
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId) {
     String namespaces =
         scope.destinationNamespacePaths().stream()
             .map(path -> String.join(".", path))
@@ -1366,12 +1499,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
     String columns =
         scope.destinationTableColumns().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
-    String snapshots =
-        scope.destinationSnapshotIds().stream()
-            .map(String::valueOf)
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("");
+    ReconcileExecutionPolicy policy =
+        executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     return accountId
         + "|"
         + connectorId
@@ -1386,7 +1515,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         + "|"
         + columns
         + "|"
-        + snapshots;
+        + policy.executionClass().name()
+        + "|"
+        + policy.lane()
+        + "|"
+        + policy.attributes()
+        + "|"
+        + (pinnedExecutorId == null ? "" : pinnedExecutorId.trim());
   }
 
   private static String hashValue(String value) {
@@ -1420,17 +1555,57 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   private record ReadyPointerTarget(String canonicalPointerKey) {}
 
+  private record ListCursor(String storeToken, int skip) {}
+
+  private static ListCursor decodeListCursor(String pageToken) {
+    if (pageToken == null || pageToken.isBlank()) {
+      return new ListCursor("", 0);
+    }
+    if (!pageToken.startsWith(LIST_TOKEN_V1_PREFIX)) {
+      return new ListCursor(pageToken, 0);
+    }
+    try {
+      String decoded =
+          new String(
+              Base64.getUrlDecoder().decode(pageToken.substring(LIST_TOKEN_V1_PREFIX.length())),
+              StandardCharsets.UTF_8);
+      int separator = decoded.indexOf('\n');
+      if (separator < 0) {
+        return new ListCursor(decoded, 0);
+      }
+      String storeToken = decoded.substring(0, separator);
+      int skip = Integer.parseInt(decoded.substring(separator + 1));
+      return new ListCursor(storeToken, Math.max(0, skip));
+    } catch (RuntimeException e) {
+      return new ListCursor(pageToken, 0);
+    }
+  }
+
+  private static String encodeListCursor(String storeToken, int skip) {
+    if (skip <= 0) {
+      return storeToken == null ? "" : storeToken;
+    }
+    String payload = (storeToken == null ? "" : storeToken) + "\n" + skip;
+    return LIST_TOKEN_V1_PREFIX
+        + Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+  }
+
   static final class StoredReconcileJob {
     public String jobId;
     public String accountId;
     public String connectorId;
     public boolean fullRescan;
     public String captureMode;
-
+    public String executionClass;
+    public String executionLane;
+    public java.util.Map<String, String> executionAttributes = java.util.Map.of();
+    public String pinnedExecutorId;
+    public String executorId;
     public List<List<String>> destinationNamespacePaths = List.of();
     public String destinationTableDisplayName;
     public List<String> destinationTableColumns = List.of();
-    public List<Long> destinationSnapshotIds = List.of();
 
     public String state;
     public String message;
@@ -1465,6 +1640,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         boolean fullRescan,
         CaptureMode captureMode,
         ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String pinnedExecutorId,
         String laneKey,
         String dedupeKey,
         long now,
@@ -1475,10 +1652,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.connectorId = connectorId;
       rec.fullRescan = fullRescan;
       rec.captureMode = (captureMode == null ? CaptureMode.METADATA_AND_STATS : captureMode).name();
+      ReconcileExecutionPolicy policy =
+          executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
+      rec.executionClass = policy.executionClass().name();
+      rec.executionLane = policy.lane();
+      rec.executionAttributes = policy.attributes();
+      rec.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
+      rec.executorId = "";
       rec.destinationNamespacePaths = scope.destinationNamespacePaths();
       rec.destinationTableDisplayName = scope.destinationTableDisplayName();
       rec.destinationTableColumns = scope.destinationTableColumns();
-      rec.destinationSnapshotIds = scope.destinationSnapshotIds();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -1504,10 +1687,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     ReconcileScope toScope() {
       return ReconcileScope.of(
-          destinationNamespacePaths,
-          destinationTableDisplayName,
-          destinationTableColumns,
-          destinationSnapshotIds);
+          destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns);
+    }
+
+    ReconcileExecutionPolicy executionPolicy() {
+      return ReconcileExecutionPolicy.of(
+          ReconcileExecutionClass.fromString(executionClass), executionLane, executionAttributes);
+    }
+
+    String pinnedExecutorId() {
+      return pinnedExecutorId == null ? "" : pinnedExecutorId;
+    }
+
+    String executorId() {
+      return executorId == null ? "" : executorId;
     }
   }
 }

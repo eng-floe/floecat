@@ -32,6 +32,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TransactionCommitRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.MetadataLocationUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.CatalogRequestContext;
@@ -42,10 +43,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitOutboxEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -57,6 +59,7 @@ import io.grpc.protobuf.StatusProto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -73,8 +76,6 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitService {
-  private static final int COMMIT_JOURNAL_VERSION = 1;
-  private static final int COMMIT_OUTBOX_VERSION = 1;
   private static final String ICEBERG_METADATA_KEY = "iceberg";
   private static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
@@ -97,8 +98,6 @@ public class TransactionCommitService {
   @Inject TableCommitMetadataMutator metadataMutator;
   @Inject TablePropertyService tablePropertyService;
   @Inject ConnectorProvisioningService connectorProvisioningService;
-  @Inject TableCommitJournalService commitJournalService;
-  @Inject TableCommitOutboxService commitOutboxService;
   @Inject TableCommitMaterializationService materializationService;
   @Inject GrpcServiceFacade grpcClient;
 
@@ -217,7 +216,7 @@ public class TransactionCommitService {
                 ? Timestamps.toMillis(begin.getTransaction().getCreatedAt())
                 : clockMillis();
     List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges = new ArrayList<>();
-    List<TableCommitOutboxService.WorkItem> outboxItems = new ArrayList<>();
+    List<PostCommitCaptureRequest> postCommitCaptures = new ArrayList<>();
 
     if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
       return IcebergErrorResponses.failure(
@@ -313,7 +312,6 @@ public class TransactionCommitService {
         ai.floedb.floecat.catalog.rpc.Table updated;
         boolean shouldPlan = !alreadyApplied;
         if (!shouldPlan) {
-          // TS_APPLIED replay reloads durable outbox work from the commit journal later.
           updated = persistedTable;
         } else {
           Supplier<ai.floedb.floecat.catalog.rpc.Table> workingTableSupplier = () -> persistedTable;
@@ -393,8 +391,11 @@ public class TransactionCommitService {
       }
       CommitUpdateInspector.Parsed parsedUpdates =
           CommitUpdateInspector.inspectUpdates(plan.updates());
-      List<Long> addedSnapshotIds = parsedUpdates.addedSnapshotIds();
       List<Long> removedSnapshotIds = parsedUpdates.removedSnapshotIds();
+      if (connectorId != null && connectorId.getId() != null && !connectorId.getId().isBlank()) {
+        postCommitCaptures.add(
+            new PostCommitCaptureRequest(plan.namespacePath(), plan.tableName(), connectorId));
+      }
       txChanges.add(
           ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
               .setTableId(plan.tableId())
@@ -404,7 +405,14 @@ public class TransactionCommitService {
 
       SnapshotChangePlan snapshotChangePlan =
           planAtomicSnapshotChanges(
-              accountId, plan.tableId(), tableForTx, tableSupport, plan.updates(), alreadyApplied);
+              accountId,
+              txId,
+              plan.tableId(),
+              tableForTx,
+              tableSupport,
+              plan.updates(),
+              removedSnapshotIds,
+              alreadyApplied);
       if (snapshotChangePlan.error() != null) {
         maybeAbortOpenTransaction(currentState, txId, "snapshot metadata planning failed");
         return snapshotChangePlan.error();
@@ -412,46 +420,6 @@ public class TransactionCommitService {
       if (!snapshotChangePlan.txChanges().isEmpty()) {
         txChanges.addAll(snapshotChangePlan.txChanges());
       }
-
-      IcebergCommitJournalEntry journal =
-          buildCommitJournalEntry(
-              txId,
-              requestHash,
-              scopedTableId,
-              plan.namespacePath(),
-              plan.tableName(),
-              connectorId,
-              addedSnapshotIds,
-              removedSnapshotIds,
-              tableForTx,
-              txCreatedAtMs);
-      String pendingKey =
-          Keys.tableCommitOutboxPendingPointer(
-              txCreatedAtMs, accountId, scopedTableId.getId(), txId);
-      txChanges.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(
-                  Keys.tableCommitJournalPointer(accountId, scopedTableId.getId(), txId))
-              .setPayload(ByteString.copyFrom(journal.toByteArray()))
-              .build());
-      txChanges.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(pendingKey)
-              .setPayload(
-                  ByteString.copyFrom(
-                      buildCommitOutboxEntry(
-                              txId, requestHash, accountId, scopedTableId.getId(), txCreatedAtMs)
-                          .toByteArray()))
-              .build());
-      outboxItems.add(commitOutboxService.toWorkItem(pendingKey, journal));
-    }
-
-    List<TableCommitOutboxService.WorkItem> outboxWorkItems =
-        alreadyApplied
-            ? loadReplayWorkItems(accountId, txId, txCreatedAtMs, requestHash, planned)
-            : new ArrayList<>();
-    if (!alreadyApplied) {
-      outboxWorkItems = outboxItems;
     }
 
     boolean applied = isCommitAccepted(currentState);
@@ -489,7 +457,6 @@ public class TransactionCommitService {
                 : TransactionState.TS_UNSPECIFIED;
         if (isCommitAccepted(commitState)) {
           applied = true;
-          // Commit applied; continue with best-effort outbox processing.
         } else {
           if (isDeterministicFailedState(commitState)) {
             return IcebergErrorResponses.failure(
@@ -514,7 +481,6 @@ public class TransactionCommitService {
         if (isRetryableCommitAbort(commitFailure)) {
           if (waitForAppliedState(txId)) {
             applied = true;
-            // Apply eventually succeeded; continue with best-effort outbox processing.
           } else {
             return IcebergErrorResponses.failure(
                 "transaction commit failed",
@@ -540,14 +506,7 @@ public class TransactionCommitService {
           Response.Status.SERVICE_UNAVAILABLE);
     }
 
-    if (!outboxWorkItems.isEmpty()) {
-      try {
-        commitOutboxService.processPendingNow(tableSupport, outboxWorkItems);
-      } catch (RuntimeException e) {
-        LOG.warnf(e, "Best-effort outbox processing failed for tx=%s", txId);
-      }
-    }
-
+    enqueuePostCommitCaptures(postCommitCaptures);
     return Response.noContent().build();
   }
 
@@ -555,6 +514,9 @@ public class TransactionCommitService {
       List<ai.floedb.floecat.transaction.rpc.TxChange> txChanges, Response error) {}
 
   private record PreMaterializedTable(ai.floedb.floecat.catalog.rpc.Table table, Response error) {}
+
+  private record PostCommitCaptureRequest(
+      List<String> namespacePath, String tableName, ResourceId connectorId) {}
 
   private record PlannedChange(
       List<String> namespacePath,
@@ -565,57 +527,43 @@ public class TransactionCommitService {
       List<Map<String, Object>> updates,
       long expectedVersion) {}
 
-  private List<TableCommitOutboxService.WorkItem> loadReplayWorkItems(
-      String accountId,
-      String txId,
-      long txCreatedAtMs,
-      String requestHash,
-      List<PlannedChange> planned) {
-    if (txId == null || txId.isBlank() || planned == null || planned.isEmpty()) {
-      return List.of();
+  private void enqueuePostCommitCaptures(List<PostCommitCaptureRequest> requests) {
+    if (requests == null || requests.isEmpty() || grpcClient == null) {
+      return;
     }
-    List<TableCommitOutboxService.WorkItem> out = new ArrayList<>();
-    for (var plan : planned) {
-      ResourceId scopedTableId = scopeTableIdWithAccount(plan.tableId(), accountId);
-      if (scopedTableId == null || scopedTableId.getId().isBlank()) {
-        continue;
-      }
-      String pendingKey =
-          Keys.tableCommitOutboxPendingPointer(
-              txCreatedAtMs, accountId, scopedTableId.getId(), txId);
-      if (!commitOutboxService.isPending(pendingKey)) {
+    for (PostCommitCaptureRequest request : requests) {
+      if (request == null
+          || request.connectorId() == null
+          || request.connectorId().getId() == null
+          || request.connectorId().getId().isBlank()
+          || request.namespacePath() == null
+          || request.namespacePath().isEmpty()
+          || request.tableName() == null
+          || request.tableName().isBlank()) {
         continue;
       }
       try {
-        var journal = commitJournalService.get(accountId, scopedTableId.getId(), txId).orElse(null);
-        if (journal == null) {
-          LOG.warnf(
-              "Skipping replay side effects for tx=%s tableId=%s; commit journal missing",
-              txId, scopedTableId.getId());
-          continue;
-        }
-        if (!requestHash.equals(journal.getRequestHash())) {
-          LOG.warnf(
-              "Skipping replay side effects for tx=%s tableId=%s; commit journal hash mismatch",
-              txId, scopedTableId.getId());
-          continue;
-        }
-        if (!journal.hasTableId() || journal.getTableName().isBlank()) {
-          LOG.warnf(
-              "Skipping replay side effects for tx=%s tableId=%s; commit journal incomplete",
-              txId, scopedTableId.getId());
-          continue;
-        }
-        out.add(commitOutboxService.toWorkItem(pendingKey, journal));
+        grpcClient.startCapture(
+            StartCaptureRequest.newBuilder()
+                .setMode(CaptureMode.CM_STATS_ONLY)
+                .setScope(
+                    CaptureScope.newBuilder()
+                        .setConnectorId(request.connectorId())
+                        .addDestinationNamespacePaths(
+                            ai.floedb.floecat.connector.rpc.NamespacePath.newBuilder()
+                                .addAllSegments(request.namespacePath())
+                                .build())
+                        .setDestinationTableDisplayName(request.tableName()))
+                .build());
       } catch (RuntimeException e) {
         LOG.warnf(
             e,
-            "Skipping replay side effects for tx=%s tableId=%s; commit journal unreadable",
-            txId,
-            scopedTableId.getId());
+            "Failed to enqueue post-commit reconcile for %s.%s connector=%s",
+            String.join(".", request.namespacePath()),
+            request.tableName(),
+            request.connectorId().getId());
       }
     }
-    return out;
   }
 
   private static String firstNonBlank(String... values) {
@@ -649,6 +597,10 @@ public class TransactionCommitService {
     }
     String requestedLocation =
         CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
+    if (requestedLocation != null && !isValidExplicitMetadataLocation(requestedLocation)) {
+      return new PreMaterializedTable(
+          plannedTable, IcebergErrorResponses.validation("metadata-location must be a valid URI"));
+    }
     boolean skipMaterialization = requestedLocation != null;
     // Materialize metadata for every commit so metadata-location advances atomically with table
     // state, including snapshot-mutating updates.
@@ -685,7 +637,11 @@ public class TransactionCommitService {
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {
-      return new PreMaterializedTable(canonicalizedTable, null);
+      return new PreMaterializedTable(
+          canonicalizedTable.toBuilder()
+              .putProperties(MetadataLocationUtil.PRIMARY_KEY, requestedLocation)
+              .build(),
+          null);
     }
     MaterializeMetadataResult result =
         materializationService.materializeMetadata(
@@ -709,14 +665,32 @@ public class TransactionCommitService {
         canonicalizedTable.toBuilder().putProperties("metadata-location", location).build(), null);
   }
 
+  private boolean isValidExplicitMetadataLocation(String metadataLocation) {
+    if (metadataLocation == null || metadataLocation.isBlank()) {
+      return false;
+    }
+    try {
+      URI uri = URI.create(metadataLocation);
+      if (uri.getScheme() == null || uri.getScheme().isBlank()) {
+        return false;
+      }
+      String directory = MetadataLocationUtil.metadataDirectory(metadataLocation);
+      return directory != null && !directory.isBlank();
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   private SnapshotChangePlan planAtomicSnapshotChanges(
       String accountId,
+      String txId,
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.Table table,
       TableGatewaySupport tableSupport,
       List<Map<String, Object>> updates,
+      List<Long> removedSnapshotIds,
       boolean alreadyApplied) {
-    if (alreadyApplied || tableId == null || updates == null || updates.isEmpty()) {
+    if (alreadyApplied || tableId == null) {
       return new SnapshotChangePlan(List.of(), null);
     }
     String resolvedAccountId = firstNonBlank(tableId.getAccountId(), accountId);
@@ -733,64 +707,135 @@ public class TransactionCommitService {
             ? tableId
             : tableId.toBuilder().setAccountId(resolvedAccountId).build();
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
-    for (Map<String, Object> update : updates) {
-      String action = CommitUpdateInspector.actionOf(update);
-      if (!CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(action)) {
-        continue;
-      }
-      Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
-      if (snapshotMap == null || snapshotMap.isEmpty()) {
-        return new SnapshotChangePlan(
-            List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot"));
-      }
-      Long snapshotId = TableMappingUtil.asLong(snapshotMap.get("snapshot-id"));
-      if (snapshotId == null || snapshotId < 0) {
-        return new SnapshotChangePlan(
-            List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot-id"));
-      }
+    if (updates != null && !updates.isEmpty()) {
+      for (Map<String, Object> update : updates) {
+        String action = CommitUpdateInspector.actionOf(update);
+        if (!CommitUpdateInspector.ACTION_ADD_SNAPSHOT.equals(action)) {
+          continue;
+        }
+        Map<String, Object> snapshotMap = TableMappingUtil.asObjectMap(update.get("snapshot"));
+        if (snapshotMap == null || snapshotMap.isEmpty()) {
+          return new SnapshotChangePlan(
+              List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot"));
+        }
+        Long snapshotId = TableMappingUtil.asLong(snapshotMap.get("snapshot-id"));
+        if (snapshotId == null || snapshotId < 0) {
+          return new SnapshotChangePlan(
+              List.of(), IcebergErrorResponses.validation("add-snapshot requires snapshot-id"));
+        }
 
-      ai.floedb.floecat.catalog.rpc.Snapshot snapshot;
-      try {
-        snapshot =
-            fetchOrBuildSnapshotPayload(
-                scopedTableId, table, tableSupport, snapshotId, snapshotMap);
-      } catch (StatusRuntimeException e) {
-        return new SnapshotChangePlan(List.of(), mapPreCommitFailure(e));
-      } catch (RuntimeException e) {
-        return new SnapshotChangePlan(
-            List.of(),
-            IcebergErrorResponses.failure(
-                "failed to fetch or build snapshot payload",
-                "CommitStateUnknownException",
-                Response.Status.SERVICE_UNAVAILABLE));
-      }
+        ai.floedb.floecat.catalog.rpc.Snapshot snapshot;
+        try {
+          snapshot =
+              fetchOrBuildSnapshotPayload(
+                  scopedTableId, table, tableSupport, snapshotId, snapshotMap);
+        } catch (StatusRuntimeException e) {
+          return new SnapshotChangePlan(List.of(), mapPreCommitFailure(e));
+        } catch (RuntimeException e) {
+          return new SnapshotChangePlan(
+              List.of(),
+              IcebergErrorResponses.failure(
+                  "failed to fetch or build snapshot payload",
+                  "CommitStateUnknownException",
+                  Response.Status.SERVICE_UNAVAILABLE));
+        }
 
-      long upstreamCreatedMs =
-          snapshot.hasUpstreamCreatedAt()
-              ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
-              : clockMillis();
-      String byIdKey =
-          Keys.snapshotPointerById(
-              resolvedAccountId, scopedTableId.getId(), snapshot.getSnapshotId());
-      String byTimeKey =
-          Keys.snapshotPointerByTime(
-              resolvedAccountId,
-              scopedTableId.getId(),
-              snapshot.getSnapshotId(),
-              upstreamCreatedMs);
-      ByteString payload = ByteString.copyFrom(snapshot.toByteArray());
-      out.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(byIdKey)
-              .setPayload(payload)
-              .build());
-      out.add(
-          ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
-              .setTargetPointerKey(byTimeKey)
-              .setPayload(payload)
-              .build());
+        long upstreamCreatedMs =
+            snapshot.hasUpstreamCreatedAt()
+                ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
+                : clockMillis();
+        String byIdKey =
+            Keys.snapshotPointerById(
+                resolvedAccountId, scopedTableId.getId(), snapshot.getSnapshotId());
+        String byTimeKey =
+            Keys.snapshotPointerByTime(
+                resolvedAccountId,
+                scopedTableId.getId(),
+                snapshot.getSnapshotId(),
+                upstreamCreatedMs);
+        ByteString payload = ByteString.copyFrom(snapshot.toByteArray());
+        out.add(
+            ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+                .setTargetPointerKey(byIdKey)
+                .setPayload(payload)
+                .build());
+        out.add(
+            ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+                .setTargetPointerKey(byTimeKey)
+                .setPayload(payload)
+                .build());
+      }
+    }
+    if (removedSnapshotIds != null && !removedSnapshotIds.isEmpty()) {
+      for (Long snapshotId : removedSnapshotIds) {
+        if (snapshotId == null || snapshotId < 0) {
+          continue;
+        }
+        ai.floedb.floecat.catalog.rpc.Snapshot snapshot;
+        try {
+          var resp =
+              grpcClient.getSnapshot(
+                  ai.floedb.floecat.catalog.rpc.GetSnapshotRequest.newBuilder()
+                      .setTableId(scopedTableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                      .build());
+          if (resp == null || !resp.hasSnapshot()) {
+            continue;
+          }
+          snapshot = resp.getSnapshot();
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+            continue;
+          }
+          return new SnapshotChangePlan(List.of(), mapPreCommitFailure(e));
+        } catch (RuntimeException e) {
+          return new SnapshotChangePlan(
+              List.of(),
+              IcebergErrorResponses.failure(
+                  "failed to load snapshot payload for transactional delete",
+                  "CommitStateUnknownException",
+                  Response.Status.SERVICE_UNAVAILABLE));
+        }
+        long upstreamCreatedMs =
+            snapshot.hasUpstreamCreatedAt()
+                ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt())
+                : clockMillis();
+        out.add(
+            snapshotDeleteChange(
+                resolvedAccountId,
+                txId,
+                scopedTableId.getId(),
+                snapshot.getSnapshotId(),
+                upstreamCreatedMs,
+                true));
+        out.add(
+            snapshotDeleteChange(
+                resolvedAccountId,
+                txId,
+                scopedTableId.getId(),
+                snapshot.getSnapshotId(),
+                upstreamCreatedMs,
+                false));
+      }
     }
     return new SnapshotChangePlan(out, null);
+  }
+
+  private ai.floedb.floecat.transaction.rpc.TxChange snapshotDeleteChange(
+      String accountId,
+      String txId,
+      String tableId,
+      long snapshotId,
+      long upstreamCreatedMs,
+      boolean byId) {
+    String targetPointerKey =
+        byId
+            ? Keys.snapshotPointerById(accountId, tableId, snapshotId)
+            : Keys.snapshotPointerByTime(accountId, tableId, snapshotId, upstreamCreatedMs);
+    return ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+        .setTargetPointerKey(targetPointerKey)
+        .setIntendedBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, targetPointerKey))
+        .build();
   }
 
   private ai.floedb.floecat.catalog.rpc.Snapshot fetchOrBuildSnapshotPayload(
@@ -1000,68 +1045,6 @@ public class TransactionCommitService {
 
   private long clockMillis() {
     return System.currentTimeMillis();
-  }
-
-  private IcebergCommitJournalEntry buildCommitJournalEntry(
-      String txId,
-      String requestHash,
-      ResourceId tableId,
-      List<String> namespacePath,
-      String tableName,
-      ResourceId connectorId,
-      List<Long> addedSnapshotIds,
-      List<Long> removedSnapshotIds,
-      ai.floedb.floecat.catalog.rpc.Table table,
-      long createdAtMs) {
-    IcebergCommitJournalEntry.Builder builder =
-        IcebergCommitJournalEntry.newBuilder()
-            .setVersion(COMMIT_JOURNAL_VERSION)
-            .setTxId(txId == null ? "" : txId)
-            .setRequestHash(requestHash == null ? "" : requestHash)
-            .setCreatedAtMs(Math.max(0L, createdAtMs));
-    if (tableId != null) {
-      builder.setTableId(tableId);
-    }
-    if (namespacePath != null && !namespacePath.isEmpty()) {
-      builder.addAllNamespacePath(namespacePath);
-    }
-    if (tableName != null && !tableName.isBlank()) {
-      builder.setTableName(tableName);
-    }
-    if (connectorId != null && !connectorId.getId().isBlank()) {
-      builder.setConnectorId(connectorId);
-    }
-    if (addedSnapshotIds != null && !addedSnapshotIds.isEmpty()) {
-      builder.addAllAddedSnapshotIds(addedSnapshotIds);
-    }
-    if (removedSnapshotIds != null && !removedSnapshotIds.isEmpty()) {
-      builder.addAllRemovedSnapshotIds(removedSnapshotIds);
-    }
-    String metadataLocation = tableMetadataLocation(table);
-    if (metadataLocation != null && !metadataLocation.isBlank()) {
-      builder.setMetadataLocation(metadataLocation);
-    }
-    String tableUuid = tableUuid(table);
-    if (tableUuid != null && !tableUuid.isBlank()) {
-      builder.setTableUuid(tableUuid);
-    }
-    return builder.build();
-  }
-
-  private IcebergCommitOutboxEntry buildCommitOutboxEntry(
-      String txId, String requestHash, String accountId, String tableId, long createdAtMs) {
-    return IcebergCommitOutboxEntry.newBuilder()
-        .setVersion(COMMIT_OUTBOX_VERSION)
-        .setTxId(txId == null ? "" : txId)
-        .setRequestHash(requestHash == null ? "" : requestHash)
-        .setAccountId(accountId == null ? "" : accountId)
-        .setTableId(tableId == null ? "" : tableId)
-        .setCreatedAtMs(Math.max(0L, createdAtMs))
-        .setAttemptCount(0)
-        .setNextAttemptAtMs(0L)
-        .setLastAttemptAtMs(0L)
-        .setDeadLetteredAtMs(0L)
-        .build();
   }
 
   private String firstDuplicateTableIdentifier(List<TransactionCommitRequest.TableChange> changes) {

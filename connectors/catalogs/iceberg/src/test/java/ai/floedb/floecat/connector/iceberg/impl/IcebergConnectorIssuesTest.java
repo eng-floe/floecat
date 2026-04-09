@@ -39,22 +39,17 @@ class IcebergConnectorIssuesTest {
     props.putAll(
         TestS3Fixtures.fileIoProperties(
             TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
-    props.put(
-        "external.metadata-location",
-        TestS3Fixtures.tpcdsSfoneUri(
-            "floe_test.db/tpcds_sfone/catalog_returns/metadata/00002-fb845f92-5b90-4bd1-8670-3cab11eb68b1.metadata.json"));
     props.put("external.namespace", "tpcds_sfone");
     props.put("external.table-name", "catalog_returns");
     props.put("stats.ndv.enabled", "false");
     props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.tpcdsSfoneUri(
+            "floe_test.db/tpcds_sfone/catalog_returns/metadata/00002-fb845f92-5b90-4bd1-8670-3cab11eb68b1.metadata.json");
 
     try (FloecatConnector connector =
         IcebergConnectorFactory.create(
-            TestS3Fixtures.tpcdsSfoneUri("floe_test.db/tpcds_sfone/catalog_returns"),
-            props,
-            "none",
-            new HashMap<>(),
-            new HashMap<>())) {
+            metadataLocation, props, "none", new HashMap<>(), new HashMap<>())) {
       var snapshots =
           assertDoesNotThrow(
               () ->

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.transaction.impl;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.Precondition;
@@ -55,9 +56,12 @@ import com.google.protobuf.util.Timestamps;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -66,6 +70,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
+  private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
 
   @Inject TransactionRepository txRepo;
   @Inject TransactionIntentRepository intentRepo;
@@ -422,6 +427,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               .setBlobUri(planned.blobUri())
               .setCreatedAt(now)
               .setExpectedVersion(planned.expectedVersion());
+      if (planned.expectedOwnedNamePointerKey() != null
+          && !planned.expectedOwnedNamePointerKey().isBlank()) {
+        intentBuilder.setExpectedOwnedNamePointerKey(planned.expectedOwnedNamePointerKey());
+      }
       TransactionIntent intent = intentBuilder.build();
       intents.add(intent);
     }
@@ -510,13 +519,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     for (var intent : intents) {
       var lockOwner = intentRepo.getByTarget(accountId, intent.getTargetPointerKey()).orElse(null);
       if (lockOwner == null || !applyPhaseTxn.getTxId().equals(lockOwner.getTxId())) {
-        return transitionTransactionState(
+        Transaction failed =
+            transitionTransactionState(
+                accountId,
+                applyPhaseTxn.getTxId(),
+                Set.of(TransactionState.TS_APPLYING),
+                TransactionState.TS_APPLY_FAILED_RETRYABLE,
+                now,
+                "lock ownership mismatch");
+        logCommitFailure(
             accountId,
-            applyPhaseTxn.getTxId(),
-            Set.of(TransactionState.TS_APPLYING),
-            TransactionState.TS_APPLY_FAILED_RETRYABLE,
-            now,
-            "lock ownership mismatch");
+            failed,
+            "LOCK_OWNERSHIP_MISMATCH",
+            "lock ownership mismatch during apply",
+            intents);
+        return failed;
       }
     }
 
@@ -548,23 +565,29 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         return applied;
       }
       annotateIntentApplyFailure(intents, outcome, now);
-      return transitionTransactionState(
-          accountId,
-          applyPhaseTxn.getTxId(),
-          Set.of(TransactionState.TS_APPLYING),
-          TransactionState.TS_APPLY_FAILED_CONFLICT,
-          now,
-          "cannot transition to apply_failed_conflict");
+      Transaction failed =
+          transitionTransactionState(
+              accountId,
+              applyPhaseTxn.getTxId(),
+              Set.of(TransactionState.TS_APPLYING),
+              TransactionState.TS_APPLY_FAILED_CONFLICT,
+              now,
+              "cannot transition to apply_failed_conflict");
+      logCommitFailure(accountId, failed, outcome, intents);
+      return failed;
     }
 
     annotateIntentApplyFailure(intents, outcome, now);
-    return transitionTransactionState(
-        accountId,
-        applyPhaseTxn.getTxId(),
-        Set.of(TransactionState.TS_APPLYING),
-        TransactionState.TS_APPLY_FAILED_RETRYABLE,
-        now,
-        "cannot transition to apply_failed_retryable");
+    Transaction failed =
+        transitionTransactionState(
+            accountId,
+            applyPhaseTxn.getTxId(),
+            Set.of(TransactionState.TS_APPLYING),
+            TransactionState.TS_APPLY_FAILED_RETRYABLE,
+            now,
+            "cannot transition to apply_failed_retryable");
+    logCommitFailure(accountId, failed, outcome, intents);
+    return failed;
   }
 
   private boolean intentsAlreadyApplied(List<TransactionIntent> intents) {
@@ -578,7 +601,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         return false;
       }
       var ptr = pointerStore.get(intent.getTargetPointerKey()).orElse(null);
-      if (ptr == null || !intent.getBlobUri().equals(ptr.getBlobUri())) {
+      if (isDeleteSentinelBlobUri(
+          intent.getAccountId(),
+          intent.getTxId(),
+          intent.getTargetPointerKey(),
+          intent.getBlobUri())) {
+        if (isTableByIdPointer(intent.getTargetPointerKey())) {
+          if (!tableDeleteAlreadyApplied(intent)) {
+            return false;
+          }
+          continue;
+        }
+        if (ptr != null) {
+          return false;
+        }
+      } else if (ptr == null || !intent.getBlobUri().equals(ptr.getBlobUri())) {
         return false;
       }
     }
@@ -600,7 +637,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               : null;
       expected.add(
           new IntentFingerprint(
-              planned.targetPointerKey(), planned.blobUri(), explicitExpectedVersion));
+              planned.targetPointerKey(),
+              planned.blobUri(),
+              explicitExpectedVersion,
+              planned.expectedOwnedNamePointerKey()));
     }
     expected.sort(Comparator.comparing(IntentFingerprint::targetPointerKey));
 
@@ -614,7 +654,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       IntentFingerprint exp = expected.get(i);
       TransactionIntent actual = existing.get(i);
       if (!exp.targetPointerKey().equals(actual.getTargetPointerKey())
-          || !exp.blobUri().equals(actual.getBlobUri())) {
+          || !exp.blobUri().equals(actual.getBlobUri())
+          || !Objects.equals(
+              exp.expectedOwnedNamePointerKey(),
+              actual.hasExpectedOwnedNamePointerKey()
+                  ? actual.getExpectedOwnedNamePointerKey()
+                  : null)) {
         throw new IllegalArgumentException(
             "prepare request does not match already-prepared transaction intents");
       }
@@ -644,6 +689,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
 
     String blobUri;
+    String expectedOwnedNamePointerKey = null;
     byte[] inlineBytes = null;
     String inlineContentType = null;
     switch (change.getChangePayloadCase()) {
@@ -655,6 +701,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
           throw new IllegalArgumentException(
               "intended_blob_uri outside account scope for " + pointerKey);
+        }
+        if (looksLikeDeleteSentinelBlobUri(accountId, blobUri)
+            && !isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)) {
+          throw new IllegalArgumentException(
+              "intended_blob_uri delete sentinel does not match target for " + pointerKey);
+        }
+        if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)
+            && isTableByIdPointer(pointerKey)) {
+          expectedOwnedNamePointerKey = expectedOwnedTableNamePointerKey(pointerKey, true);
         }
       }
       case TABLE -> {
@@ -692,7 +747,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           throw new IllegalArgumentException(
               "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
     }
-    return new PlannedIntent(pointerKey, blobUri, expectedVersion, inlineBytes, inlineContentType);
+    return new PlannedIntent(
+        pointerKey,
+        blobUri,
+        expectedVersion,
+        inlineBytes,
+        inlineContentType,
+        expectedOwnedNamePointerKey);
   }
 
   private PlannedIntent planIntentForReplayMatch(String accountId, String txId, TxChange change) {
@@ -701,6 +762,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     String pointerKey = target.pointerKey();
 
     String blobUri;
+    String expectedOwnedNamePointerKey = null;
     switch (change.getChangePayloadCase()) {
       case INTENDED_BLOB_URI -> {
         blobUri = change.getIntendedBlobUri().trim();
@@ -710,6 +772,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (!blobUri.startsWith(Keys.accountRootPrefix(accountId))) {
           throw new IllegalArgumentException(
               "intended_blob_uri outside account scope for " + pointerKey);
+        }
+        if (looksLikeDeleteSentinelBlobUri(accountId, blobUri)
+            && !isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)) {
+          throw new IllegalArgumentException(
+              "intended_blob_uri delete sentinel does not match target for " + pointerKey);
+        }
+        if (isDeleteSentinelBlobUri(accountId, txId, pointerKey, blobUri)
+            && isTableByIdPointer(pointerKey)) {
+          expectedOwnedNamePointerKey = expectedOwnedTableNamePointerKey(pointerKey, true);
         }
       }
       case TABLE -> {
@@ -743,7 +814,159 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           throw new IllegalArgumentException(
               "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
     }
-    return new PlannedIntent(pointerKey, blobUri, 0L, null, null);
+    return new PlannedIntent(pointerKey, blobUri, 0L, null, null, expectedOwnedNamePointerKey);
+  }
+
+  private boolean looksLikeDeleteSentinelBlobUri(String accountId, String blobUri) {
+    if (accountId == null || accountId.isBlank() || blobUri == null || blobUri.isBlank()) {
+      return false;
+    }
+    return blobUri.startsWith(Keys.accountRootPrefix(accountId) + "transactions/")
+        && blobUri.contains("/delete/");
+  }
+
+  private boolean isDeleteSentinelBlobUri(
+      String accountId, String txId, String targetPointerKey, String blobUri) {
+    if (!looksLikeDeleteSentinelBlobUri(accountId, blobUri)
+        || txId == null
+        || txId.isBlank()
+        || targetPointerKey == null
+        || targetPointerKey.isBlank()) {
+      return false;
+    }
+    try {
+      return Keys.transactionDeleteSentinelUri(accountId, txId, targetPointerKey).equals(blobUri);
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  private boolean isTableByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/tables/by-id/");
+  }
+
+  private boolean tableDeleteAlreadyApplied(TransactionIntent intent) {
+    if (intent == null || !isTableByIdPointer(intent.getTargetPointerKey())) {
+      return false;
+    }
+    if (pointerStore.get(intent.getTargetPointerKey()).isPresent()) {
+      return false;
+    }
+    String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
+    if (tableId == null || tableId.isBlank()) {
+      return false;
+    }
+    if (!intent.hasExpectedOwnedNamePointerKey()
+        || intent.getExpectedOwnedNamePointerKey().isBlank()) {
+      return noOwnedNamePointerReferencesTable(intent.getAccountId(), tableId);
+    }
+    return ownedNamePointerCleared(intent.getExpectedOwnedNamePointerKey(), tableId);
+  }
+
+  private boolean ownedNamePointerCleared(String pointerKey, String expectedTableId) {
+    var pointer = pointerStore.get(pointerKey).orElse(null);
+    if (pointer == null || pointer.getBlobUri().isBlank()) {
+      return true;
+    }
+    Table table = readTable(pointer.getBlobUri());
+    if (table == null || !table.hasResourceId()) {
+      return false;
+    }
+    return !expectedTableId.equals(table.getResourceId().getId());
+  }
+
+  private boolean noOwnedNamePointerReferencesTable(String accountId, String expectedTableId) {
+    if (accountId == null
+        || accountId.isBlank()
+        || expectedTableId == null
+        || expectedTableId.isBlank()) {
+      return false;
+    }
+    String prefix = Keys.catalogRootPrefix(accountId);
+    String token = "";
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(prefix, TABLE_NAME_REPLAY_SCAN_PAGE_SIZE, token, next);
+      for (Pointer pointer : pointers) {
+        String key = pointer.getKey();
+        if (key == null || !key.contains(Keys.SEG_TABLES_BY_NAME)) {
+          continue;
+        }
+        if (pointer.getBlobUri().isBlank()) {
+          continue;
+        }
+        Table table = readTable(pointer.getBlobUri());
+        if (table == null || !table.hasResourceId()) {
+          return false;
+        }
+        if (expectedTableId.equals(table.getResourceId().getId())) {
+          return false;
+        }
+      }
+      token = next.toString();
+      if (token.isEmpty()) {
+        return true;
+      }
+    }
+  }
+
+  private String tableIdFromByIdPointer(String pointerKey) {
+    if (!isTableByIdPointer(pointerKey)) {
+      return null;
+    }
+    int idx = pointerKey.lastIndexOf("/tables/by-id/");
+    if (idx < 0) {
+      return null;
+    }
+    String encoded = pointerKey.substring(idx + "/tables/by-id/".length());
+    return encoded.isBlank() ? null : URLDecoder.decode(encoded, StandardCharsets.UTF_8);
+  }
+
+  private String expectedOwnedTableNamePointerKey(
+      String tableByIdPointerKey, boolean requireReadable) {
+    var pointer = pointerStore.get(tableByIdPointerKey).orElse(null);
+    if (pointer == null || pointer.getBlobUri().isBlank()) {
+      return null;
+    }
+    Table table = readTable(pointer.getBlobUri());
+    if (table == null || !table.hasResourceId()) {
+      if (requireReadable) {
+        throw new IllegalArgumentException(
+            "current table pointer is unreadable for delete " + tableByIdPointerKey);
+      }
+      return null;
+    }
+    validateCurrentTablePointerTarget(tableByIdPointerKey, table);
+    return Keys.tablePointerByName(
+        table.getResourceId().getAccountId(),
+        table.getCatalogId().getId(),
+        table.getNamespaceId().getId(),
+        table.getDisplayName());
+  }
+
+  private void validateCurrentTablePointerTarget(String pointerKey, Table table) {
+    if (table == null || !table.hasResourceId()) {
+      throw new IllegalArgumentException("current table pointer is unreadable for " + pointerKey);
+    }
+    String expectedPointerKey =
+        Keys.tablePointerById(table.getResourceId().getAccountId(), table.getResourceId().getId());
+    if (!expectedPointerKey.equals(pointerKey)) {
+      throw new IllegalArgumentException(
+          "current table pointer target does not match payload for " + pointerKey);
+    }
+  }
+
+  private Table readTable(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      return bytes == null ? null : Table.parseFrom(bytes);
+    } catch (Exception e) {
+      return null;
+    }
   }
 
   private void annotateIntentApplyFailure(
@@ -771,6 +994,82 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             intent.getTxId(), intent.getTargetPointerKey());
       }
     }
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      TransactionIntentApplierSupport.ApplyOutcome outcome,
+      List<TransactionIntent> intents) {
+    if (outcome == null) {
+      return;
+    }
+    logCommitFailure(
+        accountId,
+        txn,
+        outcome.errorCode(),
+        outcome.errorMessage(),
+        intents,
+        outcome.expectedVersion(),
+        outcome.actualVersion(),
+        outcome.conflictOwner());
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      String errorCode,
+      String errorMessage,
+      List<TransactionIntent> intents) {
+    logCommitFailure(accountId, txn, errorCode, errorMessage, intents, null, null, null);
+  }
+
+  private void logCommitFailure(
+      String accountId,
+      Transaction txn,
+      String errorCode,
+      String errorMessage,
+      List<TransactionIntent> intents,
+      Long expectedVersion,
+      Long actualVersion,
+      String conflictOwner) {
+    LOG.warnf(
+        "transaction commit non-applied account=%s tx=%s state=%s error_code=%s error_message=%s expected_version=%s actual_version=%s conflict_owner=%s intents=%s",
+        accountId,
+        txn == null ? "" : txn.getTxId(),
+        txn == null ? TransactionState.TS_UNSPECIFIED : txn.getState(),
+        nullToEmpty(errorCode),
+        nullToEmpty(errorMessage),
+        expectedVersion,
+        actualVersion,
+        nullToEmpty(conflictOwner),
+        summarizeIntentTargets(intents));
+  }
+
+  private static String summarizeIntentTargets(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty()) {
+      return "[]";
+    }
+    List<String> targets = new ArrayList<>(Math.min(intents.size(), 8));
+    for (var intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      String target = intent.getTargetPointerKey();
+      if (target == null || target.isBlank()) {
+        continue;
+      }
+      targets.add(target);
+      if (targets.size() == 8) {
+        break;
+      }
+    }
+    String suffix = intents.size() > targets.size() ? ",..." : "";
+    return "[" + String.join(",", targets) + suffix + "]";
+  }
+
+  private static String nullToEmpty(String value) {
+    return value == null ? "" : value;
   }
 
   private void cleanupIntents(String accountId, String txId) {
@@ -966,21 +1265,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return isExpired(owner, now);
   }
 
-  private boolean isTableByIdPointer(String pointerKey) {
-    return pointerKey != null && pointerKey.contains("/tables/by-id/");
-  }
-
   private record ResolvedTxTarget(String pointerKey, ResourceId tableId) {}
 
   private record IntentFingerprint(
-      String targetPointerKey, String blobUri, Long explicitExpectedVersion) {}
+      String targetPointerKey,
+      String blobUri,
+      Long explicitExpectedVersion,
+      String expectedOwnedNamePointerKey) {}
 
   private record PlannedIntent(
       String targetPointerKey,
       String blobUri,
       long expectedVersion,
       byte[] inlineBytes,
-      String inlineContentType) {}
+      String inlineContentType,
+      String expectedOwnedNamePointerKey) {}
 
   private record PendingBlob(String uri, byte[] bytes, String contentType) {}
 }

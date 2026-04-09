@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.table.TablePropertyService;
 import com.google.protobuf.FieldMask;
@@ -226,6 +227,50 @@ class TablePropertyServiceTest {
     assertEquals(1, refs.size());
     assertEquals(33L, ((Number) refs.get("main").get("snapshot-id")).longValue());
     assertEquals(7, ((Number) refs.get("main").get("min-snapshots-to-keep")).intValue());
+  }
+
+  @Test
+  void applyCanonicalMetadataPropertiesNormalizesSnapshotAndRefPropertiesFromMetadata() {
+    Map<String, Map<String, Object>> staleRefs = new LinkedHashMap<>();
+    staleRefs.put("main", new LinkedHashMap<>(Map.of("snapshot-id", 10L, "type", "branch")));
+    Table plannedTable =
+        Table.newBuilder()
+            .putProperties("current-snapshot-id", "10")
+            .putProperties("last-sequence-number", "999")
+            .putProperties(RefPropertyUtil.PROPERTY_KEY, RefPropertyUtil.encode(staleRefs))
+            .build();
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-1",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00002.metadata.json",
+            1L,
+            Map.of(),
+            2,
+            0,
+            0,
+            0,
+            0,
+            33L,
+            7L,
+            List.of(),
+            List.of(),
+            List.of(),
+            Map.of("main", Map.of("snapshot-id", 33L, "type", "branch")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    Table updated = service.applyCanonicalMetadataProperties(plannedTable, metadata);
+
+    assertEquals("33", updated.getPropertiesMap().get("current-snapshot-id"));
+    assertEquals("7", updated.getPropertiesMap().get("last-sequence-number"));
+    Map<String, Map<String, Object>> refs =
+        RefPropertyUtil.decode(updated.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY));
+    assertEquals(33L, ((Number) refs.get("main").get("snapshot-id")).longValue());
   }
 
   private Supplier<Table> tableSupplier() {

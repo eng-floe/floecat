@@ -22,8 +22,9 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
-import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -56,6 +57,10 @@ import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Context;
+import io.grpc.Deadline;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -64,6 +69,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -73,12 +79,18 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerService reconcilerService;
   @Inject ReconcileCancellationRegistry cancellations;
   @Inject ReconcilerSettingsStore settings;
   @Inject Observability observability;
 
   private static final Logger LOG = Logger.getLogger(ReconcileControl.class);
+  private static final long CAPTURE_NOW_POLL_MS = 100L;
+
+  @ConfigProperty(name = "floecat.reconciler.capture-now.default-wait", defaultValue = "10s")
+  Duration captureNowDefaultWait = Duration.ofSeconds(10);
+
+  @ConfigProperty(name = "floecat.reconciler.capture-now.max-wait", defaultValue = "30s")
+  Duration captureNowMaxWait = Duration.ofSeconds(30);
 
   @Override
   public Uni<CaptureNowResponse> captureNow(CaptureNowRequest request) {
@@ -86,7 +98,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     String trigger = captureNowTrigger(request);
 
     return mapFailures(
-            run(
+            this.<CaptureNowResponse>run(
                 () -> {
                   try {
                     var pc = principalProvider.get();
@@ -94,31 +106,22 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     var corr = pc.getCorrelationId();
 
                     var connectorId =
-                        scopedConnectorId(
-                            pc.getAccountId(), connectorIdFromScope(request.getScope()), corr);
-                    validateSnapshotScope(request.getScope(), corr);
-                    connectorRepo
-                        .getById(connectorId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    corr,
-                                    GeneratedErrorMessages.MessageKey.CONNECTOR,
-                                    Map.of("id", connectorId.getId())));
-
-                    var result =
-                        reconcilerService.reconcile(
-                            pc,
+                        validatedConnectorId(pc.getAccountId(), request.getScope(), corr);
+                    var jobId =
+                        enqueueCapture(
                             connectorId,
                             request.getFullRescan(),
+                            mapCaptureMode(request.getMode()),
                             scopeFromCaptureScope(request.getScope()),
-                            mapCaptureMode(request.getMode()));
-                    if (!result.ok()) {
-                      if (result.error != null) {
-                        throw new RuntimeException("sync capture failed", result.error);
-                      }
-                      throw new IllegalStateException("sync capture failed");
-                    }
+                            ReconcileExecutionPolicy.of(
+                                ReconcileExecutionClass.INTERACTIVE, "", Map.of()));
+                    var job =
+                        waitForTerminalJob(
+                            pc.getAccountId(),
+                            jobId,
+                            corr,
+                            effectiveCaptureNowWait(request),
+                            Context.current());
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.CAPTURE_NOW,
                         "capture_now",
@@ -126,9 +129,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         trigger,
                         null);
                     return CaptureNowResponse.newBuilder()
-                        .setTablesScanned(result.scanned)
-                        .setTablesChanged(result.changed)
-                        .setErrors(result.errors)
+                        .setTablesScanned(job.tablesScanned)
+                        .setTablesChanged(job.tablesChanged)
+                        .setErrors(job.errors)
                         .build();
                   } catch (RuntimeException e) {
                     observeReconcileCounter(
@@ -153,7 +156,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     String trigger = startCaptureTrigger(request);
 
     return mapFailures(
-            run(
+            this.<StartCaptureResponse>run(
                 () -> {
                   try {
                     var principalContext = principalProvider.get();
@@ -163,27 +166,15 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         principalContext, List.of("connector.manage", "connector.create"));
 
                     var connectorId =
-                        scopedConnectorId(
-                            principalContext.getAccountId(),
-                            connectorIdFromScope(request.getScope()),
-                            correlationId);
-                    validateSnapshotScope(request.getScope(), correlationId);
-                    connectorRepo
-                        .getById(connectorId)
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId,
-                                    GeneratedErrorMessages.MessageKey.CONNECTOR,
-                                    Map.of("id", connectorId.getId())));
-
+                        validatedConnectorId(
+                            principalContext.getAccountId(), request.getScope(), correlationId);
                     var jobId =
-                        jobs.enqueue(
-                            connectorId.getAccountId(),
-                            connectorId.getId(),
+                        enqueueCapture(
+                            connectorId,
                             request.getFullRescan(),
                             mapCaptureMode(request.getMode()),
-                            scopeFromRequest(request));
+                            scopeFromRequest(request),
+                            executionPolicyFromRequest(request));
                     observeReconcileCounter(
                         ServiceMetrics.Reconcile.START_CAPTURE,
                         "start_capture",
@@ -249,6 +240,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         .setSnapshotsProcessed(job.snapshotsProcessed)
                         .setStatsProcessed(job.statsProcessed)
                         .setDurationMs(durationMs(job))
+                        .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
+                        .setExecutorId(job.executorId)
                         .build();
                   } catch (RuntimeException e) {
                     observeReconcileRequestCounter(
@@ -504,6 +497,162 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return request == null ? ReconcileScope.empty() : scopeFromCaptureScope(request.getScope());
   }
 
+  private ResourceId validatedConnectorId(String accountId, CaptureScope scope, String corr) {
+    var connectorId = scopedConnectorId(accountId, connectorIdFromScope(scope), corr);
+    connectorRepo
+        .getById(connectorId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    corr,
+                    GeneratedErrorMessages.MessageKey.CONNECTOR,
+                    Map.of("id", connectorId.getId())));
+    return connectorId;
+  }
+
+  private String enqueueCapture(
+      ResourceId connectorId,
+      boolean fullRescan,
+      CaptureMode mode,
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy) {
+    return jobs.enqueue(
+        connectorId.getAccountId(),
+        connectorId.getId(),
+        fullRescan,
+        mode,
+        scope,
+        executionPolicy,
+        "");
+  }
+
+  private ReconcileJobStore.ReconcileJob waitForTerminalJob(
+      String accountId, String jobId, String corr, Duration waitBudget, Context grpcContext) {
+    long deadlineNanos = System.nanoTime() + waitBudget.toNanos();
+    Deadline grpcDeadline = grpcContext.getDeadline();
+    while (true) {
+      if (grpcContext.isCancelled()) {
+        requestCaptureNowCancellation(
+            accountId,
+            jobId,
+            grpcDeadline != null && grpcDeadline.isExpired()
+                ? "capture_now timed out while waiting for completion"
+                : "capture_now caller cancelled while waiting for completion");
+        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget, true);
+      }
+      var job =
+          jobs.get(accountId, jobId)
+              .orElseThrow(
+                  () ->
+                      GrpcErrors.notFound(
+                          corr, GeneratedErrorMessages.MessageKey.JOB, Map.of("id", jobId)));
+      switch (job.state) {
+        case "JS_SUCCEEDED" -> {
+          return job;
+        }
+        case "JS_FAILED" ->
+            throw new IllegalStateException(
+                "capture job failed"
+                    + (job.message == null || job.message.isBlank() ? "" : ": " + job.message));
+        case "JS_CANCELLED", "JS_CANCELLING" ->
+            throw new IllegalStateException(
+                "capture job cancelled"
+                    + (job.message == null || job.message.isBlank() ? "" : ": " + job.message));
+        default -> {
+          if (System.nanoTime() >= deadlineNanos) {
+            requestCaptureNowCancellation(
+                accountId, jobId, "capture_now timed out while waiting for completion");
+            throw captureNowTimeout(corr, waitBudget, true);
+          }
+          sleepForCaptureNowPoll(
+              accountId, jobId, grpcContext, corr, waitBudget, grpcDeadline, deadlineNanos);
+        }
+      }
+    }
+  }
+
+  private void sleepForCaptureNowPoll(
+      String accountId,
+      String jobId,
+      Context grpcContext,
+      String corr,
+      Duration waitBudget,
+      Deadline grpcDeadline,
+      long deadlineNanos) {
+    try {
+      long remainingMillis =
+          Duration.ofNanos(Math.max(0L, deadlineNanos - System.nanoTime())).toMillis();
+      if (remainingMillis <= 0) {
+        requestCaptureNowCancellation(
+            accountId, jobId, "capture_now timed out while waiting for completion");
+        throw captureNowTimeout(corr, waitBudget, true);
+      }
+      Thread.sleep(Math.min(CAPTURE_NOW_POLL_MS, remainingMillis));
+      if (grpcContext.isCancelled()) {
+        requestCaptureNowCancellation(
+            accountId,
+            jobId,
+            grpcDeadline != null && grpcDeadline.isExpired()
+                ? "capture_now timed out while waiting for completion"
+                : "capture_now caller cancelled while waiting for completion");
+        throw captureNowCancelledOrTimedOut(corr, grpcDeadline, waitBudget, true);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("capture wait interrupted", e);
+    }
+  }
+
+  private void requestCaptureNowCancellation(String accountId, String jobId, String reason) {
+    jobs.cancel(accountId, jobId, reason)
+        .filter(cancelled -> "JS_CANCELLING".equals(cancelled.state))
+        .ifPresent(cancelled -> cancellations.requestCancel(cancelled.jobId));
+  }
+
+  private Duration effectiveCaptureNowWait(CaptureNowRequest request) {
+    Duration requested =
+        request != null && request.hasMaxWait()
+            ? fromProtoDuration(request.getMaxWait())
+            : captureNowDefaultWait;
+    if (requested.isZero() || requested.isNegative()) {
+      throw Status.INVALID_ARGUMENT
+          .withDescription("capture_now max_wait must be greater than 0")
+          .asRuntimeException();
+    }
+    return requested.compareTo(captureNowMaxWait) > 0 ? captureNowMaxWait : requested;
+  }
+
+  private static Duration fromProtoDuration(com.google.protobuf.Duration duration) {
+    return Duration.ofSeconds(duration.getSeconds()).plusNanos(duration.getNanos());
+  }
+
+  private static StatusRuntimeException captureNowCancelledOrTimedOut(
+      String corr, Deadline grpcDeadline, Duration waitBudget, boolean cancellationRequested) {
+    if (grpcDeadline != null && grpcDeadline.isExpired()) {
+      return captureNowTimeout(corr, waitBudget, cancellationRequested);
+    }
+    return Status.CANCELLED
+        .withDescription(
+            cancellationRequested
+                ? "capture_now cancelled before completion; cancellation was requested for the queued/running job"
+                : "capture_now cancelled before completion")
+        .asRuntimeException();
+  }
+
+  private static StatusRuntimeException captureNowTimeout(
+      String corr, Duration waitBudget, boolean cancellationRequested) {
+    return Status.DEADLINE_EXCEEDED
+        .withDescription(
+            "capture_now did not complete within "
+                + waitBudget.toSeconds()
+                + "s"
+                + (cancellationRequested
+                    ? "; cancellation was requested for the queued/running job"
+                    : "")
+                + "; use StartCapture for async execution")
+        .asRuntimeException();
+  }
+
   private static ReconcileScope scopeFromCaptureScope(CaptureScope scope) {
     if (scope == null) {
       return ReconcileScope.empty();
@@ -514,29 +663,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .map(List::copyOf)
             .toList();
     return ReconcileScope.of(
-        namespaces,
-        scope.getDestinationTableDisplayName(),
-        scope.getDestinationTableColumnsList(),
-        scope.getDestinationSnapshotIdsList());
+        namespaces, scope.getDestinationTableDisplayName(), scope.getDestinationTableColumnsList());
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {
     return scope == null ? ResourceId.getDefaultInstance() : scope.getConnectorId();
-  }
-
-  private static void validateSnapshotScope(CaptureScope scope, String corr) {
-    if (scope == null || scope.getDestinationSnapshotIdsList().isEmpty()) {
-      return;
-    }
-    if (scope.getDestinationNamespacePathsCount() != 1) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", "scope.destination_namespace_paths"));
-    }
-    if (scope.getDestinationTableDisplayName() == null
-        || scope.getDestinationTableDisplayName().isBlank()) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", "scope.destination_table_display_name"));
-    }
   }
 
   private static CaptureMode mapCaptureMode(ai.floedb.floecat.reconciler.rpc.CaptureMode mode) {
@@ -597,6 +728,41 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .setSnapshotsProcessed(job.snapshotsProcessed)
         .setStatsProcessed(job.statsProcessed)
         .setDurationMs(durationMs(job))
+        .setExecutionPolicy(toProtoExecutionPolicy(job.executionPolicy))
+        .setExecutorId(job.executorId)
+        .build();
+  }
+
+  private static ReconcileExecutionPolicy executionPolicyFromRequest(StartCaptureRequest request) {
+    if (request == null || !request.hasExecutionPolicy()) {
+      return ReconcileExecutionPolicy.defaults();
+    }
+    var policy = request.getExecutionPolicy();
+    return ReconcileExecutionPolicy.of(
+        switch (policy.getExecutionClass()) {
+          case EC_INTERACTIVE -> ReconcileExecutionClass.INTERACTIVE;
+          case EC_BATCH -> ReconcileExecutionClass.BATCH;
+          case EC_HEAVY -> ReconcileExecutionClass.HEAVY;
+          case EC_DEFAULT, EC_UNSPECIFIED, UNRECOGNIZED -> ReconcileExecutionClass.DEFAULT;
+        },
+        policy.getLane(),
+        policy.getAttributesMap());
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.ExecutionPolicy toProtoExecutionPolicy(
+      ReconcileExecutionPolicy policy) {
+    ReconcileExecutionPolicy effective =
+        policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+    return ai.floedb.floecat.reconciler.rpc.ExecutionPolicy.newBuilder()
+        .setExecutionClass(
+            switch (effective.executionClass()) {
+              case INTERACTIVE -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_INTERACTIVE;
+              case BATCH -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_BATCH;
+              case HEAVY -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_HEAVY;
+              case DEFAULT -> ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_DEFAULT;
+            })
+        .setLane(effective.lane())
+        .putAllAttributes(effective.attributes())
         .build();
   }
 
@@ -693,8 +859,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return !scope.getDestinationNamespacePathsList().isEmpty()
         || (scope.getDestinationTableDisplayName() != null
             && !scope.getDestinationTableDisplayName().isBlank())
-        || !scope.getDestinationTableColumnsList().isEmpty()
-        || !scope.getDestinationSnapshotIdsList().isEmpty();
+        || !scope.getDestinationTableColumnsList().isEmpty();
   }
 
   private static String normalizeReason(Throwable t) {

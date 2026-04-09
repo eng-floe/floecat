@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadataLogEntry;
@@ -180,11 +181,16 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<String> includeColumns,
       FloecatConnector.SnapshotEnumerationOptions options) {
     Table table = loadTable(namespaceFq, tableName);
-    IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
     boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
-    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
+    List<Snapshot> snapshots = snapshotsToEnumerate(table, fullRescan, knownSnapshotIds);
+    if (shouldRetryEmptyIncrementalEnumeration(
+        table, includeStatistics, fullRescan, knownSnapshotIds, snapshots)) {
+      throw new ConnectorNotReadyException(
+          "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
+    }
+    IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
 
     final Set<Integer> includeIds;
     if (!includeStatistics) {
@@ -199,8 +205,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
 
     List<SnapshotBundle> out = new ArrayList<>();
-    for (Snapshot snapshot :
-        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds)) {
+    for (Snapshot snapshot : snapshots) {
       long snapshotId = snapshot.snapshotId();
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
       long createdMs = snapshot.timestampMillis();
@@ -467,9 +472,8 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-    boolean hasTargetScope = targetSnapshotIds != null && !targetSnapshotIds.isEmpty();
-    if ((fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) && !hasTargetScope) {
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds) {
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       List<Snapshot> snapshots = new ArrayList<>();
       for (Snapshot snapshot : table.snapshots()) {
         snapshots.add(snapshot);
@@ -482,9 +486,6 @@ public abstract class IcebergConnector implements FloecatConnector {
         continue;
       }
       long snapshotId = snapshot.snapshotId();
-      if (hasTargetScope && !targetSnapshotIds.contains(snapshotId)) {
-        continue;
-      }
       if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
         continue;
       }
@@ -495,6 +496,24 @@ public abstract class IcebergConnector implements FloecatConnector {
             .thenComparingLong(Snapshot::timestampMillis)
             .thenComparingLong(Snapshot::snapshotId));
     return incremental;
+  }
+
+  private static boolean shouldRetryEmptyIncrementalEnumeration(
+      Table table,
+      boolean includeStatistics,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      List<Snapshot> snapshots) {
+    if (!includeStatistics || fullRescan) {
+      return false;
+    }
+    if (knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
+      return false;
+    }
+    if (snapshots != null && !snapshots.isEmpty()) {
+      return false;
+    }
+    return table != null && table.currentSnapshot() != null;
   }
 
   protected boolean isSingleTableMode() {
@@ -970,7 +989,7 @@ public abstract class IcebergConnector implements FloecatConnector {
 
   static boolean parseNdvEnabled(Map<String, String> options) {
     if (options != null) {
-      String v = options.getOrDefault("stats.ndv.enabled", "true");
+      String v = options.getOrDefault("stats.ndv.enabled", "false");
       return !v.equalsIgnoreCase("false");
     }
     return false;

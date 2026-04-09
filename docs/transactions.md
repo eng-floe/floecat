@@ -134,7 +134,7 @@ The Iceberg REST gateway uses this gRPC flow as follows:
    Auth failures map to:
    - 401 for unauthenticated
    - 403 for permission denied
-6. Post-commit side effects (snapshot prune + connector stats sync/reconcile trigger) are outside backend atomic CAS boundary and are best-effort after apply (they no longer downgrade a committed apply to non-204).
+6. There are no gateway-managed post-commit side effects in this path; once the backend apply succeeds, later reconciliation is handled independently by the service scheduler.
 7. Stage-create materialization (`stage-id`) is not supported in multi-table `/transactions/commit`; staged create should use single-table commit flow.
 8. Unknown requirement types and update actions are rejected with HTTP 400 before commit orchestration, including replay (`TS_APPLIED`) paths.
 9. Ambiguous commit outcomes use a short bounded confirmation poll before returning unknown-state:

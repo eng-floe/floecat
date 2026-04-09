@@ -110,7 +110,7 @@ class TableCommitMetadataMutatorTest {
             "s3://floecat/iceberg/orders",
             "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
             1L,
-            Map.of("current-snapshot-id", Long.toString(newSnapshotId), "format-version", "2"),
+            Map.of("current-snapshot-id", Long.toString(staleSnapshotId), "format-version", "2"),
             2,
             0,
             0,
@@ -159,6 +159,9 @@ class TableCommitMetadataMutatorTest {
 
     assertEquals(newSnapshotId, merged.currentSnapshotId());
     assertEquals(Long.toString(newSnapshotId), merged.properties().get("current-snapshot-id"));
+    assertEquals(
+        newSnapshotId,
+        ((Number) ((Map<?, ?>) merged.refs().get("main")).get("snapshot-id")).longValue());
   }
 
   @Test
@@ -222,5 +225,66 @@ class TableCommitMetadataMutatorTest {
     assertEquals(5, merged.defaultSortOrderId());
     assertEquals("1", merged.properties().get("current-schema-id"));
     assertEquals("2", merged.properties().get("last-column-id"));
+  }
+
+  @Test
+  void applyDoesNotPreserveStaleHigherLastSequenceNumberFromExistingMetadata() {
+    long newSnapshotId = 1772624629860L;
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
+            1L,
+            Map.of("last-sequence-number", "999", "format-version", "2"),
+            2,
+            0,
+            0,
+            0,
+            0,
+            null,
+            999L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of(
+                    "action",
+                    "add-snapshot",
+                    "snapshot",
+                    Map.of(
+                        "snapshot-id",
+                        newSnapshotId,
+                        "timestamp-ms",
+                        1772624629860L,
+                        "sequence-number",
+                        7L,
+                        "summary",
+                        Map.of("operation", "append"))),
+                Map.of(
+                    "action",
+                    "set-snapshot-ref",
+                    "ref-name",
+                    "main",
+                    "snapshot-id",
+                    newSnapshotId,
+                    "type",
+                    "branch")));
+
+    TableMetadataView merged = mutator.apply(metadata, request);
+
+    assertEquals(7L, merged.lastSequenceNumber());
+    assertEquals("7", merged.properties().get("last-sequence-number"));
   }
 }

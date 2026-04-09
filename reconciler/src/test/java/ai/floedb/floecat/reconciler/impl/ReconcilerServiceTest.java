@@ -40,11 +40,13 @@ import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -56,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.LongPredicate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -84,7 +87,9 @@ class ReconcilerServiceTest {
     service.backend = new ThrowingBackend(new RuntimeException("boom"));
     var result = service.reconcile(principal, connectorId, true, null);
     assertThat(result.errors).isEqualTo(1);
-    assertThat(result.error).isInstanceOf(IllegalArgumentException.class);
+    assertThat(result.error).isInstanceOf(ReconcileFailureException.class);
+    assertThat(((ReconcileFailureException) result.error).failureKind())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING);
     assertThat(result.error.getMessage()).contains("getConnector failed:");
   }
 
@@ -112,7 +117,6 @@ class ReconcilerServiceTest {
             .build();
 
     class CapturingBackend extends DefaultBackend {
-      Set<Long> capturedTargetSnapshotIds = Set.of();
       Set<Long> capturedKnownSnapshotIds = Set.of();
       long putConstraintsSnapshotId = -1L;
       SnapshotConstraints putConstraints = null;
@@ -262,19 +266,16 @@ class ReconcilerServiceTest {
                   ResourceId destinationTableId,
                   Set<String> includeColumns,
                   SnapshotEnumerationOptions options) {
-                backend.capturedTargetSnapshotIds = options.targetSnapshotIds();
                 backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
                 return super.enumerateSnapshotsWithStats(
                     namespaceFq, tableName, destinationTableId, includeColumns, options);
               }
             };
 
-    ReconcileScope scope =
-        ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of(), List.of(42L));
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of());
     var result = service.reconcile(principal, connectorId, false, scope);
 
     assertThat(result.ok()).isTrue();
-    assertThat(backend.capturedTargetSnapshotIds).containsExactly(42L);
     assertThat(backend.capturedKnownSnapshotIds).containsExactly(42L);
     assertThat(backend.putConstraintsSnapshotId).isEqualTo(42L);
     assertThat(backend.putConstraints).isNotNull();
@@ -849,6 +850,193 @@ class ReconcilerServiceTest {
     assertThat(backend.putFileColumnStatsCalls).isZero();
   }
 
+  @Test
+  void reconcileStatsOnlyFailsWhenDestinationTableIsNotVisibleYet() {
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        ResourceId destCatalogId =
+            ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+        ResourceId destNamespaceId =
+            ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+        return Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(
+                        NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId))
+            .build();
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "examples";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "iceberg";
+      }
+
+      @Override
+      public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+        return Optional.empty();
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class StatsOnlyConnector extends FakeConnector {
+      StatsOnlyConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public ConnectorFormat format() {
+        return ConnectorFormat.CF_ICEBERG;
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("duckdb_mutation_smoke");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            "iceberg",
+            "duckdb_mutation_smoke",
+            "s3://floecat/iceberg/duckdb_mutation_smoke",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+            Map.of());
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new StatsOnlyConnector();
+
+    var result =
+        service.reconcile(
+            principal, connectorId, false, null, ReconcilerService.CaptureMode.STATS_ONLY);
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    assertThat(result.statsProcessed).isZero();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage())
+        .contains("Destination table examples.iceberg.duckdb_mutation_smoke is not visible yet");
+  }
+
+  @Test
+  void reconcileIcebergRestStatsCaptureRetriesWhenCurrentSnapshotEnumeratesEmpty() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    class Backend extends DefaultBackend {
+      @Override
+      public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+        return activeIcebergConnector(tableId);
+      }
+
+      @Override
+      public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+        return "examples";
+      }
+
+      @Override
+      public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+        return "iceberg";
+      }
+
+      @Override
+      public ResourceId ensureTable(
+          ReconcileContext ctx,
+          ResourceId namespaceId,
+          NameRef table,
+          TableSpecDescriptor descriptor) {
+        return tableId;
+      }
+
+      @Override
+      public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
+        return Set.of();
+      }
+
+      @Override
+      public void updateConnectorDestination(
+          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
+    }
+
+    class EmptyIcebergRestConnector extends FakeConnector {
+      EmptyIcebergRestConnector() {
+        super(List.of());
+      }
+
+      @Override
+      public ConnectorFormat format() {
+        return ConnectorFormat.CF_ICEBERG;
+      }
+
+      @Override
+      public List<String> listTables(String namespaceFq) {
+        return List.of("duckdb_mutation_smoke");
+      }
+
+      @Override
+      public TableDescriptor describe(String namespaceFq, String tableName) {
+        return new TableDescriptor(
+            "iceberg",
+            "duckdb_mutation_smoke",
+            "s3://floecat/iceberg/duckdb_mutation_smoke",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(),
+            ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_FIELD_ID,
+            Map.of());
+      }
+
+      @Override
+      public List<SnapshotBundle> enumerateSnapshotsWithStats(
+          String namespaceFq,
+          String tableName,
+          ResourceId destinationTableId,
+          Set<String> includeColumns,
+          SnapshotEnumerationOptions options) {
+        throw new ConnectorNotReadyException(
+            "Current snapshot for iceberg.duckdb_mutation_smoke is not fully observable yet");
+      }
+    }
+
+    service.backend = new Backend();
+    service.connectorOpener = cfg -> new EmptyIcebergRestConnector();
+
+    var result =
+        service.reconcile(
+            principal, connectorId, false, null, ReconcilerService.CaptureMode.METADATA_AND_STATS);
+
+    assertThat(result.ok()).isFalse();
+    assertThat(result.errors).isEqualTo(1);
+    assertThat(result.snapshotsProcessed).isZero();
+    assertThat(result.statsProcessed).isZero();
+    assertThat(result.error).isNotNull();
+    assertThat(result.error.getMessage())
+        .contains("Current snapshot for iceberg.duckdb_mutation_smoke is not fully observable yet");
+  }
+
   private static final class ThrowingBackend extends DefaultBackend {
     private final RuntimeException failure;
 
@@ -1080,7 +1268,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1111,7 +1299,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1132,7 +1320,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1140,46 +1328,38 @@ class ReconcilerServiceTest {
   }
 
   @Test
-  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
-    List<FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
-            new FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
-            new FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()));
-
+  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsForMetadataOnlyRuns() throws Exception {
     @SuppressWarnings("unchecked")
-    List<FloecatConnector.SnapshotBundle> filtered =
-        (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L), Set.of(11L, 12L));
+    Set<Long> metadataOnly =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, false, Set.of(10L, 11L), id -> false);
+    @SuppressWarnings("unchecked")
+    Set<Long> fullRescan =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(true, false, Set.of(10L, 11L), id -> false);
 
-    assertThat(filtered)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(12L);
+    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
+    assertThat(fullRescan).isEmpty();
   }
 
   @Test
-  void knownSnapshotIdsForEnumerationPrunesAllIncrementalRuns() throws Exception {
+  void knownSnapshotIdsForEnumerationKeepsKnownSnapshotsWithoutStatsEnumerable() throws Exception {
     @SuppressWarnings("unchecked")
-    Set<Long> metadataOnly =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    @SuppressWarnings("unchecked")
-    Set<Long> metadataAndStats =
-        (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    @SuppressWarnings("unchecked")
-    Set<Long> statsOnly = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(false, Set.of(10L, 11L));
-    @SuppressWarnings("unchecked")
-    Set<Long> fullRescan = (Set<Long>) invokeKnownSnapshotIdsForEnumeration(true, Set.of(10L, 11L));
+    Set<Long> statsOnly =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, true, Set.of(10L, 11L), id -> false);
 
-    assertThat(metadataOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(metadataAndStats).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(statsOnly).containsExactlyInAnyOrder(10L, 11L);
-    assertThat(fullRescan).isEmpty();
+    assertThat(statsOnly).isEmpty();
+  }
+
+  @Test
+  void knownSnapshotIdsForEnumerationPrunesOnlyKnownSnapshotsWithCapturedStats() throws Exception {
+    @SuppressWarnings("unchecked")
+    Set<Long> statsOnly =
+        (Set<Long>)
+            invokeKnownSnapshotIdsForEnumeration(false, true, Set.of(10L, 11L), id -> id == 10L);
+
+    assertThat(statsOnly).containsExactly(10L);
   }
 
   @Test
@@ -1213,8 +1393,7 @@ class ReconcilerServiceTest {
       boolean fullRescan,
       boolean includeCoreMetadata,
       boolean includeStats,
-      Set<Long> existingSnapshotIds,
-      Set<Long> targetSnapshotIds)
+      Set<Long> existingSnapshotIds)
       throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
@@ -1223,7 +1402,6 @@ class ReconcilerServiceTest {
             boolean.class,
             boolean.class,
             boolean.class,
-            Set.class,
             Set.class,
             ReconcilerService.ProgressListener.class);
     method.setAccessible(true);
@@ -1234,17 +1412,24 @@ class ReconcilerServiceTest {
         includeCoreMetadata,
         includeStats,
         existingSnapshotIds,
-        targetSnapshotIds,
         (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
   }
 
   private static Object invokeKnownSnapshotIdsForEnumeration(
-      boolean fullRescan, Set<Long> existingSnapshotIds) throws Exception {
+      boolean fullRescan,
+      boolean includeStats,
+      Set<Long> existingSnapshotIds,
+      LongPredicate statsAlreadyCaptured)
+      throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
-            "knownSnapshotIdsForEnumeration", boolean.class, Set.class);
+            "knownSnapshotIdsForEnumeration",
+            boolean.class,
+            boolean.class,
+            Set.class,
+            LongPredicate.class);
     method.setAccessible(true);
-    return method.invoke(null, fullRescan, existingSnapshotIds);
+    return method.invoke(null, fullRescan, includeStats, existingSnapshotIds, statsAlreadyCaptured);
   }
 
   private static boolean invokeTableChanged(List<FloecatConnector.SnapshotBundle> bundles)
@@ -1487,6 +1672,27 @@ class ReconcilerServiceTest {
             DestinationTarget.newBuilder()
                 .setCatalogId(destCatalogId)
                 .setNamespaceId(destNamespaceId))
+        .build();
+  }
+
+  private Connector activeIcebergConnector(ResourceId tableId) {
+    ResourceId destCatalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId destNamespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    return Connector.newBuilder()
+        .setResourceId(connectorId)
+        .setState(ConnectorState.CS_ACTIVE)
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setUri("http://iceberg-rest:9200")
+        .putProperties("iceberg.source", "rest")
+        .setSource(
+            SourceSelector.newBuilder()
+                .setNamespace(
+                    NamespacePath.newBuilder().addSegments("src_cat").addSegments("src_ns")))
+        .setDestination(
+            DestinationTarget.newBuilder()
+                .setCatalogId(destCatalogId)
+                .setNamespaceId(destNamespaceId)
+                .setTableId(tableId))
         .build();
   }
 

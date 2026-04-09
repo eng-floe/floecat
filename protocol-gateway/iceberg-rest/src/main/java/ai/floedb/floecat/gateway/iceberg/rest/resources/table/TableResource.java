@@ -124,9 +124,16 @@ public class TableResource {
       @QueryParam("snapshots") String snapshots,
       @HeaderParam("X-Iceberg-Access-Delegation") String accessDelegationMode,
       @HeaderParam("If-None-Match") String ifNoneMatch) {
+    String path = String.format("/v1/%s/namespaces/%s/tables/%s", prefix, namespace, table);
+    if (snapshots != null && !snapshots.isBlank()) {
+      path = path + "?snapshots=" + snapshots;
+    }
     TableRequestContext tableContext = requestContextFactory.table(prefix, namespace, table);
-    return tableLoadService.load(
-        tableContext, table, snapshots, accessDelegationMode, ifNoneMatch, tableSupport);
+    Response response =
+        tableLoadService.load(
+            tableContext, table, snapshots, accessDelegationMode, ifNoneMatch, tableSupport);
+    commitTrafficLogger.logResponse("GET", path, response.getStatus(), response.getEntity());
+    return response;
   }
 
   @Path("/tables/{table}")

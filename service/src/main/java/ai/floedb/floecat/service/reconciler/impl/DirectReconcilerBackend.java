@@ -53,8 +53,8 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import com.google.protobuf.Timestamp;
-import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -64,8 +64,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-@IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "local", enableIfMissing = true)
 @ApplicationScoped
+@Typed(DirectReconcilerBackend.class)
 public class DirectReconcilerBackend extends BaseServiceImpl implements ReconcilerBackend {
 
   @Inject CatalogRepository catalogRepo;
@@ -349,7 +349,14 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
 
   @Override
   public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return statsRepository.getTableStats(tableId, snapshotId).isPresent();
+    var tableStats = statsRepository.getTableStats(tableId, snapshotId).orElse(null);
+    if (tableStats == null) {
+      return false;
+    }
+    if (tableStats.getDataFileCount() <= 0) {
+      return true;
+    }
+    return statsRepository.countFileStats(tableId, snapshotId) > 0;
   }
 
   @Override

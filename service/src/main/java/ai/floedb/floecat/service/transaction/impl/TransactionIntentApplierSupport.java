@@ -276,6 +276,14 @@ public class TransactionIntentApplierSupport {
           null);
     }
 
+    if (isDeleteSentinel(intent)) {
+      if (current == null) {
+        return ApplyOutcome.applied();
+      }
+      long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+      return addOp(new PointerStore.CasDelete(pointerKey, expected), pointerKey, touchedKeys, ops);
+    }
+
     if (current != null && intent.getBlobUri().equals(current.getBlobUri())) {
       return ApplyOutcome.applied();
     }
@@ -291,6 +299,23 @@ public class TransactionIntentApplierSupport {
         new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
   }
 
+  private boolean isDeleteSentinel(TransactionIntent intent) {
+    if (intent == null
+        || intent.getBlobUri().isBlank()
+        || intent.getAccountId().isBlank()
+        || intent.getTxId().isBlank()
+        || intent.getTargetPointerKey().isBlank()) {
+      return false;
+    }
+    try {
+      return Keys.transactionDeleteSentinelUri(
+              intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey())
+          .equals(intent.getBlobUri());
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
   private ApplyOutcome planTableIntentOps(
       TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
     String pointerKey = intent.getTargetPointerKey();
@@ -303,6 +328,10 @@ public class TransactionIntentApplierSupport {
           intent.getExpectedVersion(),
           actualVersion,
           null);
+    }
+
+    if (isDeleteSentinel(intent)) {
+      return planTableDeleteIntentOps(intent, current, actualVersion, ops, touchedKeys);
     }
 
     Table nextTable = readTable(intent.getBlobUri());
@@ -365,6 +394,46 @@ public class TransactionIntentApplierSupport {
       }
     }
     return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome planTableDeleteIntentOps(
+      TransactionIntent intent,
+      Pointer current,
+      long actualVersion,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys) {
+    if (current == null) {
+      return ApplyOutcome.applied();
+    }
+
+    Table currentTable = readTable(current.getBlobUri());
+    if (currentTable == null || !currentTable.hasResourceId()) {
+      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "current table pointer missing");
+    }
+    ApplyOutcome targetValidation =
+        validateTableIntentTarget(intent.getTargetPointerKey(), currentTable);
+    if (targetValidation.status != ApplyStatus.APPLIED) {
+      return targetValidation;
+    }
+
+    long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+    ApplyOutcome deletePrimary =
+        addOp(
+            new PointerStore.CasDelete(intent.getTargetPointerKey(), expected),
+            intent.getTargetPointerKey(),
+            touchedKeys,
+            ops);
+    if (deletePrimary.status != ApplyStatus.APPLIED) {
+      return deletePrimary;
+    }
+
+    String nameKey =
+        Keys.tablePointerByName(
+            currentTable.getResourceId().getAccountId(),
+            currentTable.getCatalogId().getId(),
+            currentTable.getNamespaceId().getId(),
+            currentTable.getDisplayName());
+    return buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
   }
 
   private ApplyOutcome validateTableIntentTarget(String pointerKey, Table nextTable) {

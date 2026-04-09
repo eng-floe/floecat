@@ -23,6 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -78,6 +81,170 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDoesNotDedupeAcrossDifferentExecutionPolicies() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1"));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of()),
+            "");
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+            "");
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void leaseNextFiltersByExecutionPolicy() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        "conn-default",
+        false,
+        CaptureMode.METADATA_AND_STATS,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "");
+    String remoteJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            "conn-remote",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+            "");
+
+    var remoteLease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote")))
+            .orElseThrow();
+
+    assertEquals(remoteJobId, remoteLease.jobId);
+    assertEquals("remote", remoteLease.executionPolicy.lane());
+  }
+
+  @Test
+  void leaseNextRespectsPinnedExecutorId() {
+    store.init();
+
+    store.enqueue(
+        ACCOUNT_ID,
+        "conn-a",
+        false,
+        CaptureMode.METADATA_AND_STATS,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+        "remote-a");
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            "conn-b",
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
+            "remote-b");
+
+    var lease =
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    java.util.Set.of("remote"),
+                    java.util.Set.of("remote-b")))
+            .orElseThrow();
+
+    assertEquals(jobId, lease.jobId);
+    assertEquals("remote-b", lease.pinnedExecutorId);
+  }
+
+  @Test
+  void leaseNextAllowsOnlyOneRunningJobPerLane() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+
+    String metadataJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+    String statsJob = store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.STATS_ONLY, scope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(metadataJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(metadataJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(statsJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+    String secondJob =
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextTreatsEquivalentMultiNamespaceScopesAsSameTableLane() {
+    store.init();
+    ReconcileScope firstScope =
+        ReconcileScope.of(List.of(List.of("b"), List.of("a")), "tbl", List.of());
+    ReconcileScope secondScope =
+        ReconcileScope.of(List.of(List.of("a"), List.of("b")), "tbl", List.of());
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
+    String secondJob =
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
   void successfulJobClearsDedupeAndAllowsFreshEnqueue() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
@@ -93,17 +260,45 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueuePreservesSnapshotScopeIncludingZero() {
+  void enqueuePreservesColumnScope() {
     store.init();
-    ReconcileScope scope =
-        ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of(), List.of(0L, 3L));
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1", "#3"));
 
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
 
     ReconcileJob job = store.get(jobId).orElseThrow();
-    assertEquals(List.of(0L, 3L), job.scope.destinationSnapshotIds());
-    assertTrue(job.scope.hasSnapshotFilter());
+    assertEquals(List.of("c1", "#3"), job.scope.destinationTableColumns());
+  }
+
+  @Test
+  void enqueuePreservesExecutionPolicyAndPinnedExecutorAcrossLeaseAndAssignment() {
+    store.init();
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_STATS,
+            ReconcileScope.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of("tier", "gold")),
+            "remote-executor");
+
+    ReconcileJob job = store.get(jobId).orElseThrow();
+    assertEquals(ReconcileExecutionClass.HEAVY, job.executionPolicy.executionClass());
+    assertEquals("remote", job.executionPolicy.lane());
+    assertEquals("gold", job.executionPolicy.attributes().get("tier"));
+    assertEquals("", job.executorId);
+
+    var lease = store.leaseNext().orElseThrow();
+    assertEquals(jobId, lease.jobId);
+    assertEquals("remote-executor", lease.pinnedExecutorId);
+    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+
+    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "remote-executor");
+    assertEquals("remote-executor", store.get(jobId).orElseThrow().executorId);
   }
 
   @Test
@@ -222,7 +417,8 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
-    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
+    store.markRunning(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
     assertEquals("JS_CANCELLING", store.get(jobId).orElseThrow().state);
 
@@ -259,7 +455,8 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty());
     var firstLease = store.leaseNext().orElseThrow();
-    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
+    store.markRunning(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
     store.cancel(ACCOUNT_ID, jobId, "stop");
 
     // Cancel should poke lease expiry, allowing reclaim well before the original 5s lease.
@@ -284,7 +481,8 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
-    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
+    store.markRunning(
+        lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
     Thread.sleep(500L);
     assertTrue(store.renewLease(jobId, lease.leaseEpoch));
@@ -308,7 +506,8 @@ class DurableReconcileJobStoreTest {
             CaptureMode.METADATA_AND_STATS,
             ReconcileScope.empty());
     var lease = store.leaseNext().orElseThrow();
-    store.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
+    store.markRunning(
+        lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
     assertTrue(!store.renewLease(jobId, "stale-epoch"));
   }
@@ -334,20 +533,24 @@ class DurableReconcileJobStoreTest {
   @Test
   void queueStatsReflectQueuedRunningAndCancellingJobs() {
     store.init();
+    ReconcileScope queuedScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-q", List.of());
+    ReconcileScope runningScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-r", List.of());
+    ReconcileScope cancellingScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-c", List.of());
 
-    store.enqueue(
-        ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
-    store.enqueue(
-        ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
-    store.enqueue(
-        ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, queuedScope);
+    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, runningScope);
+    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, cancellingScope);
 
     var firstLease = store.leaseNext().orElseThrow();
-    store.markRunning(firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis());
+    store.markRunning(
+        firstLease.jobId, firstLease.leaseEpoch, System.currentTimeMillis(), "default_reconciler");
 
     var cancellingLease = store.leaseNext().orElseThrow();
     store.markRunning(
-        cancellingLease.jobId, cancellingLease.leaseEpoch, System.currentTimeMillis());
+        cancellingLease.jobId,
+        cancellingLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "default_reconciler");
     store.cancel(ACCOUNT_ID, cancellingLease.jobId, "stop");
 
     var stats = store.queueStats();

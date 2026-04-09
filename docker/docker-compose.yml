@@ -30,6 +30,31 @@ services:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
 
+  executor:
+    image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
+    pull_policy: ${FLOECAT_PULL_POLICY:-never}
+    env_file:
+      - ${FLOECAT_ENV_FILE:-./env.localstack}
+    environment:
+      QUARKUS_PROFILE: ${QUARKUS_PROFILE_EXECUTOR:-reconciler-executor}
+      FLOECAT_GRPC_HOST: "service"
+      FLOECAT_GRPC_PORT: "9100"
+      FLOECAT_RECONCILER_SCHEDULER_ENABLED: "false"
+      FLOECAT_RECONCILER_REMOTE_EXECUTOR_ENABLED: "true"
+      FLOECAT_RECONCILER_DEFAULT_EXECUTOR_ENABLED: "true"
+      FLOECAT_RECONCILER_BACKEND: "remote"
+      FLOECAT_RECONCILER_AUTO_ENABLED: "false"
+      JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED"
+    depends_on:
+      - service
+    profiles:
+      - reconciler-executor
+    networks:
+      - floecat
+    volumes:
+      - ${HOME}/.aws:/root/.aws:ro
+      - ${HOME}/.aws:/home/jboss/.aws:ro
+
   iceberg-rest:
     image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
     pull_policy: ${FLOECAT_PULL_POLICY:-never}
@@ -43,6 +68,7 @@ services:
       FLOECAT_GRPC_HOST: "service"
       FLOECAT_GRPC_PORT: "9100"
       FLOECAT_UPSTREAM_TARGET: "service:9100"
+      FLOECAT_GATEWAY_SELF_URI: "http://iceberg-rest:9200"
       ICEBERG_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
       ICEBERG_STORAGE_SCOPE: ${ICEBERG_STORAGE_SCOPE:-*}
       ICEBERG_STORAGE_TYPE: ${ICEBERG_STORAGE_TYPE:-s3}

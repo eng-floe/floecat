@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
@@ -311,6 +312,29 @@ class TableResponseMapperTest {
     assertFalse(statistics.isEmpty());
     Object blobMetadata = statistics.get(0).get("blob-metadata");
     assertTrue(blobMetadata instanceof List<?>);
+  }
+
+  @Test
+  void loadResultKeepsPhysicalTableLocationWhenUpstreamUriIsConnectorEndpoint() {
+    Table table =
+        FIXTURE.table().toBuilder()
+            .setDisplayName("orders")
+            .setResourceId(ResourceId.newBuilder().setId("cat:db:orders"))
+            .setUpstream(UpstreamRef.newBuilder().setUri("http://iceberg-rest:9200"))
+            .putProperties("location", "s3://warehouse/db/orders")
+            .putProperties(
+                "metadata-location", "s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
+            .build();
+    IcebergMetadata metadata =
+        FIXTURE.metadata().toBuilder()
+            .setMetadataLocation("s3://warehouse/db/orders/metadata/00000-abc.metadata.json")
+            .build();
+
+    LoadTableResultDto result =
+        TableResponseMapper.toLoadResult("orders", table, metadata, List.of(), Map.of(), List.of());
+
+    assertEquals("s3://warehouse/db/orders", result.metadata().location());
+    assertEquals("s3://warehouse/db/orders/metadata", result.config().get("write.metadata.path"));
   }
 
   private static JsonNode fixtureSchema() {

@@ -467,8 +467,7 @@ final class ConnectorCliSupport {
           out.println(
               "usage: connector trigger <display_name|id> [--full]"
                   + " [--mode metadata-only|metadata-and-stats|stats-only]"
-                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]"
-                  + " [--snapshot-ids id1,id2,...]");
+                  + " [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]");
           return;
         }
         boolean full = args.contains("--full");
@@ -478,9 +477,6 @@ final class ConnectorCliSupport {
         String destTable = Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-table", ""));
         List<String> destColumns =
             CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--dest-cols", "")));
-        List<Long> snapshotIds =
-            CliUtils.parseSnapshotIds(
-                Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
         ResourceId connectorId =
             resolveConnectorId(Quotes.unquote(args.get(1)), connectors, getCurrentAccountId);
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
@@ -492,9 +488,6 @@ final class ConnectorCliSupport {
         }
         if (!destColumns.isEmpty()) {
           scope.addAllDestinationTableColumns(destColumns);
-        }
-        if (!snapshotIds.isEmpty()) {
-          scope.addAllDestinationSnapshotIds(snapshotIds);
         }
         var resp =
             reconcileControl.startCapture(

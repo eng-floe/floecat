@@ -98,7 +98,10 @@ public final class TableMetadataBuilder {
     } else if (metadataLocation == null || metadataLocation.isBlank()) {
       metadataLocation = propertyMetadataLocation;
     }
-    String location = table.hasUpstream() ? table.getUpstream().getUri() : props.get("location");
+    String location = props.get("location");
+    if (!hasText(location) && table.hasUpstream()) {
+      location = table.getUpstream().getUri();
+    }
     location = hasText(location) ? location : null;
     Long lastUpdatedMs =
         (metadata != null && metadata.getLastUpdatedMs() > 0)

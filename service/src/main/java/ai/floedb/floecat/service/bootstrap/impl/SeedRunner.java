@@ -485,7 +485,7 @@ public class SeedRunner {
             .setDescription(fixture.description())
             .setKind(ConnectorKind.CK_ICEBERG)
             .setState(ConnectorState.CS_ACTIVE)
-            .setUri(fixture.upstreamUri())
+            .setUri(fixture.metadataLocation())
             .setSource(
                 SourceSelector.newBuilder().setNamespace(sourceNs).setTable(fixture.tableName()))
             .setDestination(
@@ -506,20 +506,39 @@ public class SeedRunner {
 
   private void ensureIcebergFixtureProperties(Connector existing, long now) {
     var props = new LinkedHashMap<>(existing.getPropertiesMap());
-    boolean hasExternal =
-        props.containsKey("external.metadata-location")
-            && !props.get("external.metadata-location").isBlank();
+    String legacyMetadataUri =
+        props.entrySet().stream()
+            .filter(entry -> entry.getKey() != null && entry.getKey().startsWith("external."))
+            .map(Map.Entry::getValue)
+            .filter(value -> value != null && value.endsWith(".json"))
+            .filter(value -> value != null && !value.isBlank())
+            .findFirst()
+            .orElse(null);
     boolean hasSource =
         props.containsKey("iceberg.source") && !props.get("iceberg.source").isBlank();
-    if (!hasExternal || hasSource) {
+    boolean hasDeprecatedExternal =
+        props.keySet().stream().anyMatch(key -> key != null && key.startsWith("external."));
+    boolean uriLooksLikeMetadata =
+        existing.getUri() != null
+            && !existing.getUri().isBlank()
+            && existing.getUri().endsWith(".json");
+    if (!hasDeprecatedExternal && hasSource && uriLooksLikeMetadata) {
       return;
     }
     props.put("iceberg.source", "filesystem");
+    props
+        .entrySet()
+        .removeIf(entry -> entry.getKey() != null && entry.getKey().startsWith("external."));
+    String normalizedUri =
+        legacyMetadataUri != null && !legacyMetadataUri.isBlank()
+            ? legacyMetadataUri
+            : existing.getUri();
 
     var updated =
         existing.toBuilder()
             .clearProperties()
             .putAllProperties(props)
+            .setUri(normalizedUri == null ? "" : normalizedUri)
             .setUpdatedAt(Timestamps.fromMillis(now))
             .build();
     var meta = connectorRepo.metaFor(existing.getResourceId());
@@ -532,9 +551,6 @@ public class SeedRunner {
   private Map<String, String> connectorProperties(FixtureConfig fixture, String fixtureRoot) {
     Map<String, String> props = new LinkedHashMap<>();
     props.put("iceberg.source", "filesystem");
-    props.put("external.metadata-location", fixture.metadataLocation());
-    props.put("external.namespace", fixture.sourceNamespace());
-    props.put("external.table-name", fixture.tableName());
     props.put("stats.ndv.enabled", "false");
     if (TestS3Fixtures.useAwsFixtures()) {
       props.putAll(TestS3Fixtures.awsFileIoProperties());

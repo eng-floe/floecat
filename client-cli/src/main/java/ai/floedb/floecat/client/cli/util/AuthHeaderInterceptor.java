@@ -27,18 +27,24 @@ import java.util.function.Supplier;
 public final class AuthHeaderInterceptor implements ClientInterceptor {
   private final Supplier<String> tokenSupplier;
   private final Supplier<String> sessionSupplier;
+  private final Supplier<String> accountSupplier;
   private final String authHeaderName;
   private final String sessionHeaderName;
+  private final String accountHeaderName;
 
   public AuthHeaderInterceptor(
       Supplier<String> tokenSupplier,
       Supplier<String> sessionSupplier,
+      Supplier<String> accountSupplier,
       String authHeaderName,
-      String sessionHeaderName) {
+      String sessionHeaderName,
+      String accountHeaderName) {
     this.tokenSupplier = tokenSupplier;
     this.sessionSupplier = sessionSupplier;
+    this.accountSupplier = accountSupplier;
     this.authHeaderName = authHeaderName;
     this.sessionHeaderName = sessionHeaderName;
+    this.accountHeaderName = accountHeaderName;
   }
 
   @Override
@@ -64,6 +70,11 @@ public final class AuthHeaderInterceptor implements ClientInterceptor {
               Metadata.Key.of(sessionHeaderName, Metadata.ASCII_STRING_MARSHALLER), session);
         }
 
+        String account = accountSupplier.get();
+        if (!account.isBlank()) {
+          headers.put(
+              Metadata.Key.of(accountHeaderName, Metadata.ASCII_STRING_MARSHALLER), account);
+        }
         super.start(responseListener, headers);
       }
     };

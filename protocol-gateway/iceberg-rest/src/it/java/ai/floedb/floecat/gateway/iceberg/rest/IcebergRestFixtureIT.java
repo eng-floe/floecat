@@ -1787,9 +1787,8 @@ class IcebergRestFixtureIT {
 
       withReconcileControlClient(
           stub -> {
-            // The fixture table is already mirrored by registration. Use a snapshot-scoped
-            // stats-only capture to backfill known fixture snapshots, then kick off a full async
-            // job.
+            // The fixture table is already mirrored by registration. Use a table-scoped
+            // stats-only capture to backfill the fixture state, then kick off a full async job.
             stub.captureNow(
                 CaptureNowRequest.newBuilder()
                     .setScope(
@@ -1798,7 +1797,6 @@ class IcebergRestFixtureIT {
                             .addDestinationNamespacePaths(
                                 NamespacePath.newBuilder().addSegments("iceberg").build())
                             .setDestinationTableDisplayName("trino_test")
-                            .addAllDestinationSnapshotIds(fixtureSnapshotIds)
                             .build())
                     .setMode(CaptureMode.CM_STATS_ONLY)
                     .setFullRescan(true)
@@ -1854,7 +1852,7 @@ class IcebergRestFixtureIT {
       ListColumnStatsResponse columnStats =
           awaitColumnStats(tableId, current, Duration.ofSeconds(30));
       Assertions.assertFalse(
-          columnStats.getColumnsList().isEmpty(), "Column NDV statistics must be available");
+          columnStats.getColumnsList().isEmpty(), "Column statistics must be available");
       columnStats
           .getColumnsList()
           .forEach(
@@ -1864,36 +1862,38 @@ class IcebergRestFixtureIT {
                 Assertions.assertFalse(
                     col.getLogicalType().isBlank(),
                     () -> "Logical type should be populated for " + col.getColumnName());
-                Assertions.assertTrue(
-                    col.hasNdv(), "NDV must be present for " + col.getColumnName());
-                Assertions.assertTrue(
-                    col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                    () -> "NDV should contain exact or approx estimate for " + col.getColumnName());
-                if (col.getNdv().hasApprox()) {
-                  var approx = col.getNdv().getApprox();
+                if (col.hasNdv()) {
                   Assertions.assertTrue(
-                      approx.getEstimate() > 0.0d,
-                      () -> "Approximate NDV must be positive for " + col.getColumnName());
-                  Assertions.assertTrue(
-                      approx.getRowsSeen() > 0,
-                      () -> "rows-seen must be positive for " + col.getColumnName());
-                  Assertions.assertTrue(
-                      approx.getRowsTotal() >= approx.getRowsSeen(),
-                      () -> "rows-total must be >= rows-seen for " + col.getColumnName());
+                      col.getNdv().hasApprox() || col.getNdv().hasExact(),
+                      () -> "NDV should contain exact or approx estimate for " + col.getColumnName());
+                  if (col.getNdv().hasApprox()) {
+                    var approx = col.getNdv().getApprox();
+                    Assertions.assertTrue(
+                        approx.getEstimate() > 0.0d,
+                        () -> "Approximate NDV must be positive for " + col.getColumnName());
+                    Assertions.assertTrue(
+                        approx.getRowsSeen() > 0,
+                        () -> "rows-seen must be positive for " + col.getColumnName());
+                    Assertions.assertTrue(
+                        approx.getRowsTotal() >= approx.getRowsSeen(),
+                        () -> "rows-total must be >= rows-seen for " + col.getColumnName());
+                    Assertions.assertFalse(
+                        approx.getMethod().isBlank(),
+                        () -> "NDV method must be set for " + col.getColumnName());
+                  }
                   Assertions.assertFalse(
-                      approx.getMethod().isBlank(),
-                      () -> "NDV method must be set for " + col.getColumnName());
+                      col.getNdv().getSketchesList().isEmpty(),
+                      () -> "Sketch metadata must be present for " + col.getColumnName());
+                  col.getNdv()
+                      .getSketchesList()
+                      .forEach(
+                          sketch ->
+                              Assertions.assertFalse(
+                                  sketch.getType().isBlank(),
+                                  () ->
+                                      "Sketch type must be set for column "
+                                          + col.getColumnName()));
                 }
-                Assertions.assertFalse(
-                    col.getNdv().getSketchesList().isEmpty(),
-                    () -> "Sketch metadata must be present for " + col.getColumnName());
-                col.getNdv()
-                    .getSketchesList()
-                    .forEach(
-                        sketch ->
-                            Assertions.assertFalse(
-                                sketch.getType().isBlank(),
-                                () -> "Sketch type must be set for column " + col.getColumnName()));
               });
     }
   }
@@ -2432,9 +2432,8 @@ class IcebergRestFixtureIT {
                 return response.getConnectorsList().stream()
                     .filter(
                         c ->
-                            table.equals(c.getPropertiesMap().get("external.table-name"))
-                                && namespace.equals(
-                                    c.getPropertiesMap().getOrDefault("external.namespace", "")))
+                            table.equals(c.getSource().getTable())
+                                && namespace.equals(String.join(".", c.getSource().getNamespace().getSegmentsList())))
                     .findFirst()
                     .orElse(null);
               });

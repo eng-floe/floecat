@@ -19,13 +19,13 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -53,9 +53,11 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySuppo
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableLifecycleService;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.MaterializeMetadataResult;
-import ai.floedb.floecat.gateway.iceberg.rpc.IcebergCommitJournalEntry;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
+import ai.floedb.floecat.reconciler.rpc.CaptureMode;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
+import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
@@ -66,6 +68,7 @@ import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -94,10 +97,6 @@ class TransactionCommitServiceTest {
   private final TableCommitPlanner tableCommitPlanner = Mockito.mock(TableCommitPlanner.class);
   private final TableCreateTransactionMapper tableCreateTransactionMapper =
       Mockito.mock(TableCreateTransactionMapper.class);
-  private final TableCommitJournalService commitJournalService =
-      Mockito.mock(TableCommitJournalService.class);
-  private final TableCommitOutboxService commitOutboxService =
-      Mockito.mock(TableCommitOutboxService.class);
   private final TableCommitMaterializationService materializationService =
       Mockito.mock(TableCommitMaterializationService.class);
   private final CommitResponseBuilder responseBuilder = Mockito.mock(CommitResponseBuilder.class);
@@ -113,8 +112,6 @@ class TransactionCommitServiceTest {
     service.tableLifecycleService = tableLifecycleService;
     service.tableCommitPlanner = tableCommitPlanner;
     service.tableCreateTransactionMapper = tableCreateTransactionMapper;
-    service.commitJournalService = commitJournalService;
-    service.commitOutboxService = commitOutboxService;
     service.materializationService = materializationService;
     service.responseBuilder = responseBuilder;
     service.metadataMutator = metadataMutator;
@@ -150,6 +147,7 @@ class TransactionCommitServiceTest {
     when(metadataMutator.apply(any(), any())).thenAnswer(invocation -> invocation.getArgument(0));
     when(tableSupport.loadCurrentMetadata(any(Table.class))).thenReturn(null);
     when(tableSupport.connectorIntegrationEnabled()).thenReturn(true);
+    when(tableSupport.selfUri()).thenReturn(Optional.of("http://iceberg-rest:9200"));
     when(tableSupport.getConnector(any()))
         .thenAnswer(
             invocation -> {
@@ -166,23 +164,8 @@ class TransactionCommitServiceTest {
                       .setState(ConnectorState.CS_ACTIVE)
                       .build());
             });
-    when(commitJournalService.get(any(), any(), any())).thenReturn(Optional.empty());
-    when(commitOutboxService.toWorkItem(anyString(), any()))
-        .thenAnswer(
-            invocation -> {
-              String pendingKey = invocation.getArgument(0, String.class);
-              IcebergCommitJournalEntry journal =
-                  invocation.getArgument(1, IcebergCommitJournalEntry.class);
-              return new TableCommitOutboxService.WorkItem(
-                  pendingKey,
-                  List.copyOf(journal.getNamespacePathList()),
-                  journal.getTableName(),
-                  journal.getTableId(),
-                  journal.hasConnectorId() ? journal.getConnectorId() : null,
-                  List.copyOf(journal.getAddedSnapshotIdsList()),
-                  List.copyOf(journal.getRemovedSnapshotIdsList()));
-            });
-    when(commitOutboxService.isPending(anyString())).thenReturn(false);
+    when(grpcClient.startCapture(any()))
+        .thenReturn(StartCaptureResponse.newBuilder().setJobId("job-1").build());
   }
 
   private CommitTableResponseDto defaultCommitResponse() {
@@ -494,7 +477,7 @@ class TransactionCommitServiceTest {
                                         && change.hasPrecondition()
                                         && change.getPrecondition().getExpectedVersion() == 7L)
                         && prepare.getChangesList().stream()
-                            .anyMatch(
+                            .noneMatch(
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))));
@@ -578,7 +561,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitAddsAtomicConnectorChangesForExistingConnectorMetadataRefresh() {
+  void commitDoesNotMutateExistingConnectorTransactionally() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -645,25 +628,17 @@ class TransactionCommitServiceTest {
             argThat(
                 prepare ->
                     prepare.getChangesList().stream()
-                        .filter(
-                            change ->
-                                change.hasTargetPointerKey()
-                                    && change.getTargetPointerKey().contains("/connectors/by-id/"))
-                        .findFirst()
-                        .map(
-                            change -> {
-                              try {
-                                Connector connector = Connector.parseFrom(change.getPayload());
-                                return "s3://floecat/iceberg/orders/metadata/00002.metadata.json"
-                                    .equals(
-                                        connector
-                                            .getPropertiesMap()
-                                            .get("external.metadata-location"));
-                              } catch (InvalidProtocolBufferException e) {
-                                return false;
-                              }
-                            })
-                        .orElse(false)));
+                            .noneMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change.getTargetPointerKey().contains("/connectors/"))
+                        && prepare.getChangesList().stream()
+                            .anyMatch(
+                                change ->
+                                    change.hasTable()
+                                        && change.getTable().hasUpstream()
+                                        && connectorId.equals(
+                                            change.getTable().getUpstream().getConnectorId()))));
   }
 
   @Test
@@ -724,84 +699,6 @@ class TransactionCommitServiceTest {
                                                 .getTable()
                                                 .getPropertiesMap()
                                                 .get("metadata-location")))));
-  }
-
-  @Test
-  void prepareAddsPerTableCommitJournalEntry() {
-    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
-    ResourceId connectorId =
-        ResourceId.newBuilder()
-            .setAccountId("acct-1")
-            .setId("conn-1")
-            .setKind(ResourceKind.RK_CONNECTOR)
-            .build();
-    Table tableWithConnector =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
-            .putProperties("metadata-location", "s3://meta/new")
-            .putProperties("table-uuid", "tbl-uuid")
-            .build();
-    when(tableLifecycleService.getTableResponse(any()))
-        .thenReturn(
-            GetTableResponse.newBuilder()
-                .setTable(tableWithConnector)
-                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
-                .build());
-    when(tableCommitPlanner.plan(any(), any(), any(), any()))
-        .thenReturn(new TableCommitPlanner.PlanResult(tableWithConnector, null));
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
-                .build());
-    when(grpcClient.prepareTransaction(any()))
-        .thenReturn(
-            PrepareTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
-                .build());
-    when(grpcClient.commitTransaction(any()))
-        .thenReturn(
-            CommitTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(grpcClient)
-        .prepareTransaction(
-            argThat(
-                prepare -> {
-                  var journal =
-                      prepare.getChangesList().stream()
-                          .filter(
-                              change ->
-                                  change.hasTargetPointerKey()
-                                      && change.getTargetPointerKey().contains("/tx-journal/"))
-                          .map(change -> parseJournal(change.getPayload()))
-                          .filter(java.util.Objects::nonNull)
-                          .findFirst()
-                          .orElse(null);
-                  return journal != null
-                      && "tx-1".equals(journal.getTxId())
-                      && journal.getTableId().getId().equals("tbl-id")
-                      && journal.getConnectorId().getId().equals("conn-1")
-                      && journal.getNamespacePathList().equals(List.of("db"))
-                      && journal.getTableName().equals("orders")
-                      && journal.getAddedSnapshotIdsList().equals(List.of(123L))
-                      && journal.getRemovedSnapshotIdsList().isEmpty()
-                      && journal.getMetadataLocation().equals("s3://meta/new")
-                      && journal.getTableUuid().equals("tbl-uuid");
-                }));
   }
 
   @Test
@@ -931,6 +828,60 @@ class TransactionCommitServiceTest {
   }
 
   @Test
+  void commitEnqueuesSnapshotScopedStatsCaptureForAddedSnapshots() {
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+    when(grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            PrepareTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
+                .build());
+    when(grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    org.mockito.ArgumentCaptor<StartCaptureRequest> requestCaptor =
+        org.mockito.ArgumentCaptor.forClass(StartCaptureRequest.class);
+    verify(grpcClient).startCapture(requestCaptor.capture());
+    StartCaptureRequest request = requestCaptor.getValue();
+    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
+    assertEquals("conn-1", request.getScope().getConnectorId().getId());
+    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
+    assertEquals(
+        List.of("db"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
+  }
+
+  @Test
   void commitWithExplicitMetadataLocationSkipsRematerialization() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     Table table =
@@ -981,6 +932,61 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(materializationService, never())
         .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(grpcClient)
+        .prepareTransaction(
+            argThat(
+                prepare ->
+                    prepare.getChangesList().stream()
+                        .anyMatch(
+                            change ->
+                                change.hasTable()
+                                    && "s3://meta/original/00002.metadata.json"
+                                        .equals(
+                                            change
+                                                .getTable()
+                                                .getPropertiesMap()
+                                                .get("metadata-location")))));
+  }
+
+  @Test
+  void commitWithInvalidExplicitMetadataLocationReturnsValidationError() {
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("metadata-location", "s3://meta/original/00002.metadata.json")
+            .build();
+    when(tableLifecycleService.getTableResponse(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(table)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(tableCommitPlanner.plan(any(), any(), any(), any()))
+        .thenReturn(new TableCommitPlanner.PlanResult(table, null));
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_OPEN))
+                .build());
+
+    Response response =
+        service.commit(
+            "pref",
+            "idem",
+            requestWithSetMetadataLocationAndAddSnapshot("not a uri", 123L),
+            tableSupport);
+
+    assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+    verify(materializationService, never())
+        .materializeMetadata(any(), any(), any(), any(), any(), any());
+    verify(grpcClient, never()).prepareTransaction(any());
   }
 
   @Test
@@ -1141,19 +1147,23 @@ class TransactionCommitServiceTest {
             argThat(
                 prepare ->
                     prepare != null
-                        && prepare.getChangesCount() >= 2
+                        && prepare.getChangesCount() == 1
                         && prepare.getChangesList().stream()
                             .anyMatch(change -> change.hasTableId() && change.hasTable())
                         && prepare.getChangesList().stream()
                             .noneMatch(
                                 change ->
                                     change.hasTargetPointerKey()
+                                        && change.getTargetPointerKey().contains("/connectors/"))
+                        && prepare.getChangesList().stream()
+                            .noneMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/snapshots/"))));
-    verify(commitOutboxService).processPendingNow(eq(tableSupport), any());
   }
 
   @Test
-  void commitWithConnectorAndAddSnapshotPassesSnapshotIdsToPostCommitStatsSync() {
+  void commitWithConnectorAndAddSnapshotSucceeds() {
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build();
     ResourceId connectorId =
         ResourceId.newBuilder()
@@ -1202,15 +1212,6 @@ class TransactionCommitServiceTest {
     Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(123L).equals(item.addedSnapshotIds())));
   }
 
   @Test
@@ -1269,7 +1270,7 @@ class TransactionCommitServiceTest {
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/snapshots/"))
                         && prepare.getChangesList().stream()
-                            .anyMatch(
+                            .noneMatch(
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))
@@ -1292,6 +1293,45 @@ class TransactionCommitServiceTest {
                                                     .getTable()
                                                     .getPropertiesMap()
                                                     .get("metadata-location")))));
+  }
+
+  @Test
+  void alreadyAppliedWithAddSnapshotReturnsNoContent() {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+  }
+
+  @Test
+  void alreadyAppliedWithoutReplanningStillReturnsNoContent() {
+    when(grpcClient.beginTransaction(any()))
+        .thenReturn(
+            BeginTransactionResponse.newBuilder()
+                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
+                .build());
+    when(grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
+                .build());
+
+    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
   }
 
   @Test
@@ -1783,7 +1823,6 @@ class TransactionCommitServiceTest {
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
-    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -1806,101 +1845,6 @@ class TransactionCommitServiceTest {
     verify(grpcClient, never()).prepareTransaction(any());
     verify(grpcClient, never()).commitTransaction(any());
     verify(tableCommitPlanner, never()).plan(any(), any(), any(), any());
-    verify(commitOutboxService, never()).processPendingNow(any(), any());
-  }
-
-  @Test
-  void alreadyAppliedReplaysSideEffectsFromMatchingJournal() {
-    ResourceId connectorId =
-        ResourceId.newBuilder()
-            .setAccountId("acct-1")
-            .setId("conn-1")
-            .setKind(ResourceKind.RK_CONNECTOR)
-            .build();
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-    when(commitJournalService.get("acct-1", "tbl-id", "tx-1"))
-        .thenReturn(Optional.of(commitJournal("tx-1", connectorId, List.of(123L), List.of(0L))));
-    when(commitOutboxService.isPending(anyString())).thenReturn(true);
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && "tbl-id".equals(item.tableId().getId())
-                        && List.of(123L).equals(item.addedSnapshotIds())
-                        && List.of(0L).equals(item.removedSnapshotIds())));
-  }
-
-  @Test
-  void alreadyAppliedSkipsSideEffectsWhenJournalHashMismatches() {
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-    when(commitJournalService.get("acct-1", "tbl-id", "tx-1"))
-        .thenReturn(
-            Optional.of(
-                commitJournal(
-                        "tx-1",
-                        ResourceId.newBuilder().setAccountId("acct-1").setId("conn-1").build(),
-                        List.of(123L),
-                        List.of())
-                    .toBuilder()
-                    .setRequestHash("different")
-                    .build()));
-    when(commitOutboxService.isPending(anyString())).thenReturn(true);
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService, never()).processPendingNow(any(), any());
-  }
-
-  @Test
-  void alreadyAppliedSkipsSideEffectsWhenJournalUnreadable() {
-    when(grpcClient.beginTransaction(any()))
-        .thenReturn(
-            BeginTransactionResponse.newBuilder()
-                .setTransaction(Transaction.newBuilder().setTxId("tx-1"))
-                .build());
-    when(grpcClient.getTransaction(any()))
-        .thenReturn(
-            GetTransactionResponse.newBuilder()
-                .setTransaction(
-                    Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_APPLIED))
-                .build());
-    when(commitJournalService.get("acct-1", "tbl-id", "tx-1"))
-        .thenThrow(new IllegalStateException("bad journal"));
-    when(commitOutboxService.isPending(anyString())).thenReturn(true);
-
-    Response response = service.commit("pref", "idem", requestWithAddSnapshot(123L), tableSupport);
-
-    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService, never()).processPendingNow(any(), any());
   }
 
   @Test
@@ -1986,7 +1930,7 @@ class TransactionCommitServiceTest {
                                             .equals(change.getTable().getResourceId().getId())
                                         && change.getPrecondition().getExpectedVersion() == 0L)
                         && prepare.getChangesList().stream()
-                            .anyMatch(
+                            .noneMatch(
                                 change ->
                                     change.hasTargetPointerKey()
                                         && change.getTargetPointerKey().contains("/tx-journal/"))));
@@ -2433,15 +2377,6 @@ class TransactionCommitServiceTest {
                                         && change
                                             .getTargetPointerKey()
                                             .endsWith("/snapshots/by-id/0000000000000000000"))));
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
-            argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(0L).equals(item.addedSnapshotIds())));
   }
 
   @Test
@@ -2463,6 +2398,15 @@ class TransactionCommitServiceTest {
                 .setTransaction(
                     Transaction.newBuilder().setTxId("tx-1").setState(TransactionState.TS_PREPARED))
                 .build());
+    when(grpcClient.getSnapshot(any()))
+        .thenReturn(
+            GetSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setSnapshotId(0L)
+                        .setUpstreamCreatedAt(Timestamps.fromMillis(123L))
+                        .build())
+                .build());
     when(grpcClient.commitTransaction(any()))
         .thenReturn(
             CommitTransactionResponse.newBuilder()
@@ -2474,15 +2418,19 @@ class TransactionCommitServiceTest {
         service.commit("pref", "idem", requestWithRemoveSnapshots(0L), tableSupport);
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
-    verify(commitOutboxService)
-        .processPendingNow(
-            eq(tableSupport),
+    verify(grpcClient)
+        .prepareTransaction(
             argThat(
-                items ->
-                    items != null
-                        && items.size() == 1
-                        && items.get(0) instanceof TableCommitOutboxService.WorkItem item
-                        && List.of(0L).equals(item.removedSnapshotIds())));
+                prepare ->
+                    prepare != null
+                        && prepare.getChangesList().stream()
+                                .filter(
+                                    change ->
+                                        change.hasTargetPointerKey()
+                                            && change.hasIntendedBlobUri()
+                                            && change.getIntendedBlobUri().contains("/delete/"))
+                                .count()
+                            == 2));
   }
 
   @Test
@@ -2752,14 +2700,10 @@ class TransactionCommitServiceTest {
                                 .count()
                             == 2
                         && prepare.getChangesList().stream()
-                                .filter(
-                                    change ->
-                                        change.hasTargetPointerKey()
-                                            && change
-                                                .getTargetPointerKey()
-                                                .contains("/tx-journal/"))
-                                .count()
-                            == 2));
+                            .noneMatch(
+                                change ->
+                                    change.hasTargetPointerKey()
+                                        && change.getTargetPointerKey().contains("/tx-journal/"))));
   }
 
   @Test
@@ -2899,46 +2843,6 @@ class TransactionCommitServiceTest {
       return Snapshot.parseFrom(payload);
     } catch (InvalidProtocolBufferException e) {
       return null;
-    }
-  }
-
-  private IcebergCommitJournalEntry parseJournal(ByteString payload) {
-    try {
-      return IcebergCommitJournalEntry.parseFrom(payload);
-    } catch (InvalidProtocolBufferException e) {
-      return null;
-    }
-  }
-
-  private IcebergCommitJournalEntry commitJournal(
-      String txId,
-      ResourceId connectorId,
-      List<Long> addedSnapshotIds,
-      List<Long> removedSnapshotIds) {
-    try {
-      Method requestHash =
-          TransactionCommitService.class.getDeclaredMethod("requestHash", List.class);
-      requestHash.setAccessible(true);
-      String hash =
-          (String) requestHash.invoke(service, requestWithAddSnapshot(123L).tableChanges());
-      IcebergCommitJournalEntry.Builder builder =
-          IcebergCommitJournalEntry.newBuilder()
-              .setVersion(1)
-              .setTxId(txId)
-              .setRequestHash(hash)
-              .setTableId(ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-id").build())
-              .addAllNamespacePath(List.of("db"))
-              .setTableName("orders")
-              .addAllAddedSnapshotIds(addedSnapshotIds)
-              .addAllRemovedSnapshotIds(removedSnapshotIds)
-              .setMetadataLocation("s3://meta/new")
-              .setCreatedAtMs(1L);
-      if (connectorId != null) {
-        builder.setConnectorId(connectorId);
-      }
-      return builder.build();
-    } catch (ReflectiveOperationException e) {
-      throw new AssertionError(e);
     }
   }
 

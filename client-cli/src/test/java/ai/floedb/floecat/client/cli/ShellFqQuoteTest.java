@@ -392,6 +392,7 @@ class ShellFqQuoteTest {
     }
     String help = baos.toString();
     assertTrue(help.contains("analyze <tableFQ> [--columns c1,c2,...]"));
+    assertTrue(help.contains("[--wait-seconds <n>]"));
   }
 
   @Test
@@ -400,5 +401,6 @@ class ShellFqQuoteTest {
     StatsCliSupport.handle(
         "analyze", List.of(), new PrintStream(baos), null, null, null, null, null);
     assertTrue(baos.toString().contains("usage: analyze <tableFQ> [--columns c1,c2,...]"));
+    assertTrue(baos.toString().contains("[--wait-seconds <n>]"));
   }
 }

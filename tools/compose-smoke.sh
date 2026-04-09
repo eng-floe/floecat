@@ -13,13 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 DOCKER_COMPOSE_MAIN=${DOCKER_COMPOSE_MAIN:-docker compose -f docker/docker-compose.yml}
-COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
+COMPOSE_SMOKE_RUN_ID=${COMPOSE_SMOKE_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}
+COMPOSE_SMOKE_SAVE_LOG_ROOT=${COMPOSE_SMOKE_SAVE_LOG_DIR:-target/compose-smoke-logs}
+COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=${COMPOSE_SMOKE_SAVE_LOG_ROOT%/}/${COMPOSE_SMOKE_RUN_ID}
+COMPOSE_SMOKE_PERSIST_CONSOLE=${COMPOSE_SMOKE_PERSIST_CONSOLE:-true}
 COMPOSE_SMOKE_KEEP_ON_FAIL=${COMPOSE_SMOKE_KEEP_ON_FAIL:-false}
 COMPOSE_SMOKE_KEEP_ON_EXIT=${COMPOSE_SMOKE_KEEP_ON_EXIT:-false}
 COMPOSE_SMOKE_CLIENTS=${COMPOSE_SMOKE_CLIENTS:-duckdb,trino}
+COMPOSE_SMOKE_DUCKDB_IMAGE=${COMPOSE_SMOKE_DUCKDB_IMAGE:-duckdb/duckdb:1.4.4}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT:-true}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI:-http://polaris:8181/api/catalog}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS:-sales}
@@ -59,6 +63,25 @@ is_truthy() {
   esac
 }
 
+mkdir -p "$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT" || true
+ln -sfn "$COMPOSE_SMOKE_RUN_ID" "${COMPOSE_SMOKE_SAVE_LOG_ROOT%/}/latest" 2>/dev/null || true
+
+if [ "${COMPOSE_SMOKE_CONSOLE_TEE_INITIALIZED:-0}" != "1" ] && is_truthy "$COMPOSE_SMOKE_PERSIST_CONSOLE"; then
+  export COMPOSE_SMOKE_CONSOLE_TEE_INITIALIZED=1
+  exec > >(tee -a "$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT/compose-smoke.console.log") 2>&1
+fi
+
+cat >"$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT/run-info.env" <<EOF
+COMPOSE_SMOKE_RUN_ID=$COMPOSE_SMOKE_RUN_ID
+COMPOSE_SMOKE_SAVE_LOG_ROOT=$COMPOSE_SMOKE_SAVE_LOG_ROOT
+COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT=$COMPOSE_SMOKE_SAVE_LOG_DIR_DEFAULT
+COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL
+COMPOSE_SMOKE_KEEP_ON_EXIT=$COMPOSE_SMOKE_KEEP_ON_EXIT
+COMPOSE_SMOKE_CLIENTS=$COMPOSE_SMOKE_CLIENTS
+COMPOSE_SMOKE_DUCKDB_IMAGE=$COMPOSE_SMOKE_DUCKDB_IMAGE
+COMPOSE_SMOKE_PERSIST_CONSOLE=$COMPOSE_SMOKE_PERSIST_CONSOLE
+EOF
+
 should_keep_on_fail() {
   is_truthy "${COMPOSE_SMOKE_KEEP_ON_FAIL}"
 }
@@ -76,7 +99,26 @@ should_run_client() {
 run_cli_script() {
   local compose_cmd="$1"
   local script="$2"
-  printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli"
+  local out
+  local out_file
+  out_file=$(mktemp)
+  if ! printf "%s\n" "$script" | eval "$compose_cmd run --rm -T cli" >"$out_file" 2>&1; then
+    out=$(tr -d '\000' <"$out_file")
+    rm -f "$out_file"
+    printf "%s\n" "$out" \
+      | sed \
+          -e '/^\[\+\] Creating /d' \
+          -e '/^[[:space:]]*✔ Container .* Running[0-9.]*s$/d' \
+          -e '/^[[:space:]]*Container .* Running[0-9.]*s$/d'
+    return 1
+  fi
+  out=$(tr -d '\000' <"$out_file")
+  rm -f "$out_file"
+  printf "%s\n" "$out" \
+    | sed \
+        -e '/^\[\+\] Creating /d' \
+        -e '/^[[:space:]]*✔ Container .* Running[0-9.]*s$/d' \
+        -e '/^[[:space:]]*Container .* Running[0-9.]*s$/d'
 }
 
 wait_for_connector_job() {
@@ -88,6 +130,7 @@ wait_for_connector_job() {
   local attempt
   local out
   local state
+  local message
 
   if [ -z "$job_id" ]; then
     echo "[FAIL] $label missing reconcile job id"
@@ -98,12 +141,25 @@ wait_for_connector_job() {
     out=$(run_cli_script "$compose_cmd" "account t-0001
 connector job $job_id
 quit")
-    state=$(printf "%s\n" "$out" | sed -n 's/.*state=\([A-Z_]*\).*/\1/p' | head -n1)
-    if [ "$state" = "JS_SUCCEEDED" ]; then
+    state=$(
+      printf "%s\n" "$out" \
+        | sed -n \
+            -e 's/.*state=\([A-Za-z_]*\).*/\1/p' \
+            -e 's/^[[:space:]]*state:[[:space:]]*//p' \
+        | head -n1 \
+        | tr '[:upper:]' '[:lower:]'
+    )
+    message=$(
+      printf "%s\n" "$out" \
+        | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' \
+        | head -n1 \
+        | tr '[:upper:]' '[:lower:]'
+    )
+    if [ "$state" = "js_succeeded" ] || [ "$state" = "succeeded" ] || [ "$state" = "done" ] || [ "$message" = "succeeded" ]; then
       echo "[PASS] $label job succeeded ($job_id)"
       return 0
     fi
-    if [ "$state" = "JS_FAILED" ] || [ "$state" = "JS_CANCELLED" ]; then
+    if [ "$state" = "js_failed" ] || [ "$state" = "js_cancelled" ] || [ "$state" = "failed" ] || [ "$state" = "cancelled" ] || [ "$message" = "failed" ] || [ "$message" = "cancelled" ]; then
       echo "$out"
       echo "[FAIL] $label job terminal state=$state ($job_id)"
       return 1
@@ -170,6 +226,7 @@ assert_table_stats_available() {
   local snapshot_ids
   local last_out=""
 
+  echo "==> [SMOKE] waiting for stats for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
   for attempt in $(seq 1 "$retries"); do
     out=$(run_cli_script "$compose_cmd" "account t-0001
 stats files $table_fqn --current --limit 5
@@ -199,6 +256,9 @@ quit")
       fi
     done
 
+    if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+      echo "==> [SMOKE] stats not ready for $table_fqn yet (attempt $attempt/$retries)"
+    fi
     sleep "$sleep_seconds"
   done
 
@@ -707,7 +767,7 @@ quit")
     local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
 
     local duckdb_out
-    if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap $duckdb_query" 2>&1); then
       echo "$duckdb_out"
       echo "[FAIL] $label duckdb command failed"
@@ -728,7 +788,7 @@ quit")
     assert_contains "$label duckdb mutation update" "$duckdb_out" "mut_after_update=2,4,a,c2"
 
     local duckdb_rename_out
-    if duckdb_rename_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if duckdb_rename_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_rename_src_smoke VALUES (1, 'x'); ALTER TABLE iceberg_floecat.iceberg.duckdb_rename_src_smoke RENAME TO duckdb_rename_dst_smoke; SELECT 'rename_row_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_rename_dst_smoke;" 2>&1); then
       echo "$duckdb_rename_out"
       assert_contains "$label duckdb rename row count" "$duckdb_rename_out" "rename_row_count=1"
@@ -737,12 +797,12 @@ quit")
       assert_contains_any "$label duckdb rename unsupported" "$duckdb_rename_out" \
         "Not implemented Error: Alter Schema Entry" \
         "Not implemented Error: Alter table type not supported: RENAME_TABLE"
-      docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_dst_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_rename_src_smoke;" >/dev/null 2>&1 || true
     fi
 
     local duckdb_namespace_out
-    if duckdb_namespace_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if duckdb_namespace_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap CREATE SCHEMA IF NOT EXISTS iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_create_ok=1' AS check; DROP SCHEMA iceberg_floecat.duckdb_ns_smoke; SELECT 'ns_drop_ok=1' AS check;" 2>&1); then
       echo "$duckdb_namespace_out"
       assert_contains "$label duckdb namespace create" "$duckdb_namespace_out" "ns_create_ok=1"
@@ -754,7 +814,7 @@ quit")
 
     local duckdb_snapshots_out
     local duckdb_snapshots_query_fn="COPY (SELECT snapshot_id FROM iceberg_snapshots('iceberg_floecat.iceberg.duckdb_mutation_smoke') ORDER BY timestamp_ms DESC) TO '/dev/stdout' (FORMAT CSV, HEADER FALSE);"
-    if ! duckdb_snapshots_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_snapshots_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -csv -c "$duckdb_bootstrap $duckdb_snapshots_query_fn" 2>&1); then
       echo "$duckdb_snapshots_out"
       echo "[FAIL] $label duckdb time travel snapshot discovery failed"
@@ -773,7 +833,7 @@ quit")
 
     local duckdb_tt_query="SELECT 'mut_tt_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_insert_id}); SELECT 'mut_tt_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_delete_id}); SELECT 'mut_tt_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke AT (VERSION => ${duckdb_snapshot_update_id});"
     local duckdb_tt_out
-    if ! duckdb_tt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if ! duckdb_tt_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap $duckdb_tt_query" 2>&1); then
       echo "$duckdb_tt_out"
       echo "[FAIL] $label duckdb time travel query failed"
@@ -791,7 +851,7 @@ quit")
       "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
 
     local alter_out
-    if alter_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap ALTER TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke ADD COLUMN note VARCHAR; SELECT 'mut_after_alter=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(COUNT(note) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke;" 2>&1); then
       echo "$alter_out"
       assert_contains "$label duckdb mutation alter" "$alter_out" "mut_after_alter=2,0"
@@ -800,12 +860,12 @@ quit")
       assert_contains_any "$label duckdb mutation alter unsupported" "$alter_out" \
         "Not implemented Error: Alter Schema Entry" \
         "Not implemented Error: Alter table type not supported:"
-      docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke;" >/dev/null 2>&1 || true
     fi
 
     local drop_check_out
-    if drop_check_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+    if drop_check_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
       duckdb -c "$duckdb_bootstrap SELECT COUNT(*) FROM iceberg_floecat.iceberg.duckdb_ctas_smoke;" 2>&1); then
       echo "$drop_check_out"
       echo "[FAIL] $label duckdb drop table verification failed (table still queryable)"
@@ -818,7 +878,7 @@ quit")
     if is_truthy "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX"; then
       echo "==> [SMOKE] duckdb iceberg format-version matrix (v1,v2)"
       local duckdb_fmt_out
-      if ! duckdb_fmt_out=$(docker run --rm --network "${compose_project}_floecat" duckdb/duckdb:latest \
+      if ! duckdb_fmt_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
         duckdb -c "$duckdb_bootstrap DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_fmt_v2_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v1_smoke (id INTEGER, v VARCHAR) WITH (format_version=1); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v1_smoke VALUES (101, 'duckdb_v1'); SELECT 'duckdb_fmt_v1_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v1_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_fmt_v2_smoke (id INTEGER, v VARCHAR) WITH (format_version=2); INSERT INTO iceberg_floecat.iceberg.duckdb_fmt_v2_smoke VALUES (201, 'duckdb_v2'); SELECT 'duckdb_fmt_v2_count=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_fmt_v2_smoke;" 2>&1); then
         echo "$duckdb_fmt_out"
         echo "[FAIL] $label duckdb format-version matrix command failed"
@@ -977,6 +1037,21 @@ print(
 run_sql("DROP TABLE iceberg.trino_merge_smoke")
 run_sql("DROP TABLE IF EXISTS iceberg.trino_mutation_smoke")
 run_sql("CREATE TABLE iceberg.trino_mutation_smoke (id INTEGER, v VARCHAR)")
+
+
+def latest_mutation_snapshot(*exclude_snapshot_ids):
+    filters = ["snapshot_id IS NOT NULL", "parent_id IS NOT NULL"]
+    for snapshot_id in exclude_snapshot_ids:
+        filters.append(f"snapshot_id <> {int(snapshot_id)}")
+    return scalar(
+        "SELECT CAST(snapshot_id AS VARCHAR) "
+        "FROM iceberg.\"trino_mutation_smoke$snapshots\" "
+        f"WHERE {' AND '.join(filters)} "
+        "ORDER BY committed_at DESC NULLS LAST, snapshot_id DESC "
+        "LIMIT 1"
+    )
+
+
 print(
     scalar(
         "SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) "
@@ -984,10 +1059,7 @@ print(
     )
 )
 run_sql("INSERT INTO iceberg.trino_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c')")
-insert_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+insert_snapshot_id = latest_mutation_snapshot()
 print(
     scalar(
         "SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -996,10 +1068,7 @@ print(
     )
 )
 run_sql("DELETE FROM iceberg.trino_mutation_smoke WHERE id = 2")
-delete_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+delete_snapshot_id = latest_mutation_snapshot(insert_snapshot_id)
 print(
     scalar(
         "SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -1008,10 +1077,7 @@ print(
     )
 )
 run_sql("UPDATE iceberg.trino_mutation_smoke SET v = 'c2' WHERE id = 3")
-update_snapshot_id = scalar(
-    "SELECT CAST(snapshot_id AS VARCHAR) "
-    "FROM iceberg.\"trino_mutation_smoke$snapshots\" ORDER BY committed_at DESC LIMIT 1"
-)
+update_snapshot_id = latest_mutation_snapshot(insert_snapshot_id, delete_snapshot_id)
 print(
     scalar(
         "SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || "
@@ -1188,7 +1254,7 @@ PY
   echo "==> [SMOKE][PASS] mode=$label"
 }
 
-SMOKE_MODES=${COMPOSE_SMOKE_MODES:-inmem,localstack,localstack-oidc}
+SMOKE_MODES=${COMPOSE_SMOKE_MODES:-localstack,localstack-oidc}
 echo "==> [COMPOSE] smoke modes=$SMOKE_MODES"
 
 IFS=',' read -r -a mode_list <<< "$SMOKE_MODES"

@@ -84,6 +84,7 @@ public class InboundContextInterceptor {
       boolean validateAccount,
       Optional<String> sessionHeader,
       Optional<String> authorizationHeader,
+      Optional<String> devAccountHeader,
       String authMode,
       String accountClaimName,
       String roleClaimName) {
@@ -94,15 +95,17 @@ public class InboundContextInterceptor {
             validateAccount,
             sessionHeader,
             authorizationHeader,
+            devAccountHeader,
             authMode,
             accountClaimName,
             roleClaimName);
 
     LOG.infof(
         "InboundContextInterceptor ready: sessionHeader=%s authorizationHeader=%s"
-            + " authMode=%s validateAccount=%s",
+            + " devAccountHeader=%s authMode=%s validateAccount=%s",
         sessionHeader.filter(h -> !h.isBlank()).orElse("<disabled>"),
         authorizationHeader.filter(h -> !h.isBlank()).orElse("<disabled>"),
+        devAccountHeader.filter(h -> !h.isBlank()).orElse("<disabled>"),
         authMode,
         validateAccount);
   }

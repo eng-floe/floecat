@@ -166,6 +166,92 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
+  void applyTransactionDeletesNonTablePointerWhenDeleteSentinelIsUsed() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
+    pointers.compareAndSet(
+        targetKey,
+        0L,
+        Pointer.newBuilder().setKey(targetKey).setBlobUri("/blob/snap-7").setVersion(1L).build());
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, "tx-1", targetKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(targetKey).isEmpty(), "delete intent should remove the target pointer");
+  }
+
+  @Test
+  void applyTransactionDeletesTablePointerAndOwnedNamePointerWhenDeleteSentinelIsUsed()
+      throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String byNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableId))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders")
+            .build();
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(
+        byIdKey,
+        0L,
+        Pointer.newBuilder().setKey(byIdKey).setBlobUri(blobUri).setVersion(1L).build());
+    pointers.compareAndSet(
+        byNameKey,
+        0L,
+        Pointer.newBuilder().setKey(byNameKey).setBlobUri(blobUri).setVersion(1L).build());
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, "tx-1", byIdKey))
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(byIdKey).isEmpty(), "table by-id pointer should be removed");
+    assertTrue(pointers.get(byNameKey).isEmpty(), "owned table by-name pointer should be removed");
+  }
+
+  @Test
   void applyTransactionReportsNamePointerConflictWithoutPartialApply() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();

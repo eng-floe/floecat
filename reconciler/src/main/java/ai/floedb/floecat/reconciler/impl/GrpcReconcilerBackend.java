@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
@@ -77,10 +78,10 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
-import io.quarkus.arc.properties.IfBuildProperty;
 import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Typed;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -91,8 +92,8 @@ import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-@IfBuildProperty(name = "floecat.reconciler.backend", stringValue = "remote")
 @ApplicationScoped
+@Typed(GrpcReconcilerBackend.class)
 public class GrpcReconcilerBackend implements ReconcilerBackend {
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -345,15 +346,29 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     try {
-      var response =
+      var tableStatsResponse =
           statistics(ctx)
               .getTableStats(
                   GetTableStatsRequest.newBuilder()
                       .setTableId(tableId)
                       .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
                       .build());
-      var stats = response.getStats();
-      return stats.hasTableId() && stats.getSnapshotId() == snapshotId;
+      var stats = tableStatsResponse.getStats();
+      if (!stats.hasTableId() || stats.getSnapshotId() != snapshotId) {
+        return false;
+      }
+      if (stats.getDataFileCount() <= 0) {
+        return true;
+      }
+      var fileStatsResponse =
+          statistics(ctx)
+              .listFileColumnStats(
+                  ListFileColumnStatsRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                      .setPage(PageRequest.newBuilder().setPageSize(1).build())
+                      .build());
+      return fileStatsResponse.hasPage() && fileStatsResponse.getPage().getTotalSize() > 0;
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return false;

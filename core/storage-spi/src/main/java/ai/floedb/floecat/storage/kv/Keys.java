@@ -53,6 +53,21 @@ public final class Keys {
     return new KvStore.Key(partitionKey, sortKey);
   }
 
+  public static String accountRootPrefix(String accountId) {
+    String aid = req("account_id", accountId);
+    return String.format("/accounts/%s/", encodeSegment(aid));
+  }
+
+  public static String transactionDeleteSentinelUri(
+      String accountId, String txId, String targetPointerKey) {
+    String aid = req("account_id", accountId);
+    String xid = req("tx_id", txId);
+    String key = req("target_pointer_key", targetPointerKey);
+    return String.format(
+        "/accounts/%s/transactions/%s/delete/%s",
+        encodeSegment(aid), encodeSegment(xid), encodeSegment(key));
+  }
+
   public static String snapshotPointerById(String accountId, String tableId, long snapshotId) {
     String aid = req("account_id", accountId);
     String tid = req("table_id", tableId);
@@ -73,51 +88,6 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/snapshots/by-time/%019d-%019d",
         encodeSegment(aid), encodeSegment(tid), inverted, invertedSnapshotId);
-  }
-
-  public static String tableCommitJournalPointer(String accountId, String tableId, String txId) {
-    String aid = req("account_id", accountId);
-    String tid = req("table_id", tableId);
-    String xid = req("tx_id", txId);
-    return String.format(
-        "/accounts/%s/tables/%s/tx-journal/%s",
-        encodeSegment(aid), encodeSegment(tid), encodeSegment(xid));
-  }
-
-  public static String tableCommitOutboxPendingScanPrefix() {
-    return "/accounts/";
-  }
-
-  public static String tableCommitOutboxPendingPrefix(String accountId) {
-    String aid = req("account_id", accountId);
-    return String.format("/accounts/%s/tx-outbox/pending/", encodeSegment(aid));
-  }
-
-  public static String tableCommitOutboxPendingPointer(
-      long createdAtMs, String accountId, String tableId, String txId) {
-    long created = reqNonNegative("created_at_ms", createdAtMs);
-    String aid = req("account_id", accountId);
-    String tid = req("table_id", tableId);
-    String xid = req("tx_id", txId);
-    return String.format(
-        "/accounts/%s/tx-outbox/pending/%019d/%s/%s",
-        encodeSegment(aid), created, encodeSegment(tid), encodeSegment(xid));
-  }
-
-  public static String tableCommitOutboxDeadLetterPrefix(String accountId) {
-    String aid = req("account_id", accountId);
-    return String.format("/accounts/%s/tx-outbox/dead-letter/", encodeSegment(aid));
-  }
-
-  public static String tableCommitOutboxDeadLetterPointer(
-      long createdAtMs, String accountId, String tableId, String txId) {
-    long created = reqNonNegative("created_at_ms", createdAtMs);
-    String aid = req("account_id", accountId);
-    String tid = req("table_id", tableId);
-    String xid = req("tx_id", txId);
-    return String.format(
-        "/accounts/%s/tx-outbox/dead-letter/%019d/%s/%s",
-        encodeSegment(aid), created, encodeSegment(tid), encodeSegment(xid));
   }
 
   public static String connectorPointerById(String accountId, String connectorId) {

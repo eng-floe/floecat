@@ -46,6 +46,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
@@ -191,7 +192,10 @@ public class ReconcilerService {
           1,
           0,
           0,
-          new IllegalArgumentException("getConnector failed: " + connectorId.getId(), e));
+          new ReconcileFailureException(
+              ExecutionResult.FailureKind.CONNECTOR_MISSING,
+              "getConnector failed: " + connectorId.getId(),
+              e));
     }
 
     if (stored.getState() != ConnectorState.CS_ACTIVE) {
@@ -209,7 +213,7 @@ public class ReconcilerService {
     final DestinationTarget dest =
         stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
 
-    var cfg = applyIcebergOverrides(ConnectorConfigMapper.fromProto(stored));
+    var cfg = ConnectorConfigMapper.fromProto(stored);
     var resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
 
     try (FloecatConnector connector = connectorOpener.open(resolved)) {
@@ -334,20 +338,24 @@ public class ReconcilerService {
           boolean includeStats =
               captureMode == CaptureMode.STATS_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
-          Set<Long> targetSnapshotIds =
-              scope.hasSnapshotFilter() ? Set.copyOf(scope.destinationSnapshotIds()) : Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
-              knownSnapshotIdsForEnumeration(fullRescan, knownSnapshotIds);
+              knownSnapshotIdsForEnumeration(
+                  fullRescan,
+                  includeStats,
+                  knownSnapshotIds,
+                  snapshotId -> backend.statsAlreadyCaptured(ctx, destTableId, snapshotId));
           var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq,
                   srcTable,
                   destTableId,
                   includeSelectors,
-                  new FloecatConnector.SnapshotEnumerationOptions(
-                      includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
+                  fullRescan
+                      ? FloecatConnector.SnapshotEnumerationOptions.full(includeStats)
+                      : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                          includeStats, enumerationKnownSnapshotIds));
           var bundles =
               filterBundlesForMode(
                   upstreamBundles,
@@ -355,9 +363,7 @@ public class ReconcilerService {
                   includeCoreMetadata,
                   includeStats,
                   knownSnapshotIds,
-                  targetSnapshotIds,
                   progressOut);
-
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
                   ctx,
@@ -618,7 +624,18 @@ public class ReconcilerService {
             .addAllPath(List.of(namespaceFq.split("\\.")))
             .setName(tableDisplay)
             .build();
-    return backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
+    Optional<ResourceId> tableId = backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
+    if (tableId.isPresent()) {
+      return tableId;
+    }
+    throw new ReconcileNotReadyException(
+        "Destination table "
+            + catalogName
+            + "."
+            + namespaceFq
+            + "."
+            + tableDisplay
+            + " is not visible yet for stats-only reconcile");
   }
 
   private void ensureSnapshot(
@@ -722,15 +739,12 @@ public class ReconcilerService {
       boolean includeCoreMetadata,
       boolean includeStats,
       Set<Long> existingSnapshotIds,
-      Set<Long> targetSnapshotIds,
       ProgressListener progress) {
     if (bundles == null || bundles.isEmpty() || fullRescan) {
-      return filterBundlesForSnapshotScope(
-          bundles == null ? List.of() : bundles, targetSnapshotIds, progress);
+      return bundles == null ? List.of() : bundles;
     }
 
-    List<FloecatConnector.SnapshotBundle> scoped =
-        filterBundlesForSnapshotScope(bundles, targetSnapshotIds, progress);
+    List<FloecatConnector.SnapshotBundle> scoped = bundles;
     if (includeStats) {
       return scoped;
     }
@@ -766,46 +780,33 @@ public class ReconcilerService {
     return filtered;
   }
 
-  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
-      List<FloecatConnector.SnapshotBundle> bundles,
-      Set<Long> targetSnapshotIds,
-      ProgressListener progress) {
-    if (bundles == null
-        || bundles.isEmpty()
-        || targetSnapshotIds == null
-        || targetSnapshotIds.isEmpty()) {
-      return bundles == null ? List.of() : bundles;
-    }
-    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
-    int skipped = 0;
-    for (FloecatConnector.SnapshotBundle bundle : bundles) {
-      if (bundle == null) {
-        continue;
-      }
-      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
-        skipped++;
-        continue;
-      }
-      filtered.add(bundle);
-    }
-    if (skipped > 0) {
-      progress.onProgress(
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
-    }
-    return filtered;
-  }
-
   private static Set<Long> knownSnapshotIdsForEnumeration(
-      boolean fullRescan, Set<Long> knownSnapshotIds) {
+      boolean fullRescan,
+      boolean includeStats,
+      Set<Long> knownSnapshotIds,
+      LongPredicate statsAlreadyCaptured) {
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return Set.of();
     }
-    return Set.copyOf(knownSnapshotIds);
+    if (!includeStats) {
+      return Set.copyOf(knownSnapshotIds);
+    }
+    if (statsAlreadyCaptured == null) {
+      return Set.of();
+    }
+    Set<Long> fullyCaptured = new LinkedHashSet<>();
+    for (Long snapshotId : knownSnapshotIds) {
+      if (snapshotId == null || snapshotId < 0) {
+        continue;
+      }
+      if (statsAlreadyCaptured.test(snapshotId)) {
+        fullyCaptured.add(snapshotId);
+      }
+    }
+    if (fullyCaptured.isEmpty()) {
+      return Set.of();
+    }
+    return Set.copyOf(fullyCaptured);
   }
 
   private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
@@ -1181,21 +1182,6 @@ public class ReconcilerService {
         .orElse(base);
   }
 
-  private static ConnectorConfig applyIcebergOverrides(ConnectorConfig base) {
-    if (base.kind() != ConnectorConfig.Kind.ICEBERG) {
-      return base;
-    }
-    Map<String, String> options = new LinkedHashMap<>(base.options());
-    String external = options.get("external.metadata-location");
-    if (external == null || external.isBlank()) {
-      return base;
-    }
-    options.putIfAbsent("iceberg.source", "filesystem");
-    return options.equals(base.options())
-        ? base
-        : new ConnectorConfig(base.kind(), base.displayName(), base.uri(), options, base.auth());
-  }
-
   public static final class Result {
     public final long scanned, changed, errors, snapshotsProcessed, statsProcessed;
     public final Exception error;
@@ -1237,6 +1223,12 @@ public class ReconcilerService {
   private static final class ReconcileCancelledException extends RuntimeException {
     private ReconcileCancelledException() {
       super("Cancelled");
+    }
+  }
+
+  private static final class ReconcileNotReadyException extends RuntimeException {
+    private ReconcileNotReadyException(String message) {
+      super(message);
     }
   }
 

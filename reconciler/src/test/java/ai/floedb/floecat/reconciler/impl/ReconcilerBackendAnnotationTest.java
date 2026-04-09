@@ -17,15 +17,12 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import io.quarkus.arc.properties.IfBuildProperty;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerBackendAnnotationTest {
   @Test
-  void remoteBackendIsConditionalOnRemoteProperty() {
-    IfBuildProperty annotation = GrpcReconcilerBackend.class.getAnnotation(IfBuildProperty.class);
-    assertThat(annotation).isNotNull();
-    assertThat(annotation.name()).isEqualTo("floecat.reconciler.backend");
-    assertThat(annotation.stringValue()).isEqualTo("remote");
+  void remoteBackendIsNotBuildTimeGated() {
+    assertThat(GrpcReconcilerBackend.class.getAnnotations())
+        .noneMatch(annotation -> annotation.annotationType().getName().endsWith("IfBuildProperty"));
   }
 }

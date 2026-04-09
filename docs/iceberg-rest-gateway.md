@@ -71,7 +71,7 @@ Tests mirror this layout so package-private collaborators (e.g., staged table re
 3. **Service orchestration:** Controllers delegate to `services.table/*`, `services.view/*`, `services.namespace/*`, etc. These orchestrators build gRPC requests, enforce requirements, and interact with staging, metadata, connectors, or planning as needed.
 4. **gRPC translation:** Typed clients (`TableClient`, `SnapshotClient`, `ViewClient`, etc.) wrap `GrpcWithHeaders` so every call inherits Floecat’s auth context and telemetry.
 5. **Response mapping:** `TableResponseMapper`, `ViewResponseMapper`, `NamespaceResponseMapper`, and metadata builders synthesize the Iceberg contract (schemas, specs, refs, history) from Floecat responses. They also inject config overrides (e.g., `write.metadata.path`, storage credentials).
-6. **Connectors & credentials:** `TableCommitSideEffectService` resolves connector IDs and runs best-effort post-commit sync calls (stats capture, reconcile trigger, snapshot pruning where applicable). These side effects happen after backend apply and do not change commit success/failure once core apply is complete.
+6. **Connectors & credentials:** registered Iceberg tables provision a Floecat-backed connector during commit, and later reconciliation is owned by the service scheduler rather than immediate gateway follow-up.
 7. **Plan/task caching:** `PlanTaskManager` persists planning results with TTL (default 10 minutes) and chunk size limits, exposing read-once task IDs for `/tasks`.
 
 ---
@@ -207,7 +207,7 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
 ## Commit Guarantees (Current)
 
 - **Single-table core state:** synchronous and strongly consistent within the request. Table/snapshot metadata needed for the next client commit/read is advanced in the core path.
-- **Post-core side effects (stats sync/reconcile trigger/snapshot prune):** best-effort after backend apply. These are not atomic with the core commit.
+- **Post-core side effects:** none in the gateway commit path. Reconciliation happens later via the service scheduler.
 - **Multi-table `/transactions/commit`:** atomic backend transaction across all table changes in one request.
 
 ---
@@ -232,13 +232,17 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   `s3.path-style-access`, etc. when non-default storage wiring is needed (for example LocalStack).
   Request-supplied FileIO properties are merged over gateway defaults from
   `floecat.gateway.storage-credential.properties.*`.
+- **Registered Iceberg connectors:** tables registered or committed through the gateway are now
+  wired back to Floecat as ordinary `iceberg.source=rest` connectors. Steady-state discovery comes
+  from Floecat’s own REST catalog, while the table record’s `location` and `metadata-location`
+  remain the source of truth for Iceberg clients.
 - **Credentials:** `/tables/{table}/credentials` returns vended credentials based on access
   delegation; per-request signing is not yet implemented. Auth resolution supports `aws.profile`
   and `aws.profile_path` when clients expect AWS SDK profile-based access.
 - **Metrics persistence:** `/tables/{table}/metrics` validates and logs payloads but does not persist them to `TableStatisticsService`.
 - **Async planning:** plans are synchronous/completed only; streaming manifests and async planning (`/plans/{id}`) are future work.
 - **Multi-table ACID scope:** atomic within a single `/transactions/commit` backend transaction; request validation rejects duplicate table identifiers.
-- **Side-effect orchestration:** post-commit sync/prune actions are best-effort and can lag committed table state.
+- **Reconciliation freshness:** stats and other connector-derived state are eventually refreshed by scheduled reconciliation after the commit has already succeeded.
 - **Manifest/file serving:** the gateway does not serve manifests or data files directly; clients access storage through the credentials/config returned in REST responses.
 
 ---

@@ -16,10 +16,8 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.Observability;
@@ -38,6 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -84,10 +83,14 @@ public class ReconcilerScheduler {
   private static final int DEFAULT_MAX_PARALLELISM = 1;
 
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcilerService reconcilerService;
+  @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject ReconcileCancellationRegistry cancellations;
   @Inject Observability observability;
   @Inject Config config;
+
+  @ConfigProperty(name = "floecat.reconciler.scheduler.enabled", defaultValue = "true")
+  boolean schedulerEnabled;
+
   private static final Logger LOG = Logger.getLogger(ReconcilerScheduler.class);
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
@@ -97,6 +100,9 @@ public class ReconcilerScheduler {
 
   @PostConstruct
   void init() {
+    if (!schedulerEnabled) {
+      return;
+    }
     maxParallelism =
         Math.max(
             1,
@@ -118,14 +124,18 @@ public class ReconcilerScheduler {
       every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void pollOnce() {
+    if (!schedulerEnabled || executorRegistry.orderedExecutors().isEmpty()) {
+      return;
+    }
     if (!polling.compareAndSet(false, true)) {
       return;
     }
     try {
+      ReconcileJobStore.LeaseRequest leaseRequest = executorRegistry.leaseRequest();
       while (reserveWorkerSlot()) {
         Optional<ReconcileJobStore.LeasedJob> leaseOpt;
         try {
-          leaseOpt = jobs.leaseNext();
+          leaseOpt = jobs.leaseNext(leaseRequest);
         } catch (Exception e) {
           inFlight.decrementAndGet();
           LOG.errorf(e, "leaseNext() threw unexpectedly; releasing worker slot");
@@ -176,7 +186,7 @@ public class ReconcilerScheduler {
     }
   }
 
-  private void runLease(ReconcileJobStore.LeasedJob lease) {
+  void runLease(ReconcileJobStore.LeasedJob lease) {
     cancellations.register(lease.jobId, Thread.currentThread());
     long started = System.currentTimeMillis();
     long leaseMs =
@@ -236,34 +246,27 @@ public class ReconcilerScheduler {
       emitOutcome(lease, "lease_lost", now - started, 0, 0, 0, 0, 0, "lease_lost");
       return;
     }
-    jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis());
-    jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, "Running reconcile");
-    BooleanSupplier shouldStop =
-        () -> {
-          if (!leaseValid.get()) {
-            return true;
-          }
-          if (Thread.currentThread().isInterrupted()) {
-            interrupted.set(true);
-            return true;
-          }
-          return cancelRequested.getAsBoolean();
-        };
-
     try {
-      var connectorId =
-          ResourceId.newBuilder()
-              .setAccountId(lease.accountId)
-              .setId(lease.connectorId)
-              .setKind(ResourceKind.RK_CONNECTOR)
-              .build();
-
-      var principal =
-          PrincipalContext.newBuilder()
-              .setAccountId(lease.accountId)
-              .setSubject("reconciler.scheduler")
-              .setCorrelationId("reconciler-job-" + lease.jobId)
-              .build();
+      ReconcileExecutor executor =
+          executorRegistry
+              .executorFor(lease)
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "No reconcile executor available for lease " + lease.jobId));
+      jobs.markRunning(lease.jobId, lease.leaseEpoch, System.currentTimeMillis(), executor.id());
+      jobs.markProgress(lease.jobId, lease.leaseEpoch, 0, 0, 0, 0, 0, "Running reconcile");
+      BooleanSupplier shouldStop =
+          () -> {
+            if (!leaseValid.get()) {
+              return true;
+            }
+            if (Thread.currentThread().isInterrupted()) {
+              interrupted.set(true);
+              return true;
+            }
+            return cancelRequested.getAsBoolean();
+          };
       if (cancelRequested.getAsBoolean()) {
         long now = System.currentTimeMillis();
         jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, "Cancelled", 0, 0, 0, 0, 0);
@@ -271,28 +274,24 @@ public class ReconcilerScheduler {
         return;
       }
       var result =
-          reconcilerService.reconcile(
-              principal,
-              connectorId,
-              lease.fullRescan,
-              lease.scope,
-              lease.captureMode,
-              null,
-              shouldStop,
-              (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {
-                if (!heartbeat.getAsBoolean()) {
-                  return;
-                }
-                jobs.markProgress(
-                    lease.jobId,
-                    lease.leaseEpoch,
-                    scanned,
-                    changed,
-                    errors,
-                    snapshotsProcessed,
-                    statsProcessed,
-                    message);
-              });
+          executor.execute(
+              new ReconcileExecutor.ExecutionContext(
+                  lease,
+                  shouldStop,
+                  (scanned, changed, errors, snapshotsProcessed, statsProcessed, message) -> {
+                    if (!heartbeat.getAsBoolean()) {
+                      return;
+                    }
+                    jobs.markProgress(
+                        lease.jobId,
+                        lease.leaseEpoch,
+                        scanned,
+                        changed,
+                        errors,
+                        snapshotsProcessed,
+                        statsProcessed,
+                        message);
+                  }));
       long finished = System.currentTimeMillis();
       long totalSnapshots = result.snapshotsProcessed;
       long totalStats = result.statsProcessed;
@@ -311,12 +310,12 @@ public class ReconcilerScheduler {
         return;
       }
       boolean cancelledNow = cancelRequested.getAsBoolean();
-      if (result.cancelled() || cancelledNow) {
+      if (result.cancelled || cancelledNow) {
         jobs.markCancelled(
             lease.jobId,
             lease.leaseEpoch,
             finished,
-            result.message(),
+            result.message,
             result.scanned,
             result.changed,
             result.errors,
@@ -334,12 +333,36 @@ public class ReconcilerScheduler {
             null);
         return;
       }
+      if (result.failureKind == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
+        jobs.markCancelled(
+            lease.jobId,
+            lease.leaseEpoch,
+            finished,
+            result.message,
+            result.scanned,
+            result.changed,
+            result.errors,
+            totalSnapshots,
+            totalStats);
+        emitOutcome(
+            lease,
+            "cancelled",
+            finished - started,
+            result.scanned,
+            result.changed,
+            result.errors,
+            totalSnapshots,
+            totalStats,
+            "connector_missing",
+            result.message);
+        return;
+      }
       if (!result.ok()) {
         jobs.markFailed(
             lease.jobId,
             lease.leaseEpoch,
             finished,
-            result.message(),
+            result.message,
             result.scanned,
             result.changed,
             result.errors,
@@ -355,7 +378,7 @@ public class ReconcilerScheduler {
             totalSnapshots,
             totalStats,
             null,
-            result.message());
+            result.message);
         return;
       }
       jobs.markSucceeded(
@@ -392,8 +415,13 @@ public class ReconcilerScheduler {
         } else {
           var msg = describeFailure(e);
           long now = System.currentTimeMillis();
-          jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
-          emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e), msg);
+          if (failureKindOf(e) == ReconcileExecutor.ExecutionResult.FailureKind.CONNECTOR_MISSING) {
+            jobs.markCancelled(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
+            emitOutcome(lease, "cancelled", now - started, 0, 0, 1, 0, 0, "connector_missing", msg);
+          } else {
+            jobs.markFailed(lease.jobId, lease.leaseEpoch, now, msg, 0, 0, 1, 0, 0);
+            emitOutcome(lease, "failed", now - started, 0, 0, 1, 0, 0, normalizeReason(e), msg);
+          }
         }
       }
     } finally {
@@ -435,6 +463,19 @@ public class ReconcilerScheduler {
       return cls;
     }
     return cls + ": " + msg;
+  }
+
+  private static ReconcileExecutor.ExecutionResult.FailureKind failureKindOf(Throwable t) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = t;
+    while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof ReconcileFailureException rfe) {
+        return rfe.failureKind();
+      }
+      seen.add(cur);
+      cur = cur.getCause();
+    }
+    return ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL;
   }
 
   private void emitOutcome(

@@ -88,8 +88,6 @@ import ai.floedb.floecat.query.rpc.GetQueryResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
@@ -206,10 +204,6 @@ public class GrpcServiceFacade {
 
   public void deleteConnector(DeleteConnectorRequest request) {
     connectorStub().deleteConnector(request);
-  }
-
-  public CaptureNowResponse captureNow(CaptureNowRequest request) {
-    return reconcileStub().captureNow(request);
   }
 
   public StartCaptureResponse startCapture(StartCaptureRequest request) {

@@ -76,7 +76,7 @@ public class TableLoadService {
       snapshotList = delta.snapshots();
     } else {
       metadata = tableSupport.loadCurrentMetadata(tableRecord);
-      metadata = hydrateMetadataIfIncomplete(tableRecord, tableSupport, metadata);
+      metadata = hydrateMetadataIfNeeded(tableRecord, tableSupport, metadata);
       snapshotList =
           SnapshotLister.fetchSnapshots(
               snapshotClient, tableContext.tableId(), snapshotMode, metadata);
@@ -190,12 +190,19 @@ public class TableLoadService {
         && tableFormatSupport.isDelta(table);
   }
 
-  private IcebergMetadata hydrateMetadataIfIncomplete(
+  private IcebergMetadata hydrateMetadataIfNeeded(
       Table tableRecord, TableGatewaySupport tableSupport, IcebergMetadata metadata) {
-    if (metadata != null && metadata.getSchemasCount() > 0) {
+    String tableMetadataLocation = metadataLocation(null, tableRecord);
+    String snapshotMetadataLocation = metadataLocation(metadata, null);
+    boolean pointerAdvanced =
+        tableMetadataLocation != null
+            && !tableMetadataLocation.isBlank()
+            && !tableMetadataLocation.equals(snapshotMetadataLocation);
+    if (!pointerAdvanced && metadata != null && metadata.getSchemasCount() > 0) {
       return metadata;
     }
-    String metadataLocation = metadataLocation(metadata, tableRecord);
+    String metadataLocation =
+        pointerAdvanced ? tableMetadataLocation : metadataLocation(metadata, tableRecord);
     if (metadataLocation == null || metadataLocation.isBlank()) {
       LOG.warn("Load metadata had no schemas/metadata and no metadata-location; cannot hydrate");
       return metadata;

@@ -102,6 +102,11 @@ public class Shell implements Runnable {
   String sessionHeaderName;
 
   @CommandLine.Option(
+      names = {"--account-header"},
+      description = "Account header name for dev mode (default: x-floe-account)")
+  String accountHeaderName;
+
+  @CommandLine.Option(
       names = {"--oidc-token-url"},
       description = "OIDC token endpoint URL (or set FLOECAT_OIDC_TOKEN_URL)")
   String oidcTokenUrl;
@@ -445,6 +450,7 @@ public class Shell implements Runnable {
          --account-id <id>      Default account id (default: FLOECAT_ACCOUNT)
          --auth-header <name>   Authorization header name
          --session-header <name>  Session header name
+         --account-header <name>  Account header name for dev mode
          --oidc-token-url <url> OIDC token endpoint (default: FLOECAT_OIDC_TOKEN_URL)
          --oidc-issuer <url>    OIDC issuer base URL (default: FLOECAT_OIDC_ISSUER)
          --oidc-client-id <id>  OIDC client id (default: FLOECAT_OIDC_CLIENT_ID)
@@ -510,7 +516,7 @@ public class Shell implements Runnable {
          constraints add-check <id|catalog.ns[.ns...].table> <constraint_name> <check_expression> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          constraints add-fk <id|catalog.ns[.ns...].table> <constraint_name> <local_columns_csv> <referenced_table> <referenced_columns_csv> [--snapshot <id>] [--etag <etag>|--version <n>] [--json]
          analyze <tableFQ> [--columns c1,c2,...] [--mode metadata-only|metadata-and-stats|stats-only]
-             [--snapshot-ids id1,id2,...] [--full]
+             [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
          query renew <query_id> [--ttl <seconds>]
@@ -540,7 +546,6 @@ public class Shell implements Runnable {
          connector trigger <display_name|id> [--full]
              [--mode metadata-only|metadata-and-stats|stats-only]
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-cols c1,#id2,...]
-             [--snapshot-ids id1,id2,...]
          connector job <jobId>
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>]
          connector cancel <jobId> [--reason <text>]
@@ -643,6 +648,9 @@ public class Shell implements Runnable {
     if (sessionHeaderName == null || sessionHeaderName.isBlank()) {
       sessionHeaderName = "x-floe-session";
     }
+    if (accountHeaderName == null || accountHeaderName.isBlank()) {
+      accountHeaderName = "x-floe-account";
+    }
     if (currentAccountId == null || currentAccountId.isBlank()) {
       currentAccountId = accountId;
     }
@@ -706,8 +714,10 @@ public class Shell implements Runnable {
         new AuthHeaderInterceptor(
             this::resolveAuthorizationToken,
             () -> sessionToken == null ? "" : sessionToken.trim(),
+            () -> currentAccountId == null ? "" : currentAccountId.trim(),
             authHeaderName,
-            sessionHeaderName);
+            sessionHeaderName,
+            accountHeaderName);
     catalogs = catalogs.withInterceptors(authInterceptor);
     namespaces = namespaces.withInterceptors(authInterceptor);
     tables = tables.withInterceptors(authInterceptor);

@@ -22,14 +22,20 @@ import "floecat/connector/connector.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
+// Identifies the portion of a connector's destination that a reconcile request should touch.
 message CaptureScope {
+  // Connector to execute the reconcile against.
   ai.floedb.floecat.common.ResourceId connector_id = 1;
+  // Optional destination namespaces to limit the reconcile to.
+  // When empty, the reconcile uses the connector's full configured destination scope.
   repeated ai.floedb.floecat.connector.NamespacePath destination_namespace_paths = 2;
+  // Optional destination table display name used to narrow the scope to a single table.
   string destination_table_display_name = 3;
+  // Optional destination columns to process for the selected table.
   repeated string destination_table_columns = 4;
-  repeated uint64 destination_snapshot_ids = 5;
 }
 
+// Controls whether reconcile should refresh metadata, persisted statistics, or both.
 enum CaptureMode {
   CM_UNSPECIFIED = 0;
   CM_METADATA_ONLY = 1;
@@ -37,38 +43,186 @@ enum CaptureMode {
   CM_STATS_ONLY = 3;
 }
 
+// High-level execution class used by schedulers and executors for placement decisions.
+enum ExecutionClass {
+  EC_UNSPECIFIED = 0;
+  // Default background execution when no stronger hint is provided.
+  EC_DEFAULT = 1;
+  // User-facing or latency-sensitive execution.
+  EC_INTERACTIVE = 2;
+  // Non-interactive queued work.
+  EC_BATCH = 3;
+  // Resource-intensive execution that may need dedicated capacity.
+  EC_HEAVY = 4;
+}
+
+// Scheduler hints that influence where and how a reconcile job should run.
+message ExecutionPolicy {
+  // Broad execution category used for matching jobs to executors.
+  ExecutionClass execution_class = 1;
+  // Optional scheduler-specific lane or queue name.
+  string lane = 2;
+  // Free-form scheduler hints such as region, tenant, or implementation-specific labels.
+  map<string, string> attributes = 3;
+}
+
+// Synchronous reconcile request intended for immediate execution in the caller's RPC.
 message CaptureNowRequest {
   CaptureScope scope = 1;
   CaptureMode mode = 2;
+  // When true, ignore incremental optimization and rescan the selected scope from scratch.
   bool full_rescan = 3;
+  // Optional caller-supplied maximum wait for the synchronous RPC.
+  // The server may clamp this to a smaller configured maximum and may also stop earlier if the
+  // gRPC deadline expires.
+  google.protobuf.Duration max_wait = 4;
 }
 
+// Summary counters returned by a synchronous reconcile.
 message CaptureNowResponse {
   uint64 tables_scanned = 1;
   uint64 tables_changed = 2;
   uint64 errors = 3;
 }
 
+// Asynchronous reconcile request that enqueues a job for later execution.
 message StartCaptureRequest {
   CaptureScope scope = 1;
   CaptureMode mode = 2;
   bool full_rescan = 3;
+  // Optional execution hints for scheduler placement.
+  ExecutionPolicy execution_policy = 4;
 }
 
 message StartCaptureResponse {
+  // Server-assigned job id that can be used to poll or cancel the queued/running job.
   string job_id = 1;
+}
+
+// Job payload returned to an executor after successfully leasing work.
+message LeasedReconcileJob {
+  string job_id = 1;
+  ai.floedb.floecat.common.ResourceId connector_id = 2;
+  CaptureMode mode = 3;
+  bool full_rescan = 4;
+  CaptureScope scope = 5;
+  // Opaque lease token that must be echoed by renew/start/progress/complete calls.
+  string lease_epoch = 6;
+  ExecutionPolicy execution_policy = 7;
+  // Optional executor chosen by the scheduler ahead of time.
+  string pinned_executor_id = 8;
+  // Executor currently holding the lease, if any.
+  string executor_id = 9;
+}
+
+// Request from an executor asking the scheduler for work it is willing to run.
+message LeaseReconcileJobRequest {
+  // Stable executor identity used for lease ownership and routing.
+  string executor_id = 1;
+  // Execution classes this executor is currently willing to accept.
+  repeated ExecutionClass execution_classes = 2;
+  // Optional lane filters. Empty means the executor accepts jobs from any lane.
+  repeated string lanes = 3;
+}
+
+message LeaseReconcileJobResponse {
+  // False when no matching job was available for lease.
+  bool found = 1;
+  // Present only when found is true.
+  LeasedReconcileJob job = 2;
+}
+
+message RenewReconcileLeaseRequest {
+  string job_id = 1;
+  // Current lease token previously returned by LeaseReconcileJob.
+  string lease_epoch = 2;
+}
+
+message RenewReconcileLeaseResponse {
+  // False when the lease no longer belongs to the caller or the job is no longer renewable.
+  bool renewed = 1;
+  // True when the job should stop as soon as practical and report cancellation/failure.
+  bool cancellation_requested = 2;
+}
+
+// Sent by an executor when it transitions a leased job into active execution.
+message StartLeasedReconcileJobRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  string executor_id = 3;
+}
+
+message StartLeasedReconcileJobResponse {}
+
+// Incremental progress update from a running executor.
+message ReportReconcileProgressRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  uint64 tables_scanned = 3;
+  uint64 tables_changed = 4;
+  uint64 errors = 5;
+  uint64 snapshots_processed = 6;
+  uint64 stats_processed = 7;
+  // Optional human-readable status string for operators and clients.
+  string message = 8;
+}
+
+message ReportReconcileProgressResponse {
+  // False when the caller no longer owns a valid lease for this job.
+  bool lease_valid = 1;
+  bool cancellation_requested = 2;
+}
+
+// Terminal completion state reported by an executor when it finishes a leased job.
+enum ReconcileCompletionState {
+  RCS_UNSPECIFIED = 0;
+  RCS_SUCCEEDED = 1;
+  RCS_FAILED = 2;
+  RCS_CANCELLED = 3;
+}
+
+// Final result reported by an executor when it finishes leased work.
+message CompleteLeasedReconcileJobRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  ReconcileCompletionState state = 3;
+  uint64 tables_scanned = 4;
+  uint64 tables_changed = 5;
+  uint64 errors = 6;
+  uint64 snapshots_processed = 7;
+  uint64 stats_processed = 8;
+  // Optional final operator-facing summary or failure reason.
+  string message = 9;
+}
+
+message CompleteLeasedReconcileJobResponse {
+  // False when completion was rejected, typically because the lease was no longer valid.
+  bool accepted = 1;
+}
+
+message GetReconcileCancellationRequest {
+  string job_id = 1;
+}
+
+message GetReconcileCancellationResponse {
+  bool cancellation_requested = 1;
 }
 
 message GetReconcileJobRequest {
   string job_id = 1;
 }
 
+// Durable job status returned to clients and operators.
 message GetReconcileJobResponse {
   string job_id = 1;
+  // Connector id as a plain string for lightweight display and filtering.
   string connector_id = 2;
   JobState state = 3;
+  // Latest human-readable progress or terminal message.
   string message = 4;
+  // Time at which execution actually started, not queue time.
   google.protobuf.Timestamp started_at = 5;
+  // Time at which the job entered a terminal state.
   google.protobuf.Timestamp finished_at = 6;
   uint64 tables_scanned = 7;
   uint64 tables_changed = 8;
@@ -76,12 +230,19 @@ message GetReconcileJobResponse {
   bool full_rescan = 10;
   uint64 snapshots_processed = 11;
   uint64 stats_processed = 12;
+  // End-to-end runtime in milliseconds for completed jobs, or current elapsed time if reported.
   uint64 duration_ms = 13;
+  ExecutionPolicy execution_policy = 14;
+  // Executor that most recently ran or is currently running the job.
+  string executor_id = 15;
 }
 
 message ListReconcileJobsRequest {
+  // Standard pagination request.
   ai.floedb.floecat.common.PageRequest page = 1;
+  // Optional connector filter.
   string connector_id = 2;
+  // Optional state filter. Empty means all states.
   repeated JobState states = 3;
 }
 
@@ -92,14 +253,17 @@ message ListReconcileJobsResponse {
 
 message CancelReconcileJobRequest {
   string job_id = 1;
+  // Optional operator-supplied reason recorded with the job.
   string reason = 2;
 }
 
 message CancelReconcileJobResponse {
+  // True when cancellation was accepted or the job was already transitioning to cancellation.
   bool cancelled = 1;
   GetReconcileJobResponse job = 2;
 }
 
+// Persisted scheduler/runtime state for a reconcile job.
 enum JobState {
   JS_UNSPECIFIED = 0;
   JS_QUEUED = 1;
@@ -112,13 +276,19 @@ enum JobState {
 
 message GetReconcilerSettingsRequest {}
 
+// Global reconciler defaults used for connector auto-reconcile behavior.
 message GetReconcilerSettingsResponse {
+  // Enables or disables background automatic reconcile scheduling globally.
   bool auto_enabled = 1;
+  // Default interval between automatic reconciles when a connector does not override it.
   google.protobuf.Duration default_interval = 2;
+  // Default reconcile mode applied to automatic scheduling when unspecified by the connector.
   ai.floedb.floecat.connector.ReconcileMode default_mode = 3;
+  // How long finished jobs remain queryable before cleanup.
   google.protobuf.Duration finished_job_retention = 4;
 }
 
+// Partial update for global reconciler defaults. Only populated optional fields are changed.
 message UpdateReconcilerSettingsRequest {
   optional bool auto_enabled = 1;
   optional google.protobuf.Duration default_interval = 2;
@@ -133,6 +303,7 @@ message UpdateReconcilerSettingsResponse {
   google.protobuf.Duration finished_job_retention = 4;
 }
 
+// Client-facing control plane for synchronous and asynchronous reconcile operations.
 service ReconcileControl {
   rpc CaptureNow(CaptureNowRequest) returns (CaptureNowResponse);
   rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
@@ -142,4 +313,18 @@ service ReconcileControl {
   rpc GetReconcilerSettings(GetReconcilerSettingsRequest) returns (GetReconcilerSettingsResponse);
   rpc UpdateReconcilerSettings(UpdateReconcilerSettingsRequest)
       returns (UpdateReconcilerSettingsResponse);
+}
+
+// Executor-facing lease protocol used by remote workers to pull and report reconcile jobs.
+service ReconcileExecutorControl {
+  rpc LeaseReconcileJob(LeaseReconcileJobRequest) returns (LeaseReconcileJobResponse);
+  rpc RenewReconcileLease(RenewReconcileLeaseRequest) returns (RenewReconcileLeaseResponse);
+  rpc StartLeasedReconcileJob(StartLeasedReconcileJobRequest)
+      returns (StartLeasedReconcileJobResponse);
+  rpc ReportReconcileProgress(ReportReconcileProgressRequest)
+      returns (ReportReconcileProgressResponse);
+  rpc CompleteLeasedReconcileJob(CompleteLeasedReconcileJobRequest)
+      returns (CompleteLeasedReconcileJobResponse);
+  rpc GetReconcileCancellation(GetReconcileCancellationRequest)
+      returns (GetReconcileCancellationResponse);
 }

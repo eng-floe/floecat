@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -38,16 +37,12 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
-import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import java.util.List;
@@ -257,64 +252,6 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void runSyncStatisticsCaptureBuildsStatsOnlyRequest() {
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("c3").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(grpcClient.captureNow(any()))
-        .thenReturn(
-            CaptureNowResponse.newBuilder()
-                .setTablesScanned(1)
-                .setTablesChanged(1)
-                .setErrors(0)
-                .build());
-
-    support.runSyncStatisticsCapture(connectorId, List.of("db", "analytics"), "orders");
-
-    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(grpcClient, times(1)).captureNow(captor.capture());
-    CaptureNowRequest request = captor.getValue();
-    assertEquals(connectorId, request.getScope().getConnectorId());
-    assertEquals("orders", request.getScope().getDestinationTableDisplayName());
-    assertEquals(1, request.getScope().getDestinationNamespacePathsCount());
-    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
-    assertFalse(request.getFullRescan());
-  }
-
-  @Test
-  void runSyncStatisticsCaptureIncludesExplicitSnapshotScope() {
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("c4").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
-
-    support.runSyncStatisticsCapture(
-        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L));
-
-    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(grpcClient).captureNow(captor.capture());
-    CaptureNowRequest request = captor.getValue();
-    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
-    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
-    assertFalse(request.getFullRescan());
-  }
-
-  @Test
-  void runSyncStatisticsCaptureCanRequestFullRescanForExplicitSnapshotScope() {
-    ResourceId connectorId =
-        ResourceId.newBuilder().setId("c5").setKind(ResourceKind.RK_CONNECTOR).build();
-    when(grpcClient.captureNow(any())).thenReturn(CaptureNowResponse.newBuilder().build());
-
-    support.runSyncStatisticsCapture(
-        connectorId, List.of("db", "analytics"), "orders", List.of(101L, 102L), true);
-
-    ArgumentCaptor<CaptureNowRequest> captor = ArgumentCaptor.forClass(CaptureNowRequest.class);
-    verify(grpcClient).captureNow(captor.capture());
-    CaptureNowRequest request = captor.getValue();
-    assertEquals(List.of(101L, 102L), request.getScope().getDestinationSnapshotIdsList());
-    assertEquals(CaptureMode.CM_STATS_ONLY, request.getMode());
-    assertTrue(request.getFullRescan());
-  }
-
-  @Test
   void loadCurrentMetadataUsesCurrentSnapshotWhenIdsMatch() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
@@ -341,7 +278,7 @@ class TableGatewaySupportTest {
   }
 
   @Test
-  void loadCurrentMetadataFallsBackToSnapshotPropertyOnMismatchOrError() {
+  void loadCurrentMetadataPrefersCurrentSnapshotAndOnlyFallsBackOnError() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
     Table table =
         Table.newBuilder()
@@ -370,11 +307,8 @@ class TableGatewaySupportTest {
 
     IcebergMetadata loaded = support.loadCurrentMetadata(table);
 
-    assertEquals("t-99", loaded.getTableUuid());
-    ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
-    verify(grpcClient, times(2)).getSnapshot(captor.capture());
-    assertEquals(tableId, captor.getAllValues().get(1).getTableId());
-    assertEquals(99L, captor.getAllValues().get(1).getSnapshot().getSnapshotId());
+    assertEquals("t-11", loaded.getTableUuid());
+    verify(grpcClient, times(1)).getSnapshot(any());
 
     when(grpcClient.getSnapshot(any()))
         .thenThrow(Status.UNAVAILABLE.asRuntimeException())
@@ -388,6 +322,10 @@ class TableGatewaySupportTest {
                 .build());
     IcebergMetadata recovered = support.loadCurrentMetadata(table);
     assertEquals("t-99", recovered.getTableUuid());
+    ArgumentCaptor<GetSnapshotRequest> captor = ArgumentCaptor.forClass(GetSnapshotRequest.class);
+    verify(grpcClient, times(3)).getSnapshot(captor.capture());
+    assertEquals(tableId, captor.getAllValues().get(2).getTableId());
+    assertEquals(99L, captor.getAllValues().get(2).getSnapshot().getSnapshotId());
   }
 
   @Test
