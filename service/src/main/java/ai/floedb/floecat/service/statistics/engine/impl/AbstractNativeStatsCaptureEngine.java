@@ -120,7 +120,6 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
               upstream.getConnectorId());
 
       try (FloecatConnector floecatConnector = connectorOpener.open(resolved)) {
-        Set<Long> snapshotFilter = Set.of(request.snapshotId());
         // Connector SPI expects namespace as fully-qualified string.
         List<FloecatConnector.SnapshotBundle> bundles =
             floecatConnector.enumerateSnapshotsWithStats(
@@ -128,8 +127,7 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
                 upstream.getTableDisplayName(),
                 request.tableId(),
                 request.columnSelectors(),
-                new FloecatConnector.SnapshotEnumerationOptions(
-                    true, false, Set.of(), snapshotFilter));
+                new FloecatConnector.SnapshotEnumerationOptions(true, false, Set.of()));
         Optional<FloecatConnector.SnapshotBundle> bundle =
             bundles.stream().filter(b -> b.snapshotId() == request.snapshotId()).findFirst();
         if (bundle.isEmpty()) {

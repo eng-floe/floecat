@@ -343,6 +343,7 @@ public class ReconcilerService {
           boolean includeStats =
               captureMode == CaptureMode.STATS_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
+          Set<Long> targetSnapshotIds = Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
@@ -1046,7 +1047,7 @@ public class ReconcilerService {
             tableId,
             includeSelectors == null ? Set.of() : includeSelectors,
             new FloecatConnector.SnapshotEnumerationOptions(
-                false, fullRescan, enumerationKnownSnapshotIds, Set.of()));
+                false, fullRescan, enumerationKnownSnapshotIds));
     Set<Long> snapshotIds = new LinkedHashSet<>();
     if (discovered == null) {
       return snapshotIds;

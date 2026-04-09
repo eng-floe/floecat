@@ -127,8 +127,7 @@ public class StatsOrchestrator {
           table.get().getUpstream().getTableDisplayName().isBlank()
               ? table.get().getDisplayName()
               : table.get().getUpstream().getTableDisplayName();
-      ReconcileScope scope =
-          ReconcileScope.of(namespaceScope, tableDisplay, List.of(), List.of(request.snapshotId()));
+      ReconcileScope scope = ReconcileScope.of(namespaceScope, tableDisplay, List.of());
       reconcileJobStore.enqueue(
           request.tableId().getAccountId(),
           table.get().getUpstream().getConnectorId().getId(),

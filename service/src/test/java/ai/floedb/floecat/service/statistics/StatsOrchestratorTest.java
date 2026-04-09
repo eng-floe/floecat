@@ -144,8 +144,8 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             scopeCaptor.capture());
-    assertThat(scopeCaptor.getValue().destinationSnapshotIds())
-        .containsExactly(request.snapshotId());
+    assertThat(scopeCaptor.getValue().destinationNamespacePaths()).containsExactly(List.of("db"));
+    assertThat(scopeCaptor.getValue().destinationTableDisplayName()).isEqualTo("events");
   }
 
   @Test
