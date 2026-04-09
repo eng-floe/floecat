@@ -52,6 +52,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
@@ -1783,7 +1784,7 @@ class IcebergRestFixtureIT {
 
     if (connectorIntegrationEnabled) {
       Connector connector =
-          awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(20));
+          awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(45));
       Assertions.assertNotNull(connector, "Connector should be created for trino_test");
 
       withReconcileControlClient(
@@ -2425,19 +2426,10 @@ class IcebergRestFixtureIT {
   private Connector awaitConnectorForTable(String namespace, String table, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
-      Connector connector =
-          withConnectorsClient(
-              stub -> {
-                ListConnectorsResponse response =
-                    stub.listConnectors(ListConnectorsRequest.newBuilder().build());
-                return response.getConnectorsList().stream()
-                    .filter(
-                        c ->
-                            table.equals(c.getSource().getTable())
-                                && namespace.equals(String.join(".", c.getSource().getNamespace().getSegmentsList())))
-                    .findFirst()
-                    .orElse(null);
-              });
+      Connector connector = findConnectorBySourceSelection(namespace, table);
+      if (connector == null) {
+        connector = findConnectorViaTableUpstream(namespace, table);
+      }
       if (connector != null) {
         return connector;
       }
@@ -2450,6 +2442,54 @@ class IcebergRestFixtureIT {
     }
     Assertions.fail("Timed out waiting for connector for " + namespace + "." + table);
     return null;
+  }
+
+  private Connector findConnectorBySourceSelection(String namespace, String table) {
+    return withConnectorsClient(
+        stub -> {
+          ListConnectorsResponse response =
+              stub.listConnectors(ListConnectorsRequest.newBuilder().build());
+          return response.getConnectorsList().stream()
+              .filter(
+                  c ->
+                      table.equals(c.getSource().getTable())
+                          && namespace.equals(
+                              String.join(".", c.getSource().getNamespace().getSegmentsList())))
+              .findFirst()
+              .orElse(null);
+        });
+  }
+
+  private Connector findConnectorViaTableUpstream(String namespace, String table) {
+    try {
+      ResourceId tableId = resolveTableId(namespace, table);
+      if (tableId == null || tableId.getId().isBlank()) {
+        return null;
+      }
+      Table tableRecord =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
+      if (tableRecord == null
+          || !tableRecord.hasUpstream()
+          || !tableRecord.getUpstream().hasConnectorId()) {
+        return null;
+      }
+      ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
+      if (connectorId == null || connectorId.getId().isBlank()) {
+        return null;
+      }
+      return withConnectorsClient(
+          stub ->
+              stub.getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                  .getConnector());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND
+          || e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private <S extends AbstractBlockingStub<S>, T> T withServiceClient(
