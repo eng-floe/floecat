@@ -180,6 +180,71 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leaseNextAllowsOnlyOneRunningJobPerLane() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+
+    String metadataJob =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
+    String statsJob = store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.STATS_ONLY, scope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(metadataJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(metadataJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(statsJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextAllowsOnlyOneRunningJobPerTableAcrossConnectors() {
+    store.init();
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, scope);
+    String secondJob =
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.METADATA_AND_STATS, scope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
+  void leaseNextTreatsEquivalentMultiNamespaceScopesAsSameTableLane() {
+    store.init();
+    ReconcileScope firstScope =
+        ReconcileScope.of(List.of(List.of("b"), List.of("a")), "tbl", List.of());
+    ReconcileScope secondScope =
+        ReconcileScope.of(List.of(List.of("a"), List.of("b")), "tbl", List.of());
+
+    String firstJob =
+        store.enqueue(ACCOUNT_ID, "conn-a", false, CaptureMode.METADATA_AND_STATS, firstScope);
+    String secondJob =
+        store.enqueue(ACCOUNT_ID, "conn-b", false, CaptureMode.STATS_ONLY, secondScope);
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(firstJob, firstLease.jobId);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.markSucceeded(firstJob, firstLease.leaseEpoch, System.currentTimeMillis(), 1, 1, 1, 1);
+
+    var secondLease = store.leaseNext().orElseThrow();
+    assertEquals(secondJob, secondLease.jobId);
+  }
+
+  @Test
   void successfulJobClearsDedupeAndAllowsFreshEnqueue() {
     store.init();
     ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of());
@@ -468,13 +533,13 @@ class DurableReconcileJobStoreTest {
   @Test
   void queueStatsReflectQueuedRunningAndCancellingJobs() {
     store.init();
+    ReconcileScope queuedScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-q", List.of());
+    ReconcileScope runningScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-r", List.of());
+    ReconcileScope cancellingScope = ReconcileScope.of(List.of(List.of("ns")), "tbl-c", List.of());
 
-    store.enqueue(
-        ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
-    store.enqueue(
-        ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
-    store.enqueue(
-        ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, ReconcileScope.empty());
+    store.enqueue(ACCOUNT_ID, "conn-q", false, CaptureMode.METADATA_AND_STATS, queuedScope);
+    store.enqueue(ACCOUNT_ID, "conn-r", false, CaptureMode.METADATA_AND_STATS, runningScope);
+    store.enqueue(ACCOUNT_ID, "conn-c", false, CaptureMode.METADATA_AND_STATS, cancellingScope);
 
     var firstLease = store.leaseNext().orElseThrow();
     store.markRunning(

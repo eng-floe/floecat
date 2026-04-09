@@ -778,6 +778,12 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
   }
 
+  public static String reconcileLaneLeasePointer(String accountId, String laneKey) {
+    String tid = req("account_id", accountId);
+    String lane = req("lane_key", laneKey);
+    return "/accounts/" + encode(tid) + "/reconcile/lanes/" + encode(lane);
+  }
+
   public static String reconcileJobBlobPrefix(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);

@@ -135,7 +135,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     ReconcileScope scope = incomingScope == null ? ReconcileScope.empty() : incomingScope;
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
-    String laneKey = laneKey(connectorId, scope);
+    String laneKey = laneKey(scope);
     String dedupeKey =
         dedupeKey(accountId, connectorId, fullRescan, captureMode, scope, policy, pinnedExecutorId);
     String dedupePointerKey = Keys.reconcileDedupePointer(accountId, hashValue(dedupeKey));
@@ -437,6 +437,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.tablesChanged = changed;
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -474,6 +475,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
           existing.lastError = message == null ? "Failed" : message;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -561,6 +563,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             existing.startedAtMs = now;
           }
           existing.finishedAtMs = now;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -618,6 +621,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           existing.errors = errors;
           existing.snapshotsProcessed = snapshotsProcessed;
           existing.statsProcessed = statsProcessed;
+          clearLaneLeaseIfOwned(existing, existing.currentBlobUri);
           existing.leaseOwner = null;
           existing.leaseEpoch = null;
           existing.leaseExpiresAtMs = 0L;
@@ -908,6 +912,69 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return Optional.empty();
   }
 
+  private boolean tryAcquireLaneLease(StoredReconcileJob record, String blobUri, long now) {
+    if (record == null
+        || record.accountId == null
+        || record.accountId.isBlank()
+        || record.laneKey == null
+        || record.laneKey.isBlank()
+        || blobUri == null
+        || blobUri.isBlank()) {
+      return false;
+    }
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    for (int i = 0; i < CAS_MAX; i++) {
+      Pointer existing = pointerStore.get(lanePointerKey).orElse(null);
+      if (existing == null) {
+        Pointer created =
+            Pointer.newBuilder().setKey(lanePointerKey).setBlobUri(blobUri).setVersion(1L).build();
+        if (pointerStore.compareAndSet(lanePointerKey, 0L, created)) {
+          return true;
+        }
+        continue;
+      }
+      if (blobUri.equals(existing.getBlobUri())) {
+        return true;
+      }
+
+      var owner = readRecordByBlobUri(existing.getBlobUri());
+      if (owner.isPresent() && hasActiveLaneLease(owner.get(), now)) {
+        return false;
+      }
+      if (pointerStore.compareAndDelete(lanePointerKey, existing.getVersion())) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  private boolean hasActiveLaneLease(StoredReconcileJob record, long now) {
+    if (record == null) {
+      return false;
+    }
+    if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
+      return false;
+    }
+    if (record.leaseOwner == null || record.leaseOwner.isBlank()) {
+      return false;
+    }
+    return record.leaseExpiresAtMs > now;
+  }
+
+  private void clearLaneLeaseIfOwned(StoredReconcileJob record, String expectedBlobUri) {
+    if (record == null
+        || record.accountId == null
+        || record.accountId.isBlank()
+        || record.laneKey == null
+        || record.laneKey.isBlank()
+        || expectedBlobUri == null
+        || expectedBlobUri.isBlank()) {
+      return;
+    }
+    String lanePointerKey = Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey);
+    clearPointerIfMatches(lanePointerKey, expectedBlobUri);
+  }
+
   private Optional<StoredReconcileJob> loadActiveFromDedupe(String dedupePointerKey) {
     Pointer dedupePointer = pointerStore.get(dedupePointerKey).orElse(null);
     if (dedupePointer == null) {
@@ -989,6 +1056,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 }
 
                 boolean wasCancelling = "JS_CANCELLING".equals(record.state);
+                clearLaneLeaseIfOwned(record, record.currentBlobUri);
                 record.state = wasCancelling ? "JS_CANCELLING" : "JS_QUEUED";
                 record.message =
                     wasCancelling ? "Lease expired while cancelling" : "Lease expired; requeued";
@@ -1058,13 +1126,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         if (!matchesLeaseRequest(readyTarget.canonicalPointerKey(), request)) {
           continue;
         }
+        Pointer canonicalPointer = pointerStore.get(readyTarget.canonicalPointerKey()).orElse(null);
+        if (canonicalPointer == null) {
+          continue;
+        }
+        var recordOpt = readRecord(canonicalPointer);
+        if (recordOpt.isEmpty()) {
+          continue;
+        }
+        if (!tryAcquireLaneLease(recordOpt.get(), canonicalPointer.getBlobUri(), nowMs)) {
+          continue;
+        }
         if (!pointerStore.compareAndDelete(candidate.getKey(), candidate.getVersion())) {
+          clearLaneLeaseIfOwned(recordOpt.get(), canonicalPointer.getBlobUri());
           continue;
         }
         var leased = leaseCanonical(readyTarget.canonicalPointerKey(), candidate.getKey(), nowMs);
         if (leased.isPresent()) {
           return leased;
         }
+        clearLaneLeaseIfOwned(recordOpt.get(), canonicalPointer.getBlobUri());
       }
 
       String nextToken = next.toString();
@@ -1234,6 +1315,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (record.readyPointerKey != null && !record.readyPointerKey.isBlank()) {
       replacePointerBlobUriIfMatch(record.readyPointerKey, oldBlobUri, newBlobUri);
     }
+    if (hasActiveLaneLease(record, System.currentTimeMillis())) {
+      replacePointerBlobUriIfMatch(
+          Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey), oldBlobUri, newBlobUri);
+    }
     if (record.dedupeKey != null && !record.dedupeKey.isBlank() && !isTerminalState(record.state)) {
       String dedupePointer =
           Keys.reconcileDedupePointer(record.accountId, hashValue(record.dedupeKey));
@@ -1384,14 +1469,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     };
   }
 
-  private static String laneKey(String connectorId, ReconcileScope scope) {
-    String namespace =
-        scope.destinationNamespacePaths().isEmpty()
-            ? "*"
-            : String.join(".", scope.destinationNamespacePaths().get(0));
+  private static String laneKey(ReconcileScope scope) {
+    String namespaces =
+        scope.destinationNamespacePaths().stream()
+            .map(path -> String.join(".", path))
+            .sorted()
+            .reduce((a, b) -> a + "," + b)
+            .orElse("*");
     String table =
         scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
-    return connectorId + "|" + namespace + "|" + table;
+    return namespaces + "|" + table;
   }
 
   private static String dedupeKey(
