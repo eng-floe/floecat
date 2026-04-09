@@ -1283,7 +1283,7 @@ class ReconcilerServiceTest {
   }
 
   @Test
-  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
+  void filterBundlesForModeAppliesIncrementalPruningUsingExistingSnapshotIds() throws Exception {
     List<FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new FloecatConnector.SnapshotBundle(
@@ -1300,7 +1300,7 @@ class ReconcilerServiceTest {
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(12L);
+        .containsExactly(10L);
   }
 
   @Test
