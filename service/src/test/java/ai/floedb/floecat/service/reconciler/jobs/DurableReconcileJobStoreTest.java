@@ -195,17 +195,15 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueuePreservesSnapshotScopeIncludingZero() {
+  void enqueuePreservesColumnScope() {
     store.init();
-    ReconcileScope scope =
-        ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of(), List.of(0L, 3L));
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("ns")), "tbl", List.of("c1", "#3"));
 
     String jobId =
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_STATS, scope);
 
     ReconcileJob job = store.get(jobId).orElseThrow();
-    assertEquals(List.of(0L, 3L), job.scope.destinationSnapshotIds());
-    assertTrue(job.scope.hasSnapshotFilter());
+    assertEquals(List.of("c1", "#3"), job.scope.destinationTableColumns());
   }
 
   @Test

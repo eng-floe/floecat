@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
 class DeltaConnectorTest {
 
   @Test
-  void enumerateSnapshotsWithStatsHonorsExplicitTargetVersions() {
+  void enumerateSnapshotsWithStatsReturnsAvailableVersionsForFullRescan() {
     Snapshot latest = snapshot(7L, 7000L);
     Snapshot v3 = snapshot(3L, 3000L);
     Snapshot v5 = snapshot(5L, 5000L);
@@ -58,14 +58,14 @@ class DeltaConnectorTest {
             "tbl",
             ResourceId.getDefaultInstance(),
             Set.of(),
-            new FloecatConnector.SnapshotEnumerationOptions(false, true, Set.of(), Set.of(3L, 5L)));
+            new FloecatConnector.SnapshotEnumerationOptions(false, true, Set.of()));
 
     List<Long> snapshotIds =
         bundles.stream()
             .map(FloecatConnector.SnapshotBundle::snapshotId)
             .collect(Collectors.toList());
 
-    assertEquals(List.of(3L, 5L), snapshotIds);
+    assertEquals(List.of(3L, 5L, 7L), snapshotIds);
   }
 
   @Test
@@ -90,8 +90,7 @@ class DeltaConnectorTest {
             "tbl",
             ResourceId.getDefaultInstance(),
             Set.of(),
-            new FloecatConnector.SnapshotEnumerationOptions(
-                false, false, Set.of(1L, 4L), Set.of()));
+            new FloecatConnector.SnapshotEnumerationOptions(false, false, Set.of(1L, 4L)));
 
     List<Long> snapshotIds =
         bundles.stream()

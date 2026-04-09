@@ -33,8 +33,6 @@ message CaptureScope {
   string destination_table_display_name = 3;
   // Optional destination columns to process for the selected table.
   repeated string destination_table_columns = 4;
-  // Optional destination snapshot ids to process instead of discovering snapshots dynamically.
-  repeated uint64 destination_snapshot_ids = 5;
 }
 
 // Controls whether reconcile should refresh metadata, persisted statistics, or both.

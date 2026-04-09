@@ -98,35 +98,19 @@ public interface FloecatConnector extends Closeable {
   }
 
   record SnapshotEnumerationOptions(
-      boolean includeStatistics,
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
+      boolean includeStatistics, boolean fullRescan, Set<Long> knownSnapshotIds) {
     public SnapshotEnumerationOptions {
       knownSnapshotIds =
           knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
-      targetSnapshotIds =
-          targetSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(targetSnapshotIds));
     }
 
     public static SnapshotEnumerationOptions full(boolean includeStatistics) {
-      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of(), Set.of());
-    }
-
-    public static SnapshotEnumerationOptions full(
-        boolean includeStatistics, Set<Long> targetSnapshotIds) {
-      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of(), targetSnapshotIds);
+      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of());
     }
 
     public static SnapshotEnumerationOptions incremental(
         boolean includeStatistics, Set<Long> knownSnapshotIds) {
-      return new SnapshotEnumerationOptions(includeStatistics, false, knownSnapshotIds, Set.of());
-    }
-
-    public static SnapshotEnumerationOptions incremental(
-        boolean includeStatistics, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-      return new SnapshotEnumerationOptions(
-          includeStatistics, false, knownSnapshotIds, targetSnapshotIds);
+      return new SnapshotEnumerationOptions(includeStatistics, false, knownSnapshotIds);
     }
   }
 

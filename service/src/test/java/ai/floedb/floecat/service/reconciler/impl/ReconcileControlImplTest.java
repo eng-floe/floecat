@@ -32,12 +32,10 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -78,53 +76,6 @@ class ReconcileControlImplTest {
             .build();
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(Connector.newBuilder().setResourceId(connectorId).build()));
-  }
-
-  @Test
-  void captureNowRejectsSnapshotScopeWithoutSingleTableTarget() {
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .captureNow(
-                        CaptureNowRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder()
-                                    .setConnectorId(connectorId())
-                                    .addDestinationSnapshotIds(10L)
-                                    .build())
-                            .build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
-  }
-
-  @Test
-  void startCaptureRejectsSnapshotScopeWithoutSingleNamespacePath() {
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .startCapture(
-                        StartCaptureRequest.newBuilder()
-                            .setScope(
-                                CaptureScope.newBuilder()
-                                    .setConnectorId(connectorId())
-                                    .setDestinationTableDisplayName("orders")
-                                    .addDestinationSnapshotIds(10L)
-                                    .addDestinationNamespacePaths(
-                                        NamespacePath.newBuilder().addSegments("db1").build())
-                                    .addDestinationNamespacePaths(
-                                        NamespacePath.newBuilder().addSegments("db2").build())
-                                    .build())
-                            .build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
   }
 
   @Test

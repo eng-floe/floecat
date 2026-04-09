@@ -1412,12 +1412,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
     String columns =
         scope.destinationTableColumns().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
-    String snapshots =
-        scope.destinationSnapshotIds().stream()
-            .map(String::valueOf)
-            .sorted()
-            .reduce((a, b) -> a + "," + b)
-            .orElse("");
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     return accountId
@@ -1433,8 +1427,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         + table
         + "|"
         + columns
-        + "|"
-        + snapshots
         + "|"
         + policy.executionClass().name()
         + "|"
@@ -1527,7 +1519,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public List<List<String>> destinationNamespacePaths = List.of();
     public String destinationTableDisplayName;
     public List<String> destinationTableColumns = List.of();
-    public List<Long> destinationSnapshotIds = List.of();
 
     public String state;
     public String message;
@@ -1584,7 +1575,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.destinationNamespacePaths = scope.destinationNamespacePaths();
       rec.destinationTableDisplayName = scope.destinationTableDisplayName();
       rec.destinationTableColumns = scope.destinationTableColumns();
-      rec.destinationSnapshotIds = scope.destinationSnapshotIds();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -1610,10 +1600,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     ReconcileScope toScope() {
       return ReconcileScope.of(
-          destinationNamespacePaths,
-          destinationTableDisplayName,
-          destinationTableColumns,
-          destinationSnapshotIds);
+          destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns);
     }
 
     ReconcileExecutionPolicy executionPolicy() {

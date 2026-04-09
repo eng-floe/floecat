@@ -499,7 +499,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
   private ResourceId validatedConnectorId(String accountId, CaptureScope scope, String corr) {
     var connectorId = scopedConnectorId(accountId, connectorIdFromScope(scope), corr);
-    validateSnapshotScope(scope, corr);
     connectorRepo
         .getById(connectorId)
         .orElseThrow(
@@ -664,29 +663,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .map(List::copyOf)
             .toList();
     return ReconcileScope.of(
-        namespaces,
-        scope.getDestinationTableDisplayName(),
-        scope.getDestinationTableColumnsList(),
-        scope.getDestinationSnapshotIdsList());
+        namespaces, scope.getDestinationTableDisplayName(), scope.getDestinationTableColumnsList());
   }
 
   private static ResourceId connectorIdFromScope(CaptureScope scope) {
     return scope == null ? ResourceId.getDefaultInstance() : scope.getConnectorId();
-  }
-
-  private static void validateSnapshotScope(CaptureScope scope, String corr) {
-    if (scope == null || scope.getDestinationSnapshotIdsList().isEmpty()) {
-      return;
-    }
-    if (scope.getDestinationNamespacePathsCount() != 1) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", "scope.destination_namespace_paths"));
-    }
-    if (scope.getDestinationTableDisplayName() == null
-        || scope.getDestinationTableDisplayName().isBlank()) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", "scope.destination_table_display_name"));
-    }
   }
 
   private static CaptureMode mapCaptureMode(ai.floedb.floecat.reconciler.rpc.CaptureMode mode) {
@@ -878,8 +859,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     return !scope.getDestinationNamespacePathsList().isEmpty()
         || (scope.getDestinationTableDisplayName() != null
             && !scope.getDestinationTableDisplayName().isBlank())
-        || !scope.getDestinationTableColumnsList().isEmpty()
-        || !scope.getDestinationSnapshotIdsList().isEmpty();
+        || !scope.getDestinationTableColumnsList().isEmpty();
   }
 
   private static String normalizeReason(Throwable t) {

@@ -879,7 +879,6 @@ class TransactionCommitServiceTest {
     assertEquals("orders", request.getScope().getDestinationTableDisplayName());
     assertEquals(
         List.of("db"), request.getScope().getDestinationNamespacePaths(0).getSegmentsList());
-    assertEquals(List.of(123L), request.getScope().getDestinationSnapshotIdsList());
   }
 
   @Test

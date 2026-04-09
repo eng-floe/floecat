@@ -117,7 +117,6 @@ class ReconcilerServiceTest {
             .build();
 
     class CapturingBackend extends DefaultBackend {
-      Set<Long> capturedTargetSnapshotIds = Set.of();
       Set<Long> capturedKnownSnapshotIds = Set.of();
       long putConstraintsSnapshotId = -1L;
       SnapshotConstraints putConstraints = null;
@@ -267,19 +266,16 @@ class ReconcilerServiceTest {
                   ResourceId destinationTableId,
                   Set<String> includeColumns,
                   SnapshotEnumerationOptions options) {
-                backend.capturedTargetSnapshotIds = options.targetSnapshotIds();
                 backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
                 return super.enumerateSnapshotsWithStats(
                     namespaceFq, tableName, destinationTableId, includeColumns, options);
               }
             };
 
-    ReconcileScope scope =
-        ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of(), List.of(42L));
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of());
     var result = service.reconcile(principal, connectorId, false, scope);
 
     assertThat(result.ok()).isTrue();
-    assertThat(backend.capturedTargetSnapshotIds).containsExactly(42L);
     assertThat(backend.capturedKnownSnapshotIds).containsExactly(42L);
     assertThat(backend.putConstraintsSnapshotId).isEqualTo(42L);
     assertThat(backend.putConstraints).isNotNull();
@@ -1272,7 +1268,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1303,7 +1299,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L), Set.of());
+            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1324,35 +1320,11 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L), Set.of());
+            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
         .containsExactly(10L, 11L);
-  }
-
-  @Test
-  void filterBundlesForModeAppliesIncrementalPruningWithinExplicitSnapshotScope() throws Exception {
-    List<FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
-            new FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()),
-            new FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, null, List.of(), List.of(), null, null, 0L, null, Map.of(), 0,
-                Map.of()));
-
-    @SuppressWarnings("unchecked")
-    List<FloecatConnector.SnapshotBundle> filtered =
-        (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L), Set.of(11L, 12L));
-
-    assertThat(filtered)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(12L);
   }
 
   @Test
@@ -1421,8 +1393,7 @@ class ReconcilerServiceTest {
       boolean fullRescan,
       boolean includeCoreMetadata,
       boolean includeStats,
-      Set<Long> existingSnapshotIds,
-      Set<Long> targetSnapshotIds)
+      Set<Long> existingSnapshotIds)
       throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
@@ -1431,7 +1402,6 @@ class ReconcilerServiceTest {
             boolean.class,
             boolean.class,
             boolean.class,
-            Set.class,
             Set.class,
             ReconcilerService.ProgressListener.class);
     method.setAccessible(true);
@@ -1442,7 +1412,6 @@ class ReconcilerServiceTest {
         includeCoreMetadata,
         includeStats,
         existingSnapshotIds,
-        targetSnapshotIds,
         (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
   }
 

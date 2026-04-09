@@ -338,8 +338,6 @@ public class ReconcilerService {
           boolean includeStats =
               captureMode == CaptureMode.STATS_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
-          Set<Long> targetSnapshotIds =
-              scope.hasSnapshotFilter() ? Set.copyOf(scope.destinationSnapshotIds()) : Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
           Set<Long> enumerationKnownSnapshotIds =
@@ -354,8 +352,10 @@ public class ReconcilerService {
                   srcTable,
                   destTableId,
                   includeSelectors,
-                  new FloecatConnector.SnapshotEnumerationOptions(
-                      includeStats, fullRescan, enumerationKnownSnapshotIds, targetSnapshotIds));
+                  fullRescan
+                      ? FloecatConnector.SnapshotEnumerationOptions.full(includeStats)
+                      : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                          includeStats, enumerationKnownSnapshotIds));
           var bundles =
               filterBundlesForMode(
                   upstreamBundles,
@@ -363,7 +363,6 @@ public class ReconcilerService {
                   includeCoreMetadata,
                   includeStats,
                   knownSnapshotIds,
-                  targetSnapshotIds,
                   progressOut);
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
@@ -740,15 +739,12 @@ public class ReconcilerService {
       boolean includeCoreMetadata,
       boolean includeStats,
       Set<Long> existingSnapshotIds,
-      Set<Long> targetSnapshotIds,
       ProgressListener progress) {
     if (bundles == null || bundles.isEmpty() || fullRescan) {
-      return filterBundlesForSnapshotScope(
-          bundles == null ? List.of() : bundles, targetSnapshotIds, progress);
+      return bundles == null ? List.of() : bundles;
     }
 
-    List<FloecatConnector.SnapshotBundle> scoped =
-        filterBundlesForSnapshotScope(bundles, targetSnapshotIds, progress);
+    List<FloecatConnector.SnapshotBundle> scoped = bundles;
     if (includeStats) {
       return scoped;
     }
@@ -780,40 +776,6 @@ public class ReconcilerService {
           0,
           0,
           "Incremental reconcile skipped " + skipped + " already-ingested snapshots");
-    }
-    return filtered;
-  }
-
-  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
-      List<FloecatConnector.SnapshotBundle> bundles,
-      Set<Long> targetSnapshotIds,
-      ProgressListener progress) {
-    if (bundles == null
-        || bundles.isEmpty()
-        || targetSnapshotIds == null
-        || targetSnapshotIds.isEmpty()) {
-      return bundles == null ? List.of() : bundles;
-    }
-    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
-    int skipped = 0;
-    for (FloecatConnector.SnapshotBundle bundle : bundles) {
-      if (bundle == null) {
-        continue;
-      }
-      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
-        skipped++;
-        continue;
-      }
-      filtered.add(bundle);
-    }
-    if (skipped > 0) {
-      progress.onProgress(
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
     }
     return filtered;
   }

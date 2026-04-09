@@ -76,8 +76,7 @@ class ReconcileExecutorControlImplTest {
                     ReconcileScope.of(
                         java.util.List.of(java.util.List.of("db")),
                         "orders",
-                        java.util.List.of("id"),
-                        java.util.List.of(10L)),
+                        java.util.List.of("id")),
                     ReconcileExecutionPolicy.of(
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
                     "lease-1",

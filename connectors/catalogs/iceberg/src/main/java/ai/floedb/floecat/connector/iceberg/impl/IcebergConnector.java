@@ -184,11 +184,9 @@ public abstract class IcebergConnector implements FloecatConnector {
     boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
-    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
-    List<Snapshot> snapshots =
-        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds);
+    List<Snapshot> snapshots = snapshotsToEnumerate(table, fullRescan, knownSnapshotIds);
     if (shouldRetryEmptyIncrementalEnumeration(
-        table, includeStatistics, fullRescan, knownSnapshotIds, targetSnapshotIds, snapshots)) {
+        table, includeStatistics, fullRescan, knownSnapshotIds, snapshots)) {
       throw new ConnectorNotReadyException(
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
     }
@@ -474,9 +472,8 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
-    boolean hasTargetScope = targetSnapshotIds != null && !targetSnapshotIds.isEmpty();
-    if ((fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) && !hasTargetScope) {
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds) {
+    if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       List<Snapshot> snapshots = new ArrayList<>();
       for (Snapshot snapshot : table.snapshots()) {
         snapshots.add(snapshot);
@@ -489,9 +486,6 @@ public abstract class IcebergConnector implements FloecatConnector {
         continue;
       }
       long snapshotId = snapshot.snapshotId();
-      if (hasTargetScope && !targetSnapshotIds.contains(snapshotId)) {
-        continue;
-      }
       if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
         continue;
       }
@@ -509,15 +503,11 @@ public abstract class IcebergConnector implements FloecatConnector {
       boolean includeStatistics,
       boolean fullRescan,
       Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds,
       List<Snapshot> snapshots) {
     if (!includeStatistics || fullRescan) {
       return false;
     }
     if (knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
-      return false;
-    }
-    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
       return false;
     }
     if (snapshots != null && !snapshots.isEmpty()) {

@@ -211,7 +211,7 @@ final class StatsCliSupport {
       out.println(
           "usage: analyze <tableFQ> [--columns c1,c2,...]"
               + " [--mode metadata-only|metadata-and-stats|stats-only]"
-              + " [--snapshot-ids id1,id2,...] [--full] [--wait-seconds <n>]");
+              + " [--full] [--wait-seconds <n>]");
       return;
     }
 
@@ -220,9 +220,6 @@ final class StatsCliSupport {
     List<String> columns = CliUtils.csvList(columnsArg);
     CaptureMode mode =
         CliUtils.parseCaptureMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--mode", "")));
-    List<Long> snapshotIds =
-        CliUtils.parseSnapshotIds(
-            Quotes.unquote(CliArgs.parseStringFlag(args, "--snapshot-ids", "")));
     boolean full = CliArgs.hasFlag(args, "--full");
     int waitSeconds = CliArgs.parseIntFlag(args, "--wait-seconds", 10);
     if (waitSeconds <= 0) {
@@ -255,7 +252,6 @@ final class StatsCliSupport {
                             NamespacePath.newBuilder().addAllSegments(scopePath).build())
                         .setDestinationTableDisplayName(table.getDisplayName())
                         .addAllDestinationTableColumns(columns)
-                        .addAllDestinationSnapshotIds(snapshotIds)
                         .build())
                 .setMode(mode)
                 .setFullRescan(full)

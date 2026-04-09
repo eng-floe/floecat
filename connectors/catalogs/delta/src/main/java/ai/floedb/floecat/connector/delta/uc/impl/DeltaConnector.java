@@ -121,15 +121,13 @@ abstract class DeltaConnector implements FloecatConnector {
     boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
-    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
     final Snapshot latestSnapshot = table.getLatestSnapshot(engine);
     if (latestSnapshot == null) {
       return List.of();
     }
     final long latestVersion = latestSnapshot.getVersion();
 
-    List<Long> versions =
-        versionsToEnumerate(latestVersion, fullRescan, knownSnapshotIds, targetSnapshotIds);
+    List<Long> versions = versionsToEnumerate(latestVersion, fullRescan, knownSnapshotIds);
     if (versions.isEmpty()) {
       return List.of();
     }
@@ -313,17 +311,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   protected List<Long> versionsToEnumerate(
-      long latestVersion,
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
-    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
-      return targetSnapshotIds.stream()
-          .filter(version -> version != null && version >= 0L)
-          .sorted()
-          .filter(version -> fullRescan || !knownSnapshotIds.contains(version))
-          .toList();
-    }
+      long latestVersion, boolean fullRescan, Set<Long> knownSnapshotIds) {
     List<Long> versions = new ArrayList<>();
     for (long version = 0L; version <= latestVersion; version++) {
       if (!fullRescan && knownSnapshotIds.contains(version)) {

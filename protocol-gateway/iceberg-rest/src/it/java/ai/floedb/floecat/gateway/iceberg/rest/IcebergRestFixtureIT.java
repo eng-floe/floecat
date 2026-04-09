@@ -1787,9 +1787,8 @@ class IcebergRestFixtureIT {
 
       withReconcileControlClient(
           stub -> {
-            // The fixture table is already mirrored by registration. Use a snapshot-scoped
-            // stats-only capture to backfill known fixture snapshots, then kick off a full async
-            // job.
+            // The fixture table is already mirrored by registration. Use a table-scoped
+            // stats-only capture to backfill the fixture state, then kick off a full async job.
             stub.captureNow(
                 CaptureNowRequest.newBuilder()
                     .setScope(
@@ -1798,7 +1797,6 @@ class IcebergRestFixtureIT {
                             .addDestinationNamespacePaths(
                                 NamespacePath.newBuilder().addSegments("iceberg").build())
                             .setDestinationTableDisplayName("trino_test")
-                            .addAllDestinationSnapshotIds(fixtureSnapshotIds)
                             .build())
                     .setMode(CaptureMode.CM_STATS_ONLY)
                     .setFullRescan(true)
