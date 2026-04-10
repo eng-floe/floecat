@@ -728,7 +728,7 @@ public class ReconcilerService {
             .build());
   }
 
-  private List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
+  static List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
       boolean includeStats,
@@ -771,7 +771,7 @@ public class ReconcilerService {
     return filtered;
   }
 
-  private static Set<Long> knownSnapshotIdsForEnumeration(
+  static Set<Long> knownSnapshotIdsForEnumeration(
       boolean fullRescan,
       boolean includeStats,
       Set<Long> knownSnapshotIds,
@@ -800,7 +800,7 @@ public class ReconcilerService {
     return Set.copyOf(fullyCaptured);
   }
 
-  private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
+  static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
     return bundles != null && !bundles.isEmpty();
   }
 
@@ -1118,7 +1118,7 @@ public class ReconcilerService {
     return out;
   }
 
-  private static Set<String> effectiveSelectors(ReconcileScope scope, SourceSelector source) {
+  static Set<String> effectiveSelectors(ReconcileScope scope, SourceSelector source) {
     if (scope != null && scope.hasColumnFilter()) {
       return normalizeSelectors(scope.destinationTableColumns());
     }
