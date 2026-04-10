@@ -23,6 +23,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -49,8 +50,8 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
@@ -346,10 +347,18 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return statsStore
-        .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
-        .isPresent();
+  public boolean statsAlreadyCapturedForTargetKind(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
+    Optional<StatsTargetType> targetType =
+        switch (targetKind) {
+          case STK_UNSPECIFIED -> Optional.empty();
+          case STK_TABLE -> Optional.of(StatsTargetType.TABLE);
+          case STK_COLUMN -> Optional.of(StatsTargetType.COLUMN);
+          case STK_EXPRESSION -> Optional.of(StatsTargetType.EXPRESSION);
+          case STK_FILE -> Optional.of(StatsTargetType.FILE);
+          case UNRECOGNIZED -> Optional.empty();
+        };
+    return statsStore.countTargetStats(tableId, snapshotId, targetType) > 0;
   }
 
   @Override

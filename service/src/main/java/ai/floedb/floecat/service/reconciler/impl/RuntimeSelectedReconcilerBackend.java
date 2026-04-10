@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -91,8 +92,9 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
-  public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    return delegate.statsAlreadyCaptured(ctx, tableId, snapshotId);
+  public boolean statsAlreadyCapturedForTargetKind(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
+    return delegate.statsAlreadyCapturedForTargetKind(ctx, tableId, snapshotId, targetKind);
   }
 
   @Override

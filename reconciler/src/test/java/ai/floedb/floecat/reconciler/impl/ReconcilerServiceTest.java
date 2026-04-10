@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -56,7 +57,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.LongPredicate;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -169,8 +170,11 @@ class ReconcilerServiceTest {
       }
 
       @Override
-      public boolean statsAlreadyCaptured(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          StatsTargetKind targetKind) {
         return true;
       }
 
@@ -326,8 +330,11 @@ class ReconcilerServiceTest {
           ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
 
       @Override
-      public boolean statsAlreadyCaptured(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          StatsTargetKind targetKind) {
         return false;
       }
 
@@ -457,8 +464,11 @@ class ReconcilerServiceTest {
           ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
 
       @Override
-      public boolean statsAlreadyCaptured(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          StatsTargetKind targetKind) {
         return false;
       }
 
@@ -595,8 +605,11 @@ class ReconcilerServiceTest {
           ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
 
       @Override
-      public boolean statsAlreadyCaptured(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          StatsTargetKind targetKind) {
         return false;
       }
 
@@ -726,8 +739,11 @@ class ReconcilerServiceTest {
           ReconcileContext ctx, ResourceId ignoredTableId, Snapshot snapshot) {}
 
       @Override
-      public boolean statsAlreadyCaptured(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId) {
+      public boolean statsAlreadyCapturedForTargetKind(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          StatsTargetKind targetKind) {
         return true;
       }
 
@@ -1081,7 +1097,8 @@ class ReconcilerServiceTest {
     }
 
     @Override
-    public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    public boolean statsAlreadyCapturedForTargetKind(
+        ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
       throw new UnsupportedOperationException();
     }
 
@@ -1227,7 +1244,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(10L, 12L));
+            invokeFilterBundlesForMode(bundles, false, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1256,7 +1273,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, true, true, false, Set.of(10L, 12L));
+            invokeFilterBundlesForMode(bundles, true, false, Set.of(10L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1275,7 +1292,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, true, Set.of(10L));
+            invokeFilterBundlesForMode(bundles, false, true, Set.of(10L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1296,7 +1313,7 @@ class ReconcilerServiceTest {
     @SuppressWarnings("unchecked")
     List<FloecatConnector.SnapshotBundle> filtered =
         (List<FloecatConnector.SnapshotBundle>)
-            invokeFilterBundlesForMode(bundles, false, true, false, Set.of(11L, 12L));
+            invokeFilterBundlesForMode(bundles, false, false, Set.of(11L, 12L));
 
     assertThat(filtered)
         .extracting(FloecatConnector.SnapshotBundle::snapshotId)
@@ -1366,7 +1383,6 @@ class ReconcilerServiceTest {
   private Object invokeFilterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
-      boolean includeCoreMetadata,
       boolean includeStats,
       Set<Long> existingSnapshotIds)
       throws Exception {
@@ -1376,7 +1392,6 @@ class ReconcilerServiceTest {
             List.class,
             boolean.class,
             boolean.class,
-            boolean.class,
             Set.class,
             ReconcilerService.ProgressListener.class);
     method.setAccessible(true);
@@ -1384,7 +1399,6 @@ class ReconcilerServiceTest {
         service,
         bundles,
         fullRescan,
-        includeCoreMetadata,
         includeStats,
         existingSnapshotIds,
         (ReconcilerService.ProgressListener) (s, c, e, sp, stp, m) -> {});
@@ -1394,7 +1408,7 @@ class ReconcilerServiceTest {
       boolean fullRescan,
       boolean includeStats,
       Set<Long> existingSnapshotIds,
-      LongPredicate statsAlreadyCaptured)
+      Predicate<Long> statsAlreadyCaptured)
       throws Exception {
     Method method =
         ReconcilerService.class.getDeclaredMethod(
@@ -1402,7 +1416,7 @@ class ReconcilerServiceTest {
             boolean.class,
             boolean.class,
             Set.class,
-            LongPredicate.class);
+            Predicate.class);
     method.setAccessible(true);
     return method.invoke(null, fullRescan, includeStats, existingSnapshotIds, statsAlreadyCaptured);
   }

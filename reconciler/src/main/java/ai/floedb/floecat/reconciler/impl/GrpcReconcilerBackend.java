@@ -23,8 +23,8 @@ import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -38,13 +38,12 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -341,13 +340,33 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
   }
 
-  @Override
-  public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+  private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
     try {
       var response =
-          statistics(ctx).getTargetStats(buildStatsAlreadyCapturedRequest(tableId, snapshotId));
-      var stats = response.getStats();
-      return stats.hasTable() && stats.getSnapshotId() == snapshotId;
+          statistics(ctx).listTargetStats(buildStatsAlreadyCapturedRequest(tableId, snapshotId));
+      return response != null && !response.getRecordsList().isEmpty();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  @Override
+  public boolean statsAlreadyCapturedForTargetKind(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
+    if (targetKind == null || targetKind == StatsTargetKind.STK_UNSPECIFIED) {
+      return hasAnyCapturedStats(ctx, tableId, snapshotId);
+    }
+    try {
+      var response =
+          statistics(ctx)
+              .listTargetStats(
+                  buildStatsAlreadyCapturedRequest(tableId, snapshotId).toBuilder()
+                      .addTargetKinds(targetKind)
+                      .build());
+      return response != null && !response.getRecordsList().isEmpty();
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return false;
@@ -393,16 +412,16 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .build();
   }
 
-  static GetTargetStatsRequest buildStatsAlreadyCapturedRequest(
+  static ListTargetStatsRequest buildStatsAlreadyCapturedRequest(
       ResourceId tableId, long snapshotId) {
     ResourceId canonicalId =
         tableId.getKind() == ResourceKind.RK_TABLE
             ? tableId
             : tableId.toBuilder().setKind(ResourceKind.RK_TABLE).build();
-    return GetTargetStatsRequest.newBuilder()
+    return ListTargetStatsRequest.newBuilder()
         .setTableId(canonicalId)
         .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-        .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.newBuilder().build()).build())
+        .setPage(PageRequest.newBuilder().setPageSize(1).build())
         .build();
   }
 

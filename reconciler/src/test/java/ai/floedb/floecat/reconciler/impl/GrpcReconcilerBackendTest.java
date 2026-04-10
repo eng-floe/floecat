@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
-import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -196,11 +196,11 @@ class GrpcReconcilerBackendTest {
             .setId("orders")
             .build();
 
-    GetTargetStatsRequest request =
+    ListTargetStatsRequest request =
         GrpcReconcilerBackend.buildStatsAlreadyCapturedRequest(tableId, 99L);
 
     assertThat(request.getTableId()).isEqualTo(tableId);
     assertThat(request.getSnapshot().getSnapshotId()).isEqualTo(99L);
-    assertThat(request.getTarget().hasTable()).isTrue();
+    assertThat(request.getPage().getPageSize()).isEqualTo(1);
   }
 }

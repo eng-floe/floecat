@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -199,7 +200,18 @@ class DirectReconcilerBackendTest {
     assertThat(
             statsRepository.getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget()))
         .isPresent();
-    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_UNSPECIFIED))
+        .isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_TABLE))
+        .isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_COLUMN))
+        .isFalse();
 
     ScalarStats columnStats = ScalarStats.newBuilder().setDisplayName("col").build();
     backend.putTargetStats(
@@ -208,6 +220,10 @@ class DirectReconcilerBackendTest {
             statsRepository.getTargetStats(
                 tableId, SNAPSHOT_ID, StatsTargetIdentity.columnTarget(1L)))
         .isPresent();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_COLUMN))
+        .isTrue();
 
     FileTargetStats fileStats = FileTargetStats.newBuilder().setFilePath("/data/file").build();
     backend.putTargetStats(
@@ -216,6 +232,10 @@ class DirectReconcilerBackendTest {
             statsRepository.getTargetStats(
                 tableId, SNAPSHOT_ID, StatsTargetIdentity.fileTarget("/data/file")))
         .isPresent();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_FILE))
+        .isTrue();
   }
 
   @Test
