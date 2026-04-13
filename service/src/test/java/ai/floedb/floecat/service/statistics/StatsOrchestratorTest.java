@@ -33,12 +33,17 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
+import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import com.google.protobuf.ByteString;
 import java.time.Duration;
@@ -535,6 +540,53 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             any());
+  }
+
+  @Test
+  void triggerDelegatesThroughBatchRouting() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request = request(StatsExecutionMode.SYNC);
+    TargetStatsRecord record = tableRecord(request);
+    StatsCaptureResult captureResult =
+        StatsCaptureResult.forRecord("native", record, java.util.Map.of());
+    when(registry.captureBatch(any()))
+        .thenReturn(
+            StatsCaptureBatchResult.of(
+                List.of(StatsCaptureBatchItemResult.captured(request, captureResult))));
+
+    StatsTriggerResult result = orchestrator.trigger(request);
+
+    assertThat(result.outcome()).isEqualTo(StatsTriggerOutcome.CAPTURED);
+    assertThat(result.captureResult()).contains(captureResult);
+    verify(registry, never()).capture(any());
+    verify(registry).captureBatch(any(StatsCaptureBatchRequest.class));
+  }
+
+  @Test
+  void triggerBatchReturnsRegistryPerItemOutcomes() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest request = request(StatsExecutionMode.ASYNC);
+    StatsCaptureBatchResult expected =
+        StatsCaptureBatchResult.of(
+            List.of(StatsCaptureBatchItemResult.uncapturable(request, "target unsupported")));
+    when(registry.captureBatch(any())).thenReturn(expected);
+
+    StatsCaptureBatchResult result =
+        orchestrator.triggerBatch(StatsCaptureBatchRequest.of(request));
+
+    assertThat(result).isEqualTo(expected);
   }
 
   private static StatsCaptureRequest request(StatsExecutionMode mode) {
