@@ -110,6 +110,10 @@ Result model:
 - Column and expression targets share the same canonical `ScalarStats` payload.
 - Canonical metadata for all targets is stored at `TargetStatsRecord.metadata`.
 - `ScalarStats.display_name` is presentation-only (column name/alias) and not part of identity.
+- Target/payload compatibility is strict at persistence boundaries:
+  - `TABLE` target must carry `table` payload
+  - `COLUMN` and `EXPRESSION` targets must carry `scalar` payload
+  - `FILE` target must carry `file` payload with matching canonical file path
 - Table targets use `TableValueStats` (value only) with metadata at record level.
 - `StatsCaptureRequest` is intentionally target-native: one request resolves one concrete target.
   The request also carries `columnSelectors` so one reconcile/capture request can scope work to

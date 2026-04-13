@@ -374,6 +374,189 @@ class TableMutationIT {
   }
 
   @Test
+  void putTargetStatsRejectsMismatchedInnerSnapshotIdentity() throws Exception {
+    var cat =
+        TestSupport.createCatalog(catalog, tablePrefix + "cat_stats_identity", "tcat-stats-id");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for stats identity");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 21L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId + 1)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setTable(TableStatsTarget.newBuilder().build())
+                                                    .build())
+                                            .setTable(
+                                                TableValueStats.newBuilder()
+                                                    .setRowCount(1L)
+                                                    .setDataFileCount(1L)
+                                                    .setTotalSizeBytes(1L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void putTargetStatsRejectsMismatchedTargetAndPayloadKinds() throws Exception {
+    var cat =
+        TestSupport.createCatalog(
+            catalog, tablePrefix + "cat_stats_target_value", "tcat-target-kind");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for target kind");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 22L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setColumn(
+                                                        ColumnStatsTarget.newBuilder()
+                                                            .setColumnId(1L))
+                                                    .build())
+                                            .setTable(
+                                                TableValueStats.newBuilder()
+                                                    .setRowCount(1L)
+                                                    .setDataFileCount(1L)
+                                                    .setTotalSizeBytes(1L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void putTargetStatsRejectsFilePayloadPathMismatch() throws Exception {
+    var cat =
+        TestSupport.createCatalog(
+            catalog, tablePrefix + "cat_stats_file_mismatch", "tcat-file-path");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for file mismatch");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 23L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setFile(
+                                                        FileStatsTarget.newBuilder()
+                                                            .setFilePath(
+                                                                "s3://bucket/path-1.parquet"))
+                                                    .build())
+                                            .setFile(
+                                                FileTargetStats.newBuilder()
+                                                    .setTableId(tblId)
+                                                    .setSnapshotId(snapshotId)
+                                                    .setFilePath("s3://bucket/path-2.parquet")
+                                                    .setFileFormat("PARQUET")
+                                                    .setRowCount(10L)
+                                                    .setSizeBytes(100L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void pointerGcKeepsYoungBlobPointers() throws Exception {
     var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_gc_age", "tcat-gc-age");
     var ns =

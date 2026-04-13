@@ -288,6 +288,8 @@ class StatsIT {
 
     var fileStats =
         FileTargetStats.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
             .setFilePath("/data/file-0001.parquet")
             .setFileFormat("parquet")
             .setRowCount(10)

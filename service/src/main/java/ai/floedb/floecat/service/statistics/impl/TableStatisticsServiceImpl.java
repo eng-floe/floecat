@@ -264,12 +264,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     var tsNow = nowTs();
 
     for (var raw : req.getRecordsList()) {
-      if (!raw.hasTarget()
-          || raw.getTarget().getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
-        throw GrpcErrors.invalidArgument(correlationId(), STATS_INCONSISTENT_TARGET, Map.of());
-      }
       var targetRecord =
-          raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
+          TargetStatsRecordValidator.validateForPut(
+              raw, next.tableId(), next.snapshotId(), correlationId());
       validateStatsMetadata(targetRecord.hasMetadata() ? targetRecord.getMetadata() : null);
       var fingerprint = StatsCanonicalizer.canonicalFingerprint(targetRecord);
 
