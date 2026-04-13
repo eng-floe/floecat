@@ -54,10 +54,14 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import ai.floedb.floecat.storage.kv.Keys;
 import com.google.protobuf.ByteString;
@@ -1370,6 +1374,7 @@ public class ReconcilerService {
     long snapshotsProcessed = 0L;
     long statsProcessed = 0L;
     String connectorType = connectorTypeFor(connectorKind);
+    List<StatsCaptureRequest> batchRequests = new ArrayList<>();
     for (long snapshotId : snapshotIds) {
       ensureNotCancelled(cancelRequested);
       progress.onProgress(
@@ -1390,22 +1395,69 @@ public class ReconcilerService {
         continue;
       }
 
-      StatsCaptureRequest request =
-          StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
-              .columnSelectors(includeSelectors)
+      batchRequests.addAll(
+          buildStatsCaptureRequestsForSnapshot(
+              tableId, snapshotId, includeSelectors, connectorType, ctx.correlationId()));
+    }
+
+    if (!batchRequests.isEmpty()) {
+      StatsCaptureBatchResult batchResult =
+          captureBatchViaControlPlane(StatsCaptureBatchRequest.of(batchRequests));
+      Set<Long> capturedSnapshots =
+          batchResult.results().stream()
+              .filter(item -> item.outcome() == StatsTriggerOutcome.CAPTURED)
+              .map(item -> item.request().snapshotId())
+              .collect(Collectors.toCollection(LinkedHashSet::new));
+      // statsProcessed counts successful capture attempts per snapshot, not number of persisted
+      // target records.
+      statsProcessed += capturedSnapshots.size();
+    }
+    return new IngestCounts(snapshotsProcessed, statsProcessed);
+  }
+
+  private List<StatsCaptureRequest> buildStatsCaptureRequestsForSnapshot(
+      ResourceId tableId,
+      long snapshotId,
+      Set<String> includeSelectors,
+      String connectorType,
+      String correlationId) {
+    List<StatsCaptureRequest> requests = new ArrayList<>();
+    requests.add(
+        StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
+            .columnSelectors(includeSelectors)
+            .requestedKinds(Set.of())
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType(connectorType)
+            .correlationId(correlationId)
+            .build());
+
+    for (String selector : includeSelectors) {
+      long columnId = parseColumnIdSelector(selector);
+      if (columnId <= 0L) {
+        continue;
+      }
+      requests.add(
+          StatsCaptureRequest.builder(
+                  tableId, snapshotId, StatsTargetIdentity.columnTarget(columnId))
+              .columnSelectors(Set.of())
               .requestedKinds(Set.of())
               .executionMode(StatsExecutionMode.ASYNC)
               .connectorType(connectorType)
-              .correlationId(ctx.correlationId())
-              .build();
-      Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
-      if (captured.isPresent()) {
-        // statsProcessed counts successful capture attempts per snapshot, not number of persisted
-        // target records.
-        statsProcessed++;
-      }
+              .correlationId(correlationId)
+              .build());
     }
-    return new IngestCounts(snapshotsProcessed, statsProcessed);
+    return requests;
+  }
+
+  private static long parseColumnIdSelector(String selector) {
+    if (selector == null || selector.isBlank() || selector.charAt(0) != '#') {
+      return -1L;
+    }
+    try {
+      return Long.parseLong(selector.substring(1));
+    } catch (NumberFormatException ignored) {
+      return -1L;
+    }
   }
 
   private Set<Long> discoverSnapshotIdsForStatsCapture(
@@ -1455,6 +1507,30 @@ public class ReconcilerService {
           request.tableId(),
           request.snapshotId());
       return Optional.empty();
+    }
+  }
+
+  private StatsCaptureBatchResult captureBatchViaControlPlane(
+      StatsCaptureBatchRequest batchRequest) {
+    if (statsCaptureControlPlane == null || statsCaptureControlPlane.isUnsatisfied()) {
+      return StatsCaptureBatchResult.of(
+          batchRequest.requests().stream()
+              .map(
+                  req -> StatsCaptureBatchItemResult.uncapturable(req, "control plane unavailable"))
+              .toList());
+    }
+    try {
+      return statsCaptureControlPlane.get().triggerBatch(batchRequest);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Stats control-plane batch capture failed batch_size=%d",
+          batchRequest.requests().size());
+      return StatsCaptureBatchResult.of(
+          batchRequest.requests().stream()
+              .map(
+                  req -> StatsCaptureBatchItemResult.degraded(req, "control plane runtime failure"))
+              .toList());
     }
   }
 
