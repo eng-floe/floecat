@@ -19,14 +19,18 @@ package ai.floedb.floecat.stats.spi;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class StatsCaptureBatchTypesTest {
@@ -83,6 +87,61 @@ class StatsCaptureBatchTypesTest {
     assertThat(result.results()).hasSize(1);
     assertThatThrownBy(() -> result.results().clear())
         .isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  @Test
+  void engineDefaultBatchFallbackProcessesEachRequest() {
+    StatsCaptureRequest supported = request("tbl-1", 10L);
+    StatsCaptureRequest unsupported =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build(),
+                10L,
+                StatsTarget.newBuilder()
+                    .setFile(FileStatsTarget.newBuilder().setFilePath("/tmp/f.parquet").build())
+                    .build())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("corr")
+            .build();
+    StatsCaptureRequest failing = request("tbl-1", 11L);
+
+    TestStatsCaptureEngine engine =
+        TestStatsCaptureEngine.builder("test-engine")
+            .capabilities(
+                StatsCapabilities.builder()
+                    .targetTypes(Set.of(StatsTargetType.TABLE))
+                    .statisticKindsByTarget(
+                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
+                    .executionModes(Set.of(StatsExecutionMode.SYNC))
+                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+                    .snapshotAware(true)
+                    .build())
+            .captureFn(
+                req -> {
+                  if (req.snapshotId() == 11L) {
+                    throw new IllegalStateException("boom");
+                  }
+                  return Optional.of(
+                      StatsCaptureResult.forRecord(
+                          "test-engine",
+                          TargetStatsRecord.newBuilder()
+                              .setTableId(req.tableId())
+                              .setSnapshotId(req.snapshotId())
+                              .setTarget(req.target())
+                              .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+                              .build(),
+                          Map.of()));
+                })
+            .build();
+
+    StatsCaptureBatchResult out =
+        engine.captureBatch(StatsCaptureBatchRequest.of(List.of(supported, unsupported, failing)));
+
+    assertThat(out.results()).hasSize(3);
+    assertThat(out.results().get(0).outcome()).isEqualTo(StatsTriggerOutcome.CAPTURED);
+    assertThat(out.results().get(1).outcome()).isEqualTo(StatsTriggerOutcome.UNCAPTURABLE);
+    assertThat(out.results().get(2).outcome()).isEqualTo(StatsTriggerOutcome.DEGRADED);
   }
 
   private static StatsCaptureRequest request(String tableId, long snapshotId) {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.stats.spi;
 
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Service Provider Interface for pluggable statistics capture.
@@ -65,4 +66,35 @@ public interface StatsCaptureEngine {
    * runtime exception when the engine encounters a processing error.
    */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
+
+  /**
+   * Attempts to capture stats for multiple requests.
+   *
+   * <p>The default implementation evaluates requests one by one through {@link #capture} so
+   * existing engines remain compatible. Engines can override this method to execute efficiently in
+   * bulk (for example by reading shared metadata/files once for multiple targets).
+   */
+  default StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+    return StatsCaptureBatchResult.of(
+        batchRequest.requests().stream()
+            .map(
+                request -> {
+                  if (!supports(request)) {
+                    return StatsCaptureBatchItemResult.uncapturable(
+                        request, "unsupported by engine");
+                  }
+                  try {
+                    return capture(request)
+                        .map(result -> StatsCaptureBatchItemResult.captured(request, result))
+                        .orElseGet(
+                            () ->
+                                StatsCaptureBatchItemResult.uncapturable(
+                                    request, "no capture result"));
+                  } catch (RuntimeException e) {
+                    return StatsCaptureBatchItemResult.degraded(
+                        request, "capture failed: " + e.getClass().getSimpleName());
+                  }
+                })
+            .collect(Collectors.toList()));
+  }
 }
