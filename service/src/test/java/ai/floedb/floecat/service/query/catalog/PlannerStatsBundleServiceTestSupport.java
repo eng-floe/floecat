@@ -39,6 +39,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -89,7 +90,8 @@ abstract class PlannerStatsBundleServiceTestSupport {
       int maxTargets) {
     StatsEngineRegistry registry =
         new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository)));
-    StatsProviderFactory factory = new StatsProviderFactory(registry, store);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(registry, store, new FakeTableRepository());
     return PlannerStatsBundleService.forTesting(
         factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
   }

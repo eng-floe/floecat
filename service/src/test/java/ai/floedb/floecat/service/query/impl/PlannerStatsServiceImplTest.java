@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -342,7 +343,9 @@ class PlannerStatsServiceImplTest {
       StatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
     StatsProviderFactory factory =
         new StatsProviderFactory(
-            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository))), store);
+            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository))),
+            store,
+            new FakeTableRepository());
     return PlannerStatsBundleService.forTesting(
         factory, repository, /* maxTables= */ 10, /* maxTargets= */ 10, /* chunkSize= */ 5);
   }

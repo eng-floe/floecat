@@ -22,9 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -35,12 +39,22 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.StatsCapabilities;
+import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
+import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.stats.spi.StatsKind;
+import ai.floedb.floecat.stats.spi.StatsSamplingSupport;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class StatsProviderFactoryTest {
@@ -238,9 +252,27 @@ class StatsProviderFactoryTest {
 
   private static StatsProviderFactory factory(
       CountingStatsRepository repository, UserObjectBundleTestSupport.TestQueryContextStore store) {
+    FakeTableRepository tableRepository = new FakeTableRepository();
+    tableRepository.put(tableWithFormat(TableFormat.TF_ICEBERG), MutationMeta.getDefaultInstance());
     StatsEngineRegistry registry =
         new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(repository)));
-    return new StatsProviderFactory(registry, store);
+    return new StatsProviderFactory(registry, store, tableRepository);
+  }
+
+  @Test
+  void resolvesConnectorTypeFromTableFormatForEngineSelection() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    FakeTableRepository tableRepository = new FakeTableRepository();
+    tableRepository.put(tableWithFormat(TableFormat.TF_ICEBERG), MutationMeta.getDefaultInstance());
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(new IcebergOnlyTableEngine()));
+    StatsProviderFactory factory = new StatsProviderFactory(registry, store, tableRepository);
+
+    QueryContext ctx = queryContextWithPin(55L);
+    store.seed(ctx);
+    var provider = factory.forQuery(ctx, "corr");
+
+    assertTrue(provider.tableStats(TABLE).isPresent());
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
@@ -280,6 +312,62 @@ class StatsProviderFactoryTest {
         .version(1)
         .queryDefaultCatalogId(CATALOG)
         .build();
+  }
+
+  private static Table tableWithFormat(TableFormat format) {
+    return Table.newBuilder()
+        .setResourceId(TABLE)
+        .setCatalogId(CATALOG)
+        .setNamespaceId(
+            ResourceId.newBuilder()
+                .setAccountId(TABLE.getAccountId())
+                .setId("ns")
+                .setKind(ResourceKind.RK_NAMESPACE)
+                .build())
+        .setDisplayName("users")
+        .setUpstream(UpstreamRef.newBuilder().setFormat(format).build())
+        .build();
+  }
+
+  private static final class IcebergOnlyTableEngine implements StatsCaptureEngine {
+
+    @Override
+    public String id() {
+      return "test_iceberg_only";
+    }
+
+    @Override
+    public int priority() {
+      return 1;
+    }
+
+    @Override
+    public StatsCapabilities capabilities() {
+      return StatsCapabilities.builder()
+          .connectors(Set.of("iceberg"))
+          .targetTypes(Set.of(StatsTargetType.TABLE))
+          .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
+          .samplingSupport(Set.of(StatsSamplingSupport.NONE))
+          .executionModes(Set.of(ai.floedb.floecat.stats.spi.StatsExecutionMode.SYNC))
+          .snapshotAware(true)
+          .build();
+    }
+
+    @Override
+    public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+      if (!request.target().hasTable()) {
+        return Optional.empty();
+      }
+      return Optional.of(
+          StatsCaptureResult.forRecord(
+              id(),
+              TargetStatsRecords.tableRecord(
+                  request.tableId(),
+                  request.snapshotId(),
+                  TableValueStats.newBuilder().setRowCount(1L).build(),
+                  null),
+              Map.of()));
+    }
   }
 
   private static final class CountingStatsRepository extends StatsRepository {

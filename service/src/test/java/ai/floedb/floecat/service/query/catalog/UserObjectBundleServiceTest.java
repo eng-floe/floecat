@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionRes
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -165,7 +166,8 @@ class UserObjectBundleServiceTest {
     statsFactory =
         new StatsProviderFactory(
             new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(statsRepository))),
-            queryStore);
+            queryStore,
+            new FakeTableRepository());
     service =
         new UserObjectBundleService(
             overlay,
@@ -264,7 +266,8 @@ class UserObjectBundleServiceTest {
     StatsProviderFactory localStatsFactory =
         new StatsProviderFactory(
             new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(localStatsRepository))),
-            localStore);
+            localStore,
+            new FakeTableRepository());
     UserObjectBundleService localService =
         new UserObjectBundleService(
             overlay,

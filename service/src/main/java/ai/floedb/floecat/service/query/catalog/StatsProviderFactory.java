@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.catalog;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -26,6 +27,7 @@ import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
@@ -47,16 +49,21 @@ public final class StatsProviderFactory {
 
   private final StatsEngineRegistry statsEngineRegistry;
   private final QueryContextStore queryStore;
+  private final TableRepository tableRepository;
 
   @Inject
   public StatsProviderFactory(
-      StatsEngineRegistry statsEngineRegistry, QueryContextStore queryStore) {
+      StatsEngineRegistry statsEngineRegistry,
+      QueryContextStore queryStore,
+      TableRepository tableRepository) {
     this.statsEngineRegistry = statsEngineRegistry;
     this.queryStore = queryStore;
+    this.tableRepository = tableRepository;
   }
 
   public StatsProvider forQuery(QueryContext ctx, String correlationId) {
-    return new CachedStatsProvider(statsEngineRegistry, queryStore, ctx, correlationId);
+    return new CachedStatsProvider(
+        statsEngineRegistry, queryStore, tableRepository, ctx, correlationId);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -66,17 +73,21 @@ public final class StatsProviderFactory {
   private static final class CachedStatsProvider implements StatsProvider {
 
     private final StatsEngineRegistry statsEngineRegistry;
+    private final TableRepository tableRepository;
     private final SnapshotPinResolver pinResolver;
     private final String correlationId;
     private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
         tableCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<ResourceId, String> connectorTypeCache = new ConcurrentHashMap<>();
 
     private CachedStatsProvider(
         StatsEngineRegistry statsEngineRegistry,
         QueryContextStore queryStore,
+        TableRepository tableRepository,
         QueryContext ctx,
         String correlationId) {
       this.statsEngineRegistry = statsEngineRegistry;
+      this.tableRepository = tableRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
     }
@@ -102,6 +113,27 @@ public final class StatsProviderFactory {
       return pinResolver.pinnedSnapshotId(tableId);
     }
 
+    private String connectorType(ResourceId tableId) {
+      return connectorTypeCache.computeIfAbsent(tableId, this::loadConnectorType);
+    }
+
+    private String loadConnectorType(ResourceId tableId) {
+      TableFormat format =
+          tableRepository
+              .getById(tableId)
+              .filter(t -> t.hasUpstream())
+              .map(t -> t.getUpstream().getFormat())
+              .orElse(TableFormat.TF_UNSPECIFIED);
+      return switch (format) {
+        case TF_ICEBERG -> "iceberg";
+        case TF_DELTA -> "delta";
+        default -> {
+          LOG.debugf("No stats connector type mapping for table=%s format=%s", tableId, format);
+          yield "";
+        }
+      };
+    }
+
     private Optional<StatsProvider.TableStatsView> safeTableStats(
         ResourceId tableId, long snapshotId) {
       try {
@@ -114,8 +146,7 @@ public final class StatsProviderFactory {
                 Set.of(),
                 Set.of(),
                 StatsExecutionMode.SYNC,
-                // Empty connector type means no connector-based engine filtering.
-                "",
+                connectorType(tableId),
                 correlationId,
                 false);
         return statsEngineRegistry
@@ -146,8 +177,7 @@ public final class StatsProviderFactory {
                 Set.of(),
                 Set.of(),
                 StatsExecutionMode.SYNC,
-                // Empty connector type means no connector-based engine filtering.
-                "",
+                connectorType(tableId),
                 correlationId,
                 false);
         return statsEngineRegistry
