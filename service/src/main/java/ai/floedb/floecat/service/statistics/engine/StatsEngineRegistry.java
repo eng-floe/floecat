@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.service.statistics.engine;
 
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
@@ -27,6 +30,7 @@ import jakarta.inject.Inject;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /** Registry and routing layer for available stats capture engines. */
@@ -92,5 +96,29 @@ public class StatsEngineRegistry {
       }
     }
     return Optional.empty();
+  }
+
+  /**
+   * Routes each request in the batch independently using the same capability + priority policy as
+   * {@link #capture(StatsCaptureRequest)}.
+   */
+  public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+    return StatsCaptureBatchResult.of(
+        batchRequest.requests().stream()
+            .map(this::captureOneBatchItem)
+            .collect(Collectors.toList()));
+  }
+
+  private StatsCaptureBatchItemResult captureOneBatchItem(StatsCaptureRequest request) {
+    try {
+      return capture(request)
+          .map(result -> StatsCaptureBatchItemResult.captured(request, result))
+          .orElseGet(() -> StatsCaptureBatchItemResult.uncapturable(request, "no capture result"));
+    } catch (StatsUnsupportedTargetException e) {
+      return StatsCaptureBatchItemResult.uncapturable(request, "target unsupported");
+    } catch (RuntimeException e) {
+      return StatsCaptureBatchItemResult.degraded(
+          request, "capture failed: " + e.getClass().getSimpleName());
+    }
   }
 }
