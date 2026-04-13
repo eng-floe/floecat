@@ -51,6 +51,7 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import com.google.protobuf.Timestamp;

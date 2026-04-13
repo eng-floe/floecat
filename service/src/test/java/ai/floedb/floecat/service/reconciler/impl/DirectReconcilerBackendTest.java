@@ -307,13 +307,19 @@ class DirectReconcilerBackendTest {
     backend.putTargetStats(
         ctx, List.of(TargetStatsRecords.tableRecord(tableId, SNAPSHOT_ID, tableStats, null)));
 
-    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isFalse();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_TABLE))
+        .isFalse();
 
     FileTargetStats fileStats = FileTargetStats.newBuilder().setFilePath("/data/file-1").build();
     backend.putTargetStats(
         ctx, List.of(TargetStatsRecords.fileRecord(tableId, SNAPSHOT_ID, fileStats)));
 
-    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_TABLE))
+        .isTrue();
   }
 
   @Test
