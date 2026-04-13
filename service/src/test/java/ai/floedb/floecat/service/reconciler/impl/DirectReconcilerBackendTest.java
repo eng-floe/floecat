@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -235,6 +237,23 @@ class DirectReconcilerBackendTest {
     assertThat(
             backend.statsAlreadyCapturedForTargetKind(
                 ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_FILE))
+        .isTrue();
+
+    ScalarStats expressionStats = ScalarStats.newBuilder().setDisplayName("expr").build();
+    backend.putTargetStats(
+        ctx,
+        List.of(
+            TargetStatsRecords.expressionRecord(
+                tableId,
+                SNAPSHOT_ID,
+                EngineExpressionStatsTarget.newBuilder()
+                    .setEngineKind("duckdb")
+                    .setEngineExpressionKey(ByteString.copyFromUtf8("sum_col"))
+                    .build(),
+                expressionStats)));
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_EXPRESSION))
         .isTrue();
   }
 
