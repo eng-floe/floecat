@@ -1006,7 +1006,7 @@ public class ReconcilerService {
       if (!fullRescan
           && knownSnapshotIds != null
           && knownSnapshotIds.contains(snapshotId)
-          && backend.statsAlreadyCaptured(ctx, tableId, snapshotId)) {
+          && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors)) {
         continue;
       }
 
