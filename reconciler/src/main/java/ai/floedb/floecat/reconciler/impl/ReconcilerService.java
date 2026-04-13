@@ -42,6 +42,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -80,6 +81,7 @@ import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -109,6 +111,7 @@ public class ReconcilerService {
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
   @Inject Instance<StatsCaptureControlPlane> statsCaptureControlPlane;
+  @Inject Instance<ReconcileJobStore> reconcileJobStore;
 
   /** Opens a connector from a resolved configuration. */
   @FunctionalInterface
@@ -341,9 +344,7 @@ public class ReconcilerService {
           boolean includeCoreMetadata =
               captureMode == CaptureMode.METADATA_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
-          boolean includeStats =
-              captureMode == CaptureMode.STATS_ONLY
-                  || captureMode == CaptureMode.METADATA_AND_STATS;
+          boolean includeStats = captureMode == CaptureMode.STATS_ONLY;
           Set<Long> targetSnapshotIds = Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
@@ -422,6 +423,14 @@ public class ReconcilerService {
           statsProcessed += ingestCounts.statsProcessed;
           if (tableChanged(bundles)) {
             changed++;
+          }
+          if (captureMode == CaptureMode.METADATA_AND_STATS) {
+            enqueueStatsOnlyCapture(
+                connectorId,
+                scopeNamespaceFq,
+                destTableDisplay,
+                includeSelectors,
+                snapshotIdsFromBundles(bundles));
           }
           progressOut.onProgress(
               scanned,
@@ -955,6 +964,8 @@ public class ReconcilerService {
 
       if (includeCoreMetadata) {
         ensureSnapshot(ctx, tableId, snapshotBundle);
+        maybeIngestSnapshotConstraints(
+            ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
       }
 
       if (!includeStats) {
@@ -966,8 +977,6 @@ public class ReconcilerService {
               && statsCompleteForSnapshot != null
               && statsCompleteForSnapshot.test(snapshotId);
       if (statsCaptured) {
-        maybeIngestSnapshotConstraints(
-            ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
         continue;
       }
 
@@ -985,9 +994,6 @@ public class ReconcilerService {
         // target records.
         statsProcessed++;
       }
-
-      maybeIngestSnapshotConstraints(
-          ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed);
   }
@@ -1115,6 +1121,63 @@ public class ReconcilerService {
           request.snapshotId());
       return Optional.empty();
     }
+  }
+
+  private void enqueueStatsOnlyCapture(
+      ResourceId connectorId,
+      String namespaceFq,
+      String tableDisplayName,
+      Set<String> includeSelectors,
+      Set<Long> snapshotIds) {
+    if (reconcileJobStore == null || reconcileJobStore.isUnsatisfied()) {
+      LOG.warnf(
+          "Skipping follow-up STATS_ONLY enqueue: reconcile job store unavailable for connector=%s table=%s.%s",
+          connectorId != null ? connectorId.getId() : "",
+          namespaceFq == null ? "" : namespaceFq,
+          tableDisplayName == null ? "" : tableDisplayName);
+      return;
+    }
+    if (connectorId == null
+        || connectorId.getAccountId().isBlank()
+        || connectorId.getId().isBlank()) {
+      LOG.warn("Skipping follow-up STATS_ONLY enqueue: connector identity is incomplete");
+      return;
+    }
+    if (namespaceFq == null
+        || namespaceFq.isBlank()
+        || tableDisplayName == null
+        || tableDisplayName.isBlank()) {
+      LOG.warnf(
+          "Skipping follow-up STATS_ONLY enqueue: scope identity missing for connector=%s",
+          connectorId.getId());
+      return;
+    }
+    List<List<String>> namespacePaths = List.of(List.of(namespaceFq.split("\\.")));
+    List<String> columns =
+        includeSelectors == null ? List.of() : includeSelectors.stream().sorted().toList();
+    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, columns);
+    String jobId =
+        reconcileJobStore
+            .get()
+            .enqueue(
+                connectorId.getAccountId(),
+                connectorId.getId(),
+                false,
+                CaptureMode.STATS_ONLY,
+                scope);
+    LOG.infof(
+        "Enqueued follow-up STATS_ONLY capture job=%s connector=%s table=%s.%s snapshots=%s",
+        jobId, connectorId.getId(), namespaceFq, tableDisplayName, snapshotIds);
+  }
+
+  private Set<Long> snapshotIdsFromBundles(List<FloecatConnector.SnapshotBundle> bundles) {
+    if (bundles == null || bundles.isEmpty()) {
+      return Set.of();
+    }
+    return bundles.stream()
+        .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
+        .map(FloecatConnector.SnapshotBundle::snapshotId)
+        .collect(Collectors.toCollection(LinkedHashSet::new));
   }
 
   private static String connectorTypeFor(ConnectorConfig.Kind kind) {

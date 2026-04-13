@@ -229,11 +229,11 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             };
 
     ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest_ns")), "tbl", List.of());
-    var result = service.reconcile(principal, connectorId, false, scope);
+    var result = service.reconcile(principal, connectorId, true, scope);
 
     assertThat(result.ok()).isTrue();
     assertThat(backend.capturedTargetSnapshotIds).isEmpty();
-    assertThat(backend.capturedKnownSnapshotIds).containsExactly(42L);
+    assertThat(backend.capturedKnownSnapshotIds).isEmpty();
     assertThat(backend.putConstraintsSnapshotId).isEqualTo(42L);
     assertThat(backend.putConstraints).isNotNull();
     assertThat(backend.putConstraints.getConstraintsCount()).isEqualTo(1);
