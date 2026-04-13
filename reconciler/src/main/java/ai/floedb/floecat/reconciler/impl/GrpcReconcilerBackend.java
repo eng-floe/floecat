@@ -372,7 +372,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         if (tableStatsResponse == null || tableStatsResponse.getRecordsList().isEmpty()) {
           return false;
         }
-        var tableRecord = tableStatsResponse.getRecords(0).getStats();
+        var tableRecord = tableStatsResponse.getRecords(0);
         if (!tableRecord.hasTable()) {
           return false;
         }

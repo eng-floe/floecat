@@ -54,6 +54,7 @@ import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -385,15 +386,14 @@ public class ReconcilerService {
             continue;
           }
           var upstreamBundles =
-              connector.enumerateSnapshotsWithStats(
+              connector.enumerateSnapshots(
                   sourceNsFq,
                   srcTable,
                   destTableId,
-                  includeSelectors,
                   fullRescan
-                      ? FloecatConnector.SnapshotEnumerationOptions.full(includeStats)
+                      ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
                       : FloecatConnector.SnapshotEnumerationOptions.incremental(
-                          includeStats, enumerationKnownSnapshotIds));
+                          enumerationKnownSnapshotIds, targetSnapshotIds));
           var bundles =
               filterBundlesForMode(
                   upstreamBundles, fullRescan, includeStats, knownSnapshotIds, progressOut);
@@ -843,6 +843,7 @@ public class ReconcilerService {
     }
     return filtered;
   }
+
   static Set<Long> knownSnapshotIdsForEnumeration(
       boolean fullRescan,
       boolean includeStats,
@@ -1078,13 +1079,14 @@ public class ReconcilerService {
       return new LinkedHashSet<>(targetSnapshotIds);
     }
     List<FloecatConnector.SnapshotBundle> discovered =
-        connector.enumerateSnapshotsWithStats(
+        connector.enumerateSnapshots(
             sourceNs,
             sourceTable,
             tableId,
-            includeSelectors == null ? Set.of() : includeSelectors,
-            new FloecatConnector.SnapshotEnumerationOptions(
-                false, fullRescan, enumerationKnownSnapshotIds));
+            fullRescan
+                ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
+                : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                    enumerationKnownSnapshotIds, targetSnapshotIds));
     Set<Long> snapshotIds = new LinkedHashSet<>();
     if (discovered == null) {
       return snapshotIds;
@@ -1103,7 +1105,8 @@ public class ReconcilerService {
       return Optional.empty();
     }
     try {
-      return statsCaptureControlPlane.get().capture(request);
+      StatsTriggerResult result = statsCaptureControlPlane.get().trigger(request);
+      return result.captureResult();
     } catch (RuntimeException e) {
       LOG.warnf(
           e,

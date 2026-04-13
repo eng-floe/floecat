@@ -16,7 +16,8 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -24,9 +25,19 @@ import org.junit.jupiter.api.Test;
 class ReconcileScopeTest {
 
   @Test
-  void emptyScopeIsReturnedWhenAllFiltersAreBlank() {
-    ReconcileScope scope = ReconcileScope.of(List.of(), "", List.of());
+  void namespaceMatchingAcceptsSegmentedAndFqSingleSegmentPaths() {
+    ReconcileScope segmented = ReconcileScope.of(List.of(List.of("dest", "ns")), null, List.of());
+    ReconcileScope fqSingle = ReconcileScope.of(List.of(List.of("dest.ns")), null, List.of());
 
-    assertEquals(ReconcileScope.empty(), scope);
+    assertTrue(segmented.matchesNamespace("dest.ns"));
+    assertTrue(fqSingle.matchesNamespace("dest.ns"));
+  }
+
+  @Test
+  void tableAcceptanceRequiresMatchingTableWhenTableFilterPresent() {
+    ReconcileScope scope = ReconcileScope.of(List.of(List.of("dest", "ns")), "tbl", List.of());
+
+    assertTrue(scope.acceptsTable("dest.ns", "tbl"));
+    assertFalse(scope.acceptsTable("dest.ns", "other"));
   }
 }

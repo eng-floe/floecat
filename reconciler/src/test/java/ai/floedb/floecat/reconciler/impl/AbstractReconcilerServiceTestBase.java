@@ -35,7 +35,6 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -43,7 +42,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
-import jakarta.enterprise.inject.Instance;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -53,7 +51,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
-import org.mockito.Mockito;
 
 abstract class AbstractReconcilerServiceTestBase {
   protected ReconcilerService service;
@@ -73,21 +70,6 @@ abstract class AbstractReconcilerServiceTestBase {
             .setId("connector-1")
             .setKind(ResourceKind.RK_CONNECTOR)
             .build();
-
-    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    Mockito.when(
-            jobStore.enqueue(
-                Mockito.anyString(),
-                Mockito.anyString(),
-                Mockito.anyBoolean(),
-                Mockito.any(),
-                Mockito.any()))
-        .thenReturn("job-default");
-    @SuppressWarnings("unchecked")
-    Instance<ReconcileJobStore> jobStoreInstance = Mockito.mock(Instance.class);
-    Mockito.when(jobStoreInstance.isUnsatisfied()).thenReturn(false);
-    Mockito.when(jobStoreInstance.get()).thenReturn(jobStore);
-    service.reconcileJobStore = jobStoreInstance;
   }
 
   protected Connector activeConnector() {
@@ -186,7 +168,6 @@ abstract class AbstractReconcilerServiceTestBase {
       throw new UnsupportedOperationException();
     }
 
-    @Override
     public Optional<String> lookupTableDisplayName(ReconcileContext ctx, ResourceId tableId) {
       throw new UnsupportedOperationException();
     }
@@ -217,7 +198,11 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
+    public boolean statsAlreadyCapturedForTargetKind(
+        ReconcileContext ctx,
+        ResourceId tableId,
+        long snapshotId,
+        ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
       throw new UnsupportedOperationException();
     }
 

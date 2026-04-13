@@ -63,12 +63,12 @@ class IcebergConnectorIncrementalEnumerationTest {
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
-            "snapshotsToEnumerate", Table.class, boolean.class, Set.class);
+            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
     List<Snapshot> snapshots =
-        (List<Snapshot>) method.invoke(connector, table, false, Set.of(100L, 200L));
+        (List<Snapshot>) method.invoke(connector, table, false, Set.of(100L, 200L), Set.of());
 
     assertEquals(List.of(300L, 250L), snapshots.stream().map(Snapshot::snapshotId).toList());
   }
@@ -100,17 +100,18 @@ class IcebergConnectorIncrementalEnumerationTest {
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
-            "snapshotsToEnumerate", Table.class, boolean.class, Set.class);
+            "snapshotsToEnumerate", Table.class, boolean.class, Set.class, Set.class);
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
-    List<Snapshot> snapshots = (List<Snapshot>) method.invoke(connector, table, true, Set.of());
+    List<Snapshot> snapshots =
+        (List<Snapshot>) method.invoke(connector, table, true, Set.of(), Set.of());
 
     assertEquals(List.of(300L, 200L, 100L), snapshots.stream().map(Snapshot::snapshotId).toList());
   }
 
   @Test
-  void enumerateSnapshotsWithStatsFailsWhenCurrentSnapshotExistsButIncrementalEnumerationIsEmpty() {
+  void enumerateSnapshotsFailsWhenCurrentSnapshotExistsButIncrementalEnumerationIsEmpty() {
     Snapshot current = snapshot(300L, 3L, 3000L, 200L);
     Table table = table(List.of(), current);
 
@@ -135,12 +136,11 @@ class IcebergConnectorIncrementalEnumerationTest {
     assertThrows(
         ConnectorNotReadyException.class,
         () ->
-            connector.enumerateSnapshotsWithStats(
+            connector.enumerateSnapshots(
                 "iceberg",
                 "duckdb_mutation_smoke",
                 ResourceId.getDefaultInstance(),
-                Set.of(),
-                FloecatConnector.SnapshotEnumerationOptions.incremental(true, Set.of())));
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of())));
   }
 
   private static Snapshot snapshot(
