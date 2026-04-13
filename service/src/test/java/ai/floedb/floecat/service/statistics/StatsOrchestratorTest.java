@@ -589,6 +589,37 @@ class StatsOrchestratorTest {
     assertThat(result).isEqualTo(expected);
   }
 
+  @Test
+  void resolveBatchPreservesRequestOrder() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
+
+    StatsCaptureRequest req1 = request(StatsExecutionMode.SYNC);
+    StatsCaptureRequest req2 =
+        request(
+            StatsExecutionMode.SYNC,
+            StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
+            43L);
+    TargetStatsRecord rec1 = tableRecord(req1);
+    when(statsStore.getTargetStats(req1.tableId(), req1.snapshotId(), req1.target()))
+        .thenReturn(Optional.of(rec1));
+    when(statsStore.getTargetStats(req2.tableId(), req2.snapshotId(), req2.target()))
+        .thenReturn(Optional.empty());
+    when(registry.capture(req2)).thenReturn(Optional.empty());
+    when(registry.candidates(any())).thenReturn(List.of());
+
+    List<Optional<TargetStatsRecord>> out =
+        orchestrator.resolveBatch(StatsCaptureBatchRequest.of(List.of(req1, req2)));
+
+    assertThat(out).hasSize(2);
+    assertThat(out.get(0)).contains(rec1);
+    assertThat(out.get(1)).isEmpty();
+  }
+
   private static StatsCaptureRequest request(StatsExecutionMode mode) {
     return request(
         mode,

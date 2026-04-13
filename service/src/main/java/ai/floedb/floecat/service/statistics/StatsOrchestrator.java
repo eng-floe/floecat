@@ -112,6 +112,15 @@ public class StatsOrchestrator {
     return Optional.empty();
   }
 
+  /**
+   * Batch variant of {@link #resolve(StatsCaptureRequest)}.
+   *
+   * <p>Requests are resolved in-order with the same semantics as single-item resolve.
+   */
+  public List<Optional<TargetStatsRecord>> resolveBatch(StatsCaptureBatchRequest batchRequest) {
+    return batchRequest.requests().stream().map(this::resolve).toList();
+  }
+
   /** Reads the authoritative persisted record for the exact request identity. */
   private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
     // Fast path: authoritative persisted read.

@@ -21,10 +21,17 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
+import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBatch;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
@@ -35,6 +42,7 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.ByteString;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -169,6 +177,69 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(1L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void mixedTargetsReturnPartialStableResults() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 10, /* maxTables= */ 10, /* maxTargets= */ 20);
+    QueryContext ctx = queryContextWithPin("query-mixed", 107L);
+    store.seed(ctx);
+
+    repository.putTargetStats(
+        TargetStatsRecords.tableRecord(
+            TABLE, 107L, TableValueStats.newBuilder().setRowCount(100L).build(), null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 107L, 1L, sampleStats(TABLE, 107L, 1L), null));
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId("query-mixed")
+            .addTables(
+                TableTargetStatsRequest.newBuilder()
+                    .setTableId(TABLE)
+                    .addTargets(
+                        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
+                    .addTargets(
+                        StatsTarget.newBuilder()
+                            .setColumn(ColumnStatsTarget.newBuilder().setColumnId(1L)))
+                    .addTargets(
+                        StatsTarget.newBuilder()
+                            .setFile(
+                                FileStatsTarget.newBuilder()
+                                    .setFilePath("/warehouse/part-001.parquet")))
+                    .addTargets(
+                        StatsTarget.newBuilder()
+                            .setExpression(
+                                EngineExpressionStatsTarget.newBuilder()
+                                    .setEngineKind("duckdb")
+                                    .setEngineExpressionKey(ByteString.copyFromUtf8("expr-1")))))
+            .build();
+
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(4, results.size());
+    assertEquals(
+        2,
+        results.stream()
+            .filter(r -> r.getStatus().equals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND))
+            .count());
+    assertEquals(
+        2,
+        results.stream()
+            .filter(r -> r.getStatus().equals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND))
+            .count());
+
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(2L, end.getReturnedTargets());
+    assertEquals(2L, end.getNotFoundTargets());
+    assertEquals(0L, end.getErrorTargets());
   }
 
   @Test
