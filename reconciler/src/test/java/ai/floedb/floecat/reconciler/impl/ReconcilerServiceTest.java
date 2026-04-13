@@ -232,6 +232,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
     var result = service.reconcile(principal, connectorId, true, scope);
 
     assertThat(result.ok()).isTrue();
+    assertThat(result.degraded()).isTrue();
+    assertThat(result.degradedReasons)
+        .anyMatch(reason -> reason.contains("stats_followup_unavailable"));
     assertThat(backend.capturedTargetSnapshotIds).isEmpty();
     assertThat(backend.capturedKnownSnapshotIds).isEmpty();
     assertThat(backend.putConstraintsSnapshotId).isEqualTo(42L);

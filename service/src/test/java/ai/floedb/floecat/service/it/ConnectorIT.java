@@ -335,6 +335,74 @@ public class ConnectorIT {
   }
 
   @Test
+  void metadataAndStatsReturnsBeforeFollowUpStatsAreVisible() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-deferred-contract", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-deferred-contract")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-deferred-contract")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(metadataLocation)
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var metadataJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(metadataJob);
+    assertEquals("JS_SUCCEEDED", metadataJob.state, () -> "job failed: " + metadataJob.message);
+    assertEquals(
+        0L,
+        metadataJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-deferred-contract")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    var immediate = listCurrentFileStats(table.getResourceId(), 200);
+    assertTrue(
+        immediate.isEmpty(),
+        "metadata+stats should complete before follow-up STATS_ONLY capture makes stats visible");
+
+    var eventual = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
+    assertFalse(eventual.isEmpty(), "expected follow-up STATS_ONLY job to materialize file stats");
+  }
+
+  @Test
   void icebergFixtureIncrementalReconcileSkipsAlreadyIngestedSnapshots() throws Exception {
     TestS3Fixtures.seedFixturesOnce();
 

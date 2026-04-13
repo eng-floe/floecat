@@ -188,6 +188,7 @@ public class ReconcilerService {
     String corr = ctx.correlationId();
 
     final ArrayList<String> errSummaries = new ArrayList<>();
+    final ArrayList<String> degradedSummaries = new ArrayList<>();
     final BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     final ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -416,6 +417,7 @@ public class ReconcilerService {
                   captureMode);
           snapshotsProcessed += upstreamBundles.ingestCounts().snapshotsProcessed;
           statsProcessed += upstreamBundles.ingestCounts().statsProcessed;
+          upstreamBundles.degradedReason().ifPresent(degradedSummaries::add);
           if (upstreamBundles.tableChanged()) {
             changed++;
           }
@@ -538,7 +540,14 @@ public class ReconcilerService {
       }
 
       if (errors == 0) {
-        return new Result(scanned, changed, 0, snapshotsProcessed, statsProcessed, null);
+        return new Result(
+            scanned,
+            changed,
+            0,
+            snapshotsProcessed,
+            statsProcessed,
+            null,
+            List.copyOf(degradedSummaries));
       } else {
         var summary = new StringBuilder();
         summary.append("Partial failure (errors=").append(errors).append("):");
@@ -551,7 +560,8 @@ public class ReconcilerService {
             errors,
             snapshotsProcessed,
             statsProcessed,
-            new RuntimeException(summary.toString()));
+            new RuntimeException(summary.toString()),
+            List.copyOf(degradedSummaries));
       }
 
     } catch (Exception e) {
@@ -1103,25 +1113,32 @@ public class ReconcilerService {
     }
   }
 
-  private void enqueueStatsOnlyCapture(
+  private Optional<String> enqueueStatsOnlyCapture(
       ResourceId connectorId,
       String namespaceFq,
       String tableDisplayName,
       Set<String> includeSelectors,
       Set<Long> snapshotIds) {
     if (reconcileJobStore == null || reconcileJobStore.isUnsatisfied()) {
+      String reason =
+          "stats_followup_unavailable connector="
+              + (connectorId != null ? connectorId.getId() : "")
+              + " table="
+              + (namespaceFq == null ? "" : namespaceFq)
+              + "."
+              + (tableDisplayName == null ? "" : tableDisplayName);
       LOG.warnf(
           "Skipping follow-up STATS_ONLY enqueue: reconcile job store unavailable for connector=%s table=%s.%s",
           connectorId != null ? connectorId.getId() : "",
           namespaceFq == null ? "" : namespaceFq,
           tableDisplayName == null ? "" : tableDisplayName);
-      return;
+      return Optional.of(reason);
     }
     if (connectorId == null
         || connectorId.getAccountId().isBlank()
         || connectorId.getId().isBlank()) {
       LOG.warn("Skipping follow-up STATS_ONLY enqueue: connector identity is incomplete");
-      return;
+      return Optional.of("stats_followup_unavailable connector_identity_incomplete");
     }
     if (namespaceFq == null
         || namespaceFq.isBlank()
@@ -1130,7 +1147,8 @@ public class ReconcilerService {
       LOG.warnf(
           "Skipping follow-up STATS_ONLY enqueue: scope identity missing for connector=%s",
           connectorId.getId());
-      return;
+      return Optional.of(
+          "stats_followup_unavailable scope_identity_missing connector=" + connectorId.getId());
     }
     List<List<String>> namespacePaths = List.of(namespacePath(namespaceFq));
     List<String> columns =
@@ -1148,6 +1166,7 @@ public class ReconcilerService {
     LOG.infof(
         "Enqueued follow-up STATS_ONLY capture job=%s connector=%s table=%s.%s snapshots=%s",
         jobId, connectorId.getId(), namespaceFq, tableDisplayName, snapshotIds);
+    return Optional.empty();
   }
 
   private Set<Long> snapshotIdsFromBundles(List<FloecatConnector.SnapshotBundle> bundles) {
@@ -1216,15 +1235,17 @@ public class ReconcilerService {
             errors,
             snapshotsProcessedBase,
             statsProcessedBase);
+    Optional<String> degradedReason = Optional.empty();
     if (captureMode == CaptureMode.METADATA_AND_STATS) {
-      enqueueStatsOnlyCapture(
-          connectorId,
-          scopeNamespaceFq,
-          destTableDisplay,
-          includeSelectors,
-          snapshotIdsFromBundles(bundles));
+      degradedReason =
+          enqueueStatsOnlyCapture(
+              connectorId,
+              scopeNamespaceFq,
+              destTableDisplay,
+              includeSelectors,
+              snapshotIdsFromBundles(bundles));
     }
-    return new MetadataPassOutcome(ingestCounts, tableChanged(bundles));
+    return new MetadataPassOutcome(ingestCounts, tableChanged(bundles), degradedReason);
   }
 
   private List<String> namespacePath(String namespaceFq) {
@@ -1450,6 +1471,7 @@ public class ReconcilerService {
     // target records for a single successful capture attempt.
     public final long scanned, changed, errors, snapshotsProcessed, statsProcessed;
     public final Exception error;
+    public final List<String> degradedReasons;
 
     public Result(
         long scanned,
@@ -1458,12 +1480,27 @@ public class ReconcilerService {
         long snapshotsProcessed,
         long statsProcessed,
         Exception error) {
+      this(scanned, changed, errors, snapshotsProcessed, statsProcessed, error, List.of());
+    }
+
+    public Result(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        Exception error,
+        List<String> degradedReasons) {
       this.scanned = scanned;
       this.changed = changed;
       this.errors = errors;
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.error = error;
+      this.degradedReasons =
+          degradedReasons == null || degradedReasons.isEmpty()
+              ? List.of()
+              : List.copyOf(degradedReasons);
     }
 
     public boolean ok() {
@@ -1474,8 +1511,15 @@ public class ReconcilerService {
       return error instanceof ReconcileCancelledException;
     }
 
+    public boolean degraded() {
+      return !degradedReasons.isEmpty();
+    }
+
     public String message() {
-      return ok() ? "OK" : rootCauseMessage(error);
+      if (!ok()) {
+        return rootCauseMessage(error);
+      }
+      return degraded() ? "DEGRADED: " + String.join("; ", degradedReasons) : "OK";
     }
   }
 
@@ -1507,5 +1551,6 @@ public class ReconcilerService {
     }
   }
 
-  private record MetadataPassOutcome(IngestCounts ingestCounts, boolean tableChanged) {}
+  private record MetadataPassOutcome(
+      IngestCounts ingestCounts, boolean tableChanged, Optional<String> degradedReason) {}
 }
