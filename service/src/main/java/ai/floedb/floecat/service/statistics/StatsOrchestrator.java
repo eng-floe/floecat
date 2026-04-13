@@ -23,6 +23,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
@@ -178,17 +181,22 @@ public class StatsOrchestrator {
    * It is intended for control-plane callers that explicitly request capture now.
    */
   public StatsTriggerResult trigger(StatsCaptureRequest request) {
-    CaptureAttempt attempt = captureAttempt(request);
-    StatsTriggerResult result;
-    if (attempt.result().isPresent()) {
-      result = StatsTriggerResult.captured(attempt.result().get());
-    } else if (!attempt.supported()) {
-      result = StatsTriggerResult.uncapturable("target unsupported");
-    } else {
-      result = StatsTriggerResult.uncapturable("no capture result");
-    }
-    logTriggerOutcome(request, result);
-    return result;
+    StatsCaptureBatchResult batchResult = triggerBatch(StatsCaptureBatchRequest.of(request));
+    return toTriggerResult(batchResult.results().getFirst());
+  }
+
+  /**
+   * Executes explicit capture trigger attempts for each request in the batch.
+   *
+   * <p>Each item is routed independently using registry capability + priority policy. Results are
+   * returned in the same order as requests.
+   */
+  public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
+    StatsCaptureBatchResult registryResult = statsEngineRegistry.captureBatch(batchRequest);
+    registryResult
+        .results()
+        .forEach(item -> logTriggerOutcome(item.request(), toTriggerResult(item)));
+    return registryResult;
   }
 
   private CaptureAttempt captureAttempt(StatsCaptureRequest request) {
@@ -203,6 +211,19 @@ public class StatsOrchestrator {
   }
 
   private record CaptureAttempt(Optional<StatsCaptureResult> result, boolean supported) {}
+
+  private static StatsTriggerResult toTriggerResult(StatsCaptureBatchItemResult item) {
+    return switch (item.outcome()) {
+      case CAPTURED ->
+          StatsTriggerResult.captured(
+              item.captureResult()
+                  .orElseThrow(
+                      () -> new IllegalStateException("captured outcome missing payload")));
+      case QUEUED -> StatsTriggerResult.queued(item.detail());
+      case UNCAPTURABLE -> StatsTriggerResult.uncapturable(item.detail());
+      case DEGRADED -> StatsTriggerResult.degraded(item.detail());
+    };
+  }
 
   private void logTriggerOutcome(StatsCaptureRequest request, StatsTriggerResult result) {
     if (result.outcome() == StatsTriggerOutcome.CAPTURED) {
