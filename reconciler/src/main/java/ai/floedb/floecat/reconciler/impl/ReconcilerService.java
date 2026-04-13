@@ -346,14 +346,11 @@ public class ReconcilerService {
           Set<Long> targetSnapshotIds = Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
+          Predicate<Long> statsCompleteForSnapshot =
+              snapshotCompletenessChecker(ctx, destTableId, includeSelectors);
           Set<Long> enumerationKnownSnapshotIds =
               knownSnapshotIdsForEnumeration(
-                  fullRescan,
-                  includeStats,
-                  knownSnapshotIds,
-                  snapshotId ->
-                      isStatsCaptureCompleteForScope(
-                          ctx, destTableId, snapshotId, includeSelectors));
+                  fullRescan, includeStats, knownSnapshotIds, statsCompleteForSnapshot);
           if (captureMode == CaptureMode.STATS_ONLY) {
             IngestCounts ingestCounts =
                 captureStatsOnlyViaControlPlane(
@@ -366,6 +363,7 @@ public class ReconcilerService {
                     knownSnapshotIds,
                     enumerationKnownSnapshotIds,
                     targetSnapshotIds,
+                    statsCompleteForSnapshot,
                     includeSelectors,
                     cancelCheck,
                     progressOut,
@@ -409,6 +407,7 @@ public class ReconcilerService {
                   includeCoreMetadata,
                   includeStats,
                   fullRescan,
+                  statsCompleteForSnapshot,
                   includeSelectors,
                   cancelCheck,
                   progressOut,
@@ -885,6 +884,7 @@ public class ReconcilerService {
       boolean includeCoreMetadata,
       boolean includeStats,
       boolean fullRescan,
+      Predicate<Long> statsCompleteForSnapshot,
       Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
@@ -928,7 +928,9 @@ public class ReconcilerService {
       }
 
       boolean statsCaptured =
-          !fullRescan && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors);
+          !fullRescan
+              && statsCompleteForSnapshot != null
+              && statsCompleteForSnapshot.test(snapshotId);
       if (statsCaptured) {
         maybeIngestSnapshotConstraints(
             ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
@@ -966,6 +968,7 @@ public class ReconcilerService {
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
+      Predicate<Long> statsCompleteForSnapshot,
       Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
@@ -1006,7 +1009,8 @@ public class ReconcilerService {
       if (!fullRescan
           && knownSnapshotIds != null
           && knownSnapshotIds.contains(snapshotId)
-          && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors)) {
+          && statsCompleteForSnapshot != null
+          && statsCompleteForSnapshot.test(snapshotId)) {
         continue;
       }
 
@@ -1113,8 +1117,7 @@ public class ReconcilerService {
       return false;
     }
     if (includeSelectors != null && !includeSelectors.isEmpty()) {
-      return backend.statsAlreadyCapturedForTargetKind(
-          ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN);
+      return backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, includeSelectors);
     }
     return backend.statsAlreadyCapturedForTargetKind(
             ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN)
@@ -1122,6 +1125,18 @@ public class ReconcilerService {
             ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
         || backend.statsAlreadyCapturedForTargetKind(
             ctx, tableId, snapshotId, StatsTargetKind.STK_EXPRESSION);
+  }
+
+  /**
+   * Builds a memoized snapshot completeness checker so repeated lookups in one table reconcile pass
+   * do not issue duplicate backend calls for the same snapshot.
+   */
+  private Predicate<Long> snapshotCompletenessChecker(
+      ReconcileContext ctx, ResourceId tableId, Set<String> includeSelectors) {
+    Map<Long, Boolean> completenessBySnapshot = new LinkedHashMap<>();
+    return snapshotId ->
+        completenessBySnapshot.computeIfAbsent(
+            snapshotId, id -> isStatsCaptureCompleteForScope(ctx, tableId, id, includeSelectors));
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {

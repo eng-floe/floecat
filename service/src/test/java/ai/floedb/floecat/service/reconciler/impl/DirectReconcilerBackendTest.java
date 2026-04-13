@@ -58,6 +58,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -254,6 +255,49 @@ class DirectReconcilerBackendTest {
     assertThat(
             backend.statsAlreadyCapturedForTargetKind(
                 ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_EXPRESSION))
+        .isTrue();
+  }
+
+  @Test
+  void statsCapturedForColumnSelectorsRequiresFullSelectorCoverage() {
+    ScalarStats col1 = ScalarStats.newBuilder().setDisplayName("i").build();
+    ScalarStats col2 = ScalarStats.newBuilder().setDisplayName("j").build();
+    backend.putTargetStats(
+        ctx,
+        List.of(
+            TargetStatsRecords.columnRecord(tableId, SNAPSHOT_ID, 1L, col1, null),
+            TargetStatsRecords.columnRecord(tableId, SNAPSHOT_ID, 2L, col2, null)));
+
+    assertThat(
+            backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of("#1", "j")))
+        .isTrue();
+    assertThat(
+            backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of("#1", "#3")))
+        .isFalse();
+    assertThat(backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of("i", "z")))
+        .isFalse();
+  }
+
+  @Test
+  void statsCapturedForColumnSelectorsRejectsMalformedIdSelectors() {
+    ScalarStats col1 = ScalarStats.newBuilder().setDisplayName("i").build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.columnRecord(tableId, SNAPSHOT_ID, 1L, col1, null)));
+
+    assertThat(backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of("#bad")))
+        .isFalse();
+  }
+
+  @Test
+  void statsCapturedForColumnSelectorsFallsBackToAnyColumnWhenSelectorsAreEmpty() {
+    assertThat(backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of()))
+        .isFalse();
+
+    ScalarStats col1 = ScalarStats.newBuilder().setDisplayName("i").build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.columnRecord(tableId, SNAPSHOT_ID, 1L, col1, null)));
+
+    assertThat(backend.statsCapturedForColumnSelectors(ctx, tableId, SNAPSHOT_ID, Set.of()))
         .isTrue();
   }
 

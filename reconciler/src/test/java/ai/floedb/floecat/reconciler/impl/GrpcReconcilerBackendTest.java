@@ -16,6 +16,8 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
@@ -24,9 +26,16 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class GrpcReconcilerBackendTest {
@@ -202,5 +211,32 @@ class GrpcReconcilerBackendTest {
     assertThat(request.getTableId()).isEqualTo(tableId);
     assertThat(request.getSnapshot().getSnapshotId()).isEqualTo(99L);
     assertThat(request.getPage().getPageSize()).isEqualTo(1);
+  }
+
+  @Test
+  void statsCapturedForColumnSelectorsRejectsMalformedIdSelectorsWithoutGrpcCall() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.statistics = mock(TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub.class);
+    ReconcileContext ctx =
+        new ReconcileContext(
+            "corr",
+            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr").build(),
+            "svc",
+            Instant.now(),
+            Optional.empty());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("orders")
+            .build();
+
+    boolean captured =
+        backend.statsCapturedForColumnSelectors(ctx, tableId, 42L, Set.of("#bad", "amount"));
+
+    assertThat(captured).isFalse();
+    verifyNoInteractions(backend.statistics);
   }
 }

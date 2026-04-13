@@ -62,6 +62,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
@@ -81,6 +82,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -373,6 +375,50 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       throw e;
     }
+  }
+
+  @Override
+  public boolean statsCapturedForColumnSelectors(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
+    ColumnSelectorCoverage.SelectorCoverage required = ColumnSelectorCoverage.parse(selectors);
+    if (required.isUnsatisfiable()) {
+      return false;
+    }
+    if (required.isEmpty()) {
+      return statsAlreadyCapturedForTargetKind(
+          ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN);
+    }
+    Set<Long> presentIds = new HashSet<>();
+    Set<String> presentNames = new HashSet<>();
+    String pageToken = "";
+    final int pageSize = 256;
+    try {
+      do {
+        ListTargetStatsRequest request =
+            buildStatsAlreadyCapturedRequest(tableId, snapshotId).toBuilder()
+                .clearTargetKinds()
+                .addTargetKinds(StatsTargetKind.STK_COLUMN)
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(pageToken))
+                .build();
+        var response = statistics(ctx).listTargetStats(request);
+        if (response == null) {
+          break;
+        }
+        for (TargetStatsRecord record : response.getRecordsList()) {
+          ColumnSelectorCoverage.recordColumnCoverage(record, presentIds, presentNames);
+        }
+        if (required.isSatisfiedBy(presentIds, presentNames)) {
+          return true;
+        }
+        pageToken = response.hasPage() ? response.getPage().getNextPageToken() : "";
+      } while (pageToken != null && !pageToken.isBlank());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+    return required.isSatisfiedBy(presentIds, presentNames);
   }
 
   @Override
