@@ -191,6 +191,13 @@ public final class StatsProtoEmitter {
     }
 
     Map<String, Long> idByPath = buildIdByCanonicalPath(algo, schema);
+    var upstream =
+        LogicalTypeProtoAdapter.upstreamStamp(
+            toTableFormat(format),
+            "",
+            Long.toString(snapshotId),
+            Timestamps.fromMillis(Math.max(0L, upstreamCreatedAtMs)),
+            Map.of());
     List<TargetStatsRecord> out = new ArrayList<>(in.size());
     for (var view : in) {
       if (view == null || view.ref() == null) {
@@ -206,6 +213,7 @@ public final class StatsProtoEmitter {
               .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
               .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
               .setValueCount(view.valueCount() == null ? 0L : view.valueCount())
+              .setUpstream(upstream)
               .putAllProperties(view.properties() == null ? Map.of() : view.properties());
       if (view.nullCount() != null) {
         scalar.setNullCount(view.nullCount());

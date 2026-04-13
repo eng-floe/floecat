@@ -177,6 +177,30 @@ public class StatsProtoEmitterTest {
   }
 
   @Test
+  public void toColumnStats_setsUpstreamProvenanceOnScalarPayload() {
+    var schema = schemaWithColumns(schemaCol("id", "id", 1, 1, true));
+    long upstreamCreatedAtMs = 1_700_000_123_000L;
+    long snapshotId = 3L;
+
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
+            rid("t1"),
+            snapshotId,
+            upstreamCreatedAtMs,
+            ConnectorFormat.CF_ICEBERG,
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            schema,
+            List.of(view(ref("id", "id", 0, 0), 12L)));
+
+    assertEquals(1, out.size());
+    assertTrue(out.get(0).getScalar().hasUpstream());
+    assertEquals("3", out.get(0).getScalar().getUpstream().getCommitRef());
+    assertEquals(
+        upstreamCreatedAtMs / 1000L,
+        out.get(0).getScalar().getUpstream().getFetchedAt().getSeconds());
+  }
+
+  @Test
   public void toColumnStats_fieldId_skipsWhenFieldIdMissing() {
     var schema = schemaWithColumns(schemaCol("id", "id", 1, 1, true));
 
