@@ -88,7 +88,6 @@ class StatsEngineRegistryTest {
                     .statisticKindsByTarget(Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.NDV)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
             .fixed(Optional.empty())
             .build();
@@ -118,7 +117,6 @@ class StatsEngineRegistryTest {
                         Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
             .fixed(Optional.empty())
             .build();
@@ -152,7 +150,6 @@ class StatsEngineRegistryTest {
                         Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
             .fixed(Optional.empty())
             .build();
@@ -166,7 +163,6 @@ class StatsEngineRegistryTest {
                         Map.of(StatsTargetType.FILE, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
             .fixed(Optional.empty())
             .build();
@@ -175,71 +171,6 @@ class StatsEngineRegistryTest {
     assertThat(registry.candidates(request))
         .extracting(StatsCaptureEngine::id)
         .containsExactly("supported");
-  }
-
-  @Test
-  void candidatesExcludeNonSnapshotAwareEngineForConcreteSnapshot() {
-    StatsCaptureRequest request = sampleRequest(); // concrete snapshot id: 100
-    StatsCaptureEngine notSnapshotAware =
-        TestStatsCaptureEngine.builder("not-snapshot-aware")
-            .priority(1)
-            .capabilities(
-                StatsCapabilities.builder()
-                    .targetTypes(Set.of(StatsTargetType.TABLE))
-                    .statisticKindsByTarget(
-                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
-                    .executionModes(Set.of(StatsExecutionMode.SYNC))
-                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(false)
-                    .build())
-            .fixed(Optional.empty())
-            .build();
-    StatsCaptureEngine snapshotAware =
-        TestStatsCaptureEngine.builder("snapshot-aware")
-            .priority(2)
-            .capabilities(tableOnlyCaps())
-            .fixed(Optional.empty())
-            .build();
-
-    StatsEngineRegistry registry =
-        new StatsEngineRegistry(List.of(notSnapshotAware, snapshotAware));
-
-    assertThat(registry.candidates(request))
-        .extracting(StatsCaptureEngine::id)
-        .containsExactly("snapshot-aware");
-  }
-
-  @Test
-  void candidatesAllowNonSnapshotAwareEngineForUnresolvedSnapshotSentinel() {
-    StatsCaptureRequest request =
-        StatsCaptureRequest.builder(
-                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
-                0L,
-                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
-            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
-            .executionMode(StatsExecutionMode.SYNC)
-            .correlationId("test-corr-zero")
-            .build();
-    StatsCaptureEngine notSnapshotAware =
-        TestStatsCaptureEngine.builder("not-snapshot-aware")
-            .priority(1)
-            .capabilities(
-                StatsCapabilities.builder()
-                    .targetTypes(Set.of(StatsTargetType.TABLE))
-                    .statisticKindsByTarget(
-                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
-                    .executionModes(Set.of(StatsExecutionMode.SYNC))
-                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(false)
-                    .build())
-            .fixed(Optional.empty())
-            .build();
-
-    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(notSnapshotAware));
-
-    assertThat(registry.candidates(request))
-        .extracting(StatsCaptureEngine::id)
-        .containsExactly("not-snapshot-aware");
   }
 
   private static StatsCaptureRequest sampleRequest() {
@@ -259,7 +190,6 @@ class StatsEngineRegistryTest {
         .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
         .executionModes(Set.of(StatsExecutionMode.SYNC))
         .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-        .snapshotAware(true)
         .build();
   }
 }

@@ -1295,8 +1295,7 @@ public class ReconcilerService {
       return false;
     }
     if (includeSelectors != null && !includeSelectors.isEmpty()) {
-      return backend.statsAlreadyCapturedForTargetKind(
-          ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN);
+      return backend.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, includeSelectors);
     }
     return backend.statsAlreadyCapturedForTargetKind(
             ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN)

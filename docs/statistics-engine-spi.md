@@ -92,7 +92,6 @@ Each `StatsCaptureEngine` advertises:
 - supported statistic kinds per target (`statisticKindsByTarget`)
 - supported execution modes (`SYNC`, `ASYNC`)
 - sampling support (`NONE`, `RANDOM_ROW_GROUP`, `METADATA_GUIDED`)
-- snapshot awareness
 
 Kind routing note:
 
@@ -102,11 +101,6 @@ Kind routing note:
 
 `StatsEngineRegistry` uses these capabilities plus `priority()` to select candidate engines in
 order.
-
-Snapshot-awareness rule:
-
-- for concrete snapshot requests (`snapshot_id > 0`), only `snapshotAware=true` engines are eligible
-- for unresolved/current sentinel requests (`snapshot_id = 0`), both engine types may be eligible
 
 ## Routing behavior
 

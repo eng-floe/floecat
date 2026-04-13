@@ -41,8 +41,7 @@ public record StatsCapabilities(
     Set<StatsTargetType> targetTypes,
     Map<StatsTargetType, Set<StatsKind>> statisticKindsByTarget,
     Set<StatsExecutionMode> executionModes,
-    Set<StatsSamplingSupport> samplingSupport,
-    boolean snapshotAware) {
+    Set<StatsSamplingSupport> samplingSupport) {
 
   public StatsCapabilities {
     connectors = normalizeConnectors(connectors);
@@ -69,9 +68,6 @@ public record StatsCapabilities(
   public boolean supports(StatsCaptureRequest request) {
     Objects.requireNonNull(request, "request");
     StatsTargetType targetType = StatsTargetType.from(request.target());
-    if (request.snapshotId() > 0L && !snapshotAware) {
-      return false;
-    }
     if (!targetTypes.isEmpty() && !targetTypes.contains(targetType)) {
       return false;
     }
@@ -130,7 +126,6 @@ public record StatsCapabilities(
    *   <li>{@code statisticKinds}: empty set (all statistic kinds)
    *   <li>{@code executionModes}: {@code [SYNC]}
    *   <li>{@code samplingSupport}: {@code [NONE]}
-   *   <li>{@code snapshotAware}: {@code true}
    * </ul>
    */
   public static final class Builder {
@@ -140,7 +135,6 @@ public record StatsCapabilities(
     private Set<StatsExecutionMode> executionModes = Set.of(StatsExecutionMode.SYNC);
     // Default to NONE unless explicitly declared otherwise.
     private Set<StatsSamplingSupport> samplingSupport = Set.of(StatsSamplingSupport.NONE);
-    private boolean snapshotAware = true;
 
     private Builder() {}
 
@@ -175,20 +169,9 @@ public record StatsCapabilities(
       return this;
     }
 
-    /** Declares whether snapshot-scoped requests are supported by this engine. */
-    public Builder snapshotAware(boolean snapshotAware) {
-      this.snapshotAware = snapshotAware;
-      return this;
-    }
-
     public StatsCapabilities build() {
       return new StatsCapabilities(
-          connectors,
-          targetTypes,
-          statisticKindsByTarget,
-          executionModes,
-          samplingSupport,
-          snapshotAware);
+          connectors, targetTypes, statisticKindsByTarget, executionModes, samplingSupport);
     }
   }
 
