@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.statistics;
 
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
@@ -38,5 +40,10 @@ public class StatsCaptureControlPlaneAdapter implements StatsCaptureControlPlane
   @Override
   public StatsTriggerResult trigger(StatsCaptureRequest request) {
     return orchestrator.trigger(request);
+  }
+
+  @Override
+  public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
+    return orchestrator.triggerBatch(batchRequest);
   }
 }

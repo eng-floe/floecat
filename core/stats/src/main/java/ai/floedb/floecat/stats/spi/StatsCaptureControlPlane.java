@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.stats.spi;
 
+import java.util.stream.Collectors;
+
 /**
  * Control-plane entrypoint for explicit stats capture requests.
  *
@@ -37,4 +39,29 @@ public interface StatsCaptureControlPlane {
    * </ul>
    */
   StatsTriggerResult trigger(StatsCaptureRequest request);
+
+  /**
+   * Executes multiple explicit trigger attempts.
+   *
+   * <p>Default behavior delegates each request to {@link #trigger(StatsCaptureRequest)} in order,
+   * so existing control-plane implementations remain compatible.
+   */
+  default StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
+    return StatsCaptureBatchResult.of(
+        batchRequest.requests().stream()
+            .map(
+                request -> {
+                  StatsTriggerResult result = trigger(request);
+                  return switch (result.outcome()) {
+                    case CAPTURED ->
+                        StatsCaptureBatchItemResult.captured(
+                            request, result.captureResult().orElseThrow());
+                    case QUEUED -> StatsCaptureBatchItemResult.queued(request, result.detail());
+                    case UNCAPTURABLE ->
+                        StatsCaptureBatchItemResult.uncapturable(request, result.detail());
+                    case DEGRADED -> StatsCaptureBatchItemResult.degraded(request, result.detail());
+                  };
+                })
+            .collect(Collectors.toList()));
+  }
 }

@@ -25,11 +25,15 @@ import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -104,6 +108,23 @@ class StatsCaptureControlPlaneAdapterTest {
     assertThat(out.captureResult()).isEmpty();
     assertThat(out.detail()).isEqualTo("runtime failure");
     verify(orchestrator).trigger(request);
+  }
+
+  @Test
+  void delegatesBatchTrigger() {
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsCaptureControlPlaneAdapter adapter = new StatsCaptureControlPlaneAdapter(orchestrator);
+    StatsCaptureRequest request = request();
+    StatsCaptureBatchRequest batchRequest = StatsCaptureBatchRequest.of(request);
+    StatsCaptureBatchResult expected =
+        StatsCaptureBatchResult.of(
+            List.of(StatsCaptureBatchItemResult.uncapturable(request, "unsupported")));
+    when(orchestrator.triggerBatch(batchRequest)).thenReturn(expected);
+
+    StatsCaptureBatchResult out = adapter.triggerBatch(batchRequest);
+
+    assertThat(out).isEqualTo(expected);
+    verify(orchestrator).triggerBatch(batchRequest);
   }
 
   private static StatsCaptureRequest request() {
