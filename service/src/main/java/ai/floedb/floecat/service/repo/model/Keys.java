@@ -31,8 +31,7 @@ public final class Keys {
   public static final String SEG_SNAPSHOT = "/snapshot/";
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
-  public static final String SEG_TABLE_STATS = "/table-stats/";
-  public static final String SEG_COLUMN_STATS = "/column-stats/";
+  public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_FILE_STATS = "/file-stats/";
   public static final String SEG_CONSTRAINTS = "/constraints/";
   public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
@@ -92,10 +91,6 @@ public final class Keys {
       enc[i] = encode(req("segments[" + i + "]", segments.get(i)));
     }
     return String.join("/", enc);
-  }
-
-  private static String normalizeColumnId(long columnId) {
-    return String.format("%019d", columnId);
   }
 
   // ===== Account =====
@@ -438,58 +433,50 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/%019d/stats/", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotTableStatsPointer(
+  public static String snapshotTargetStatsDirectoryPointer(
       String accountId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "table";
-  }
-
-  public static String snapshotColumnStatsDirectoryPointer(
-      String accountId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "columns/";
-  }
-
-  public static String snapshotColumnStatsPointer(
-      String accountId, String tableId, long snapshotId, long columnId) {
-    String cid = normalizeColumnId(columnId);
-    return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(cid);
-  }
-
-  public static String snapshotTableStatsBlobUri(String accountId, String tableId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format(
-        "/accounts/%s/tables/%s/table-stats/%s.pb", encode(tid), encode(tbid), encode(sha256));
-  }
-
-  public static String snapshotTableStatsBlobPrefix(String accountId, String tableId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format("/accounts/%s/tables/%s/table-stats/", encode(tid), encode(tbid));
-  }
-
-  public static String snapshotColumnStatsBlobUri(
-      String accountId, String tableId, long columnId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String cid = normalizeColumnId(columnId);
-    return String.format(
-        "/accounts/%s/tables/%s/column-stats/%s/%s.pb",
-        encode(tid), encode(tbid), encode(cid), encode(sha256));
-  }
-
-  public static String snapshotColumnStatsBlobPrefix(String accountId, String tableId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format("/accounts/%s/tables/%s/column-stats/", encode(tid), encode(tbid));
+    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets/";
   }
 
   public static String snapshotStatsPrefix(String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId);
   }
 
-  public static String snapshotColumnStatsPrefix(
+  public static String snapshotTargetStatsPointer(
+      String accountId, String tableId, long snapshotId, String targetId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    long sid = reqNonNegative("snapshot_id", snapshotId);
+    String target = req("target_id", targetId);
+    return snapshotTargetStatsDirectoryPointer(tid, tbid, sid) + encode(target);
+  }
+
+  public static String snapshotTargetStatsBlobUri(
+      String accountId, String tableId, String targetId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String target = req("target_id", targetId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/target-stats/%s/%s.pb",
+        encode(tid), encode(tbid), encode(target), encode(sha));
+  }
+
+  public static String snapshotTargetStatsBlobPrefix(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/target-stats/", encode(tid), encode(tbid));
+  }
+
+  public static String snapshotTargetStatsPrefix(
       String accountId, String tableId, long snapshotId) {
-    return snapshotColumnStatsDirectoryPointer(accountId, tableId, snapshotId);
+    return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId);
+  }
+
+  public static String snapshotTargetColumnStatsPrefix(
+      String accountId, String tableId, long snapshotId, String columnTargetIdPrefix) {
+    String prefix = req("column_target_id_prefix", columnTargetIdPrefix);
+    return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(prefix);
   }
 
   public static String snapshotFileStatsDirectoryPointer(

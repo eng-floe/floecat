@@ -18,19 +18,51 @@ package ai.floedb.floecat.stats.spi;
 
 import java.util.Optional;
 
-/** Floecat-side provider SPI for statistics capture. */
+/**
+ * Service Provider Interface for pluggable statistics capture.
+ *
+ * <p>OSS engine authors: implement this interface, annotate the implementation with {@code
+ * @jakarta.enterprise.context.ApplicationScoped}, and it will be auto-discovered by {@code
+ * StatsEngineRegistry} through CDI {@code Instance<>} injection.
+ *
+ * <p>See {@code PersistedStatsCaptureEngine} for the baseline reference implementation.
+ */
 public interface StatsCaptureEngine {
+  /**
+   * Stable unique engine identifier.
+   *
+   * <p>Used for logging, diagnostics, and result attribution.
+   */
   String id();
 
+  /**
+   * Capture priority where lower values win.
+   *
+   * <p>Baseline persisted engine uses {@code 10_000}. Most specialized engines should use lower
+   * values. The default return value is {@code 100}, which takes priority over the baseline.
+   */
   default int priority() {
     return 100;
   }
 
-  StatsEngineCapabilities capabilities();
+  /** Advertised static capabilities for routing. */
+  StatsCapabilities capabilities();
 
+  /**
+   * Returns whether this engine supports the request.
+   *
+   * <p>The default implementation delegates to {@link #capabilities()}. Override to add dynamic
+   * checks (for example feature flags or table-specific constraints).
+   */
   default boolean supports(StatsCaptureRequest request) {
     return capabilities().supports(request);
   }
 
+  /**
+   * Attempts to capture stats for the request.
+   *
+   * <p>Return {@link Optional#empty()} when the engine has no data for this request. Throw a
+   * runtime exception when the engine encounters a processing error.
+   */
   Optional<StatsCaptureResult> capture(StatsCaptureRequest request);
 }

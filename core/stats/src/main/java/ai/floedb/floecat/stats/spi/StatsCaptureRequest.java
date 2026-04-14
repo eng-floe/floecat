@@ -31,15 +31,19 @@ import java.util.Set;
  *
  * <p>{@code columnSelectors} allows scoped capture requests to declare the set of relevant columns
  * in one request (for example destination column IDs or source column names).
+ *
+ * <p>{@code correlationId} is optional but should be populated by caller-facing services to keep
+ * engine routing logs traceable.
  */
 public record StatsCaptureRequest(
     ResourceId tableId,
     long snapshotId,
     StatsTarget target,
     Set<String> columnSelectors,
-    Set<StatsStatisticKind> requestedKinds,
+    Set<StatsKind> requestedKinds,
     StatsExecutionMode executionMode,
     String connectorType,
+    String correlationId,
     boolean samplingRequested,
     Optional<Duration> latencyBudget) {
 
@@ -53,6 +57,7 @@ public record StatsCaptureRequest(
     requestedKinds = Set.copyOf(Objects.requireNonNull(requestedKinds, "requestedKinds"));
     executionMode = Objects.requireNonNull(executionMode, "executionMode");
     connectorType = connectorType == null ? "" : connectorType.trim().toLowerCase();
+    correlationId = correlationId == null ? "" : correlationId.trim();
     latencyBudget = Objects.requireNonNullElse(latencyBudget, Optional.empty());
     if (latencyBudget.isPresent()
         && (latencyBudget.get().isZero() || latencyBudget.get().isNegative())) {
@@ -60,18 +65,16 @@ public record StatsCaptureRequest(
     }
   }
 
-  /**
-   * Backward-compatible constructor for call sites that do not pass a latency budget. {@code
-   * latencyBudget} defaults to empty.
-   */
+  /** Convenience constructor that defaults {@code latencyBudget} to empty. */
   public StatsCaptureRequest(
       ResourceId tableId,
       long snapshotId,
       StatsTarget target,
       Set<String> columnSelectors,
-      Set<StatsStatisticKind> requestedKinds,
+      Set<StatsKind> requestedKinds,
       StatsExecutionMode executionMode,
       String connectorType,
+      String correlationId,
       boolean samplingRequested) {
     this(
         tableId,
@@ -81,6 +84,7 @@ public record StatsCaptureRequest(
         requestedKinds,
         executionMode,
         connectorType,
+        correlationId,
         samplingRequested,
         Optional.empty());
   }

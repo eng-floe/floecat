@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.types;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import com.google.protobuf.Timestamp;
@@ -25,7 +25,7 @@ import java.util.Objects;
 
 /**
  * Adapter between Floecat {@link LogicalType} objects and their protobuf wire representations
- * ({@code ColumnStats}, {@code UpstreamStamp}).
+ * ({@code ScalarStats}, {@code UpstreamStamp}).
  *
  * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Encoding and
  * decoding of min/max values is delegated to {@link ValueEncoders}.
@@ -74,7 +74,7 @@ public final class LogicalTypeProtoAdapter {
   }
 
   /**
-   * Encodes a stat value to its canonical string (for storage in {@code ColumnStats.min/max}).
+   * Encodes a stat value to its canonical string (for storage in {@code ScalarStats.min/max}).
    * Returns an empty string for null values.
    *
    * @param type the logical type governing encoding semantics
@@ -132,16 +132,16 @@ public final class LogicalTypeProtoAdapter {
     return b.build();
   }
 
-  public static LogicalType columnLogicalType(ColumnStats cs) {
+  public static LogicalType columnLogicalType(ScalarStats cs) {
     return decodeLogicalType(cs.getLogicalType());
   }
 
-  public static Object columnMin(ColumnStats cs) {
+  public static Object columnMin(ScalarStats cs) {
     LogicalType t = columnLogicalType(cs);
     return decodeValue(t, cs.getMin());
   }
 
-  public static Object columnMax(ColumnStats cs) {
+  public static Object columnMax(ScalarStats cs) {
     LogicalType t = columnLogicalType(cs);
     return decodeValue(t, cs.getMax());
   }

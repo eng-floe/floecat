@@ -1033,14 +1033,13 @@ public class TransactionCommitService {
     if (tableId == null) {
       return null;
     }
-    String resolvedAccount = firstNonBlank(tableId.getAccountId(), accountId);
-    if (resolvedAccount == null || resolvedAccount.isBlank()) {
-      return tableId;
+    if (tableId.getAccountId() == null || tableId.getAccountId().isBlank()) {
+      throw new IllegalStateException("table_id.account_id must be set");
     }
-    if (resolvedAccount.equals(tableId.getAccountId())) {
-      return tableId;
+    if (accountId != null && !accountId.isBlank() && !accountId.equals(tableId.getAccountId())) {
+      throw new IllegalStateException("table_id.account_id mismatch with request account");
     }
-    return tableId.toBuilder().setAccountId(resolvedAccount).build();
+    return tableId;
   }
 
   private long clockMillis() {

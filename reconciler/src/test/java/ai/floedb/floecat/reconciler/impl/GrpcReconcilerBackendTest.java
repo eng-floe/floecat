@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -184,5 +185,22 @@ class GrpcReconcilerBackendTest {
         .isEqualTo(ForeignKeyMatchOption.FK_MATCH_OPTION_UNSPECIFIED);
     assertThat(emitted.getUpdateRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
     assertThat(emitted.getDeleteRule()).isEqualTo(ForeignKeyActionRule.FK_ACTION_RULE_UNSPECIFIED);
+  }
+
+  @Test
+  void buildStatsAlreadyCapturedRequestIncludesTableId() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("orders")
+            .build();
+
+    ListTargetStatsRequest request =
+        GrpcReconcilerBackend.buildStatsAlreadyCapturedRequest(tableId, 99L);
+
+    assertThat(request.getTableId()).isEqualTo(tableId);
+    assertThat(request.getSnapshot().getSnapshotId()).isEqualTo(99L);
+    assertThat(request.getPage().getPageSize()).isEqualTo(1);
   }
 }

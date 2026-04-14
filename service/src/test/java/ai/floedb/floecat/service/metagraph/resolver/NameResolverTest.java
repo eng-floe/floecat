@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.metagraph.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -107,6 +108,40 @@ class NameResolverTest {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_v").build();
     assertThat(resolver.resolveViewId("corr", "account", ref))
         .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("view"));
+  }
+
+  @Test
+  void resolveTableIdRejectsUnspecifiedKind() {
+    ResourceId catalogId = rid("account", "cat2", ResourceKind.RK_CATALOG);
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat2").build());
+
+    ResourceId namespaceId = rid("account", "ns2", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(namespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns2")
+            .build());
+
+    ResourceId rawTableId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("tbl2")
+            .setKind(ResourceKind.RK_UNSPECIFIED)
+            .build();
+    tableRepository.put(
+        Table.newBuilder()
+            .setResourceId(rawTableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders2")
+            .setSchemaJson("{}")
+            .build());
+
+    NameRef ref = NameRef.newBuilder().setCatalog("cat2").addPath("ns2").setName("orders2").build();
+    assertThatThrownBy(() -> resolver.resolveTableId("corr", "account", ref))
+        .isInstanceOf(IllegalStateException.class);
   }
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {

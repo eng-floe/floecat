@@ -35,10 +35,10 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
@@ -52,7 +52,7 @@ class SnapshotServiceImplTest {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
-    svc.statsRepo = mock(StatsRepository.class);
+    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -92,7 +92,7 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsRepo = mock(StatsRepository.class);
+    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -147,7 +147,7 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsRepo = mock(StatsRepository.class);
+    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);

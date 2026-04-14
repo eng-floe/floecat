@@ -28,7 +28,6 @@ import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.client.cli.util.AuthHeaderInterceptor;
-import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.OidcClientCredentialsTokenProvider;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
@@ -762,9 +761,5 @@ public class Shell implements Runnable {
       return "";
     }
     return oidcTokenProvider.resolveToken();
-  }
-
-  private void printJson(com.google.protobuf.MessageOrBuilder message) {
-    CliUtils.printJson(message, out);
   }
 }

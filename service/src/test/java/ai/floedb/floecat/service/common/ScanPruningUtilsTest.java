@@ -18,7 +18,8 @@ package ai.floedb.floecat.service.common;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.common.rpc.Operator;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -37,9 +38,9 @@ public class ScanPruningUtilsTest {
   private static ScanFile file(String path, String col, long min, long max) {
     LogicalType t = LogicalType.of(LogicalKind.INT);
 
-    ColumnStats cs =
-        ColumnStats.newBuilder()
-            .setColumnName(col)
+    ScalarStats cs =
+        ScalarStats.newBuilder()
+            .setDisplayName(col)
             .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
@@ -50,15 +51,15 @@ public class ScanPruningUtilsTest {
         .setFileFormat("PARQUET")
         .setFileSizeInBytes(10)
         .setRecordCount(1)
-        .addColumns(cs)
+        .addColumns(fileColumn(1L, cs))
         .build();
   }
 
   private static ScanFile fileWithStats(
       String path, String col, LogicalType type, Object min, Object max) {
-    ColumnStats.Builder cs =
-        ColumnStats.newBuilder()
-            .setColumnName(col)
+    ScalarStats.Builder cs =
+        ScalarStats.newBuilder()
+            .setDisplayName(col)
             .setLogicalType(LogicalTypeProtoAdapter.encodeLogicalType(type));
 
     if (LogicalComparators.isStatsOrderable(type)) {
@@ -71,7 +72,7 @@ public class ScanPruningUtilsTest {
         .setFileFormat("PARQUET")
         .setFileSizeInBytes(10)
         .setRecordCount(1)
-        .addColumns(cs.build())
+        .addColumns(fileColumn(1L, cs.build()))
         .build();
   }
 
@@ -79,9 +80,9 @@ public class ScanPruningUtilsTest {
   private static ScanFile deleteFileWithStats(String path, String col, long min, long max) {
     LogicalType t = LogicalType.of(LogicalKind.INT);
 
-    ColumnStats cs =
-        ColumnStats.newBuilder()
-            .setColumnName(col)
+    ScalarStats cs =
+        ScalarStats.newBuilder()
+            .setDisplayName(col)
             .setLogicalType("INT")
             .setMin(LogicalTypeProtoAdapter.encodeValue(t, min))
             .setMax(LogicalTypeProtoAdapter.encodeValue(t, max))
@@ -91,8 +92,12 @@ public class ScanPruningUtilsTest {
         .setFilePath(path)
         .setFileContent(
             ai.floedb.floecat.execution.rpc.ScanFileContent.SCAN_FILE_CONTENT_EQUALITY_DELETES)
-        .addColumns(cs)
+        .addColumns(fileColumn(1L, cs))
         .build();
+  }
+
+  private static FileColumnStats fileColumn(long columnId, ScalarStats scalar) {
+    return FileColumnStats.newBuilder().setColumnId(columnId).setScalar(scalar).build();
   }
 
   /** Delete file with no stats (must not be removed). */

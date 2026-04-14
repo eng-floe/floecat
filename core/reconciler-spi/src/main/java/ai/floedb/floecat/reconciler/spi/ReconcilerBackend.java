@@ -16,11 +16,10 @@
 package ai.floedb.floecat.reconciler.spi;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -54,13 +53,11 @@ public interface ReconcilerBackend {
 
   void ingestSnapshot(ReconcileContext ctx, ResourceId tableId, Snapshot snapshot);
 
-  boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId);
+  /** Returns whether the snapshot has persisted stats for a specific target kind. */
+  boolean statsAlreadyCapturedForTargetKind(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind);
 
-  void putTableStats(ReconcileContext ctx, ResourceId tableId, TableStats stats);
-
-  void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats);
-
-  void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats);
+  void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 
   /** No-op default; connectors that predate constraints support may omit this. */
   default void putSnapshotConstraints(

@@ -25,7 +25,7 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ConnectorStatsViewBuilder;
 import ai.floedb.floecat.connector.common.GenericStatsEngine;
@@ -35,6 +35,7 @@ import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.types.LogicalType;
@@ -171,12 +172,7 @@ abstract class DeltaConnector implements FloecatConnector {
     if (constraints.isEmpty()) {
       return Optional.empty();
     }
-    return Optional.of(
-        SnapshotConstraints.newBuilder()
-            .setTableId(destinationTableId)
-            .setSnapshotId(snapshotId)
-            .addAllConstraints(constraints)
-            .build());
+    return Optional.of(SnapshotConstraints.newBuilder().addAllConstraints(constraints).build());
   }
 
   protected abstract String storageLocation(String namespaceFq, String tableName);
@@ -370,9 +366,7 @@ abstract class DeltaConnector implements FloecatConnector {
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-    TableStats tStats = null;
-    List<FloecatConnector.ColumnStatsView> cStats = List.of();
-    List<FloecatConnector.FileColumnStatsView> fileStats = List.of();
+    List<TargetStatsRecord> targetStats = List.of();
 
     if (includeStatistics) {
       EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
@@ -383,15 +377,15 @@ abstract class DeltaConnector implements FloecatConnector {
       var result = engineOut.result();
       var logicalTypes = engineOut.logicalTypes();
 
-      tStats =
-          ConnectorStatsViewBuilder.toTableStats(
-              destinationTableId, version, createdMs, TableFormat.TF_DELTA, result);
+      var tStats =
+          ConnectorStatsViewBuilder.toTableValueStats(
+              version, createdMs, TableFormat.TF_DELTA, result);
 
       var positions =
           LogicalSchemaMapper.buildColumnOrdinals(
               ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
 
-      cStats =
+      var cStats =
           ConnectorStatsViewBuilder.toColumnStatsView(
               result.columns(),
               name -> name,
@@ -436,16 +430,26 @@ abstract class DeltaConnector implements FloecatConnector {
                 List.of()));
       }
 
-      fileStats = List.copyOf(mutableFiles);
+      List<TargetStatsRecord> materialized = new ArrayList<>();
+      materialized.add(
+          StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, version, tStats));
+      materialized.addAll(
+          StatsProtoEmitter.toTargetColumnStatsFromViews(
+              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
+      materialized.addAll(
+          StatsProtoEmitter.toTargetFileStatsFromViews(
+              destinationTableId,
+              version,
+              ColumnIdAlgorithm.CID_PATH_ORDINAL,
+              List.copyOf(mutableFiles)));
+      targetStats = List.copyOf(materialized);
     }
 
     return new SnapshotBundle(
         version,
         parent,
         createdMs,
-        tStats,
-        cStats,
-        fileStats,
+        targetStats,
         schemaJson,
         partitionSpec,
         0L,

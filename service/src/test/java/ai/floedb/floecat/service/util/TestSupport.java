@@ -167,7 +167,17 @@ public final class TestSupport {
                                 .build())
                         .setSchemaJson(schemaJson))
                 .build());
-    return resp.getTable();
+    Table created = resp.getTable();
+    ResourceId createdId = created.getResourceId();
+    ResourceId normalizedId =
+        createdId.toBuilder()
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .setAccountId(
+                createdId.getAccountId().isBlank()
+                    ? catalogId.getAccountId()
+                    : createdId.getAccountId())
+            .build();
+    return created.toBuilder().setResourceId(normalizedId).build();
   }
 
   public static Snapshot createSnapshot(
@@ -175,12 +185,14 @@ public final class TestSupport {
       ResourceId tableId,
       long snapshotId,
       long upstreamCreatedAtMs) {
+    ResourceId normalizedTableId =
+        tableId.toBuilder().setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE).build();
     var resp =
         mutation.createSnapshot(
             CreateSnapshotRequest.newBuilder()
                 .setSpec(
                     SnapshotSpec.newBuilder()
-                        .setTableId(tableId)
+                        .setTableId(normalizedTableId)
                         .setSnapshotId(snapshotId)
                         .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs)))
                 .build());
@@ -278,10 +290,12 @@ public final class TestSupport {
 
     FieldMask mask = FieldMask.newBuilder().addPaths("schema_json").build();
 
+    ResourceId normalizedTableId =
+        tableId.toBuilder().setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE).build();
     return mutation
         .updateTable(
             UpdateTableRequest.newBuilder()
-                .setTableId(tableId)
+                .setTableId(normalizedTableId)
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build())
@@ -295,10 +309,12 @@ public final class TestSupport {
 
     FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
 
+    ResourceId normalizedTableId =
+        tableId.toBuilder().setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE).build();
     return mutation
         .updateTable(
             UpdateTableRequest.newBuilder()
-                .setTableId(tableId)
+                .setTableId(normalizedTableId)
                 .setSpec(spec)
                 .setUpdateMask(mask)
                 .build())

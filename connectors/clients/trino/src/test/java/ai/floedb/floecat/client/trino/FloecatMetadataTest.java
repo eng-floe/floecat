@@ -585,7 +585,7 @@ class FloecatMetadataTest {
       SnapshotRef ref = request.getSnapshot();
       var snapshot =
           Snapshot.newBuilder()
-              .setTableId(TABLE_ID)
+              .setTableId(request.getTableId())
               .setSnapshotId(ref.hasSnapshotId() ? ref.getSnapshotId() : 0L)
               .setSchemaJson(snapshotSchemaJson)
               .build();

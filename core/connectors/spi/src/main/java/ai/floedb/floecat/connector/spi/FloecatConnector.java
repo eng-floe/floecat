@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import com.google.protobuf.ByteString;
@@ -168,9 +168,7 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       long parentId,
       long upstreamCreatedAtMs,
-      TableStats tableStats,
-      List<ColumnStatsView> columnStats,
-      List<FileColumnStatsView> fileStats,
+      List<TargetStatsRecord> targetStats,
       String schemaJson,
       PartitionSpecInfo partitionSpec,
       long sequenceNumber,

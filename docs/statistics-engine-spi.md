@@ -21,11 +21,10 @@ This SPI introduces that layer while keeping current planner contracts stable.
 Core interfaces and models:
 
 - `StatsCaptureEngine`
-- `StatsEngineCapabilities`
+- `StatsStore`
+- `StatsCapabilities`
 - `StatsCaptureRequest`
 - `StatsCaptureResult`
-- `StatsCaptureValue` (exactly one payload: table, file, column, expression)
-- `StatsValueSummary` (shared value-level metrics for column/expression payloads)
 - `StatsEngineRegistry`
 
 Module boundaries:
@@ -35,19 +34,24 @@ Module boundaries:
 
 Current baseline engine:
 
-- `PersistedStatsCaptureEngine` (reads already persisted table/column stats and internal file stats from repository)
+- `PersistedStatsCaptureEngine` (capture SPI fallback reading persisted target stats from store)
 - configured as a lowest-priority fallback so specialized providers win when available
+
+Default store:
+
+- `StatsRepository` (default OSS `StatsStore` implementation)
 
 Service wiring:
 
-- `StatsEngineRegistry` is internal orchestration infrastructure for provider routing.
-- Public stats RPCs remain repository-backed in this stage; they are not yet routed through the
-  registry.
+- `StatsEngineRegistry` is internal capture orchestration for provider routing.
+- Public read/list RPCs resolve through `StatsStore`.
+- Planner/query reads resolve through `StatsStore`.
 
 Authoritative model:
 
 - Providers produce stats records through the SPI.
-- Floecat persists canonical stats as the system of record.
+- Floecat defines canonical stats record semantics and serves authoritative reads; storage backend
+  is pluggable (default OSS deployment uses Floecat-managed persistence).
 - Floecat serves persisted authoritative stats through public APIs.
 
 ## What this does not do yet
@@ -95,14 +99,22 @@ Snapshot-awareness rule:
 1. filters engines by `supports(request)` / capabilities
 2. sorts by `priority()` then `id()`
 3. calls each engine until one returns a non-empty result
+4. if no engine supports the request, returns a clear `NON_IMPLEMENTED` error
 
 The registry is responsible for discovery, ordering, and selection only. It is not a merge
 framework and does not assemble a final user-facing response.
 
-Payload model:
+Result model:
 
-- `StatsCaptureResult` carries a single typed `StatsCaptureValue`.
-- Column and expression payloads share `StatsValueSummary` to avoid duplicated metric schemas.
+- `StatsCaptureResult` returns one canonical `TargetStatsRecord` plus engine attributes.
+- Column and expression targets share the same canonical `ScalarStats` payload.
+- Canonical metadata for all targets is stored at `TargetStatsRecord.metadata`.
+- `ScalarStats.display_name` is presentation-only (column name/alias) and not part of identity.
+- Target/payload compatibility is strict at persistence boundaries:
+  - `TABLE` target must carry `table` payload
+  - `COLUMN` and `EXPRESSION` targets must carry `scalar` payload
+  - `FILE` target must carry `file` payload with matching canonical file path
+- Table targets use `TableValueStats` (value only) with metadata at record level.
 - `StatsCaptureRequest` is intentionally target-native: one request resolves one concrete target.
   The request also carries `columnSelectors` so one reconcile/capture request can scope work to
   multiple relevant columns in that target context.
@@ -112,7 +124,7 @@ Payload model:
 ## How to add a new engine
 
 1. Implement `StatsCaptureEngine`.
-2. Define accurate `StatsEngineCapabilities`.
+2. Define accurate `StatsCapabilities`.
 3. Set `priority()` (lower is higher priority).
 4. Return `Optional.empty()` when unsupported/unavailable for a specific request.
 5. Register as CDI bean (`@ApplicationScoped`), no manual registry wiring needed.
@@ -126,9 +138,29 @@ Guidelines:
 
 ## Existing baseline behavior
 
-`PersistedStatsCaptureEngine` supports repository-backed table and column targets, and can also
-serve file stats for internal/reconciliation capture paths.
-This ensures no regression while making provider selection real.
+`PersistedStatsCaptureEngine` supports store-backed table, column, expression, and file targets
+for `SYNC` capture mode.
+`StatsRepository` is the default OSS authoritative `StatsStore` implementation.
+This ensures no regression while keeping reads/writes aligned to one store contract.
+
+## Plugging your own StatsStore
+
+You can replace the default store with your own CDI bean implementing
+`ai.floedb.floecat.stats.spi.StatsStore`.
+
+Requirements:
+
+- implement all `StatsStore` operations (`put`, `get`, `list`, `count`, `delete`, metadata)
+- enforce the same target identity semantics (`StatsTargetIdentity.storageId(...)`)
+- keep record-level metadata intact (`TargetStatsRecord.metadata`)
+- preserve snapshot consistency (`table_id + snapshot_id + target`)
+
+CDI guidance:
+
+- register your implementation as `@ApplicationScoped`
+- ensure only one active `StatsStore` bean is selected (use alternatives if needed)
+- no changes are required in service code; all public reads/listing and capture fallback already
+  resolve through `StatsStore`
 
 ## Typical extensions
 

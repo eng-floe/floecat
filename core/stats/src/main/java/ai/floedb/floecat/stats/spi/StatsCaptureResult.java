@@ -16,10 +16,7 @@
 
 package ai.floedb.floecat.stats.spi;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import java.util.Map;
 import java.util.Objects;
 
@@ -30,33 +27,16 @@ import java.util.Objects;
  * planner/user-facing resolved answer and does not imply multi-provider composition.
  */
 public record StatsCaptureResult(
-    String engineId, StatsTarget target, StatsCaptureValue value, Map<String, String> attributes) {
+    String engineId, TargetStatsRecord record, Map<String, String> attributes) {
 
   public StatsCaptureResult {
     engineId = Objects.requireNonNull(engineId, "engineId");
-    target = Objects.requireNonNull(target, "target");
-    value = Objects.requireNonNull(value, "value");
+    record = Objects.requireNonNull(record, "record");
     attributes = Map.copyOf(Objects.requireNonNull(attributes, "attributes"));
   }
 
-  public static StatsCaptureResult forTable(
-      String engineId, StatsTarget target, TableStats tableStats, Map<String, String> attrs) {
-    return new StatsCaptureResult(
-        engineId, target, StatsCaptureValue.forTable(tableStats), attrs == null ? Map.of() : attrs);
-  }
-
-  public static StatsCaptureResult forColumn(
-      String engineId, StatsTarget target, ColumnStats columnStats, Map<String, String> attrs) {
-    return new StatsCaptureResult(
-        engineId,
-        target,
-        StatsCaptureValue.forColumn(StatsColumnValue.fromColumnStats(columnStats)),
-        attrs == null ? Map.of() : attrs);
-  }
-
-  public static StatsCaptureResult forFile(
-      String engineId, StatsTarget target, FileColumnStats fileStats, Map<String, String> attrs) {
-    return new StatsCaptureResult(
-        engineId, target, StatsCaptureValue.forFile(fileStats), attrs == null ? Map.of() : attrs);
+  public static StatsCaptureResult forRecord(
+      String engineId, TargetStatsRecord record, Map<String, String> attrs) {
+    return new StatsCaptureResult(engineId, record, attrs == null ? Map.of() : attrs);
   }
 }

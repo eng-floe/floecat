@@ -20,12 +20,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -46,8 +48,11 @@ import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -82,8 +87,7 @@ class DirectReconcilerBackendTest {
     namespaceRepo = new FakeNamespaceRepository();
     tableRepo = new FakeTableRepository();
     snapshotRepo = new SnapshotTestSupport.FakeSnapshotRepository();
-    statsRepository =
-        StatsRepository.forTesting(new InMemoryPointerStore(), new InMemoryBlobStore(), 64, 200, 5);
+    statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     snapshotHelper = new SnapshotHelper(snapshotRepo);
     connectorRepo = new ConnectorRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
 
@@ -92,7 +96,7 @@ class DirectReconcilerBackendTest {
     backend.namespaceRepo = namespaceRepo;
     backend.tableRepo = tableRepo;
     backend.snapshotRepo = snapshotRepo;
-    backend.statsRepository = statsRepository;
+    backend.statsStore = statsRepository;
     backend.snapshotHelper = snapshotHelper;
     backend.connectorRepo = connectorRepo;
 
@@ -192,30 +196,65 @@ class DirectReconcilerBackendTest {
 
   @Test
   void statsPuttersStoreAndTrackTablesColumnsAndFiles() {
-    TableStats tableStats =
-        TableStats.newBuilder().setTableId(tableId).setSnapshotId(SNAPSHOT_ID).build();
-    backend.putTableStats(ctx, tableId, tableStats);
-    assertThat(statsRepository.getTableStats(tableId, SNAPSHOT_ID)).isPresent();
-    assertThat(backend.statsAlreadyCaptured(ctx, tableId, SNAPSHOT_ID)).isTrue();
+    TableValueStats tableStats = TableValueStats.newBuilder().build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.tableRecord(tableId, SNAPSHOT_ID, tableStats, null)));
+    assertThat(
+            statsRepository.getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.tableTarget()))
+        .isPresent();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_UNSPECIFIED))
+        .isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_TABLE))
+        .isTrue();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_COLUMN))
+        .isFalse();
 
-    ColumnStats columnStats =
-        ColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(SNAPSHOT_ID)
-            .setColumnId(1)
-            .setColumnName("col")
-            .build();
-    backend.putColumnStats(ctx, List.of(columnStats));
-    assertThat(statsRepository.getColumnStats(tableId, SNAPSHOT_ID, 1)).isPresent();
+    ScalarStats columnStats = ScalarStats.newBuilder().setDisplayName("col").build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.columnRecord(tableId, SNAPSHOT_ID, 1L, columnStats, null)));
+    assertThat(
+            statsRepository.getTargetStats(
+                tableId, SNAPSHOT_ID, StatsTargetIdentity.columnTarget(1L)))
+        .isPresent();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_COLUMN))
+        .isTrue();
 
-    FileColumnStats fileStats =
-        FileColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(SNAPSHOT_ID)
-            .setFilePath("/data/file")
-            .build();
-    backend.putFileColumnStats(ctx, List.of(fileStats));
-    assertThat(statsRepository.getFileColumnStats(tableId, SNAPSHOT_ID, "/data/file")).isPresent();
+    FileTargetStats fileStats = FileTargetStats.newBuilder().setFilePath("/data/file").build();
+    backend.putTargetStats(
+        ctx, List.of(TargetStatsRecords.fileRecord(tableId, SNAPSHOT_ID, fileStats)));
+    assertThat(
+            statsRepository.getTargetStats(
+                tableId, SNAPSHOT_ID, StatsTargetIdentity.fileTarget("/data/file")))
+        .isPresent();
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_FILE))
+        .isTrue();
+
+    ScalarStats expressionStats = ScalarStats.newBuilder().setDisplayName("expr").build();
+    backend.putTargetStats(
+        ctx,
+        List.of(
+            TargetStatsRecords.expressionRecord(
+                tableId,
+                SNAPSHOT_ID,
+                EngineExpressionStatsTarget.newBuilder()
+                    .setEngineKind("duckdb")
+                    .setEngineExpressionKey(ByteString.copyFromUtf8("sum_col"))
+                    .build(),
+                expressionStats)));
+    assertThat(
+            backend.statsAlreadyCapturedForTargetKind(
+                ctx, tableId, SNAPSHOT_ID, StatsTargetKind.STK_EXPRESSION))
+        .isTrue();
   }
 
   @Test
@@ -260,18 +299,18 @@ class DirectReconcilerBackendTest {
   }
 
   @Test
-  void ingestSnapshotAcceptsZeroSnapshotId() {
+  void ingestSnapshotStoresProvidedSnapshotId() {
     Snapshot snapshot =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(0L)
+            .setSnapshotId(5L)
             .setSchemaJson("{}")
             .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()))
             .build();
 
     backend.ingestSnapshot(ctx, tableId, snapshot);
 
-    assertThat(snapshotRepo.getById(tableId, 0L)).isPresent();
+    assertThat(snapshotRepo.getById(tableId, 5L)).isPresent();
   }
 
   @Test

@@ -163,6 +163,16 @@ public final class GrpcErrors {
         io.grpc.Status.UNAVAILABLE, ErrorCode.MC_UNAVAILABLE, corrId, params, suffix(key), t);
   }
 
+  public static StatusRuntimeException unimplemented(
+      String corrId,
+      GeneratedErrorMessages.MessageKey key,
+      Map<String, String> params,
+      Throwable t) {
+    validateErrorCode("unimplemented", key, ErrorCode.MC_UNAVAILABLE);
+    return build(
+        io.grpc.Status.UNIMPLEMENTED, ErrorCode.MC_UNAVAILABLE, corrId, params, suffix(key), t);
+  }
+
   public static StatusRuntimeException cancelled(
       String corrId,
       GeneratedErrorMessages.MessageKey key,
@@ -248,6 +258,11 @@ public final class GrpcErrors {
   public static StatusRuntimeException unavailable(
       String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
     return unavailable(corrId, key, params, null);
+  }
+
+  public static StatusRuntimeException unimplemented(
+      String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
+    return unimplemented(corrId, key, params, null);
   }
 
   public static StatusRuntimeException cancelled(

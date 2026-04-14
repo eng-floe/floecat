@@ -362,7 +362,9 @@ public class TableGatewaySupport {
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
-      return SnapshotMetadataUtil.parseSnapshotMetadata(response.getSnapshot());
+      var snapshot = response.getSnapshot();
+      IcebergMetadata parsed = SnapshotMetadataUtil.parseSnapshotMetadata(snapshot);
+      return parsed;
     } catch (StatusRuntimeException primaryFailure) {
       return loadSnapshotByProperty(table);
     }

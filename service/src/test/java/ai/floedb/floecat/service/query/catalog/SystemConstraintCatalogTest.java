@@ -274,8 +274,8 @@ class SystemConstraintCatalogTest {
             .setType(ConstraintType.CT_NOT_NULL)
             .addColumns(
                 ConstraintColumnRef.newBuilder()
-                    .setColumnName("table_name")
                     .setColumnId(10L)
+                    .setColumnName("table_name")
                     .setOrdinal(1)
                     .build())
             .build();
@@ -416,8 +416,8 @@ class SystemConstraintCatalogTest {
             .setType(ConstraintType.CT_PRIMARY_KEY)
             .addColumns(
                 ConstraintColumnRef.newBuilder()
-                    .setColumnName("c1")
                     .setColumnId(1L)
+                    .setColumnName("c1")
                     .setOrdinal(1)
                     .build())
             .build();
@@ -427,8 +427,8 @@ class SystemConstraintCatalogTest {
             .setType(ConstraintType.CT_NOT_NULL)
             .addColumns(
                 ConstraintColumnRef.newBuilder()
-                    .setColumnName("c2")
                     .setColumnId(2L)
+                    .setColumnName("c2")
                     .setOrdinal(1)
                     .build())
             .build();

@@ -50,11 +50,11 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import io.quarkus.grpc.GrpcService;
@@ -71,7 +71,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRepository tableRepo;
-  @Inject StatsRepository statsRepo;
+  @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -403,7 +403,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       throw GrpcErrors.notFound(
                           correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
-                    statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
+                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
                   }
 
@@ -423,7 +423,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
 
-                    statsRepo.deleteAllStatsForSnapshot(tableId, snapshotId);
+                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(

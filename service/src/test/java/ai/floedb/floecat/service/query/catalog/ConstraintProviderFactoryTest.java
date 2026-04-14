@@ -177,7 +177,7 @@ class ConstraintProviderFactoryTest {
                 .addColumns(
                     ConstraintColumnRef.newBuilder()
                         .setOrdinal(1)
-                        .setColumnId(1)
+                        .setColumnId(1L)
                         .setColumnName("id")
                         .build())
                 .build())

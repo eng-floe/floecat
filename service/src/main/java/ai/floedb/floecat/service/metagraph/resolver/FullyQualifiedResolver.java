@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -138,14 +139,15 @@ public class FullyQualifiedResolver {
     List<QualifiedRelation> out = new ArrayList<>(entries.size());
 
     for (Table t : entries) {
+      ResourceId tableId = requireCanonicalTableId(t.getResourceId());
       NameRef fq =
           NameRef.newBuilder()
               .setCatalog(catalog.getDisplayName())
               .addAllPath(nsPath)
               .setName(t.getDisplayName())
-              .setResourceId(t.getResourceId())
+              .setResourceId(tableId)
               .build();
-      out.add(new QualifiedRelation(fq, t.getResourceId()));
+      out.add(new QualifiedRelation(fq, tableId));
     }
 
     return new ResolveResult(out, total, next.toString());
@@ -216,14 +218,15 @@ public class FullyQualifiedResolver {
             accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
         .map(
             t -> {
+              ResourceId tableId = requireCanonicalTableId(t.getResourceId());
               NameRef canonical =
                   NameRef.newBuilder()
                       .setCatalog(catalog.getDisplayName())
                       .addAllPath(namespacePath(ns))
                       .setName(t.getDisplayName())
-                      .setResourceId(t.getResourceId())
+                      .setResourceId(tableId)
                       .build();
-              return new QualifiedRelation(canonical, t.getResourceId());
+              return new QualifiedRelation(canonical, tableId);
             });
   }
 
@@ -355,6 +358,16 @@ public class FullyQualifiedResolver {
       case "view" -> GeneratedErrorMessages.MessageKey.VIEW_NAME_MISSING;
       default -> GeneratedErrorMessages.MessageKey.FIELD;
     };
+  }
+
+  private ResourceId requireCanonicalTableId(ResourceId tableId) {
+    if (tableId == null
+        || tableId.getId().isBlank()
+        || tableId.getAccountId().isBlank()
+        || tableId.getKind() != ResourceKind.RK_TABLE) {
+      throw new IllegalStateException("non-canonical table resource id in fq resolver");
+    }
+    return tableId;
   }
 
   // ----------------------------------------------------------------------

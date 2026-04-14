@@ -74,6 +74,9 @@ class TableMutationIT {
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statsMutiny;
+
+  @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   private String tablePrefix = this.getClass().getSimpleName() + "_";
@@ -314,25 +317,46 @@ class TableMutationIT {
             "s3://bucket/orders",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
-    var tblId = tbl.getResourceId();
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
 
     long snapshotId = 11L;
     TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
 
-    TableStats tStats =
-        TableStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
+    TableValueStats tStats =
+        TableValueStats.newBuilder()
             .setRowCount(10)
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
             .build();
-    stats.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
-            .setStats(tStats)
-            .build());
+    statsMutiny
+        .putTargetStats(
+            io.smallrye.mutiny.Multi.createFrom()
+                .item(
+                    PutTargetStatsRequest.newBuilder()
+                        .setTableId(tblId)
+                        .setSnapshotId(snapshotId)
+                        .addRecords(
+                            TargetStatsRecord.newBuilder()
+                                .setTableId(tblId)
+                                .setSnapshotId(snapshotId)
+                                .setTarget(
+                                    StatsTarget.newBuilder()
+                                        .setTable(TableStatsTarget.newBuilder().build())
+                                        .build())
+                                .setTable(
+                                    TableValueStats.newBuilder()
+                                        .setRowCount(tStats.getRowCount())
+                                        .setDataFileCount(tStats.getDataFileCount())
+                                        .setTotalSizeBytes(tStats.getTotalSizeBytes())
+                                        .build())
+                                .build())
+                        .build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
 
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tblId).build());
 
@@ -347,6 +371,189 @@ class TableMutationIT {
         0,
         ptr.countByPrefix(Keys.snapshotStatsPrefix(accountId, tableId, snapshotId)),
         "stats pointers should be removed");
+  }
+
+  @Test
+  void putTargetStatsRejectsMismatchedInnerSnapshotIdentity() throws Exception {
+    var cat =
+        TestSupport.createCatalog(catalog, tablePrefix + "cat_stats_identity", "tcat-stats-id");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for stats identity");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 21L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId + 1)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setTable(TableStatsTarget.newBuilder().build())
+                                                    .build())
+                                            .setTable(
+                                                TableValueStats.newBuilder()
+                                                    .setRowCount(1L)
+                                                    .setDataFileCount(1L)
+                                                    .setTotalSizeBytes(1L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void putTargetStatsRejectsMismatchedTargetAndPayloadKinds() throws Exception {
+    var cat =
+        TestSupport.createCatalog(
+            catalog, tablePrefix + "cat_stats_target_value", "tcat-target-kind");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for target kind");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 22L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setColumn(
+                                                        ColumnStatsTarget.newBuilder()
+                                                            .setColumnId(1L))
+                                                    .build())
+                                            .setTable(
+                                                TableValueStats.newBuilder()
+                                                    .setRowCount(1L)
+                                                    .setDataFileCount(1L)
+                                                    .setTotalSizeBytes(1L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void putTargetStatsRejectsFilePayloadPathMismatch() throws Exception {
+    var cat =
+        TestSupport.createCatalog(
+            catalog, tablePrefix + "cat_stats_file_mismatch", "tcat-file-path");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_tbl"), "ns for file mismatch");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tblId =
+        tbl.getResourceId().toBuilder()
+            .setAccountId(cat.getResourceId().getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    long snapshotId = 23L;
+    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statsMutiny
+                    .putTargetStats(
+                        io.smallrye.mutiny.Multi.createFrom()
+                            .item(
+                                PutTargetStatsRequest.newBuilder()
+                                    .setTableId(tblId)
+                                    .setSnapshotId(snapshotId)
+                                    .addRecords(
+                                        TargetStatsRecord.newBuilder()
+                                            .setTableId(tblId)
+                                            .setSnapshotId(snapshotId)
+                                            .setTarget(
+                                                StatsTarget.newBuilder()
+                                                    .setFile(
+                                                        FileStatsTarget.newBuilder()
+                                                            .setFilePath(
+                                                                "s3://bucket/path-1.parquet"))
+                                                    .build())
+                                            .setFile(
+                                                FileTargetStats.newBuilder()
+                                                    .setTableId(tblId)
+                                                    .setSnapshotId(snapshotId)
+                                                    .setFilePath("s3://bucket/path-2.parquet")
+                                                    .setFileFormat("PARQUET")
+                                                    .setRowCount(10L)
+                                                    .setSizeBytes(100L)
+                                                    .build())
+                                            .build())
+                                    .build()))
+                    .await()
+                    .atMost(java.time.Duration.ofSeconds(30)));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
   }
 
   @Test

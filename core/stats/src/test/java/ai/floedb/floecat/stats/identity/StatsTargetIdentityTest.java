@@ -64,6 +64,29 @@ class StatsTargetIdentityTest {
   }
 
   @Test
+  void expressionStorageIdUsesCanonicalIdentityHash() {
+    EngineExpressionStatsTarget a =
+        EngineExpressionStatsTarget.newBuilder()
+            .setEngineKind("  TRINO ")
+            .setEngineVersion("430")
+            .setEngineExpressionKey(ByteString.copyFromUtf8("expr:user.id"))
+            .build();
+    EngineExpressionStatsTarget b =
+        EngineExpressionStatsTarget.newBuilder()
+            .setEngineKind("trino")
+            .setEngineVersion("431")
+            .setEngineExpressionKey(ByteString.copyFromUtf8("expr:user.id"))
+            .build();
+
+    String canonical = StatsTargetIdentity.expressionIdentityHashHex(a);
+    String storageA = StatsTargetIdentity.storageId(StatsTargetIdentity.expressionTarget(a));
+    String storageB = StatsTargetIdentity.storageId(StatsTargetIdentity.expressionTarget(b));
+
+    assertThat(storageA).isEqualTo(storageB);
+    assertThat(storageA).isEqualTo("expression-trino-" + canonical);
+  }
+
+  @Test
   void tableTargetHasConstantHash() {
     assertThat(StatsTargetIdentity.identityHashHex(StatsTargetIdentity.tableTarget()))
         .isEqualTo("e632b7095b0bf32c260fa4c539e9fd7b852d0de454e9be26f24d0d6f91d069d3");
@@ -98,6 +121,8 @@ class StatsTargetIdentityTest {
         .isEqualTo(
             StatsTargetIdentity.identityHashHex(
                 StatsTargetIdentity.fileTarget("/data/file.parquet")));
+    assertThat(StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget("/data/file.parquet")))
+        .startsWith(StatsTargetIdentity.fileStorageIdPrefix());
   }
 
   @Test

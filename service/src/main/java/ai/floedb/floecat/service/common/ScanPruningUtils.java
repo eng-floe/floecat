@@ -16,7 +16,8 @@
 
 package ai.floedb.floecat.service.common;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.execution.rpc.ScanBundle;
 import ai.floedb.floecat.execution.rpc.ScanFile;
@@ -105,7 +106,7 @@ public final class ScanPruningUtils {
   private static ScanFile filterColumns(ScanFile file, Set<String> cols) {
     ScanFile.Builder b = file.toBuilder().clearColumns();
     for (var c : file.getColumnsList()) {
-      if (cols.contains(c.getColumnName())) {
+      if (c.hasScalar() && cols.contains(c.getScalar().getDisplayName())) {
         b.addColumns(c);
       }
     }
@@ -184,10 +185,10 @@ public final class ScanPruningUtils {
       return true;
     }
 
-    ColumnStats cs = null;
-    for (ColumnStats c : pf.getColumnsList()) {
-      if (col.equalsIgnoreCase(c.getColumnName())) {
-        cs = c;
+    ScalarStats cs = null;
+    for (FileColumnStats c : pf.getColumnsList()) {
+      if (c.hasScalar() && col.equalsIgnoreCase(c.getScalar().getDisplayName())) {
+        cs = c.getScalar();
         break;
       }
     }

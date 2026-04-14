@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.statistics.engine;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -33,16 +35,18 @@ public class StatsEngineRegistry {
 
   private static final Logger LOG = Logger.getLogger(StatsEngineRegistry.class);
 
-  private final List<StatsCaptureEngine> engines;
+  private final List<StatsCaptureEngine> captureEngines;
 
+  /** CDI constructor used in production; discovered engines are sorted by priority then id. */
   @Inject
-  public StatsEngineRegistry(Instance<StatsCaptureEngine> engines) {
-    this(engines == null ? List.of() : engines.stream().toList());
+  public StatsEngineRegistry(Instance<StatsCaptureEngine> captureEngines) {
+    this(captureEngines == null ? List.of() : captureEngines.stream().toList());
   }
 
-  public StatsEngineRegistry(List<StatsCaptureEngine> engines) {
-    this.engines =
-        (engines == null ? List.<StatsCaptureEngine>of() : engines)
+  /** Testing/override constructor; engines are sorted by priority then id. */
+  public StatsEngineRegistry(List<StatsCaptureEngine> captureEngines) {
+    this.captureEngines =
+        (captureEngines == null ? List.<StatsCaptureEngine>of() : captureEngines)
             .stream()
                 .sorted(
                     Comparator.comparingInt(StatsCaptureEngine::priority)
@@ -50,12 +54,14 @@ public class StatsEngineRegistry {
                 .toList();
   }
 
+  /** Returns all registered engines sorted by priority then id. */
   public List<StatsCaptureEngine> engines() {
-    return engines;
+    return captureEngines;
   }
 
+  /** Returns request-compatible engines after applying {@link StatsCaptureEngine#supports}. */
   public List<StatsCaptureEngine> candidates(StatsCaptureRequest request) {
-    return engines.stream().filter(e -> e.supports(request)).toList();
+    return captureEngines.stream().filter(e -> e.supports(request)).toList();
   }
 
   /**
@@ -63,14 +69,26 @@ public class StatsEngineRegistry {
    * Engines may return empty when data is unavailable for the request.
    */
   public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    for (StatsCaptureEngine engine : candidates(request)) {
+    List<StatsCaptureEngine> candidates = candidates(request);
+    if (candidates.isEmpty()) {
+      throw new StatsUnsupportedTargetException(StatsTargetType.from(request.target()), request);
+    }
+    if (LOG.isDebugEnabled()) {
+      LOG.debugf(
+          "Stats capture routed corr=%s target=%s candidates=%s",
+          request.correlationId(),
+          StatsTargetType.from(request.target()),
+          candidates.stream().map(StatsCaptureEngine::id).toList());
+    }
+    for (StatsCaptureEngine engine : candidates) {
       Optional<StatsCaptureResult> out = engine.capture(request);
       if (out.isPresent()) {
         return out;
       }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
-            "Stats engine %s returned empty for request target=%s", engine.id(), request.target());
+            "Stats engine %s returned empty corr=%s target=%s",
+            engine.id(), request.correlationId(), request.target());
       }
     }
     return Optional.empty();

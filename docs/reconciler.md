@@ -44,8 +44,8 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Destination binding** – When reconciling, the service ensures the connector’s declared
   destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
   `ConnectorState` update or raises conflicts.
-- **Statistics ingestion** – Table stats plus column/file stats are streamed one request per item via
-  `PutColumnStats` / `PutFileColumnStats`, keeping a single idempotency key per table/snapshot.
+- **Statistics ingestion** – Target stats (including file targets) are streamed one request per
+  item via `PutTargetStats`, keeping a single idempotency key per table/snapshot.
 - **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
   `PutTableConstraints` after snapshot/stats handling.
   - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail

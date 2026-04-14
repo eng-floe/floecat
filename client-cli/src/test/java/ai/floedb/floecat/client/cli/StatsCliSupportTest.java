@@ -19,16 +19,17 @@ package ai.floedb.floecat.client.cli;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsResponse;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
@@ -55,7 +56,15 @@ class StatsCliSupportTest {
   void statsTablePrintsHeader() throws Exception {
     try (Harness h = new Harness()) {
       h.statisticsService.tableStatsToReturn =
-          TableStats.newBuilder().setSnapshotId(7L).setRowCount(100L).build();
+          TargetStatsRecord.newBuilder()
+              .setTableId(tableId())
+              .setSnapshotId(7L)
+              .setTarget(
+                  ai.floedb.floecat.catalog.rpc.StatsTarget.newBuilder()
+                      .setTable(TableStatsTarget.getDefaultInstance())
+                      .build())
+              .setTable(TableValueStats.newBuilder().setRowCount(100L).build())
+              .build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       StatsCliSupport.handle(
@@ -91,7 +100,7 @@ class StatsCliSupportTest {
       assertEquals(1, h.statisticsService.getTableStatsCalls.get());
       assertEquals(
           SpecialSnapshot.SS_CURRENT,
-          h.statisticsService.lastTableStatsRequest.getSnapshot().getSpecial());
+          h.statisticsService.lastTargetStatsRequest.getSnapshot().getSpecial());
     }
   }
 
@@ -109,7 +118,7 @@ class StatsCliSupportTest {
           h.reconcileControlStub,
           ignored -> tableId());
 
-      assertEquals(42L, h.statisticsService.lastTableStatsRequest.getSnapshot().getSnapshotId());
+      assertEquals(42L, h.statisticsService.lastTargetStatsRequest.getSnapshot().getSnapshotId());
     }
   }
 
@@ -147,7 +156,10 @@ class StatsCliSupportTest {
           ignored -> tableId());
 
       assertTrue(buf.toString().contains("CID"), "expected column header");
-      assertEquals(1, h.statisticsService.listColumnStatsCalls.get());
+      assertEquals(1, h.statisticsService.listTargetStatsCalls.get());
+      assertEquals(
+          StatsTargetKind.STK_COLUMN,
+          h.statisticsService.lastListTargetStatsRequest.getTargetKinds(0));
     }
   }
 
@@ -185,7 +197,10 @@ class StatsCliSupportTest {
           ignored -> tableId());
 
       assertTrue(buf.toString().contains("No file stats found."));
-      assertEquals(1, h.statisticsService.listFileColumnStatsCalls.get());
+      assertEquals(1, h.statisticsService.listTargetStatsCalls.get());
+      assertEquals(
+          StatsTargetKind.STK_FILE,
+          h.statisticsService.lastListTargetStatsRequest.getTargetKinds(0));
     }
   }
 
@@ -282,35 +297,27 @@ class StatsCliSupportTest {
       extends TableStatisticsServiceGrpc.TableStatisticsServiceImplBase {
 
     final AtomicInteger getTableStatsCalls = new AtomicInteger();
-    final AtomicInteger listColumnStatsCalls = new AtomicInteger();
-    final AtomicInteger listFileColumnStatsCalls = new AtomicInteger();
-    GetTableStatsRequest lastTableStatsRequest;
-    TableStats tableStatsToReturn = TableStats.getDefaultInstance();
+    final AtomicInteger listTargetStatsCalls = new AtomicInteger();
+    GetTargetStatsRequest lastTargetStatsRequest;
+    ListTargetStatsRequest lastListTargetStatsRequest;
+    TargetStatsRecord tableStatsToReturn = TargetStatsRecord.getDefaultInstance();
 
     @Override
-    public void getTableStats(
-        GetTableStatsRequest request, StreamObserver<GetTableStatsResponse> responseObserver) {
+    public void getTargetStats(
+        GetTargetStatsRequest request, StreamObserver<GetTargetStatsResponse> responseObserver) {
       getTableStatsCalls.incrementAndGet();
-      lastTableStatsRequest = request;
+      lastTargetStatsRequest = request;
       responseObserver.onNext(
-          GetTableStatsResponse.newBuilder().setStats(tableStatsToReturn).build());
+          GetTargetStatsResponse.newBuilder().setStats(tableStatsToReturn).build());
       responseObserver.onCompleted();
     }
 
     @Override
-    public void listColumnStats(
-        ListColumnStatsRequest request, StreamObserver<ListColumnStatsResponse> responseObserver) {
-      listColumnStatsCalls.incrementAndGet();
-      responseObserver.onNext(ListColumnStatsResponse.getDefaultInstance());
-      responseObserver.onCompleted();
-    }
-
-    @Override
-    public void listFileColumnStats(
-        ListFileColumnStatsRequest request,
-        StreamObserver<ListFileColumnStatsResponse> responseObserver) {
-      listFileColumnStatsCalls.incrementAndGet();
-      responseObserver.onNext(ListFileColumnStatsResponse.getDefaultInstance());
+    public void listTargetStats(
+        ListTargetStatsRequest request, StreamObserver<ListTargetStatsResponse> responseObserver) {
+      listTargetStatsCalls.incrementAndGet();
+      lastListTargetStatsRequest = request;
+      responseObserver.onNext(ListTargetStatsResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }

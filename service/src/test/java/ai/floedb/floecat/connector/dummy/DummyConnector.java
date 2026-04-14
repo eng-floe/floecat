@@ -18,8 +18,10 @@ package ai.floedb.floecat.connector.dummy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.FileContent;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.util.ArrayList;
@@ -138,8 +140,7 @@ public final class DummyConnector implements FloecatConnector {
     long createdAt = 1_700_000_000_000L;
 
     var tStats =
-        TableStats.newBuilder()
-            .setSnapshotId(snapshotId)
+        TableValueStats.newBuilder()
             .setRowCount(100)
             .setDataFileCount(3)
             .setTotalSizeBytes(2048)
@@ -252,14 +253,22 @@ public final class DummyConnector implements FloecatConnector {
 
     String schemaJson = describe(namespace, table).schemaJson();
 
+    List<TargetStatsRecord> materialized = new ArrayList<>();
+    materialized.add(
+        StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetColumnStatsFromViews(
+            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cstats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetFileStatsFromViews(
+            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, fileStats));
+
     return List.of(
         new SnapshotBundle(
             snapshotId,
             0L,
             createdAt,
-            tStats,
-            cstats,
-            fileStats,
+            List.copyOf(materialized),
             schemaJson,
             null,
             0L,

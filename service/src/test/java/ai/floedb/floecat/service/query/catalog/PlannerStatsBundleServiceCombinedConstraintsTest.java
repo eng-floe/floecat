@@ -22,13 +22,14 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
-import ai.floedb.floecat.query.rpc.ColumnStatsBundleChunk;
-import ai.floedb.floecat.query.rpc.FetchColumnStatsRequest;
+import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -47,8 +48,11 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
         queryContextWithPins(
             "query-constraints-found", List.of(pin(TABLE, 500L), pin(TABLE_TWO, 501L)));
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 500L, sampleStats(TABLE, 500L, 1L));
-    repository.putColumnStats(TABLE_TWO, 501L, sampleStats(TABLE_TWO, 501L, 2L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 500L, 1L, sampleStats(TABLE, 500L, 1L), null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_TWO, 501L, 2L, sampleStats(TABLE_TWO, 501L, 2L), null));
 
     ConstraintProvider provider =
         new ConstraintProvider() {
@@ -83,17 +87,17 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 10,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .addTables(tableRequest(TABLE_TWO, List.of(2L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     List<TableConstraintsResult> constraints = flattenConstraints(chunks);
     assertEquals(2, constraints.size());
@@ -103,12 +107,22 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             .filter(c -> c.getStatus() == BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
             .count());
     assertEquals(
-        1,
-        constraints.stream().filter(c -> c.getTableId().equals(TABLE)).count(),
+        1L,
+        constraints.stream()
+            .filter(
+                c ->
+                    c.getConstraintsCount() == 1
+                        && c.getConstraints(0).getName().equals("pk_users"))
+            .count(),
         "constraints should be emitted once per table");
     assertEquals(
-        1,
-        constraints.stream().filter(c -> c.getTableId().equals(TABLE_TWO)).count(),
+        1L,
+        constraints.stream()
+            .filter(
+                c ->
+                    c.getConstraintsCount() == 1
+                        && c.getConstraints(0).getName().equals("pk_orders"))
+            .count(),
         "constraints should be emitted once per table");
   }
 
@@ -120,7 +134,9 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     QueryContext ctx = queryContextWithPin("query-constraints-chunked-once", 555L);
     store.seed(ctx);
     for (long columnId = 1; columnId <= 5; columnId++) {
-      repository.putColumnStats(TABLE, 555L, sampleStats(TABLE, 555L, columnId));
+      repository.putTargetStats(
+          TargetStatsRecords.columnRecord(
+              TABLE, 555L, columnId, sampleStats(TABLE, 555L, columnId), null));
     }
 
     ConstraintDefinition pk =
@@ -146,19 +162,19 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 2,
             /* maxTables= */ 10,
-            /* maxColumns= */ 20);
+            /* maxTargets= */ 20);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L, 2L, 3L, 4L, 5L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
-    List<ColumnStatsBundleChunk> batches = new ArrayList<>();
-    for (ColumnStatsBundleChunk chunk : chunks) {
+    List<TargetStatsBundleChunk> batches = new ArrayList<>();
+    for (TargetStatsBundleChunk chunk : chunks) {
       if (chunk.hasBatch()) {
         batches.add(chunk);
       }
@@ -180,8 +196,10 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     StatsRepository repository = createRepository();
     QueryContext ctx = queryContextWithPin("query-constraints-pass-through", 560L);
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 560L, sampleStats(TABLE, 560L, 1L));
-    repository.putColumnStats(TABLE, 560L, sampleStats(TABLE, 560L, 2L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 560L, 1L, sampleStats(TABLE, 560L, 1L), null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 560L, 2L, sampleStats(TABLE, 560L, 2L), null));
 
     ConstraintDefinition expectedPk =
         constraint("pk_users_passthrough", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
@@ -209,16 +227,16 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L, 2L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, result.getStatus());
@@ -243,18 +261,18 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             ConstraintProvider.NONE,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
     QueryContext ctx = queryContextWithoutPin("query-constraints-no-pin");
     store.seed(ctx);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, result.getStatus());
@@ -268,7 +286,8 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     StatsRepository repository = createRepository();
     QueryContext ctx = queryContextWithPin("query-constraints-not-found", 600L);
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 600L, sampleStats(TABLE, 600L, 1L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 600L, 1L, sampleStats(TABLE, 600L, 1L), null));
     PlannerStatsBundleService service =
         createService(
             repository,
@@ -276,16 +295,16 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             ConstraintProvider.NONE,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, result.getStatus());
@@ -300,7 +319,8 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     StatsRepository repository = createRepository();
     QueryContext ctx = queryContextWithPin("query-constraints-prune", 700L);
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 700L, sampleStats(TABLE, 700L, 1L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 700L, 1L, sampleStats(TABLE, 700L, 1L), null));
 
     ConstraintDefinition hiddenCheck =
         ConstraintDefinition.newBuilder()
@@ -333,16 +353,16 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, result.getStatus());
@@ -359,7 +379,8 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     StatsRepository repository = createRepository();
     QueryContext ctx = queryContextWithPin("query-constraints-keep-relation-scoped", 705L);
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 705L, sampleStats(TABLE, 705L, 1L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 705L, 1L, sampleStats(TABLE, 705L, 1L), null));
 
     ConstraintDefinition pkHiddenProjection =
         constraint("pk_not_projected", ConstraintType.CT_PRIMARY_KEY, List.of(2L));
@@ -384,16 +405,16 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, result.getStatus());
@@ -412,7 +433,8 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
         queryContextWithPins(
             "query-constraints-pruned-empty", List.of(pin(TABLE, 710L), pin(TABLE_TWO, 711L)));
     store.seed(ctx);
-    repository.putColumnStats(TABLE, 710L, sampleStats(TABLE, 710L, 1L));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 710L, 1L, sampleStats(TABLE, 710L, 1L), null));
 
     ConstraintDefinition hiddenFk =
         ConstraintDefinition.newBuilder()
@@ -443,16 +465,16 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
             provider,
             /* chunkSize= */ 5,
             /* maxTables= */ 10,
-            /* maxColumns= */ 10);
+            /* maxTargets= */ 10);
 
-    FetchColumnStatsRequest request =
-        FetchColumnStatsRequest.newBuilder()
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
             .setIncludeConstraints(true)
             .addTables(tableRequest(TABLE, List.of(1L)))
             .build();
-    List<ColumnStatsBundleChunk> chunks =
-        service.stream("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
 
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, result.getStatus());

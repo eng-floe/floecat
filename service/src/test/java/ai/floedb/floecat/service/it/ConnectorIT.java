@@ -19,11 +19,14 @@ package ai.floedb.floecat.service.it;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -32,7 +35,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
@@ -253,28 +255,22 @@ public class ConnectorIT {
             .get(0)
             .getResourceId();
 
-    var fileResp =
-        statsService.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder()
-                .setTableId(tbl)
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                .setPage(PageRequest.newBuilder().setPageSize(100))
-                .build());
+    var fileStats = listCurrentFileStats(tbl, 100);
 
-    assertEquals(3, fileResp.getFileColumnsCount(), "expected 3 files");
+    assertEquals(3, fileStats.size(), "expected 3 files");
 
-    for (var f : fileResp.getFileColumnsList()) {
+    for (var f : fileStats) {
       assertTrue(f.getColumnsCount() > 0, "file should have per-column stats");
 
       var byName =
           f.getColumnsList().stream()
-              .collect(Collectors.toMap(ColumnStats::getColumnName, cs -> cs));
+              .filter(FileColumnStats::hasScalar)
+              .collect(Collectors.toMap(cs -> cs.getScalar().getDisplayName(), cs -> cs));
 
       assertTrue(byName.containsKey("id"), "per-file stats should include id column");
       var idCol = byName.get("id");
-      assertEquals(0L, idCol.getNullCount());
-      assertTrue(idCol.getValueCount() > 0, "value_count should be > 0 for id");
+      assertEquals(0L, idCol.getScalar().getNullCount());
+      assertTrue(idCol.getScalar().getValueCount() > 0, "value_count should be > 0 for id");
     }
   }
 
@@ -330,19 +326,11 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
             .orElseThrow();
 
-    var fileResp =
-        statsService.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder()
-                .setTableId(table.getResourceId())
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                .setPage(PageRequest.newBuilder().setPageSize(200))
-                .build());
+    var fileStats = listCurrentFileStats(table.getResourceId(), 200);
 
-    assertTrue(fileResp.getFileColumnsCount() > 0, "expected file stats for iceberg fixture");
+    assertTrue(fileStats.size() > 0, "expected file stats for iceberg fixture");
     boolean hasSeq =
-        fileResp.getFileColumnsList().stream()
-            .anyMatch(f -> f.hasSequenceNumber() && f.getSequenceNumber() > 0);
+        fileStats.stream().anyMatch(f -> f.hasSequenceNumber() && f.getSequenceNumber() > 0);
     assertTrue(hasSeq, "expected at least one file with sequence_number");
   }
 
@@ -500,17 +488,9 @@ public class ConnectorIT {
         snaps.count(table.getResourceId()),
         "expected second snapshot after incremental reconcile");
 
-    var fileResp =
-        statsService.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder()
-                .setTableId(table.getResourceId())
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                .setPage(PageRequest.newBuilder().setPageSize(200))
-                .build());
+    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
     assertTrue(
-        fileResp.getFileColumnsCount() > 0,
-        "expected current snapshot file stats after incremental reconcile");
+        fileResp.size() > 0, "expected current snapshot file stats after incremental reconcile");
   }
 
   @Test
@@ -597,17 +577,9 @@ public class ConnectorIT {
         snaps.count(table.getResourceId()),
         "expected third snapshot after incremental reconcile");
 
-    var fileResp =
-        statsService.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder()
-                .setTableId(table.getResourceId())
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                .setPage(PageRequest.newBuilder().setPageSize(200))
-                .build());
+    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
     assertTrue(
-        fileResp.getFileColumnsList().stream()
-            .anyMatch(f -> f.getFileContent() == FileContent.FC_POSITION_DELETES),
+        fileResp.stream().anyMatch(f -> f.getFileContent() == FileContent.FC_POSITION_DELETES),
         "expected current snapshot to expose a position delete file");
   }
 
@@ -671,22 +643,15 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_types")
             .orElseThrow();
 
-    var fileResp =
-        statsService.listFileColumnStats(
-            ListFileColumnStatsRequest.newBuilder()
-                .setTableId(table.getResourceId())
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                .setPage(PageRequest.newBuilder().setPageSize(200))
-                .build());
+    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
 
-    assertFalse(
-        fileResp.getFileColumnsList().isEmpty(), "expected file stats for complex iceberg fixture");
+    assertFalse(fileResp.isEmpty(), "expected file stats for complex iceberg fixture");
 
     var columnNames =
-        fileResp.getFileColumnsList().stream()
+        fileResp.stream()
             .flatMap(f -> f.getColumnsList().stream())
-            .map(ColumnStats::getColumnName)
+            .filter(FileColumnStats::hasScalar)
+            .map(c -> c.getScalar().getDisplayName())
             .collect(Collectors.toSet());
     assertTrue(columnNames.contains("c_time"), "expected TIME column stats to be materialized");
     assertTrue(columnNames.contains("c_ts"), "expected TIMESTAMP column stats to be materialized");
@@ -806,15 +771,8 @@ public class ConnectorIT {
       var outTableId = outTables.get(0).getResourceId();
       assertTrue(snaps.getById(outTableId, 0L).isPresent(), "expected Delta snapshot_id=0");
 
-      var fileStats =
-          statsService.listFileColumnStats(
-              ListFileColumnStatsRequest.newBuilder()
-                  .setTableId(outTableId)
-                  .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                  .setPage(PageRequest.newBuilder().setPageSize(10))
-                  .build());
-      assertFalse(
-          fileStats.getFileColumnsList().isEmpty(), "expected file stats at current snapshot");
+      var fileStats = listCurrentFileStats(outTableId, 10);
+      assertFalse(fileStats.isEmpty(), "expected file stats at current snapshot");
     }
   }
 
@@ -1001,28 +959,22 @@ public class ConnectorIT {
                   .build(),
               Set.of("#1", "#4", "#9"));
 
-      var cs1 = onlyIds.get(0).columnStats();
+      var cs1 =
+          onlyIds.get(0).targetStats().stream()
+              .filter(
+                  r ->
+                      r.hasTarget()
+                          && r.getTarget().hasColumn()
+                          && r.hasScalar()
+                          && r.getTarget().getColumn().getColumnId() > 0)
+              .toList();
       var ids1 =
           cs1.stream()
-              .map(
-                  v ->
-                      ColumnIdComputer.compute(
-                          td.columnIdAlgorithm(),
-                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
-                              .setName(v.ref().name() == null ? "" : v.ref().name())
-                              .setPhysicalPath(
-                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
-                              .setOrdinal(v.ref().ordinal())
-                              .setFieldId(v.ref().fieldId())
-                              .build()))
+              .map(v -> v.getTarget().getColumn().getColumnId())
               .collect(java.util.stream.Collectors.toSet());
       var names1 =
           cs1.stream()
-              .map(
-                  v ->
-                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
-                          ? v.ref().name()
-                          : v.ref().physicalPath())
+              .map(v -> v.getScalar().getDisplayName())
               .collect(java.util.stream.Collectors.toSet());
 
       assertEquals(Set.of(1L, 4L, 9L), ids1);
@@ -1039,28 +991,22 @@ public class ConnectorIT {
                   .build(),
               Set.of("user.name", "attrs.value"));
 
-      var cs2 = onlyNames.get(0).columnStats();
+      var cs2 =
+          onlyNames.get(0).targetStats().stream()
+              .filter(
+                  r ->
+                      r.hasTarget()
+                          && r.getTarget().hasColumn()
+                          && r.hasScalar()
+                          && r.getTarget().getColumn().getColumnId() > 0)
+              .toList();
       var ids2 =
           cs2.stream()
-              .map(
-                  v ->
-                      ColumnIdComputer.compute(
-                          td.columnIdAlgorithm(),
-                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
-                              .setName(v.ref().name() == null ? "" : v.ref().name())
-                              .setPhysicalPath(
-                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
-                              .setOrdinal(v.ref().ordinal())
-                              .setFieldId(v.ref().fieldId())
-                              .build()))
+              .map(v -> v.getTarget().getColumn().getColumnId())
               .collect(java.util.stream.Collectors.toSet());
       var names2 =
           cs2.stream()
-              .map(
-                  v ->
-                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
-                          ? v.ref().name()
-                          : v.ref().physicalPath())
+              .map(v -> v.getScalar().getDisplayName())
               .collect(java.util.stream.Collectors.toSet());
 
       assertEquals(Set.of(5L, 12L), ids2);
@@ -1077,28 +1023,22 @@ public class ConnectorIT {
                   .build(),
               Set.of("#2", "items.element.sku"));
 
-      var cs3 = mixed.get(0).columnStats();
+      var cs3 =
+          mixed.get(0).targetStats().stream()
+              .filter(
+                  r ->
+                      r.hasTarget()
+                          && r.getTarget().hasColumn()
+                          && r.hasScalar()
+                          && r.getTarget().getColumn().getColumnId() > 0)
+              .toList();
       var ids3 =
           cs3.stream()
-              .map(
-                  v ->
-                      ColumnIdComputer.compute(
-                          td.columnIdAlgorithm(),
-                          ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
-                              .setName(v.ref().name() == null ? "" : v.ref().name())
-                              .setPhysicalPath(
-                                  v.ref().physicalPath() == null ? "" : v.ref().physicalPath())
-                              .setOrdinal(v.ref().ordinal())
-                              .setFieldId(v.ref().fieldId())
-                              .build()))
+              .map(v -> v.getTarget().getColumn().getColumnId())
               .collect(java.util.stream.Collectors.toSet());
       var names3 =
           cs3.stream()
-              .map(
-                  v ->
-                      (v.ref().physicalPath() == null || v.ref().physicalPath().isBlank())
-                          ? v.ref().name()
-                          : v.ref().physicalPath())
+              .map(v -> v.getScalar().getDisplayName())
               .collect(java.util.stream.Collectors.toSet());
 
       assertEquals(Set.of(2L, 8L), ids3);
@@ -1115,7 +1055,16 @@ public class ConnectorIT {
                   .build(),
               Collections.emptySet());
 
-      assertEquals(8, allCols.get(0).columnStats().size());
+      long allColsCount =
+          allCols.get(0).targetStats().stream()
+              .filter(
+                  r ->
+                      r.hasTarget()
+                          && r.getTarget().hasColumn()
+                          && r.hasScalar()
+                          && r.getTarget().getColumn().getColumnId() > 0)
+              .count();
+      assertEquals(8, allColsCount);
     }
   }
 
@@ -1492,6 +1441,22 @@ public class ConnectorIT {
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  private List<FileTargetStats> listCurrentFileStats(ResourceId tableId, int pageSize) {
+    var response =
+        statsService.listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(
+                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .addTargetKinds(StatsTargetKind.STK_FILE)
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize))
+                .build());
+    return response.getRecordsList().stream()
+        .filter(TargetStatsRecord::hasFile)
+        .map(TargetStatsRecord::getFile)
+        .toList();
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {

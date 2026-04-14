@@ -19,7 +19,7 @@ package ai.floedb.floecat.connector.common.resolver;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -104,8 +104,8 @@ public class DeltaNestedColumnStatsTest {
             // Another nested column: ordinal=2
             view(ref("info.zip", "info.zip", 2, 0), 100L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             snapshotId,
             1700000000000L,
@@ -118,22 +118,37 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(3, out.size(), "all columns including nested ones should resolve");
 
     // All should have non-zero column_id
-    for (ColumnStats col : out) {
-      assertTrue(col.getColumnId() > 0L, "column_id should be non-zero for " + col.getColumnName());
+    for (TargetStatsRecord col : out) {
+      assertTrue(
+          col.getTarget().getColumn().getColumnId() > 0L,
+          "column_id should be non-zero for " + col.getScalar().getDisplayName());
     }
 
     // Nested columns should have different IDs from top-level
-    ColumnStats topLevel =
-        out.stream().filter(c -> "id".equals(c.getColumnName())).findFirst().orElseThrow();
-    ColumnStats nested1 =
-        out.stream().filter(c -> "info.city".equals(c.getColumnName())).findFirst().orElseThrow();
-    ColumnStats nested2 =
-        out.stream().filter(c -> "info.zip".equals(c.getColumnName())).findFirst().orElseThrow();
+    TargetStatsRecord topLevel =
+        out.stream()
+            .filter(c -> "id".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
+    TargetStatsRecord nested1 =
+        out.stream()
+            .filter(c -> "info.city".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
+    TargetStatsRecord nested2 =
+        out.stream()
+            .filter(c -> "info.zip".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
 
     assertNotEquals(
-        topLevel.getColumnId(), nested1.getColumnId(), "nested columns should have different IDs");
+        topLevel.getTarget().getColumn().getColumnId(),
+        nested1.getTarget().getColumn().getColumnId(),
+        "nested columns should have different IDs");
     assertNotEquals(
-        nested1.getColumnId(), nested2.getColumnId(), "nested siblings should have different IDs");
+        nested1.getTarget().getColumn().getColumnId(),
+        nested2.getTarget().getColumn().getColumnId(),
+        "nested siblings should have different IDs");
   }
 
   @Test
@@ -152,8 +167,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("unknown", "unknown", 0, 0), 50L) // ordinal=0 should be skipped
             );
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -164,7 +179,7 @@ public class DeltaNestedColumnStatsTest {
 
     // Only resolvable column should be in output
     assertEquals(1, out.size(), "unresolvable column (ordinal=0) should be skipped");
-    assertEquals("id", out.get(0).getColumnName());
+    assertEquals("id", out.get(0).getScalar().getDisplayName());
   }
 
   @Test
@@ -185,8 +200,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("id", "id", 1, 0), 1000L),
             view(ref("profile.address.city", "profile.address.city", 1, 0), 800L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -199,12 +214,14 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(2, out.size(), "both top-level and deeply nested should resolve");
 
     // Deeply nested should have non-zero ID
-    ColumnStats deepNested =
+    TargetStatsRecord deepNested =
         out.stream()
-            .filter(c -> "profile.address.city".equals(c.getColumnName()))
+            .filter(c -> "profile.address.city".equals(c.getScalar().getDisplayName()))
             .findFirst()
             .orElseThrow();
-    assertTrue(deepNested.getColumnId() > 0L, "deeply nested column should have non-zero ID");
+    assertTrue(
+        deepNested.getTarget().getColumn().getColumnId() > 0L,
+        "deeply nested column should have non-zero ID");
   }
 
   @Test
@@ -226,8 +243,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("config.key", "config.key", 1, 0), 100L),
             view(ref("config.value", "config.value", 2, 0), 100L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -240,15 +257,21 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(3, out.size(), "map key and value should resolve");
 
     // Map key and value should have different IDs
-    ColumnStats mapKey =
-        out.stream().filter(c -> "config.key".equals(c.getColumnName())).findFirst().orElseThrow();
-    ColumnStats mapValue =
+    TargetStatsRecord mapKey =
         out.stream()
-            .filter(c -> "config.value".equals(c.getColumnName()))
+            .filter(c -> "config.key".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
+    TargetStatsRecord mapValue =
+        out.stream()
+            .filter(c -> "config.value".equals(c.getScalar().getDisplayName()))
             .findFirst()
             .orElseThrow();
 
-    assertNotEquals(mapKey.getColumnId(), mapValue.getColumnId(), "Map key/value should differ");
+    assertNotEquals(
+        mapKey.getTarget().getColumn().getColumnId(),
+        mapValue.getTarget().getColumn().getColumnId(),
+        "Map key/value should differ");
   }
 
   @Test
@@ -268,8 +291,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("id", "id", 1, 0), 100L),
             view(ref("tags[]", "tags[]", 1, 0), 75L)); // 75 array elements total
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -281,9 +304,14 @@ public class DeltaNestedColumnStatsTest {
     // Both should resolve
     assertEquals(2, out.size(), "array element should resolve");
 
-    ColumnStats arrayElem =
-        out.stream().filter(c -> "tags[]".equals(c.getColumnName())).findFirst().orElseThrow();
-    assertTrue(arrayElem.getColumnId() > 0L, "array element should have non-zero ID");
+    TargetStatsRecord arrayElem =
+        out.stream()
+            .filter(c -> "tags[]".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
+    assertTrue(
+        arrayElem.getTarget().getColumn().getColumnId() > 0L,
+        "array element should have non-zero ID");
   }
 
   @Test
@@ -306,8 +334,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("items[].id", "items[].id", 1, 0), 150L), // 150 items in total
             view(ref("items[].name", "items[].name", 2, 0), 140L)); // 140 have names
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -320,20 +348,27 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(3, out.size(), "complex nested columns should resolve");
 
     // All should have non-zero IDs
-    for (ColumnStats col : out) {
+    for (TargetStatsRecord col : out) {
       assertTrue(
-          col.getColumnId() > 0L, "column " + col.getColumnName() + " should have non-zero ID");
+          col.getTarget().getColumn().getColumnId() > 0L,
+          "column " + col.getScalar().getDisplayName() + " should have non-zero ID");
     }
 
     // Siblings should have different IDs
-    ColumnStats itemId =
-        out.stream().filter(c -> "items[].id".equals(c.getColumnName())).findFirst().orElseThrow();
-    ColumnStats itemName =
+    TargetStatsRecord itemId =
         out.stream()
-            .filter(c -> "items[].name".equals(c.getColumnName()))
+            .filter(c -> "items[].id".equals(c.getScalar().getDisplayName()))
             .findFirst()
             .orElseThrow();
-    assertNotEquals(itemId.getColumnId(), itemName.getColumnId(), "Siblings should differ");
+    TargetStatsRecord itemName =
+        out.stream()
+            .filter(c -> "items[].name".equals(c.getScalar().getDisplayName()))
+            .findFirst()
+            .orElseThrow();
+    assertNotEquals(
+        itemId.getTarget().getColumn().getColumnId(),
+        itemName.getTarget().getColumn().getColumnId(),
+        "Siblings should differ");
   }
 
   @Test
@@ -350,8 +385,8 @@ public class DeltaNestedColumnStatsTest {
     // Even if paths come in non-canonical form, should still resolve
     var in = List.of(view(ref("addresses[].zip", "addresses[].zip", 1, 0), 1000L));
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -361,7 +396,8 @@ public class DeltaNestedColumnStatsTest {
             in);
 
     assertEquals(1, out.size(), "canonical path should resolve");
-    assertTrue(out.get(0).getColumnId() > 0L, "should have non-zero column ID");
+    assertTrue(
+        out.get(0).getTarget().getColumn().getColumnId() > 0L, "should have non-zero column ID");
   }
 
   @Test
@@ -393,8 +429,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("user", "user", 2, 0), 800L) // struct container, not leaf
             );
 
-    List<ColumnStats> out =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -409,10 +445,10 @@ public class DeltaNestedColumnStatsTest {
     // The nested columns (user.name, user.age) do NOT appear because they're not in
     // result.columns() from the Delta engine
     assertTrue(
-        out.stream().noneMatch(c -> "user.name".equals(c.getColumnName())),
+        out.stream().noneMatch(c -> "user.name".equals(c.getScalar().getDisplayName())),
         "Nested user.name should not be in stats (not in Parquet footer)");
     assertTrue(
-        out.stream().noneMatch(c -> "user.age".equals(c.getColumnName())),
+        out.stream().noneMatch(c -> "user.age".equals(c.getScalar().getDisplayName())),
         "Nested user.age should not be in stats (not in Parquet footer)");
   }
 
@@ -485,8 +521,8 @@ public class DeltaNestedColumnStatsTest {
     var todayStatsInput =
         List.of(view(ref("id", "id", 1, 0), 1000L), view(ref("user", "user", 2, 0), 800L));
 
-    List<ColumnStats> todayOut =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> todayOut =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000000L,
@@ -499,7 +535,9 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(2, todayOut.size(), "TODAY: Only top-level columns in stats");
     assertEquals(
         2,
-        todayOut.stream().filter(c -> positions.getOrDefault(c.getColumnName(), 0) > 0).count(),
+        todayOut.stream()
+            .filter(c -> positions.getOrDefault(c.getScalar().getDisplayName(), 0) > 0)
+            .count(),
         "TODAY: All returned columns have ordinals in pre-computed map");
 
     // Scenario 2: FUTURE - Delta adds nested column stats
@@ -511,8 +549,8 @@ public class DeltaNestedColumnStatsTest {
             view(ref("user.age", "user.age", 2, 0), 650L) // NEW: nested stat
             );
 
-    List<ColumnStats> futureOut =
-        StatsProtoEmitter.toColumnStats(
+    List<TargetStatsRecord> futureOut =
+        StatsProtoEmitter.toTargetColumnStats(
             tableId,
             1L,
             1700000000001L,
@@ -525,17 +563,19 @@ public class DeltaNestedColumnStatsTest {
     assertEquals(4, futureOut.size(), "FUTURE: Top-level + nested columns in stats");
     assertEquals(
         4,
-        futureOut.stream().filter(c -> positions.getOrDefault(c.getColumnName(), 0) > 0).count(),
+        futureOut.stream()
+            .filter(c -> positions.getOrDefault(c.getScalar().getDisplayName(), 0) > 0)
+            .count(),
         "FUTURE: ALL columns have ordinals in pre-computed map (why we pre-compute ALL)");
 
     // Key proof: The SAME lookup logic works for both scenarios
-    for (ColumnStats stat : futureOut) {
-      int ordinal = positions.getOrDefault(stat.getColumnName(), 0);
+    for (TargetStatsRecord stat : futureOut) {
+      int ordinal = positions.getOrDefault(stat.getScalar().getDisplayName(), 0);
       assertNotEquals(
           0,
           ordinal,
           "PROOF: Pre-computed ordinals handle both today's top-level and future's nested: "
-              + stat.getColumnName());
+              + stat.getScalar().getDisplayName());
     }
 
     // This is why we pre-compute: today's top-level lookups AND tomorrow's nested lookups

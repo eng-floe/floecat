@@ -18,7 +18,10 @@ package ai.floedb.floecat.stats.spi;
 
 /** Sampling modes a stats engine can support. */
 public enum StatsSamplingSupport {
+  /** No sampling; exact or metadata-only paths. */
   NONE,
+  /** Random row-group sampling. */
   RANDOM_ROW_GROUP,
+  /** Metadata-guided row-group sampling. */
   METADATA_GUIDED
 }

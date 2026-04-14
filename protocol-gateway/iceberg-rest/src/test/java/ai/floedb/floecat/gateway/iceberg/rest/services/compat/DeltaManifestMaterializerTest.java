@@ -26,8 +26,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -186,21 +187,27 @@ class DeltaManifestMaterializerTest {
             .setFileSizeInBytes(512)
             .setRecordCount(50)
             .addColumns(
-                ColumnStats.newBuilder()
+                FileColumnStats.newBuilder()
                     .setColumnId(1)
-                    .setLogicalType("INT")
-                    .setValueCount(50)
-                    .setNullCount(2)
-                    .setMin("10")
-                    .setMax("200")
+                    .setScalar(
+                        ScalarStats.newBuilder()
+                            .setLogicalType("INT")
+                            .setValueCount(50)
+                            .setNullCount(2)
+                            .setMin("10")
+                            .setMax("200")
+                            .build())
                     .build())
             .addColumns(
-                ColumnStats.newBuilder()
+                FileColumnStats.newBuilder()
                     .setColumnId(2)
-                    .setLogicalType("STRING")
-                    .setValueCount(50)
-                    .setMin("alpha")
-                    .setMax("omega")
+                    .setScalar(
+                        ScalarStats.newBuilder()
+                            .setLogicalType("STRING")
+                            .setValueCount(50)
+                            .setMin("alpha")
+                            .setMax("omega")
+                            .build())
                     .build())
             .build();
     when(grpcClient.fetchScanBundle(any()))

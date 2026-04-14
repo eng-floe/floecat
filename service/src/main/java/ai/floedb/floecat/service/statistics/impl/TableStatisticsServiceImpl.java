@@ -18,54 +18,43 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListFileColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.Ndv;
-import ai.floedb.floecat.catalog.rpc.NdvApprox;
-import ai.floedb.floecat.catalog.rpc.NdvSketch;
-import ai.floedb.floecat.catalog.rpc.PutColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutFileColumnStatsResponse;
-import ai.floedb.floecat.catalog.rpc.PutTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.PutTableStatsResponse;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.PutTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.StatsCoverage;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsService;
-import ai.floedb.floecat.catalog.rpc.TableStats;
-import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
@@ -75,7 +64,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
-  @Inject StatsRepository stats;
+  @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -83,8 +72,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
 
   @Override
-  public Uni<GetTableStatsResponse> getTableStats(GetTableStatsRequest request) {
-    var L = LogHelper.start(LOG, "GetTableStats");
+  public Uni<GetTargetStatsResponse> getTargetStats(GetTargetStatsRequest request) {
+    var L = LogHelper.start(LOG, "GetTargetStats");
 
     return mapFailures(
             run(
@@ -94,51 +83,19 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   authz.require(principalContext, "catalog.read");
 
                   final var tableId = request.getTableId();
-                  final var ref = request.getSnapshot();
-                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
+                  final long snapId = resolveSnapshotId(tableId, request.getSnapshot());
+                  StatsTarget target = request.getTarget();
+                  if (target == null
+                      || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), STATS_INCONSISTENT_TARGET, Map.of());
                   }
 
-                  final long snapId;
-                  switch (ref.getWhichCase()) {
-                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
-                    case SPECIAL -> {
-                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
-                      }
-                      snapId =
-                          snapshots
-                              .getCurrentSnapshot(tableId)
-                              .map(Snapshot::getSnapshotId)
-                              .orElseThrow(
-                                  () ->
-                                      GrpcErrors.notFound(
-                                          correlationId(),
-                                          SNAPSHOT,
-                                          Map.of("id", tableId.getId())));
-                    }
-                    case AS_OF -> {
-                      var asOf = ref.getAsOf();
-                      snapId =
-                          snapshots
-                              .getAsOf(tableId, asOf)
-                              .map(Snapshot::getSnapshotId)
-                              .orElseThrow(
-                                  () ->
-                                      GrpcErrors.notFound(
-                                          correlationId(),
-                                          SNAPSHOT,
-                                          Map.of("id", tableId.getId())));
-                    }
-                    default ->
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_MISSING, Map.of());
-                  }
-
-                  return stats
-                      .getTableStats(tableId, snapId)
-                      .map(s -> GetTableStatsResponse.newBuilder().setStats(s).build())
+                  return statsStore
+                      .getTargetStats(tableId, snapId, target)
+                      .map(
+                          statsRecord ->
+                              GetTargetStatsResponse.newBuilder().setStats(statsRecord).build())
                       .orElseThrow(
                           () ->
                               GrpcErrors.notFound(
@@ -158,8 +115,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   }
 
   @Override
-  public Uni<ListColumnStatsResponse> listColumnStats(ListColumnStatsRequest request) {
-    var L = LogHelper.start(LOG, "ListColumnStats");
+  public Uni<ListTargetStatsResponse> listTargetStats(ListTargetStatsRequest request) {
+    var L = LogHelper.start(LOG, "ListTargetStats");
 
     return mapFailures(
             run(
@@ -173,46 +130,31 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                           ? request.getPage().getPageSize()
                           : 200;
                   final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-                  final StringBuilder next = new StringBuilder();
-
                   final var tableId = request.getTableId();
-                  final var ref = request.getSnapshot();
-                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
+                  final long snapId = resolveSnapshotId(tableId, request.getSnapshot());
+                  List<StatsTargetKind> kinds = request.getTargetKindsList();
+                  if (kinds.size() > 1) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(),
+                        STATS_INCONSISTENT_TARGET,
+                        Map.of("reason", "list_target_stats supports at most one target kind"));
                   }
 
-                  final long snapId;
-                  switch (ref.getWhichCase()) {
-                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
-                    case SPECIAL -> {
-                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
-                      }
-                      snapId =
-                          snapshots
-                              .getCurrentSnapshot(tableId)
-                              .map(Snapshot::getSnapshotId)
-                              .orElseThrow(
-                                  () ->
-                                      GrpcErrors.notFound(
-                                          correlationId(),
-                                          SNAPSHOT,
-                                          Map.of("id", tableId.getId())));
-                    }
-                    default ->
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_MISSING, Map.of());
-                  }
+                  Optional<StatsTargetType> targetType =
+                      kinds.isEmpty() || kinds.get(0) == StatsTargetKind.STK_UNSPECIFIED
+                          ? Optional.empty()
+                          : Optional.of(toTargetType(kinds.get(0)));
 
-                  var items = stats.list(tableId, snapId, Math.max(1, limit), token, next);
-                  int total = stats.count(tableId, snapId);
+                  var listResult =
+                      statsStore.listTargetStats(
+                          tableId, snapId, targetType, Math.max(1, limit), token);
+                  int total = statsStore.countTargetStats(tableId, snapId, targetType);
 
-                  return ListColumnStatsResponse.newBuilder()
-                      .addAllColumns(items)
+                  return ListTargetStatsResponse.newBuilder()
+                      .addAllRecords(listResult.records())
                       .setPage(
                           PageResponse.newBuilder()
-                              .setNextPageToken(next.toString())
+                              .setNextPageToken(listResult.nextPageToken())
                               .setTotalSize(total)
                               .build())
                       .build();
@@ -225,161 +167,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   }
 
   @Override
-  public Uni<ListFileColumnStatsResponse> listFileColumnStats(ListFileColumnStatsRequest request) {
-
-    var L = LogHelper.start(LOG, "ListFileColumnStats");
-
-    return mapFailures(
-            run(
-                () -> {
-                  var principalContext = principal.get();
-                  authz.require(principalContext, "catalog.read");
-
-                  final int limit =
-                      (request.hasPage() && request.getPage().getPageSize() > 0)
-                          ? request.getPage().getPageSize()
-                          : 200;
-                  final String token = request.hasPage() ? request.getPage().getPageToken() : "";
-                  final StringBuilder next = new StringBuilder();
-
-                  final var tableId = request.getTableId();
-                  final var ref = request.getSnapshot();
-                  if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
-                    throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
-                  }
-
-                  final long snapId;
-                  switch (ref.getWhichCase()) {
-                    case SNAPSHOT_ID -> snapId = ref.getSnapshotId();
-                    case SPECIAL -> {
-                      if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
-                      }
-                      snapId =
-                          snapshots
-                              .getCurrentSnapshot(tableId)
-                              .map(Snapshot::getSnapshotId)
-                              .orElseThrow(
-                                  () ->
-                                      GrpcErrors.notFound(
-                                          correlationId(),
-                                          SNAPSHOT,
-                                          Map.of("id", tableId.getId())));
-                    }
-                    default ->
-                        throw GrpcErrors.invalidArgument(
-                            correlationId(), SNAPSHOT_MISSING, Map.of());
-                  }
-
-                  var items = stats.listFileStats(tableId, snapId, Math.max(1, limit), token, next);
-                  int total = stats.countFileStats(tableId, snapId);
-
-                  return ListFileColumnStatsResponse.newBuilder()
-                      .addAllFileColumns(items)
-                      .setPage(
-                          PageResponse.newBuilder()
-                              .setNextPageToken(next.toString())
-                              .setTotalSize(total)
-                              .build())
-                      .build();
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<PutTableStatsResponse> putTableStats(PutTableStatsRequest request) {
-    var L = LogHelper.start(LOG, "PutTableStats");
-
-    return mapFailures(
-            runWithRetry(
-                () -> {
-                  var pc = principal.get();
-                  var accountId = pc.getAccountId();
-
-                  authz.require(pc, "table.write");
-
-                  var tsNow = nowTs();
-
-                  tables
-                      .getById(request.getTableId())
-                      .orElseThrow(
-                          () ->
-                              GrpcErrors.notFound(
-                                  correlationId(),
-                                  TABLE,
-                                  Map.of("id", request.getTableId().getId())));
-
-                  if (snapshots.getById(request.getTableId(), request.getSnapshotId()).isEmpty()) {
-                    LOG.debugf(
-                        "Received metrics for unknown snapshot tableId=%s snapshotId=%d; storing"
-                            + " stats anyway",
-                        request.getTableId().getId(), request.getSnapshotId());
-                  }
-                  validateStatsMetadata(
-                      request.getStats().hasMetadata() ? request.getStats().getMetadata() : null);
-
-                  var fingerprint = canonicalFingerprint(request.getStats());
-                  var explicitKey =
-                      request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
-                  var idempotencyKey = explicitKey.isEmpty() ? null : explicitKey;
-
-                  if (idempotencyKey == null) {
-                    stats.putTableStats(
-                        request.getTableId(), request.getSnapshotId(), request.getStats());
-                    var meta =
-                        stats.metaForTableStats(
-                            request.getTableId(), request.getSnapshotId(), tsNow);
-                    return PutTableStatsResponse.newBuilder()
-                        .setStats(request.getStats())
-                        .setMeta(meta)
-                        .build();
-                  }
-
-                  var result =
-                      runIdempotentCreate(
-                          () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "PutTableStats",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    stats.putTableStats(
-                                        request.getTableId(),
-                                        request.getSnapshotId(),
-                                        request.getStats());
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        request.getStats(), request.getTableId());
-                                  },
-                                  ignored ->
-                                      stats.metaForTableStats(
-                                          request.getTableId(), request.getSnapshotId(), tsNow),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  TableStats::parseFrom));
-
-                  return PutTableStatsResponse.newBuilder()
-                      .setStats(request.getStats())
-                      .setMeta(result.meta)
-                      .build();
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<PutColumnStatsResponse> putColumnStats(Multi<PutColumnStatsRequest> requests) {
-    var L = LogHelper.start(LOG, "PutColumnStats");
+  public Uni<PutTargetStatsResponse> putTargetStats(Multi<PutTargetStatsRequest> requests) {
+    var L = LogHelper.start(LOG, "PutTargetStats");
 
     var state = new AtomicReference<>(StreamState.initial());
     AtomicInteger upserted = new AtomicInteger();
@@ -388,49 +177,15 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
             requests
                 .onItem()
                 .transformToUniAndConcatenate(
-                    req -> runWithRetry(() -> processColumnStats(state, req, upserted)))
+                    req -> runWithRetry(() -> processTargetStats(state, req, upserted)))
                 .collect()
                 .last()
                 .onItem()
                 .ifNull()
                 .failWith(
-                    () -> GrpcErrors.invalidArgument(correlationId(), COLUMN_STATS_EMPTY, Map.of()))
+                    () -> GrpcErrors.invalidArgument(correlationId(), TARGET_STATS_EMPTY, Map.of()))
                 .replaceWith(
-                    () -> PutColumnStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
-  public Uni<PutFileColumnStatsResponse> putFileColumnStats(
-      Multi<PutFileColumnStatsRequest> requests) {
-
-    var L = LogHelper.start(LOG, "PutFileColumnStats");
-
-    var state = new AtomicReference<>(StreamState.initial());
-    AtomicInteger upserted = new AtomicInteger();
-
-    return mapFailures(
-            requests
-                .onItem()
-                .transformToUniAndConcatenate(
-                    req -> runWithRetry(() -> processFileColumnStats(state, req, upserted)))
-                .collect()
-                .last()
-                .onItem()
-                .ifNull()
-                .failWith(
-                    () ->
-                        GrpcErrors.invalidArgument(
-                            correlationId(), FILE_COLUMN_STATS_EMPTY, Map.of()))
-                .replaceWith(
-                    () ->
-                        PutFileColumnStatsResponse.newBuilder()
-                            .setUpserted(upserted.get())
-                            .build()),
+                    () -> PutTargetStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
             correlationId())
         .onFailure()
         .invoke(L::fail)
@@ -495,8 +250,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     return state.with(state.tableId, state.snapshotId, state.idempotencyKey, true);
   }
 
-  private Boolean processColumnStats(
-      AtomicReference<StreamState> stateRef, PutColumnStatsRequest req, AtomicInteger upserted) {
+  private Boolean processTargetStats(
+      AtomicReference<StreamState> stateRef, PutTargetStatsRequest req, AtomicInteger upserted) {
     StreamState computed =
         ensureState(stateRef.get(), req.getTableId(), req.getSnapshotId()); // may throw on mismatch
     computed =
@@ -508,94 +263,40 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     var accountId = principal.get().getAccountId();
     var tsNow = nowTs();
 
-    for (var raw : req.getColumnsList()) {
-      var columnStats =
-          raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
-      validateStatsMetadata(columnStats.hasMetadata() ? columnStats.getMetadata() : null);
-      var fingerprint = canonicalFingerprint(columnStats);
+    for (var raw : req.getRecordsList()) {
+      var targetRecord =
+          TargetStatsRecordValidator.validateForPut(
+              raw, next.tableId(), next.snapshotId(), correlationId());
+      validateStatsMetadata(targetRecord.hasMetadata() ? targetRecord.getMetadata() : null);
+      var fingerprint = StatsCanonicalizer.canonicalFingerprint(targetRecord);
 
       if (next.idempotencyKey() == null) {
-        stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
+        statsStore.putTargetStats(targetRecord);
         upserted.incrementAndGet();
         continue;
       }
 
-      var itemKey = itemIdempotencyKey(next.idempotencyKey(), "col", raw.getColumnId());
+      String targetKey = StatsTargetIdentity.storageId(targetRecord.getTarget());
+      var itemKey = itemIdempotencyKey(next.idempotencyKey(), "target", hashString(targetKey));
       runIdempotentCreate(
           () ->
               MutationOps.createProto(
                   accountId,
-                  "PutColumnStats",
+                  "PutTargetStats",
                   itemKey,
                   () -> fingerprint,
                   () -> {
-                    stats.putColumnStats(next.tableId(), next.snapshotId(), columnStats);
-                    return new IdempotencyGuard.CreateResult<>(columnStats, next.tableId());
+                    statsStore.putTargetStats(targetRecord);
+                    return new IdempotencyGuard.CreateResult<>(targetRecord, next.tableId());
                   },
-                  cs ->
-                      stats.metaForColumnStats(
-                          next.tableId(), next.snapshotId(), cs.getColumnId(), tsNow),
+                  rec ->
+                      statsStore.metaForTargetStats(
+                          next.tableId(), next.snapshotId(), rec.getTarget(), tsNow),
                   idempotencyStore,
                   tsNow,
                   idempotencyTtlSeconds(),
                   this::correlationId,
-                  ColumnStats::parseFrom));
-
-      upserted.incrementAndGet();
-    }
-    return Boolean.TRUE;
-  }
-
-  private Boolean processFileColumnStats(
-      AtomicReference<StreamState> stateRef,
-      PutFileColumnStatsRequest req,
-      AtomicInteger upserted) {
-    StreamState computed =
-        ensureState(stateRef.get(), req.getTableId(), req.getSnapshotId()); // may throw on mismatch
-    computed =
-        ensureIdempotency(computed, req.hasIdempotency() ? req.getIdempotency().getKey() : null);
-    computed = validateOnce(computed);
-    stateRef.set(computed);
-    final StreamState next = computed;
-
-    var accountId = principal.get().getAccountId();
-    var tsNow = nowTs();
-
-    for (var raw : req.getFilesList()) {
-      var fileStats =
-          raw.toBuilder().setTableId(next.tableId()).setSnapshotId(next.snapshotId()).build();
-      for (var column : fileStats.getColumnsList()) {
-        validateStatsMetadata(column.hasMetadata() ? column.getMetadata() : null);
-      }
-      var fingerprint = canonicalFingerprint(fileStats);
-
-      if (next.idempotencyKey() == null) {
-        stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
-        upserted.incrementAndGet();
-        continue;
-      }
-
-      var itemKey =
-          itemIdempotencyKey(next.idempotencyKey(), "file", hashFilePath(raw.getFilePath()));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "PutFileColumnStats",
-                  itemKey,
-                  () -> fingerprint,
-                  () -> {
-                    stats.putFileColumnStats(next.tableId(), next.snapshotId(), fileStats);
-                    return new IdempotencyGuard.CreateResult<>(fileStats, next.tableId());
-                  },
-                  fs ->
-                      stats.metaForFileColumnStats(
-                          next.tableId(), next.snapshotId(), fs.getFilePath(), tsNow),
-                  idempotencyStore,
-                  tsNow,
-                  idempotencyTtlSeconds(),
-                  this::correlationId,
-                  FileColumnStats::parseFrom));
+                  TargetStatsRecord::parseFrom));
 
       upserted.incrementAndGet();
     }
@@ -606,11 +307,11 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     return baseKey + ":" + kind + ":" + String.valueOf(itemId);
   }
 
-  private static String hashFilePath(String filePath) {
-    if (filePath == null || filePath.isBlank()) {
+  private static String hashString(String value) {
+    if (value == null || value.isBlank()) {
       return "empty";
     }
-    return hashFingerprint(filePath.getBytes(StandardCharsets.UTF_8));
+    return hashFingerprint(value.getBytes(StandardCharsets.UTF_8));
   }
 
   private void validateStatsMetadata(StatsMetadata metadata) {
@@ -657,206 +358,44 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         Map.of("field", field, "value", Long.toString(value)));
   }
 
-  private static byte[] canonicalFingerprint(TableStats stats) {
-    var c = new Canonicalizer();
-    canonicalResourceId(c, "table_id", stats.getTableId());
-    c.scalar("snapshot_id", stats.getSnapshotId());
-    canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
-    c.scalar("row_count", stats.getRowCount());
-    c.scalar("data_file_count", stats.getDataFileCount());
-    c.scalar("total_size_bytes", stats.getTotalSizeBytes());
-    canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
-    canonicalStatsMetadata(c, "metadata", stats.hasMetadata() ? stats.getMetadata() : null);
-    c.map("properties", stats.getPropertiesMap());
-    return c.bytes();
-  }
-
-  private static byte[] canonicalFingerprint(ColumnStats stats) {
-    var c = new Canonicalizer();
-    canonicalResourceId(c, "table_id", stats.getTableId());
-    c.scalar("snapshot_id", stats.getSnapshotId());
-    c.scalar("column_id", stats.getColumnId());
-    c.scalar("column_name", stats.getColumnName());
-    c.scalar("logical_type", stats.getLogicalType());
-    canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
-    c.scalar("value_count", stats.getValueCount());
-    c.scalar("null_count", stats.getNullCount());
-    c.scalar("nan_count", stats.getNanCount());
-    canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
-    c.scalar("min", stats.getMin());
-    c.scalar("max", stats.getMax());
-    c.scalar("histogram_b64", bytesToB64(stats.getHistogram().toByteArray()));
-    c.scalar("tdigest_b64", bytesToB64(stats.getTdigest().toByteArray()));
-    canonicalStatsMetadata(c, "metadata", stats.hasMetadata() ? stats.getMetadata() : null);
-    c.map("properties", stats.getPropertiesMap());
-    return c.bytes();
-  }
-
-  private static byte[] canonicalFingerprint(FileColumnStats stats) {
-    var c = new Canonicalizer();
-    canonicalResourceId(c, "table_id", stats.getTableId());
-    c.scalar("snapshot_id", stats.getSnapshotId());
-    c.scalar("file_path", stats.getFilePath());
-    c.scalar("file_format", stats.getFileFormat());
-    c.scalar("row_count", stats.getRowCount());
-    c.scalar("size_bytes", stats.getSizeBytes());
-    c.scalar("file_content", stats.getFileContent().name());
-    c.scalar("partition_data_json", stats.getPartitionDataJson());
-    c.scalar("partition_spec_id", stats.getPartitionSpecId());
-    if (stats.hasSequenceNumber()) {
-      c.scalar("sequence_number", stats.getSequenceNumber());
+  private long resolveSnapshotId(ResourceId tableId, SnapshotRef ref) {
+    if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+      throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
     }
-
-    var eqIds = new ArrayList<Integer>(stats.getEqualityFieldIdsList());
-    eqIds.sort(Comparator.naturalOrder());
-    c.list("equality_field_ids", eqIds);
-
-    var cols = new ArrayList<>(stats.getColumnsList());
-    cols.sort(
-        Comparator.comparingLong(ColumnStats::getColumnId)
-            .thenComparing(ColumnStats::getColumnName));
-    for (var col : cols) {
-      c.group(
-          "column_" + col.getColumnId(),
-          g -> g.scalar("fp_b64", bytesToB64(canonicalFingerprint(col))));
-    }
-
-    return c.bytes();
+    return switch (ref.getWhichCase()) {
+      case SNAPSHOT_ID -> ref.getSnapshotId();
+      case SPECIAL -> {
+        if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
+          throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
+        }
+        yield snapshots
+            .getCurrentSnapshot(tableId)
+            .map(Snapshot::getSnapshotId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(correlationId(), SNAPSHOT, Map.of("id", tableId.getId())));
+      }
+      case AS_OF ->
+          snapshots
+              .getAsOf(tableId, ref.getAsOf())
+              .map(Snapshot::getSnapshotId)
+              .orElseThrow(
+                  () ->
+                      GrpcErrors.notFound(
+                          correlationId(), SNAPSHOT, Map.of("id", tableId.getId())));
+      default -> throw GrpcErrors.invalidArgument(correlationId(), SNAPSHOT_MISSING, Map.of());
+    };
   }
 
-  private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {
-    c.group(
-        key,
-        g -> {
-          if (id == null) {
-            return;
-          }
-          g.scalar("account_id", id.getAccountId());
-          g.scalar("id", id.getId());
-          g.scalar("kind", id.getKind().name());
-        });
-  }
-
-  private static void canonicalUpstream(Canonicalizer c, String key, UpstreamStamp up) {
-    if (up == null) {
-      return;
-    }
-    c.group(
-        key,
-        g -> {
-          g.scalar("system", up.getSystem().name());
-          g.scalar("table_native_id", up.getTableNativeId());
-          g.scalar("commit_ref", up.getCommitRef());
-          g.scalar("fetched_at_seconds", up.hasFetchedAt() ? up.getFetchedAt().getSeconds() : 0L);
-          g.scalar("fetched_at_nanos", up.hasFetchedAt() ? up.getFetchedAt().getNanos() : 0);
-          g.map("properties", up.getPropertiesMap());
-        });
-  }
-
-  private static void canonicalNdv(Canonicalizer c, String key, Ndv ndv) {
-    if (ndv == null) {
-      return;
-    }
-    c.group(
-        key,
-        g -> {
-          g.scalar("mode", ndv.getModeCase().name());
-          if (ndv.hasExact()) {
-            g.scalar("exact", ndv.getExact());
-          }
-          if (ndv.hasApprox()) {
-            canonicalNdvApprox(g, "approx", ndv.getApprox());
-          }
-          var sketches = new ArrayList<>(ndv.getSketchesList());
-          sketches.sort(
-              Comparator.comparing(NdvSketch::getType)
-                  .thenComparing(NdvSketch::getEncoding)
-                  .thenComparing(NdvSketch::getCompression)
-                  .thenComparingInt(NdvSketch::getVersion)
-                  .thenComparing(s -> bytesToB64(s.getData().toByteArray())));
-          for (var sketch : sketches) {
-            canonicalNdvSketch(g, "sketch_" + sketch.getType(), sketch);
-          }
-        });
-  }
-
-  private static void canonicalNdvApprox(Canonicalizer c, String key, NdvApprox approx) {
-    c.group(
-        key,
-        g -> {
-          g.scalar("estimate", approx.getEstimate());
-          g.scalar("relative_standard_error", approx.getRelativeStandardError());
-          g.scalar("confidence_lower", approx.getConfidenceLower());
-          g.scalar("confidence_upper", approx.getConfidenceUpper());
-          g.scalar("confidence_level", approx.getConfidenceLevel());
-          g.scalar("rows_seen", approx.getRowsSeen());
-          g.scalar("rows_total", approx.getRowsTotal());
-          g.scalar("method", approx.getMethod());
-          g.map("properties", approx.getPropertiesMap());
-        });
-  }
-
-  private static void canonicalNdvSketch(Canonicalizer c, String key, NdvSketch sketch) {
-    c.group(
-        key,
-        g -> {
-          g.scalar("type", sketch.getType());
-          g.scalar("encoding", sketch.getEncoding());
-          g.scalar("compression", sketch.getCompression());
-          g.scalar("version", sketch.getVersion());
-          g.scalar("data_b64", bytesToB64(sketch.getData().toByteArray()));
-          g.map("properties", sketch.getPropertiesMap());
-        });
-  }
-
-  private static void canonicalStatsMetadata(Canonicalizer c, String key, StatsMetadata metadata) {
-    if (metadata == null) {
-      return;
-    }
-    c.group(
-        key,
-        g -> {
-          g.scalar("producer", metadata.getProducer().name());
-          g.scalar("completeness", metadata.getCompleteness().name());
-          g.scalar("capture_mode", metadata.getCaptureMode().name());
-          if (metadata.hasConfidenceLevel()) {
-            g.scalar("confidence_level", metadata.getConfidenceLevel());
-          }
-          canonicalStatsCoverage(
-              g, "coverage", metadata.hasCoverage() ? metadata.getCoverage() : null);
-          // captured_at and refreshed_at are operational timestamps and intentionally excluded
-          // from content identity/fingerprinting used by idempotency.
-          g.map("properties", metadata.getPropertiesMap());
-        });
-  }
-
-  private static void canonicalStatsCoverage(Canonicalizer c, String key, StatsCoverage coverage) {
-    if (coverage == null) {
-      return;
-    }
-    c.group(
-        key,
-        g -> {
-          if (coverage.hasRowsScanned()) {
-            g.scalar("rows_scanned", coverage.getRowsScanned());
-          }
-          if (coverage.hasFilesScanned()) {
-            g.scalar("files_scanned", coverage.getFilesScanned());
-          }
-          if (coverage.hasRowGroupsSampled()) {
-            g.scalar("row_groups_sampled", coverage.getRowGroupsSampled());
-          }
-          if (coverage.hasBytesScanned()) {
-            g.scalar("bytes_scanned", coverage.getBytesScanned());
-          }
-          g.map("properties", coverage.getPropertiesMap());
-        });
-  }
-
-  private static String bytesToB64(byte[] data) {
-    if (data == null || data.length == 0) {
-      return "";
-    }
-    return Base64.getEncoder().encodeToString(data);
+  private static StatsTargetType toTargetType(StatsTargetKind kind) {
+    return switch (kind) {
+      case STK_TABLE -> StatsTargetType.TABLE;
+      case STK_COLUMN -> StatsTargetType.COLUMN;
+      case STK_EXPRESSION -> StatsTargetType.EXPRESSION;
+      case STK_FILE -> StatsTargetType.FILE;
+      case STK_UNSPECIFIED ->
+          throw new IllegalArgumentException("target kind must not be STK_UNSPECIFIED");
+      case UNRECOGNIZED -> throw new IllegalArgumentException("target kind is unrecognized");
+    };
   }
 }

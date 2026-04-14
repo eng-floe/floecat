@@ -57,6 +57,9 @@ class ConstraintsIT {
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistic;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub statisticMutiny;
+
+  @GrpcClient("floecat")
   TableConstraintsServiceGrpc.TableConstraintsServiceBlockingStub constraintsService;
 
   String tablePrefix = this.getClass().getSimpleName() + "_";
@@ -87,21 +90,20 @@ class ConstraintsIT {
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
 
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 303L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var constraints =
         SnapshotConstraints.newBuilder()
-            .setTableId(tblId.toBuilder().setId("wrong-id-should-be-overwritten").build())
-            .setSnapshotId(snapshotId + 1)
+            .setTableId(tableId.toBuilder().setId("wrong-id-should-be-overwritten").build())
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_fact_constraints")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
                         ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
+                            .setColumnId(1L)
                             .setColumnName("id")
                             .setOrdinal(1)
                             .build())
@@ -110,16 +112,17 @@ class ConstraintsIT {
 
     constraintsService.putTableConstraints(
         PutTableConstraintsRequest.newBuilder()
-            .setTableId(tblId)
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraints(constraints)
             .build());
 
-    var stored = constraintRepository.getSnapshotConstraints(tblId, snapshotId).orElseThrow();
-    assertEquals(tblId, stored.getTableId());
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
+    assertEquals(tableId, stored.getTableId());
     assertEquals(snapshotId, stored.getSnapshotId());
     assertEquals(1, stored.getConstraintsCount());
     assertEquals("pk_fact_constraints", stored.getConstraints(0).getName());
+    assertEquals(1L, stored.getConstraints(0).getColumns(0).getColumnId());
   }
 
   @Test
@@ -139,9 +142,9 @@ class ConstraintsIT {
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
 
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 302L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var ex =
         assertThrows(
@@ -149,13 +152,13 @@ class ConstraintsIT {
             () ->
                 constraintsService.putTableConstraints(
                     PutTableConstraintsRequest.newBuilder()
-                        .setTableId(tblId)
+                        .setTableId(tableId)
                         .setSnapshotId(snapshotId)
                         .build()));
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "constraints");
-    assertTrue(constraintRepository.getSnapshotConstraints(tblId, snapshotId).isEmpty());
+    assertTrue(constraintRepository.getSnapshotConstraints(tableId, snapshotId).isEmpty());
   }
 
   @Test
@@ -175,19 +178,19 @@ class ConstraintsIT {
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
 
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 3021L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     constraintsService.putTableConstraints(
         PutTableConstraintsRequest.newBuilder()
-            .setTableId(tblId)
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraints(SnapshotConstraints.getDefaultInstance())
             .build());
 
-    var stored = constraintRepository.getSnapshotConstraints(tblId, snapshotId).orElseThrow();
-    assertEquals(tblId, stored.getTableId());
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
+    assertEquals(tableId, stored.getTableId());
     assertEquals(snapshotId, stored.getSnapshotId());
     assertEquals(0, stored.getConstraintsCount());
   }
@@ -255,23 +258,17 @@ class ConstraintsIT {
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
 
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 9_999L;
 
     var constraints =
         SnapshotConstraints.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_unknown_snapshot")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
@@ -281,13 +278,13 @@ class ConstraintsIT {
             () ->
                 constraintsService.putTableConstraints(
                     PutTableConstraintsRequest.newBuilder()
-                        .setTableId(tblId)
+                        .setTableId(tableId)
                         .setSnapshotId(snapshotId)
                         .setConstraints(constraints)
                         .build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
-    assertTrue(constraintRepository.getSnapshotConstraints(tblId, snapshotId).isEmpty());
+    assertTrue(constraintRepository.getSnapshotConstraints(tableId, snapshotId).isEmpty());
   }
 
   @Test
@@ -306,32 +303,26 @@ class ConstraintsIT {
             "s3://bucket/fact_constraints_idem",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 404L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var idem = IdempotencyKey.newBuilder().setKey("stats-constraints-idem").build();
 
     var constraintsA =
         SnapshotConstraints.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_a")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
     constraintsService.putTableConstraints(
         PutTableConstraintsRequest.newBuilder()
-            .setTableId(tblId)
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraints(constraintsA)
             .setIdempotency(idem)
@@ -345,11 +336,7 @@ class ConstraintsIT {
                     .setName("pk_b")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
@@ -359,7 +346,7 @@ class ConstraintsIT {
             () ->
                 constraintsService.putTableConstraints(
                     PutTableConstraintsRequest.newBuilder()
-                        .setTableId(tblId)
+                        .setTableId(tableId)
                         .setSnapshotId(snapshotId)
                         .setConstraints(constraintsB)
                         .setIdempotency(idem)
@@ -370,7 +357,7 @@ class ConstraintsIT {
 
   @Test
   void putTableConstraintsRejectsUnknownTable() throws Exception {
-    var unknownTableId =
+    var tableId =
         ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
             .setAccountId("t-0001")
             .setId("00000000-0000-0000-0000-000000000123")
@@ -380,18 +367,12 @@ class ConstraintsIT {
 
     var constraints =
         SnapshotConstraints.newBuilder()
-            .setTableId(unknownTableId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_unknown_table")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
@@ -401,13 +382,13 @@ class ConstraintsIT {
             () ->
                 constraintsService.putTableConstraints(
                     PutTableConstraintsRequest.newBuilder()
-                        .setTableId(unknownTableId)
+                        .setTableId(tableId)
                         .setSnapshotId(snapshotId)
                         .setConstraints(constraints)
                         .build()));
 
     TestSupport.assertGrpcAndMc(ex, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
-    assertTrue(constraintRepository.getSnapshotConstraints(unknownTableId, snapshotId).isEmpty());
+    assertTrue(constraintRepository.getSnapshotConstraints(tableId, snapshotId).isEmpty());
   }
 
   @Test
@@ -426,24 +407,18 @@ class ConstraintsIT {
             "s3://bucket/fact_constraints_replay",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 405L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var constraints =
         SnapshotConstraints.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_replay")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
@@ -451,7 +426,7 @@ class ConstraintsIT {
 
     var request =
         PutTableConstraintsRequest.newBuilder()
-            .setTableId(tblId)
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraints(constraints)
             .setIdempotency(idem)
@@ -462,7 +437,7 @@ class ConstraintsIT {
     assertNotNull(first.getMeta().getPointerKey());
     assertNotNull(second.getMeta().getPointerKey());
 
-    var stored = constraintRepository.getSnapshotConstraints(tblId, snapshotId).orElseThrow();
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
     assertEquals(1, stored.getConstraintsCount());
     assertEquals("pk_replay", stored.getConstraints(0).getName());
   }
@@ -483,62 +458,91 @@ class ConstraintsIT {
             "s3://bucket/fact_constraints_absent",
             "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
             "none");
-    var tblId = tbl.getResourceId();
+    var tableId = tbl.getResourceId();
     long snapshotId = 406L;
-    TestSupport.createSnapshot(snapshot, tblId, snapshotId, System.currentTimeMillis());
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var withConstraintsStats =
-        TableStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
-            .setRowCount(13)
-            .setTotalSizeBytes(130)
-            .build();
+        TableValueStats.newBuilder().setRowCount(13).setTotalSizeBytes(130).build();
 
     var constraints =
         SnapshotConstraints.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_absent")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
 
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapshotId)
-            .setStats(withConstraintsStats)
-            .build());
+    statisticMutiny
+        .putTargetStats(
+            io.smallrye.mutiny.Multi.createFrom()
+                .item(
+                    PutTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(snapshotId)
+                        .addRecords(
+                            TargetStatsRecord.newBuilder()
+                                .setTableId(tableId)
+                                .setSnapshotId(snapshotId)
+                                .setTarget(
+                                    StatsTarget.newBuilder()
+                                        .setTable(TableStatsTarget.newBuilder().build())
+                                        .build())
+                                .setTable(
+                                    TableValueStats.newBuilder()
+                                        .setRowCount(withConstraintsStats.getRowCount())
+                                        .setDataFileCount(withConstraintsStats.getDataFileCount())
+                                        .setTotalSizeBytes(withConstraintsStats.getTotalSizeBytes())
+                                        .build())
+                                .build())
+                        .build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
     constraintsService.putTableConstraints(
         PutTableConstraintsRequest.newBuilder()
-            .setTableId(tblId)
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
             .setConstraints(constraints)
             .build());
 
     // Table stats are create-only for a (table_id, snapshot_id) pair.
-    // Replaying the same idempotent PutTableStats request validates that the absence of constraints
+    // Replaying the same idempotent PutTargetStats request validates that the absence of
+    // constraints
     // in stats writes does not remove previously written constraints.
     var replayRequest =
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tblId)
+        PutTargetStatsRequest.newBuilder()
+            .setTableId(tableId)
             .setSnapshotId(snapshotId)
-            .setStats(withConstraintsStats)
+            .addRecords(
+                TargetStatsRecord.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(snapshotId)
+                    .setTarget(
+                        StatsTarget.newBuilder()
+                            .setTable(TableStatsTarget.newBuilder().build())
+                            .build())
+                    .setTable(
+                        TableValueStats.newBuilder()
+                            .setRowCount(withConstraintsStats.getRowCount())
+                            .setDataFileCount(withConstraintsStats.getDataFileCount())
+                            .setTotalSizeBytes(withConstraintsStats.getTotalSizeBytes())
+                            .build())
+                    .build())
             .setIdempotency(IdempotencyKey.newBuilder().setKey("stats-only-replay").build())
             .build();
-    statistic.putTableStats(replayRequest);
-    statistic.putTableStats(replayRequest);
+    statisticMutiny
+        .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(replayRequest))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
+    statisticMutiny
+        .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(replayRequest))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
 
-    var stored = constraintRepository.getSnapshotConstraints(tblId, snapshotId).orElseThrow();
+    var stored = constraintRepository.getSnapshotConstraints(tableId, snapshotId).orElseThrow();
     assertEquals(1, stored.getConstraintsCount());
     assertEquals("pk_absent", stored.getConstraints(0).getName());
   }
@@ -565,18 +569,12 @@ class ConstraintsIT {
 
     var bundle =
         SnapshotConstraints.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
             .addConstraints(
                 ConstraintDefinition.newBuilder()
                     .setName("pk_get")
                     .setType(ConstraintType.CT_PRIMARY_KEY)
                     .addColumns(
-                        ConstraintColumnRef.newBuilder()
-                            .setColumnId(1)
-                            .setColumnName("id")
-                            .setOrdinal(1)
-                            .build())
+                        ConstraintColumnRef.newBuilder().setColumnName("id").setOrdinal(1).build())
                     .build())
             .build();
     constraintsService.putTableConstraints(
@@ -627,15 +625,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotOne)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotOne)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_list_1")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -648,15 +643,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotTwo)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotTwo)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_list_2")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -713,15 +705,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_delete")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -765,15 +754,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_existing")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -792,7 +778,6 @@ class ConstraintsIT {
                         .setType(ConstraintType.CT_UNIQUE)
                         .addColumns(
                             ConstraintColumnRef.newBuilder()
-                                .setColumnId(1)
                                 .setColumnName("id")
                                 .setOrdinal(1)
                                 .build())
@@ -843,7 +828,6 @@ class ConstraintsIT {
                         .setType(ConstraintType.CT_UNIQUE)
                         .addColumns(
                             ConstraintColumnRef.newBuilder()
-                                .setColumnId(1)
                                 .setColumnName("id")
                                 .setOrdinal(1)
                                 .build())
@@ -888,15 +872,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_existing")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -917,7 +898,7 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_PRIMARY_KEY)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(2)
+                                        .setColumnId(2L)
                                         .setColumnName("id2")
                                         .setOrdinal(1)
                                         .build())
@@ -928,7 +909,7 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_UNIQUE)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(3)
+                                        .setColumnId(3L)
                                         .setColumnName("email")
                                         .setOrdinal(1)
                                         .build())
@@ -985,7 +966,6 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_PRIMARY_KEY)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(1)
                                         .setColumnName("id")
                                         .setOrdinal(1)
                                         .build())
@@ -1078,7 +1058,6 @@ class ConstraintsIT {
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1141,15 +1120,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_existing")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1173,7 +1149,6 @@ class ConstraintsIT {
                                         .setType(ConstraintType.CT_PRIMARY_KEY)
                                         .addColumns(
                                             ConstraintColumnRef.newBuilder()
-                                                .setColumnId(2)
                                                 .setColumnName("id2")
                                                 .setOrdinal(1)
                                                 .build())
@@ -1221,7 +1196,6 @@ class ConstraintsIT {
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1283,7 +1257,6 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_PRIMARY_KEY)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(1)
                                         .setColumnName("id")
                                         .setOrdinal(1)
                                         .build())
@@ -1472,7 +1445,6 @@ class ConstraintsIT {
                         .setType(ConstraintType.CT_PRIMARY_KEY)
                         .addColumns(
                             ConstraintColumnRef.newBuilder()
-                                .setColumnId(1)
                                 .setColumnName("id")
                                 .setOrdinal(1)
                                 .build())
@@ -1513,15 +1485,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_keep")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1532,7 +1501,6 @@ class ConstraintsIT {
                             .setType(ConstraintType.CT_UNIQUE)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1578,15 +1546,12 @@ class ConstraintsIT {
                 .setSnapshotId(snapshotId)
                 .setConstraints(
                     SnapshotConstraints.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
                         .addConstraints(
                             ConstraintDefinition.newBuilder()
                                 .setName("pk_initial")
                                 .setType(ConstraintType.CT_PRIMARY_KEY)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(1)
                                         .setColumnName("id")
                                         .setOrdinal(1)
                                         .build())
@@ -1614,7 +1579,6 @@ class ConstraintsIT {
                                 .setType(ConstraintType.CT_UNIQUE)
                                 .addColumns(
                                     ConstraintColumnRef.newBuilder()
-                                        .setColumnId(1)
                                         .setColumnName("id")
                                         .setOrdinal(1)
                                         .build())
@@ -1654,15 +1618,12 @@ class ConstraintsIT {
             .setSnapshotId(snapshotId)
             .setConstraints(
                 SnapshotConstraints.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
                     .addConstraints(
                         ConstraintDefinition.newBuilder()
                             .setName("pk_only")
                             .setType(ConstraintType.CT_PRIMARY_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("id")
                                     .setOrdinal(1)
                                     .build())
@@ -1830,7 +1791,6 @@ class ConstraintsIT {
                             .setType(ConstraintType.CT_NOT_NULL)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("email")
                                     .setOrdinal(1)
                                     .build())
@@ -1866,7 +1826,6 @@ class ConstraintsIT {
                             .setCheckExpression("age > 0")
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("age")
                                     .setOrdinal(1)
                                     .build())
@@ -1902,25 +1861,21 @@ class ConstraintsIT {
                             .setType(ConstraintType.CT_FOREIGN_KEY)
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(1)
                                     .setColumnName("a")
                                     .setOrdinal(1)
                                     .build())
                             .addColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(2)
                                     .setColumnName("b")
                                     .setOrdinal(2)
                                     .build())
                             .addReferencedColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(10)
                                     .setColumnName("ref_a")
                                     .setOrdinal(1)
                                     .build())
                             .addReferencedColumns(
                                 ConstraintColumnRef.newBuilder()
-                                    .setColumnId(11)
                                     .setColumnName("ref_b")
                                     .setOrdinal(2)
                                     .build())
@@ -1972,19 +1927,16 @@ class ConstraintsIT {
                                         .setType(ConstraintType.CT_FOREIGN_KEY)
                                         .addColumns(
                                             ConstraintColumnRef.newBuilder()
-                                                .setColumnId(1)
                                                 .setColumnName("a")
                                                 .setOrdinal(1)
                                                 .build())
                                         .addColumns(
                                             ConstraintColumnRef.newBuilder()
-                                                .setColumnId(2)
                                                 .setColumnName("b")
                                                 .setOrdinal(2)
                                                 .build())
                                         .addReferencedColumns(
                                             ConstraintColumnRef.newBuilder()
-                                                .setColumnId(10)
                                                 .setColumnName("ref_a")
                                                 .setOrdinal(1)
                                                 .build())
@@ -2021,7 +1973,6 @@ class ConstraintsIT {
                                         .setType(ConstraintType.CT_FOREIGN_KEY)
                                         .addColumns(
                                             ConstraintColumnRef.newBuilder()
-                                                .setColumnId(1)
                                                 .setColumnName("a")
                                                 .setOrdinal(1)
                                                 .build())

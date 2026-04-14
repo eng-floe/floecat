@@ -26,16 +26,15 @@ import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
-class StatsEngineCapabilitiesTest {
+class StatsCapabilitiesTest {
 
   @Test
   void normalizesConnectorTypesOnConstruction() {
-    StatsEngineCapabilities caps =
-        StatsEngineCapabilities.builder()
+    StatsCapabilities caps =
+        StatsCapabilities.builder()
             .connectors(Set.of(" Iceberg ", "DELTA", ""))
             .targetTypes(Set.of(StatsTargetType.TABLE))
-            .statisticKindsByTarget(
-                Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
+            .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
             .executionModes(Set.of(StatsExecutionMode.SYNC))
             .samplingSupport(Set.of(StatsSamplingSupport.NONE))
             .snapshotAware(true)
@@ -46,8 +45,8 @@ class StatsEngineCapabilitiesTest {
 
   @Test
   void normalizedConnectorsMatchNormalizedRequestConnectorType() {
-    StatsEngineCapabilities caps =
-        StatsEngineCapabilities.builder()
+    StatsCapabilities caps =
+        StatsCapabilities.builder()
             .connectors(Set.of("ICEBERG"))
             .targetTypes(Set.of(StatsTargetType.TABLE))
             .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of()))
@@ -65,6 +64,7 @@ class StatsEngineCapabilitiesTest {
             Set.of(),
             StatsExecutionMode.SYNC,
             " iceberg ",
+            "",
             false);
 
     assertThat(caps.supports(request)).isTrue();
@@ -72,13 +72,13 @@ class StatsEngineCapabilitiesTest {
 
   @Test
   void supportsUsesPerTargetStatisticKinds() {
-    StatsEngineCapabilities caps =
-        StatsEngineCapabilities.builder()
+    StatsCapabilities caps =
+        StatsCapabilities.builder()
             .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN))
             .statisticKindsByTarget(
                 Map.of(
-                    StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT),
-                    StatsTargetType.COLUMN, Set.of(StatsStatisticKind.NDV)))
+                    StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT),
+                    StatsTargetType.COLUMN, Set.of(StatsKind.NDV)))
             .executionModes(Set.of(StatsExecutionMode.SYNC))
             .samplingSupport(Set.of(StatsSamplingSupport.NONE))
             .snapshotAware(true)
@@ -90,8 +90,9 @@ class StatsEngineCapabilitiesTest {
             1L,
             StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build(),
             Set.of(),
-            Set.of(StatsStatisticKind.NDV),
+            Set.of(StatsKind.NDV),
             StatsExecutionMode.SYNC,
+            "",
             "",
             false);
     assertThat(caps.supports(tableNdvRequest)).isFalse();
@@ -101,10 +102,10 @@ class StatsEngineCapabilitiesTest {
   void requiresKindsMappingForEveryDeclaredTargetType() {
     assertThatThrownBy(
             () ->
-                StatsEngineCapabilities.builder()
+                StatsCapabilities.builder()
                     .targetTypes(Set.of(StatsTargetType.TABLE, StatsTargetType.COLUMN))
                     .statisticKindsByTarget(
-                        Map.of(StatsTargetType.TABLE, Set.of(StatsStatisticKind.ROW_COUNT)))
+                        Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
                     .snapshotAware(true)

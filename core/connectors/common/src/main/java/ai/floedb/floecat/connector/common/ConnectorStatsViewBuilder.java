@@ -20,8 +20,7 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableStats;
-import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.connector.common.ndv.NdvSketch;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.types.LogicalComparators;
@@ -38,12 +37,8 @@ public final class ConnectorStatsViewBuilder {
 
   private ConnectorStatsViewBuilder() {}
 
-  public static TableStats toTableStats(
-      ResourceId tableId,
-      long snapshotId,
-      long upstreamCreatedAtMs,
-      TableFormat format,
-      StatsEngine.Result<?> result) {
+  public static TableValueStats toTableValueStats(
+      long snapshotId, long upstreamCreatedAtMs, TableFormat format, StatsEngine.Result<?> result) {
 
     var upstream =
         LogicalTypeProtoAdapter.upstreamStamp(
@@ -53,9 +48,7 @@ public final class ConnectorStatsViewBuilder {
             Timestamps.fromMillis(upstreamCreatedAtMs),
             Map.of());
 
-    return TableStats.newBuilder()
-        .setTableId(tableId)
-        .setSnapshotId(snapshotId)
+    return TableValueStats.newBuilder()
         .setUpstream(upstream)
         .setRowCount(result.totalRowCount())
         .setDataFileCount(result.fileCount())

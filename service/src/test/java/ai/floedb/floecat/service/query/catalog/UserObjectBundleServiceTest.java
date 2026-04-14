@@ -18,7 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
@@ -53,6 +53,10 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionResult;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.testsupport.FakeTableRepository;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -159,7 +163,11 @@ class UserObjectBundleServiceTest {
     overlay.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    statsFactory = new StatsProviderFactory(statsRepository, queryStore);
+    statsFactory =
+        new StatsProviderFactory(
+            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(statsRepository))),
+            queryStore,
+            new FakeTableRepository());
     service =
         new UserObjectBundleService(
             overlay,
@@ -217,13 +225,9 @@ class UserObjectBundleServiceTest {
 
   @Test
   void relationIncludesStatsWhenPinned() {
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(TABLE_A)
-            .setSnapshotId(TABLE_A_SNAPSHOT_ID)
-            .setRowCount(22)
-            .build();
-    statsRepository.putTableStats(TABLE_A, TABLE_A_SNAPSHOT_ID, stats);
+    TableValueStats stats = TableValueStats.newBuilder().setRowCount(22).build();
+    statsRepository.putTargetStats(
+        TargetStatsRecords.tableRecord(TABLE_A, TABLE_A_SNAPSHOT_ID, stats, null));
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -260,7 +264,10 @@ class UserObjectBundleServiceTest {
     StatsRepository localStatsRepository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     StatsProviderFactory localStatsFactory =
-        new StatsProviderFactory(localStatsRepository, localStore);
+        new StatsProviderFactory(
+            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(localStatsRepository))),
+            localStore,
+            new FakeTableRepository());
     UserObjectBundleService localService =
         new UserObjectBundleService(
             overlay,
@@ -276,14 +283,10 @@ class UserObjectBundleServiceTest {
             "test");
 
     long expectedSnapshotId = 99L;
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(TABLE_A)
-            .setSnapshotId(expectedSnapshotId)
-            .setRowCount(42)
-            .setTotalSizeBytes(99L)
-            .build();
-    localStatsRepository.putTableStats(TABLE_A, expectedSnapshotId, stats);
+    TableValueStats stats =
+        TableValueStats.newBuilder().setRowCount(42).setTotalSizeBytes(99L).build();
+    localStatsRepository.putTargetStats(
+        TargetStatsRecords.tableRecord(TABLE_A, expectedSnapshotId, stats, null));
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -435,14 +438,10 @@ class UserObjectBundleServiceTest {
   @Test
   void relationIncludesTotalSizeWhenProvided() {
     long totalSize = 5_000L;
-    TableStats stats =
-        TableStats.newBuilder()
-            .setTableId(TABLE_A)
-            .setSnapshotId(TABLE_A_SNAPSHOT_ID)
-            .setRowCount(22)
-            .setTotalSizeBytes(totalSize)
-            .build();
-    statsRepository.putTableStats(TABLE_A, TABLE_A_SNAPSHOT_ID, stats);
+    TableValueStats stats =
+        TableValueStats.newBuilder().setRowCount(22).setTotalSizeBytes(totalSize).build();
+    statsRepository.putTargetStats(
+        TargetStatsRecords.tableRecord(TABLE_A, TABLE_A_SNAPSHOT_ID, stats, null));
 
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
@@ -467,9 +466,8 @@ class UserObjectBundleServiceTest {
         NameRef.newBuilder().setCatalog("sys").setName("system_table").build(),
         GraphNodeOrigin.SYSTEM);
 
-    TableStats stats =
-        TableStats.newBuilder().setTableId(SYSTEM_TABLE).setSnapshotId(999L).setRowCount(5).build();
-    statsRepository.putTableStats(SYSTEM_TABLE, 999L, stats);
+    TableValueStats stats = TableValueStats.newBuilder().setRowCount(5).build();
+    statsRepository.putTargetStats(TargetStatsRecords.tableRecord(SYSTEM_TABLE, 999L, stats, null));
 
     TableReferenceCandidate systemCandidate =
         TableReferenceCandidate.newBuilder()

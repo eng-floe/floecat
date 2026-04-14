@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.AbstractRestResourceTest;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.RestResourceTestProfile;
@@ -105,8 +106,18 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void commitSupportsSetLocationUpdateViaAtomicTransaction() {
-    ResourceId nsId = ResourceId.newBuilder().setId("cat:db").build();
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId nsId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("cat:db")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("cat:db:orders")
+            .build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
@@ -119,7 +130,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
     Table current =
         Table.newBuilder()
             .setResourceId(tableId)
-            .setCatalogId(ResourceId.newBuilder().setId("cat"))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(TEST_ACCOUNT_ID)
+                    .setKind(ResourceKind.RK_CATALOG)
+                    .setId("cat")
+                    .build())
             .setNamespaceId(nsId)
             .setUpstream(upstream)
             .putProperties("location", "s3://bucket/path/")
@@ -152,7 +168,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void commitAddSnapshotDoesNotDirectlyMutateSnapshotsOutsideTransaction() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("cat:db:orders")
+            .build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
     Table existing =
@@ -186,7 +207,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void commitRequirementTableUuidMismatchReturns409() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("cat:db:orders")
+            .build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 
@@ -214,7 +240,12 @@ class TableCommitResourceTest extends AbstractRestResourceTest {
 
   @Test
   void commitRequirementAssertRefSnapshotIdMismatchReturns409() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(TEST_ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("cat:db:orders")
+            .build();
     when(directoryStub.resolveTable(any()))
         .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
 

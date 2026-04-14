@@ -189,7 +189,7 @@ class TableRepositoryTest {
     var snap =
         Snapshot.newBuilder()
             .setTableId(tableId)
-            .setSnapshotId(42)
+            .setSnapshotId(42L)
             .setIngestedAt(Timestamps.fromMillis(clock.millis()))
             .build();
     snapshotRepo.create(snap);

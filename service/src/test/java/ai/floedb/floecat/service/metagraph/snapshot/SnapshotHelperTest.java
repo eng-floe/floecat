@@ -93,6 +93,7 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     Snapshot snapshot =
         Snapshot.newBuilder()
+            .setTableId(tableId)
             .setSnapshotId(99L)
             .setUpstreamCreatedAt(ts("2024-03-01T00:00:00Z"))
             .build();
@@ -108,6 +109,7 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     Snapshot snapshot =
         Snapshot.newBuilder()
+            .setTableId(tableId)
             .setSnapshotId(41L)
             .setSchemaJson("{\"fields\":[]}")
             .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))

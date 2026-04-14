@@ -19,17 +19,17 @@ package ai.floedb.floecat.reconciler.impl;
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
-import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
@@ -79,7 +79,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class ReconcilerService {
   private static final Logger LOG = Logger.getLogger(ReconcilerService.class);
-  private static final int SCHEMA_CACHE_MAX_ENTRIES = 64;
   private static final BooleanSupplier NO_CANCEL = () -> false;
   private static final ProgressListener NO_PROGRESS = (s, c, e, sp, stp, m) -> {};
 
@@ -345,7 +344,9 @@ public class ReconcilerService {
                   fullRescan,
                   includeStats,
                   knownSnapshotIds,
-                  snapshotId -> backend.statsAlreadyCaptured(ctx, destTableId, snapshotId));
+                  snapshotId ->
+                      isStatsCaptureCompleteForScope(
+                          ctx, destTableId, snapshotId, includeSelectors));
           var upstreamBundles =
               connector.enumerateSnapshotsWithStats(
                   sourceNsFq,
@@ -358,18 +359,12 @@ public class ReconcilerService {
                           includeStats, enumerationKnownSnapshotIds));
           var bundles =
               filterBundlesForMode(
-                  upstreamBundles,
-                  fullRescan,
-                  includeCoreMetadata,
-                  includeStats,
-                  knownSnapshotIds,
-                  progressOut);
+                  upstreamBundles, fullRescan, includeStats, knownSnapshotIds, progressOut);
           IngestCounts ingestCounts =
               ingestAllSnapshotsAndStatsFiltered(
                   ctx,
                   destTableId,
                   connector,
-                  effective,
                   bundles,
                   includeSelectors,
                   includeCoreMetadata,
@@ -733,10 +728,9 @@ public class ReconcilerService {
             .build());
   }
 
-  private List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
+  static List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean fullRescan,
-      boolean includeCoreMetadata,
       boolean includeStats,
       Set<Long> existingSnapshotIds,
       ProgressListener progress) {
@@ -746,9 +740,6 @@ public class ReconcilerService {
 
     List<FloecatConnector.SnapshotBundle> scoped = bundles;
     if (includeStats) {
-      return scoped;
-    }
-    if (!includeCoreMetadata) {
       return scoped;
     }
     if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
@@ -780,11 +771,11 @@ public class ReconcilerService {
     return filtered;
   }
 
-  private static Set<Long> knownSnapshotIdsForEnumeration(
+  static Set<Long> knownSnapshotIdsForEnumeration(
       boolean fullRescan,
       boolean includeStats,
       Set<Long> knownSnapshotIds,
-      LongPredicate statsAlreadyCaptured) {
+      Predicate<Long> statsAlreadyCaptured) {
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return Set.of();
     }
@@ -809,7 +800,7 @@ public class ReconcilerService {
     return Set.copyOf(fullyCaptured);
   }
 
-  private static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
+  static boolean tableChanged(List<FloecatConnector.SnapshotBundle> bundles) {
     return bundles != null && !bundles.isEmpty();
   }
 
@@ -849,7 +840,6 @@ public class ReconcilerService {
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
-      FloecatConnector.TableDescriptor tableDesc,
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<String> includeSelectors,
       boolean includeCoreMetadata,
@@ -868,15 +858,6 @@ public class ReconcilerService {
     long snapshotsProcessed = 0L;
     long statsProcessed = 0L;
     var seen = new HashSet<Long>();
-    var schemaCache =
-        new LinkedHashMap<String, SchemaDescriptor>(16, 0.75f, true) {
-          private static final long serialVersionUID = 1L;
-
-          @Override
-          protected boolean removeEldestEntry(Map.Entry<String, SchemaDescriptor> eldest) {
-            return size() > SCHEMA_CACHE_MAX_ENTRIES;
-          }
-        };
 
     for (var snapshotBundle : bundles) {
       ensureNotCancelled(cancelRequested);
@@ -905,80 +886,40 @@ public class ReconcilerService {
         continue;
       }
 
-      boolean statsCaptured = !fullRescan && backend.statsAlreadyCaptured(ctx, tableId, snapshotId);
+      boolean statsCaptured =
+          !fullRescan && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors);
       if (statsCaptured) {
         maybeIngestSnapshotConstraints(
             ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
         continue;
       }
 
-      var tsIn = snapshotBundle.tableStats();
-      if (tsIn != null) {
-        var tStats = tsIn.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
-        backend.putTableStats(ctx, tableId, tStats);
-        statsProcessed++;
-      }
+      List<TargetStatsRecord> outRecords = new ArrayList<>();
 
-      var colsIn = snapshotBundle.columnStats();
-      var fileStatsIn = snapshotBundle.fileStats();
+      var statsIn = snapshotBundle.targetStats();
+      if (statsIn != null && !statsIn.isEmpty()) {
+        for (TargetStatsRecord raw : statsIn) {
+          if (raw == null || !raw.hasTarget()) {
+            continue;
+          }
+          TargetStatsRecord normalized =
+              raw.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
 
-      SchemaDescriptor schema = null;
-      if ((colsIn != null && !colsIn.isEmpty())
-          || (fileStatsIn != null && !fileStatsIn.isEmpty())) {
-        String schemaJson =
-            (snapshotBundle.schemaJson() != null && !snapshotBundle.schemaJson().isBlank())
-                ? snapshotBundle.schemaJson()
-                : tableDesc.schemaJson();
-        if (schemaJson == null) {
-          schemaJson = "";
-        }
+          if (includeSelectors != null
+              && !includeSelectors.isEmpty()
+              && normalized.hasScalar()
+              && normalized.getTarget().hasColumn()
+              && !matchesSelector(normalized, includeSelectors)) {
+            continue;
+          }
 
-        final String schemaJsonForMapping = schemaJson;
-        schema =
-            schemaCache.computeIfAbsent(
-                schemaJson,
-                key ->
-                    schemaMapper.mapRaw(
-                        tableDesc.columnIdAlgorithm(),
-                        toTableFormat(connector.format()),
-                        schemaJsonForMapping,
-                        new HashSet<>(tableDesc.partitionKeys())));
-      }
-
-      if (colsIn != null && !colsIn.isEmpty()) {
-        List<ColumnStats> colsOut =
-            StatsProtoEmitter.toColumnStats(
-                tableId,
-                snapshotId,
-                snapshotBundle.upstreamCreatedAtMs(),
-                connector.format(),
-                tableDesc.columnIdAlgorithm(),
-                (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
-                colsIn);
-
-        List<ColumnStats> filtered =
-            (includeSelectors == null || includeSelectors.isEmpty())
-                ? colsOut
-                : colsOut.stream().filter(c -> matchesSelector(c, includeSelectors)).toList();
-
-        if (!filtered.isEmpty()) {
-          backend.putColumnStats(ctx, filtered);
-          statsProcessed += filtered.size();
+          outRecords.add(normalized);
         }
       }
 
-      if (fileStatsIn != null && !fileStatsIn.isEmpty()) {
-        var fileStatsOut =
-            StatsProtoEmitter.toFileColumnStats(
-                tableId,
-                snapshotId,
-                snapshotBundle.upstreamCreatedAtMs(),
-                connector.format(),
-                tableDesc.columnIdAlgorithm(),
-                (schema == null ? SchemaDescriptor.getDefaultInstance() : schema),
-                fileStatsIn);
-        backend.putFileColumnStats(ctx, fileStatsOut);
-        statsProcessed += fileStatsOut.size();
+      if (!outRecords.isEmpty()) {
+        backend.putTargetStats(ctx, outRecords);
+        statsProcessed += outRecords.size();
       }
 
       maybeIngestSnapshotConstraints(
@@ -1004,6 +945,24 @@ public class ReconcilerService {
       return;
     }
     backend.putSnapshotConstraints(ctx, tableId, snapshotId, constraints.get());
+  }
+
+  private boolean isStatsCaptureCompleteForScope(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> includeSelectors) {
+    if (!backend.statsAlreadyCapturedForTargetKind(
+        ctx, tableId, snapshotId, StatsTargetKind.STK_TABLE)) {
+      return false;
+    }
+    if (includeSelectors != null && !includeSelectors.isEmpty()) {
+      return backend.statsAlreadyCapturedForTargetKind(
+          ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN);
+    }
+    return backend.statsAlreadyCapturedForTargetKind(
+            ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN)
+        || backend.statsAlreadyCapturedForTargetKind(
+            ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
+        || backend.statsAlreadyCapturedForTargetKind(
+            ctx, tableId, snapshotId, StatsTargetKind.STK_EXPRESSION);
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
@@ -1038,16 +997,21 @@ public class ReconcilerService {
         upstream.properties());
   }
 
-  private static boolean matchesSelector(ColumnStats c, Set<String> selectors) {
+  private static boolean matchesSelector(TargetStatsRecord record, Set<String> selectors) {
     if (selectors == null || selectors.isEmpty()) {
       return true;
     }
 
-    if (selectors.contains(c.getColumnName())) {
+    if (!record.hasTarget() || !record.getTarget().hasColumn()) {
       return true;
     }
 
-    if (selectors.contains("#" + c.getColumnId())) {
+    if (record.hasScalar() && selectors.contains(record.getScalar().getDisplayName())) {
+      return true;
+    }
+
+    long columnId = record.getTarget().getColumn().getColumnId();
+    if (selectors.contains("#" + columnId)) {
       return true;
     }
 
@@ -1154,7 +1118,7 @@ public class ReconcilerService {
     return out;
   }
 
-  private static Set<String> effectiveSelectors(ReconcileScope scope, SourceSelector source) {
+  static Set<String> effectiveSelectors(ReconcileScope scope, SourceSelector source) {
     if (scope != null && scope.hasColumnFilter()) {
       return normalizeSelectors(scope.destinationTableColumns());
     }

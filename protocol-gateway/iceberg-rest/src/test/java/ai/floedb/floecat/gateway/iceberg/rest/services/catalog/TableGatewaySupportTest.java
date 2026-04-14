@@ -265,7 +265,7 @@ class TableGatewaySupportTest {
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
                     Snapshot.newBuilder()
-                        .setSnapshotId(44)
+                        .setSnapshotId(44L)
                         .putFormatMetadata("iceberg", metadata.toByteString())
                         .build())
                 .build());
@@ -292,7 +292,7 @@ class TableGatewaySupportTest {
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
                     Snapshot.newBuilder()
-                        .setSnapshotId(11)
+                        .setSnapshotId(11L)
                         .putFormatMetadata("iceberg", firstMetadata.toByteString())
                         .build())
                 .build())
@@ -300,7 +300,7 @@ class TableGatewaySupportTest {
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
                     Snapshot.newBuilder()
-                        .setSnapshotId(99)
+                        .setSnapshotId(99L)
                         .putFormatMetadata("iceberg", secondMetadata.toByteString())
                         .build())
                 .build());
@@ -316,7 +316,7 @@ class TableGatewaySupportTest {
             GetSnapshotResponse.newBuilder()
                 .setSnapshot(
                     Snapshot.newBuilder()
-                        .setSnapshotId(99)
+                        .setSnapshotId(99L)
                         .putFormatMetadata("iceberg", secondMetadata.toByteString())
                         .build())
                 .build());

@@ -65,9 +65,13 @@ class IcebergConnectorIssuesTest {
 
       assertNotNull(snapshots);
       assertFalse(snapshots.isEmpty(), "expected snapshots from tpcds_sfone fixture");
-      assertNotNull(snapshots.get(0).tableStats(), "expected table stats to still be produced");
       assertTrue(
-          snapshots.get(0).fileStats().stream().anyMatch(f -> !f.columns().isEmpty()),
+          snapshots.get(0).targetStats().stream().anyMatch(r -> r.hasTable()),
+          "expected table stats to still be produced");
+      assertTrue(
+          snapshots.get(0).targetStats().stream()
+              .filter(r -> r.hasFile())
+              .anyMatch(r -> !r.getFile().getColumnsList().isEmpty()),
           "expected file-level stats to still be produced");
     }
   }

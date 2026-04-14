@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -92,8 +93,9 @@ class PointerGcTest {
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
 
     long snapshotId = 7L;
-    String statsPtr = Keys.snapshotTableStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
-    String statsBlob = Keys.snapshotTableStatsBlobUri(ACCOUNT_ID, TABLE_ID, "sha-stats");
+    String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
+    String statsPtr = Keys.snapshotTargetStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId, targetId);
+    String statsBlob = Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, targetId, "sha-stats");
     putPointer(statsPtr, statsBlob);
 
     gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);

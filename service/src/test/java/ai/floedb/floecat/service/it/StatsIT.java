@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
@@ -114,9 +115,7 @@ class StatsIT {
     TestSupport.createSnapshot(snapshot, tblId, snapNew, System.currentTimeMillis());
 
     var tableStatsOld =
-        TableStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapOld)
+        TableValueStats.newBuilder()
             .setUpstream(
                 UpstreamStamp.newBuilder()
                     .setSystem(TableFormat.TF_ICEBERG)
@@ -127,71 +126,60 @@ class StatsIT {
             .setRowCount(1_000)
             .setDataFileCount(5)
             .setTotalSizeBytes(123_456)
-            .setNdv(Ndv.newBuilder().setExact(950).build())
-            .setMetadata(
-                StatsMetadata.newBuilder()
-                    .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                    .setCaptureMode(StatsCaptureMode.SCM_ASYNC)
-                    .setCompleteness(StatsCompleteness.SC_PARTIAL)
-                    .setConfidenceLevel(0.72d)
-                    .setCoverage(
-                        StatsCoverage.newBuilder()
-                            .setRowsScanned(1_000)
-                            .setFilesScanned(5)
-                            .setRowGroupsSampled(2)
-                            .setBytesScanned(12_345)
-                            .putProperties("sampling_strategy", "metadata-guided")
-                            .build())
-                    .setCapturedAt(Timestamps.fromMillis(fixedNowMs - 5_000L))
-                    .setRefreshedAt(Timestamps.fromMillis(fixedNowMs))
-                    .putProperties("estimator", "baseline")
-                    .build())
             .build();
 
-    var putTableRespOld =
-        statistic.putTableStats(
-            PutTableStatsRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshotId(snapOld)
-                .setStats(tableStatsOld)
-                .build());
-    assertNotNull(putTableRespOld.getMeta().getPointerKey());
+    var tableMetadataOld =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_ASYNC)
+            .setCompleteness(StatsCompleteness.SC_PARTIAL)
+            .setConfidenceLevel(0.72d)
+            .setCoverage(
+                StatsCoverage.newBuilder()
+                    .setRowsScanned(1_000)
+                    .setFilesScanned(5)
+                    .setRowGroupsSampled(2)
+                    .setBytesScanned(12_345)
+                    .putProperties("sampling_strategy", "metadata-guided")
+                    .build())
+            .setCapturedAt(Timestamps.fromMillis(fixedNowMs - 5_000L))
+            .setRefreshedAt(Timestamps.fromMillis(fixedNowMs))
+            .putProperties("estimator", "baseline")
+            .build();
+
+    var putTableRespOld = putTableStats(tblId, snapOld, tableStatsOld, tableMetadataOld, null);
+    assertEquals(1, putTableRespOld.getUpserted());
+
+    var colIdMetadata =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_UPSTREAM_METADATA_DERIVED)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .setConfidenceLevel(0.99d)
+            .setCoverage(
+                StatsCoverage.newBuilder()
+                    .setRowsScanned(1_000)
+                    .setFilesScanned(5)
+                    .setBytesScanned(9_876)
+                    .build())
+            .setCapturedAt(Timestamps.fromMillis(fixedNowMs - 10_000L))
+            .setRefreshedAt(Timestamps.fromMillis(fixedNowMs - 2_000L))
+            .build();
 
     var colIdStats =
-        ColumnStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapOld)
-            .setColumnId(1)
-            .setColumnName("id")
+        ScalarStats.newBuilder()
+            .setDisplayName("id")
             .setLogicalType("int")
             .setNullCount(0)
             .setNdv(Ndv.newBuilder().setExact(1_000).build())
             .setMin("1")
             .setMax("1000")
             .setUpstream(tableStatsOld.getUpstream())
-            .setMetadata(
-                StatsMetadata.newBuilder()
-                    .setProducer(StatsProducer.SPROD_UPSTREAM_METADATA_DERIVED)
-                    .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                    .setCompleteness(StatsCompleteness.SC_COMPLETE)
-                    .setConfidenceLevel(0.99d)
-                    .setCoverage(
-                        StatsCoverage.newBuilder()
-                            .setRowsScanned(1_000)
-                            .setFilesScanned(5)
-                            .setBytesScanned(9_876)
-                            .build())
-                    .setCapturedAt(Timestamps.fromMillis(fixedNowMs - 10_000L))
-                    .setRefreshedAt(Timestamps.fromMillis(fixedNowMs - 2_000L))
-                    .build())
             .build();
 
     var colTsStats =
-        ColumnStats.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapOld)
-            .setColumnId(2)
-            .setColumnName("ts")
+        ScalarStats.newBuilder()
+            .setDisplayName("ts")
             .setLogicalType("timestamp")
             .setNullCount(10)
             .setNdv(Ndv.newBuilder().build())
@@ -201,46 +189,28 @@ class StatsIT {
             .build();
 
     var putColsRespOld =
-        statisticMutiny
-            .putColumnStats(
-                io.smallrye.mutiny.Multi.createFrom()
-                    .items(
-                        PutColumnStatsRequest.newBuilder()
-                            .setTableId(tblId)
-                            .setSnapshotId(snapOld)
-                            .addColumns(colIdStats)
-                            .addColumns(colTsStats)
-                            .build()))
-            .await()
-            .atMost(java.time.Duration.ofSeconds(30));
+        putColumnStats(
+            tblId,
+            snapOld,
+            null,
+            new ColumnWrite(1L, colIdStats, colIdMetadata),
+            new ColumnWrite(2L, colTsStats, null));
     assertTrue(putColsRespOld.getUpserted() >= 2);
 
-    var gotTableOld =
-        statistic.getTableStats(
-            GetTableStatsRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapOld).build())
-                .build());
-    assertEquals(1_000, gotTableOld.getStats().getRowCount());
-    assertEquals(123_456, gotTableOld.getStats().getTotalSizeBytes());
-    assertEquals(
-        StatsProducer.SPROD_SOURCE_NATIVE, gotTableOld.getStats().getMetadata().getProducer());
-    assertEquals(
-        StatsCompleteness.SC_PARTIAL, gotTableOld.getStats().getMetadata().getCompleteness());
-    assertEquals(0.72d, gotTableOld.getStats().getMetadata().getConfidenceLevel(), 0.0001d);
-    assertEquals(2L, gotTableOld.getStats().getMetadata().getCoverage().getRowGroupsSampled());
+    var gotTableOld = getTableStats(tblId, SnapshotRef.newBuilder().setSnapshotId(snapOld).build());
+    assertEquals(1_000, gotTableOld.getTable().getRowCount());
+    assertEquals(123_456, gotTableOld.getTable().getTotalSizeBytes());
+    assertEquals(StatsProducer.SPROD_SOURCE_NATIVE, gotTableOld.getMetadata().getProducer());
+    assertEquals(StatsCompleteness.SC_PARTIAL, gotTableOld.getMetadata().getCompleteness());
+    assertEquals(0.72d, gotTableOld.getMetadata().getConfidenceLevel(), 0.0001d);
+    assertEquals(2L, gotTableOld.getMetadata().getCoverage().getRowGroupsSampled());
 
     var listColsOld =
-        statistic.listColumnStats(
-            ListColumnStatsRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapOld).build())
-                .setPage(PageRequest.newBuilder().setPageSize(100).build())
-                .build());
-    assertEquals(2, listColsOld.getColumnsCount());
-    assertEquals(1, listColsOld.getColumns(0).getColumnId());
+        listColumnStats(tblId, SnapshotRef.newBuilder().setSnapshotId(snapOld).build(), 100);
+    assertEquals(2, listColsOld.size());
+    assertEquals(1, listColsOld.get(0).getTarget().getColumn().getColumnId());
     var firstCol =
-        listColsOld.getColumnsList().stream().filter(c -> c.getColumnId() == 1).findFirst();
+        listColsOld.stream().filter(c -> c.getTarget().getColumn().getColumnId() == 1).findFirst();
     assertTrue(firstCol.isPresent());
     assertEquals(
         StatsProducer.SPROD_UPSTREAM_METADATA_DERIVED, firstCol.get().getMetadata().getProducer());
@@ -248,7 +218,6 @@ class StatsIT {
 
     var tableStatsNew =
         tableStatsOld.toBuilder()
-            .setSnapshotId(snapNew)
             .setRowCount(2_500)
             .setDataFileCount(9)
             .setTotalSizeBytes(987_654)
@@ -259,62 +228,246 @@ class StatsIT {
                     .build())
             .build();
 
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tblId)
-            .setSnapshotId(snapNew)
-            .setStats(tableStatsNew)
-            .build());
+    putTableStats(tblId, snapNew, tableStatsNew, null, null);
 
-    statisticMutiny
-        .putColumnStats(
-            io.smallrye.mutiny.Multi.createFrom()
-                .items(
-                    PutColumnStatsRequest.newBuilder()
-                        .setTableId(tblId)
-                        .setSnapshotId(snapNew)
-                        .addColumns(
-                            colIdStats.toBuilder()
-                                .setSnapshotId(snapNew)
-                                .setNdv(Ndv.newBuilder().setExact(2_500)))
-                        .addColumns(
-                            colTsStats.toBuilder()
-                                .setSnapshotId(snapNew)
-                                .setNdv(Ndv.newBuilder().build()))
-                        .build()))
-        .await()
-        .atMost(java.time.Duration.ofSeconds(30));
+    putColumnStats(
+        tblId,
+        snapNew,
+        null,
+        new ColumnWrite(
+            1L, colIdStats.toBuilder().setNdv(Ndv.newBuilder().setExact(2_500)).build(), null),
+        new ColumnWrite(2L, colTsStats.toBuilder().setNdv(Ndv.newBuilder().build()).build(), null));
 
     var currentTableStats =
-        statistic.getTableStats(
-            GetTableStatsRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                .build());
-    assertEquals(snapNew, currentTableStats.getStats().getSnapshotId());
-    assertEquals(2_500, currentTableStats.getStats().getRowCount());
+        getTableStats(
+            tblId, SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build());
+    assertEquals(snapNew, currentTableStats.getSnapshotId());
+    assertEquals(2_500, currentTableStats.getTable().getRowCount());
 
     var currentCols =
-        statistic.listColumnStats(
-            ListColumnStatsRequest.newBuilder()
-                .setTableId(tblId)
-                .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
-                .setPage(PageRequest.newBuilder().setPageSize(100).build())
-                .build());
-    assertTrue(currentCols.getColumnsCount() >= 2);
-    assertEquals(snapNew, currentCols.getColumns(0).getSnapshotId());
+        listColumnStats(
+            tblId, SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(), 100);
+    assertTrue(currentCols.size() >= 2);
+    assertEquals(snapNew, currentCols.get(0).getSnapshotId());
 
     var notFound =
         assertThrows(
             StatusRuntimeException.class,
-            () ->
-                statistic.getTableStats(
-                    GetTableStatsRequest.newBuilder()
-                        .setTableId(tblId)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(9_999_999L).build())
-                        .build()));
+            () -> getTableStats(tblId, SnapshotRef.newBuilder().setSnapshotId(9_999_999L).build()));
     TestSupport.assertGrpcAndMc(
         notFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
+  }
+
+  @Test
+  void getTargetStatsSupportsFileAndExpressionTargets() throws Exception {
+    var catName = tablePrefix + "cat_target_kinds";
+    var cat = TestSupport.createCatalog(catalog, catName, "cat for target kinds");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns_target_kinds", List.of("db"), "ns");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "target_kinds_tbl",
+            "s3://bucket/target_kinds_tbl",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tableId = tbl.getResourceId();
+    long snapshotId = 909L;
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
+
+    var metadata =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .setCoverage(StatsCoverage.newBuilder().setRowsScanned(10).setFilesScanned(1).build())
+            .build();
+
+    var fileStats =
+        FileTargetStats.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setFilePath("/data/file-0001.parquet")
+            .setFileFormat("parquet")
+            .setRowCount(10)
+            .setSizeBytes(1024)
+            .build();
+
+    var expressionTarget =
+        EngineExpressionStatsTarget.newBuilder()
+            .setEngineKind("duckdb")
+            .setEngineExpressionKey(com.google.protobuf.ByteString.copyFromUtf8("sum(id)"))
+            .build();
+    var expressionScalar =
+        ScalarStats.newBuilder()
+            .setDisplayName("sum(id)")
+            .setLogicalType("int64")
+            .setValueCount(10)
+            .setNullCount(0)
+            .setNdv(Ndv.newBuilder().setExact(1).build())
+            .setMin("55")
+            .setMax("55")
+            .build();
+
+    var fileRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setFile(FileStatsTarget.newBuilder().setFilePath(fileStats.getFilePath()))
+                    .build())
+            .setFile(fileStats)
+            .setMetadata(metadata)
+            .build();
+    var expressionRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(StatsTarget.newBuilder().setExpression(expressionTarget))
+            .setScalar(expressionScalar)
+            .setMetadata(metadata)
+            .build();
+    putTargetRecords(tableId, snapshotId, null, fileRecord, expressionRecord);
+
+    var fileResponse =
+        statistic.getTargetStats(
+            GetTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                .setTarget(
+                    StatsTarget.newBuilder()
+                        .setFile(FileStatsTarget.newBuilder().setFilePath(fileStats.getFilePath()))
+                        .build())
+                .build());
+    assertTrue(fileResponse.getStats().hasFile());
+    assertEquals("/data/file-0001.parquet", fileResponse.getStats().getFile().getFilePath());
+    assertEquals(10L, fileResponse.getStats().getFile().getRowCount());
+    assertEquals(
+        StatsCompleteness.SC_COMPLETE, fileResponse.getStats().getMetadata().getCompleteness());
+
+    var expressionResponse =
+        statistic.getTargetStats(
+            GetTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                .setTarget(StatsTarget.newBuilder().setExpression(expressionTarget).build())
+                .build());
+    assertTrue(expressionResponse.getStats().hasScalar());
+    assertEquals("sum(id)", expressionResponse.getStats().getScalar().getDisplayName());
+    assertEquals(
+        "duckdb", expressionResponse.getStats().getTarget().getExpression().getEngineKind());
+    assertEquals(
+        "sum(id)",
+        expressionResponse
+            .getStats()
+            .getTarget()
+            .getExpression()
+            .getEngineExpressionKey()
+            .toStringUtf8());
+  }
+
+  @Test
+  void listTargetStatsSupportsKindFiltersAndRejectsMultipleKinds() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, tablePrefix + "cat_list_kinds", "cat");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns_list_kinds", List.of(), "ns");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "tbl_list_kinds",
+            "s3://bucket/tbl_list_kinds",
+            "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
+            "none");
+    var tableId = tbl.getResourceId();
+    long snapshotId = 910L;
+    TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
+
+    var tableRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
+            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+            .build();
+    var columnRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(
+                StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(1L)))
+            .setScalar(ScalarStats.newBuilder().setDisplayName("id").setLogicalType("int").build())
+            .build();
+    var expressionRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setExpression(
+                        EngineExpressionStatsTarget.newBuilder()
+                            .setEngineKind("duckdb")
+                            .setEngineExpressionKey(
+                                com.google.protobuf.ByteString.copyFromUtf8("expr:id"))
+                            .build()))
+            .setScalar(
+                ScalarStats.newBuilder().setDisplayName("expr").setLogicalType("int").build())
+            .build();
+    putTargetRecords(tableId, snapshotId, null, tableRecord, columnRecord, expressionRecord);
+
+    var tableOnly =
+        statistic.listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                .setPage(PageRequest.newBuilder().setPageSize(50).build())
+                .addTargetKinds(StatsTargetKind.STK_TABLE)
+                .build());
+    assertEquals(1, tableOnly.getRecordsCount());
+    assertTrue(tableOnly.getRecords(0).getTarget().hasTable());
+
+    var columnOnly =
+        statistic.listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                .setPage(PageRequest.newBuilder().setPageSize(50).build())
+                .addTargetKinds(StatsTargetKind.STK_COLUMN)
+                .build());
+    assertEquals(1, columnOnly.getRecordsCount());
+    assertTrue(columnOnly.getRecords(0).getTarget().hasColumn());
+
+    var expressionOnly =
+        statistic.listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                .setPage(PageRequest.newBuilder().setPageSize(50).build())
+                .addTargetKinds(StatsTargetKind.STK_EXPRESSION)
+                .build());
+    assertEquals(1, expressionOnly.getRecordsCount());
+    assertTrue(expressionOnly.getRecords(0).getTarget().hasExpression());
+
+    var multiKinds =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                statistic.listTargetStats(
+                    ListTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                        .setPage(PageRequest.newBuilder().setPageSize(50).build())
+                        .addTargetKinds(StatsTargetKind.STK_TABLE)
+                        .addTargetKinds(StatsTargetKind.STK_COLUMN)
+                        .build()));
+    TestSupport.assertGrpcAndMc(
+        multiKinds, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, null);
   }
 
   @Test
@@ -337,58 +490,24 @@ class StatsIT {
     TestSupport.createSnapshot(snapshot, tableId, snapshotId, System.currentTimeMillis());
 
     var tableStats =
-        TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
+        TableValueStats.newBuilder()
             .setRowCount(123)
             .setDataFileCount(2)
             .setTotalSizeBytes(456)
             .build();
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setStats(tableStats)
-            .build());
+    putTableStats(tableId, snapshotId, tableStats, null);
 
     var columnStats =
-        ColumnStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setColumnId(1)
-            .setColumnName("id")
-            .setLogicalType("int")
-            .setNullCount(0)
-            .build();
-    statisticMutiny
-        .putColumnStats(
-            io.smallrye.mutiny.Multi.createFrom()
-                .items(
-                    PutColumnStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
-                        .addColumns(columnStats)
-                        .build()))
-        .await()
-        .atMost(java.time.Duration.ofSeconds(30));
+        ScalarStats.newBuilder().setDisplayName("id").setLogicalType("int").setNullCount(0).build();
+    putColumnStats(tableId, snapshotId, null, new ColumnWrite(1L, columnStats, null));
 
-    var got =
-        statistic.getTableStats(
-            GetTableStatsRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                .build());
-    assertFalse(got.getStats().hasMetadata());
+    var got = getTableStats(tableId, SnapshotRef.newBuilder().setSnapshotId(snapshotId).build());
+    assertFalse(got.hasMetadata());
 
     var listed =
-        statistic.listColumnStats(
-            ListColumnStatsRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                .setPage(PageRequest.newBuilder().setPageSize(10).build())
-                .build());
-    assertEquals(1, listed.getColumnsCount());
-    assertFalse(listed.getColumns(0).hasMetadata());
+        listColumnStats(tableId, SnapshotRef.newBuilder().setSnapshotId(snapshotId).build(), 10);
+    assertEquals(1, listed.size());
+    assertFalse(listed.get(0).hasMetadata());
   }
 
   @Test
@@ -412,51 +531,26 @@ class StatsIT {
 
     var key = IdempotencyKey.newBuilder().setKey("stats-idem-metadata-mismatch").build();
     var base =
-        TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
+        TableValueStats.newBuilder()
             .setRowCount(10)
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
             .build();
+    var metadataA =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_PARTIAL)
+            .setConfidenceLevel(0.5d)
+            .build();
+    var metadataB = metadataA.toBuilder().setConfidenceLevel(0.9d).build();
 
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setStats(
-                base.toBuilder()
-                    .setMetadata(
-                        StatsMetadata.newBuilder()
-                            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                            .setCompleteness(StatsCompleteness.SC_PARTIAL)
-                            .setConfidenceLevel(0.5d)
-                            .build())
-                    .build())
-            .setIdempotency(key)
-            .build());
+    putTableStats(tableId, snapshotId, base, metadataA, key);
 
     var mismatch =
         assertThrows(
             StatusRuntimeException.class,
-            () ->
-                statistic.putTableStats(
-                    PutTableStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
-                        .setStats(
-                            base.toBuilder()
-                                .setMetadata(
-                                    StatsMetadata.newBuilder()
-                                        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                                        .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                                        .setCompleteness(StatsCompleteness.SC_PARTIAL)
-                                        .setConfidenceLevel(0.9d)
-                                        .build())
-                                .build())
-                        .setIdempotency(key)
-                        .build()));
+            () -> putTableStats(tableId, snapshotId, base, metadataB, key));
     TestSupport.assertGrpcAndMc(
         mismatch, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "Idempotency key mismatch");
   }
@@ -482,9 +576,7 @@ class StatsIT {
 
     var key = IdempotencyKey.newBuilder().setKey("stats-idem-refresh-only").build();
     var base =
-        TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
+        TableValueStats.newBuilder()
             .setRowCount(10)
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
@@ -494,52 +586,23 @@ class StatsIT {
     var firstRefreshedAt = Timestamps.fromMillis(1_700_000_001_000L);
     var secondRefreshedAt = Timestamps.fromMillis(1_700_000_002_000L);
 
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setStats(
-                base.toBuilder()
-                    .setMetadata(
-                        StatsMetadata.newBuilder()
-                            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                            .setCompleteness(StatsCompleteness.SC_COMPLETE)
-                            .setCapturedAt(firstCapturedAt)
-                            .setRefreshedAt(firstRefreshedAt)
-                            .build())
-                    .build())
-            .setIdempotency(key)
-            .build());
+    var firstMetadata =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .setCapturedAt(firstCapturedAt)
+            .setRefreshedAt(firstRefreshedAt)
+            .build();
+    var secondMetadata = firstMetadata.toBuilder().setRefreshedAt(secondRefreshedAt).build();
 
-    assertDoesNotThrow(
-        () ->
-            statistic.putTableStats(
-                PutTableStatsRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .setStats(
-                        base.toBuilder()
-                            .setMetadata(
-                                StatsMetadata.newBuilder()
-                                    .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                                    .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                                    .setCompleteness(StatsCompleteness.SC_COMPLETE)
-                                    .setCapturedAt(firstCapturedAt)
-                                    .setRefreshedAt(secondRefreshedAt)
-                                    .build())
-                            .build())
-                    .setIdempotency(key)
-                    .build()));
+    putTableStats(tableId, snapshotId, base, firstMetadata, key);
 
-    var stored =
-        statistic.getTableStats(
-            GetTableStatsRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                .build());
+    assertDoesNotThrow(() -> putTableStats(tableId, snapshotId, base, secondMetadata, key));
+
+    var stored = getTableStats(tableId, SnapshotRef.newBuilder().setSnapshotId(snapshotId).build());
     // Replay should not rewrite content when only refreshed_at differs.
-    assertEquals(firstRefreshedAt, stored.getStats().getMetadata().getRefreshedAt());
+    assertEquals(firstRefreshedAt, stored.getMetadata().getRefreshedAt());
   }
 
   @Test
@@ -563,9 +626,7 @@ class StatsIT {
 
     var key = IdempotencyKey.newBuilder().setKey("stats-idem-capture-only").build();
     var base =
-        TableStats.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
+        TableValueStats.newBuilder()
             .setRowCount(10)
             .setDataFileCount(1)
             .setTotalSizeBytes(100)
@@ -575,52 +636,23 @@ class StatsIT {
     var secondCapturedAt = Timestamps.fromMillis(1_700_000_020_000L);
     var refreshedAt = Timestamps.fromMillis(1_700_000_030_000L);
 
-    statistic.putTableStats(
-        PutTableStatsRequest.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotId(snapshotId)
-            .setStats(
-                base.toBuilder()
-                    .setMetadata(
-                        StatsMetadata.newBuilder()
-                            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                            .setCompleteness(StatsCompleteness.SC_COMPLETE)
-                            .setCapturedAt(firstCapturedAt)
-                            .setRefreshedAt(refreshedAt)
-                            .build())
-                    .build())
-            .setIdempotency(key)
-            .build());
+    var firstMetadata =
+        StatsMetadata.newBuilder()
+            .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+            .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .setCapturedAt(firstCapturedAt)
+            .setRefreshedAt(refreshedAt)
+            .build();
+    var secondMetadata = firstMetadata.toBuilder().setCapturedAt(secondCapturedAt).build();
 
-    assertDoesNotThrow(
-        () ->
-            statistic.putTableStats(
-                PutTableStatsRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(snapshotId)
-                    .setStats(
-                        base.toBuilder()
-                            .setMetadata(
-                                StatsMetadata.newBuilder()
-                                    .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                                    .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                                    .setCompleteness(StatsCompleteness.SC_COMPLETE)
-                                    .setCapturedAt(secondCapturedAt)
-                                    .setRefreshedAt(refreshedAt)
-                                    .build())
-                            .build())
-                    .setIdempotency(key)
-                    .build()));
+    putTableStats(tableId, snapshotId, base, firstMetadata, key);
 
-    var stored =
-        statistic.getTableStats(
-            GetTableStatsRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                .build());
+    assertDoesNotThrow(() -> putTableStats(tableId, snapshotId, base, secondMetadata, key));
+
+    var stored = getTableStats(tableId, SnapshotRef.newBuilder().setSnapshotId(snapshotId).build());
     // Replay should not rewrite content when only captured_at differs.
-    assertEquals(firstCapturedAt, stored.getStats().getMetadata().getCapturedAt());
+    assertEquals(firstCapturedAt, stored.getMetadata().getCapturedAt());
   }
 
   @Test
@@ -646,26 +678,21 @@ class StatsIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                statistic.putTableStats(
-                    PutTableStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
-                        .setStats(
-                            TableStats.newBuilder()
-                                .setTableId(tableId)
-                                .setSnapshotId(snapshotId)
-                                .setRowCount(1)
-                                .setDataFileCount(1)
-                                .setTotalSizeBytes(1)
-                                .setMetadata(
-                                    StatsMetadata.newBuilder()
-                                        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                                        .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                                        .setCompleteness(StatsCompleteness.SC_PARTIAL)
-                                        .setConfidenceLevel(1.1d)
-                                        .build())
-                                .build())
-                        .build()));
+                putTableStats(
+                    tableId,
+                    snapshotId,
+                    TableValueStats.newBuilder()
+                        .setRowCount(1)
+                        .setDataFileCount(1)
+                        .setTotalSizeBytes(1)
+                        .build(),
+                    StatsMetadata.newBuilder()
+                        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+                        .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+                        .setCompleteness(StatsCompleteness.SC_PARTIAL)
+                        .setConfidenceLevel(1.1d)
+                        .build(),
+                    null));
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "confidence_level");
   }
@@ -693,28 +720,191 @@ class StatsIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                statistic.putTableStats(
-                    PutTableStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshotId(snapshotId)
-                        .setStats(
-                            TableStats.newBuilder()
-                                .setTableId(tableId)
-                                .setSnapshotId(snapshotId)
-                                .setRowCount(1)
-                                .setDataFileCount(1)
-                                .setTotalSizeBytes(1)
-                                .setMetadata(
-                                    StatsMetadata.newBuilder()
-                                        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
-                                        .setCaptureMode(StatsCaptureMode.SCM_SYNC)
-                                        .setCompleteness(StatsCompleteness.SC_PARTIAL)
-                                        .setCoverage(
-                                            StatsCoverage.newBuilder().setRowsScanned(-1L).build())
-                                        .build())
-                                .build())
-                        .build()));
+                putTableStats(
+                    tableId,
+                    snapshotId,
+                    TableValueStats.newBuilder()
+                        .setRowCount(1)
+                        .setDataFileCount(1)
+                        .setTotalSizeBytes(1)
+                        .build(),
+                    StatsMetadata.newBuilder()
+                        .setProducer(StatsProducer.SPROD_SOURCE_NATIVE)
+                        .setCaptureMode(StatsCaptureMode.SCM_SYNC)
+                        .setCompleteness(StatsCompleteness.SC_PARTIAL)
+                        .setCoverage(StatsCoverage.newBuilder().setRowsScanned(-1L).build())
+                        .build(),
+                    null));
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "rows_scanned");
   }
+
+  private PutTargetStatsResponse putTableStats(
+      ResourceId tableId, long snapshotId, TableValueStats tableStats, IdempotencyKey idempotency) {
+    return putTableStats(tableId, snapshotId, tableStats, null, idempotency);
+  }
+
+  private PutTargetStatsResponse putTableStats(
+      ResourceId tableId,
+      long snapshotId,
+      TableValueStats tableStats,
+      StatsMetadata metadata,
+      IdempotencyKey idempotency) {
+    PutTargetStatsRequest.Builder request =
+        PutTargetStatsRequest.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .addRecords(toTableRecord(tableId, snapshotId, tableStats, metadata));
+    if (idempotency != null) {
+      request.setIdempotency(idempotency);
+    }
+    return statisticMutiny
+        .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(request.build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
+  }
+
+  private record ColumnWrite(long columnId, ScalarStats stats, StatsMetadata metadata) {}
+
+  private PutTargetStatsResponse putColumnStats(
+      ResourceId tableId, long snapshotId, IdempotencyKey idempotency, ColumnWrite... columns) {
+    PutTargetStatsRequest.Builder request =
+        PutTargetStatsRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+    for (ColumnWrite column : columns) {
+      request.addRecords(
+          toColumnRecord(
+              tableId, snapshotId, column.columnId(), column.stats(), column.metadata()));
+    }
+    if (idempotency != null) {
+      request.setIdempotency(idempotency);
+    }
+    return statisticMutiny
+        .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(request.build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
+  }
+
+  private PutTargetStatsResponse putTargetRecords(
+      ResourceId tableId,
+      long snapshotId,
+      IdempotencyKey idempotency,
+      TargetStatsRecord... records) {
+    PutTargetStatsRequest.Builder request =
+        PutTargetStatsRequest.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+    request.addAllRecords(List.of(records));
+    if (idempotency != null) {
+      request.setIdempotency(idempotency);
+    }
+    return statisticMutiny
+        .putTargetStats(io.smallrye.mutiny.Multi.createFrom().item(request.build()))
+        .await()
+        .atMost(java.time.Duration.ofSeconds(30));
+  }
+
+  private TargetStatsRecord getTableStats(ResourceId tableId, SnapshotRef snapshotRef) {
+    var rpc =
+        statistic.getTargetStats(
+            GetTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(snapshotRef)
+                .setTarget(
+                    StatsTarget.newBuilder()
+                        .setTable(TableStatsTarget.newBuilder().build())
+                        .build())
+                .build());
+    return rpc.getStats();
+  }
+
+  private List<TargetStatsRecord> listColumnStats(
+      ResourceId tableId, SnapshotRef snapshotRef, int pageSize) {
+    var rpc =
+        statistic.listTargetStats(
+            ListTargetStatsRequest.newBuilder()
+                .setTableId(tableId)
+                .setSnapshot(snapshotRef)
+                .setPage(PageRequest.newBuilder().setPageSize(pageSize).build())
+                .addTargetKinds(StatsTargetKind.STK_COLUMN)
+                .build());
+    List<TargetStatsRecord> columns = new ArrayList<>();
+    for (TargetStatsRecord record : rpc.getRecordsList()) {
+      if (record.getTarget().hasColumn()
+          && record.getValueCase() == TargetStatsRecord.ValueCase.SCALAR) {
+        columns.add(record);
+      }
+    }
+    return columns;
+  }
+
+  private static TargetStatsRecord toTableRecord(
+      ResourceId tableId, long snapshotId, TableValueStats tableStats, StatsMetadata metadata) {
+    TableValueStats.Builder tableValue =
+        TableValueStats.newBuilder()
+            .setRowCount(tableStats.getRowCount())
+            .setDataFileCount(tableStats.getDataFileCount())
+            .setTotalSizeBytes(tableStats.getTotalSizeBytes())
+            .putAllProperties(tableStats.getPropertiesMap());
+    if (tableStats.hasUpstream()) {
+      tableValue.setUpstream(tableStats.getUpstream());
+    }
+    TargetStatsRecord.Builder builder =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(
+                StatsTarget.newBuilder().setTable(TableStatsTarget.newBuilder().build()).build())
+            .setTable(tableValue.build());
+    if (metadata != null) {
+      builder.setMetadata(metadata);
+    }
+    return builder.build();
+  }
+
+  private static TargetStatsRecord toColumnRecord(
+      ResourceId tableId,
+      long snapshotId,
+      long columnId,
+      ScalarStats columnStats,
+      StatsMetadata metadata) {
+    ScalarStats.Builder scalar =
+        ScalarStats.newBuilder()
+            .setDisplayName(columnStats.getDisplayName())
+            .setLogicalType(columnStats.getLogicalType())
+            .setValueCount(columnStats.getValueCount())
+            .setHistogram(columnStats.getHistogram())
+            .setTdigest(columnStats.getTdigest())
+            .putAllProperties(columnStats.getPropertiesMap());
+    if (columnStats.hasUpstream()) {
+      scalar.setUpstream(columnStats.getUpstream());
+    }
+    if (columnStats.hasNullCount()) {
+      scalar.setNullCount(columnStats.getNullCount());
+    }
+    if (columnStats.hasNanCount()) {
+      scalar.setNanCount(columnStats.getNanCount());
+    }
+    if (columnStats.hasNdv()) {
+      scalar.setNdv(columnStats.getNdv());
+    }
+    if (columnStats.hasMin()) {
+      scalar.setMin(columnStats.getMin());
+    }
+    if (columnStats.hasMax()) {
+      scalar.setMax(columnStats.getMax());
+    }
+    TargetStatsRecord.Builder builder =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId).build())
+                    .build())
+            .setScalar(scalar.build());
+    if (metadata != null) {
+      builder.setMetadata(metadata);
+    }
+    return builder.build();
+  }
+
+  // Column stats remain in TargetStatsRecord form in tests so identity and metadata stay explicit.
 }

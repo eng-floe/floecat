@@ -64,9 +64,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **ViewServiceImpl** – Stores SQL definitions and references to base tables.
 - **SnapshotServiceImpl** – Binds snapshots to tables, ensuring parent-child relationships remain
   intact.
-- **TableStatisticsServiceImpl** – Persists per-snapshot table/column/file stats; validates
-  NDV/histogram payloads; paginates table, column, and file-level listings; uses client-streaming
-  `PutColumnStats`/`PutFileColumnStats` to batch writes per stream.
+- **TableStatisticsServiceImpl** – Persists per-snapshot target/file stats; validates
+  NDV/histogram payloads; paginates target listings (optionally filtered by target kind); uses
+  client-streaming `PutTargetStats` to batch writes per stream.
 - **DirectoryServiceImpl** – Provides fast name↔ID lookup via `MetadataGraph` (Resolve*/Lookup*) and
   reuses the graph’s ResolveFQ helpers for list/prefix pagination.
 - **AccountServiceImpl** – Administers accounts and enforces conventional permissions.
@@ -145,7 +145,7 @@ available immediately after startup.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to
-`PutColumnStats`/`PutFileColumnStats`, rejects mixed idempotency keys within a stream, and applies
+`PutTargetStats`, rejects mixed idempotency keys within a stream, and applies
 idempotent writes when a key is present. Each stream returns one response summarising the total
 rows upserted after all batches have been consumed.
 

@@ -627,10 +627,16 @@ final class QueryCliSupport {
         file.getColumnsList()
             .forEach(
                 col -> {
-                  String ndv = col.hasNdv() ? CliUtils.ndvToString(col.getNdv()) : "-";
+                  var scalar = col.getScalar();
+                  String ndv = scalar.hasNdv() ? CliUtils.ndvToString(scalar.getNdv()) : "-";
+                  long nullCount = scalar.hasNullCount() ? scalar.getNullCount() : 0L;
+                  String displayName =
+                      !scalar.getDisplayName().isBlank()
+                          ? scalar.getDisplayName()
+                          : "#" + col.getColumnId();
                   out.printf(
                       "      %s (%s) nulls=%d ndv=%s%n",
-                      col.getColumnName(), col.getLogicalType(), col.getNullCount(), ndv);
+                      displayName, scalar.getLogicalType(), nullCount, ndv);
                 });
       }
     }

@@ -20,11 +20,20 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 
 /** Canonical stats target categories understood by routing capabilities. */
 public enum StatsTargetType {
+  /** Table-wide statistics target. */
   TABLE,
+  /** Physical column statistics target. */
   COLUMN,
+  /** Expression-derived statistics target. */
   EXPRESSION,
+  /** File-level statistics target. */
   FILE;
 
+  /**
+   * Maps a proto {@link StatsTarget} to its canonical routing category.
+   *
+   * @throws IllegalArgumentException when {@code target} has no selected target case
+   */
   public static StatsTargetType from(StatsTarget target) {
     return switch (target.getTargetCase()) {
       case TABLE -> TABLE;

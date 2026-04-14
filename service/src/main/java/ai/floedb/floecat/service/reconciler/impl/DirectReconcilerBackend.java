@@ -21,13 +21,12 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.NAMESPACE;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.ColumnStats;
-import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsTargetKind;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -49,15 +48,15 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsTargetType;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -73,7 +72,7 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   @Inject TableRepository tableRepo;
   @Inject ViewRepository viewRepo;
   @Inject SnapshotRepository snapshotRepo;
-  @Inject StatsRepository statsRepository;
+  @Inject StatsStore statsStore;
   @Inject SnapshotHelper snapshotHelper;
   @Inject ConnectorRepository connectorRepo;
 
@@ -348,51 +347,30 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
   }
 
   @Override
-  public boolean statsAlreadyCaptured(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
-    var tableStats = statsRepository.getTableStats(tableId, snapshotId).orElse(null);
-    if (tableStats == null) {
-      return false;
-    }
-    if (tableStats.getDataFileCount() <= 0) {
-      return true;
-    }
-    return statsRepository.countFileStats(tableId, snapshotId) > 0;
+  public boolean statsAlreadyCapturedForTargetKind(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind) {
+    Optional<StatsTargetType> targetType =
+        switch (targetKind) {
+          case STK_UNSPECIFIED -> Optional.empty();
+          case STK_TABLE -> Optional.of(StatsTargetType.TABLE);
+          case STK_COLUMN -> Optional.of(StatsTargetType.COLUMN);
+          case STK_EXPRESSION -> Optional.of(StatsTargetType.EXPRESSION);
+          case STK_FILE -> Optional.of(StatsTargetType.FILE);
+          case UNRECOGNIZED -> Optional.empty();
+        };
+    return statsStore.countTargetStats(tableId, snapshotId, targetType) > 0;
   }
 
   @Override
-  public void putTableStats(ReconcileContext ctx, ResourceId tableId, TableStats stats) {
-    statsRepository.putTableStats(tableId, stats.getSnapshotId(), stats);
-  }
-
-  @Override
-  public void putColumnStats(ReconcileContext ctx, List<ColumnStats> stats) {
+  public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     if (stats.isEmpty()) {
       return;
     }
-    Map<StatsGroupKey, List<ColumnStats>> grouped = new LinkedHashMap<>();
-    for (ColumnStats columnStats : stats) {
-      StatsGroupKey key = new StatsGroupKey(columnStats.getTableId(), columnStats.getSnapshotId());
-      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(columnStats);
-    }
-    for (var entry : grouped.entrySet()) {
-      statsRepository.putColumnStats(
-          entry.getKey().tableId, entry.getKey().snapshotId, entry.getValue());
-    }
-  }
-
-  @Override
-  public void putFileColumnStats(ReconcileContext ctx, List<FileColumnStats> stats) {
-    if (stats.isEmpty()) {
-      return;
-    }
-    Map<StatsGroupKey, List<FileColumnStats>> grouped = new LinkedHashMap<>();
-    for (FileColumnStats fileStats : stats) {
-      StatsGroupKey key = new StatsGroupKey(fileStats.getTableId(), fileStats.getSnapshotId());
-      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(fileStats);
-    }
-    for (var entry : grouped.entrySet()) {
-      statsRepository.putFileColumnStats(
-          entry.getKey().tableId, entry.getKey().snapshotId, entry.getValue());
+    for (TargetStatsRecord record : stats) {
+      if (!record.hasTableId() || record.getTableId().getId().isBlank()) {
+        throw new IllegalArgumentException("record missing tableId");
+      }
+      statsStore.putTargetStats(record);
     }
   }
 
@@ -451,35 +429,6 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
       case CF_DELTA -> TableFormat.TF_DELTA;
       default -> TableFormat.TF_UNKNOWN;
     };
-  }
-
-  private static final class StatsGroupKey {
-    private final ResourceId tableId;
-    private final long snapshotId;
-
-    private StatsGroupKey(ResourceId tableId, long snapshotId) {
-      this.tableId = tableId;
-      this.snapshotId = snapshotId;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (this == o) {
-        return true;
-      }
-      if (o == null || getClass() != o.getClass()) {
-        return false;
-      }
-      StatsGroupKey that = (StatsGroupKey) o;
-      return snapshotId == that.snapshotId && tableId.equals(that.tableId);
-    }
-
-    @Override
-    public int hashCode() {
-      int result = tableId.hashCode();
-      result = 31 * result + Long.hashCode(snapshotId);
-      return result;
-    }
   }
 
   private List<String> normalizedSegments(List<String> segments) {

@@ -287,4 +287,47 @@ class TableCommitMetadataMutatorTest {
     assertEquals(7L, merged.lastSequenceNumber());
     assertEquals("7", merged.properties().get("last-sequence-number"));
   }
+
+  @Test
+  void applyRemovesSnapshotsListedInRemoveSnapshotsUpdate() {
+    long keepSnapshotId = 1001L;
+    long removedSnapshotId = 1002L;
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
+            1L,
+            Map.of("format-version", "2", "current-snapshot-id", Long.toString(keepSnapshotId)),
+            0,
+            0,
+            0,
+            0,
+            0,
+            keepSnapshotId,
+            0L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of("main", Map.of("snapshot-id", keepSnapshotId, "type", "branch")),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(
+                Map.of("snapshot-id", keepSnapshotId, "timestamp-ms", 1L),
+                Map.of("snapshot-id", removedSnapshotId, "timestamp-ms", 2L)));
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of("action", "remove-snapshots", "snapshot-ids", List.of(removedSnapshotId))));
+
+    TableMetadataView merged = mutator.apply(metadata, request);
+
+    assertEquals(
+        List.of(Map.of("snapshot-id", keepSnapshotId, "timestamp-ms", 1L)), merged.snapshots());
+  }
 }

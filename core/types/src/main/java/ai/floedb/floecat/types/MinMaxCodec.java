@@ -34,7 +34,7 @@ public final class MinMaxCodec {
   private MinMaxCodec() {}
 
   /**
-   * Encodes {@code value} to the canonical string used in ColumnStats {@code min}/{@code max}
+   * Encodes {@code value} to the canonical string used in ScalarStats {@code min}/{@code max}
    * fields.
    *
    * @param t the logical type governing encoding semantics (must not be null)

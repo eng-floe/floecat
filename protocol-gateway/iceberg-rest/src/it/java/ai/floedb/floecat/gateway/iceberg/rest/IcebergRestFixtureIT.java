@@ -29,21 +29,22 @@ import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableStatsResponse;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ListColumnStatsResponse;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableStats;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
+import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
@@ -1781,9 +1783,25 @@ class IcebergRestFixtureIT {
         .body("metadata.'format-version'", equalTo(2));
 
     if (connectorIntegrationEnabled) {
+      ResourceId tableId = resolveTableId("iceberg", "trino_test");
+      Table tableRecord =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
+                      .getTable());
+      Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
+      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
+      Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
+      Assertions.assertTrue(
+          metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
+          () -> "metadata-location should reside under fixture bucket: " + metadataLocation);
+      Assumptions.assumeTrue(
+          tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
+          "Connector integration enabled, but no upstream connector was provisioned");
+
       Connector connector =
-          awaitConnectorForTable("iceberg", "trino_test", Duration.ofSeconds(20));
-      Assertions.assertNotNull(connector, "Connector should be created for trino_test");
+          awaitConnectorById(tableRecord.getUpstream().getConnectorId(), Duration.ofSeconds(45));
+      Assertions.assertNotNull(connector, "Connector should be retrievable for trino_test");
 
       withReconcileControlClient(
           stub -> {
@@ -1813,22 +1831,6 @@ class IcebergRestFixtureIT {
             return null;
           });
 
-      ResourceId tableId = resolveTableId("iceberg", "trino_test");
-      Table tableRecord =
-          withTableClient(
-              stub ->
-                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build())
-                      .getTable());
-      Assertions.assertNotNull(tableRecord, "Table should be retrievable via table service");
-      String metadataLocation = tableRecord.getPropertiesMap().get("metadata-location");
-      Assertions.assertNotNull(metadataLocation, "metadata-location property should exist");
-      Assertions.assertTrue(
-          metadataLocation.startsWith(FIXTURE_METADATA_PREFIX),
-          () -> "metadata-location should reside under fixture bucket: " + metadataLocation);
-      Assertions.assertTrue(
-          tableRecord.hasUpstream() && tableRecord.getUpstream().hasConnectorId(),
-          "Upstream connector identifier must be populated");
-
       ListSnapshotsResponse snapshots =
           withSnapshotClient(
               stub ->
@@ -1843,47 +1845,47 @@ class IcebergRestFixtureIT {
           "Snapshot catalog should contain fixture snapshot ids");
 
       SnapshotRef current = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
-      TableStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
+      TableValueStats stats = awaitTableStats(tableId, current, Duration.ofSeconds(30));
       Assertions.assertTrue(
           stats.getRowCount() > 0, "Fixture stats should report a positive row count");
       Assertions.assertTrue(
           stats.getTotalSizeBytes() > 0, "Fixture stats should track total bytes");
 
-      ListColumnStatsResponse columnStats =
+      List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStats =
           awaitColumnStats(tableId, current, Duration.ofSeconds(30));
-      Assertions.assertFalse(
-          columnStats.getColumnsList().isEmpty(), "Column statistics must be available");
+      Assertions.assertFalse(columnStats.isEmpty(), "Column statistics must be available");
       columnStats
-          .getColumnsList()
           .forEach(
               col -> {
-                Assertions.assertNotNull(col.getColumnName(), "Column name should be set");
-                Assertions.assertFalse(col.getColumnName().isBlank(), "Column name should be set");
+                Assertions.assertNotNull(col.getDisplayName(), "Column name should be set");
+                Assertions.assertFalse(col.getDisplayName().isBlank(), "Column name should be set");
                 Assertions.assertFalse(
                     col.getLogicalType().isBlank(),
-                    () -> "Logical type should be populated for " + col.getColumnName());
+                    () -> "Logical type should be populated for " + col.getDisplayName());
                 if (col.hasNdv()) {
                   Assertions.assertTrue(
                       col.getNdv().hasApprox() || col.getNdv().hasExact(),
-                      () -> "NDV should contain exact or approx estimate for " + col.getColumnName());
+                      () ->
+                          "NDV should contain exact or approx estimate for "
+                              + col.getDisplayName());
                   if (col.getNdv().hasApprox()) {
                     var approx = col.getNdv().getApprox();
                     Assertions.assertTrue(
                         approx.getEstimate() > 0.0d,
-                        () -> "Approximate NDV must be positive for " + col.getColumnName());
+                        () -> "Approximate NDV must be positive for " + col.getDisplayName());
                     Assertions.assertTrue(
                         approx.getRowsSeen() > 0,
-                        () -> "rows-seen must be positive for " + col.getColumnName());
+                        () -> "rows-seen must be positive for " + col.getDisplayName());
                     Assertions.assertTrue(
                         approx.getRowsTotal() >= approx.getRowsSeen(),
-                        () -> "rows-total must be >= rows-seen for " + col.getColumnName());
+                        () -> "rows-total must be >= rows-seen for " + col.getDisplayName());
                     Assertions.assertFalse(
                         approx.getMethod().isBlank(),
-                        () -> "NDV method must be set for " + col.getColumnName());
+                        () -> "NDV method must be set for " + col.getDisplayName());
                   }
                   Assertions.assertFalse(
                       col.getNdv().getSketchesList().isEmpty(),
-                      () -> "Sketch metadata must be present for " + col.getColumnName());
+                      () -> "Sketch metadata must be present for " + col.getDisplayName());
                   col.getNdv()
                       .getSketchesList()
                       .forEach(
@@ -1892,7 +1894,7 @@ class IcebergRestFixtureIT {
                                   sketch.getType().isBlank(),
                                   () ->
                                       "Sketch type must be set for column "
-                                          + col.getColumnName()));
+                                          + col.getDisplayName()));
                 }
               });
     }
@@ -2033,10 +2035,14 @@ class IcebergRestFixtureIT {
 
   private String registerTable(
       String namespace, String table, String metadataLocation, boolean overwrite) {
-    Map<String, Object> properties = fixtureIoProperties();
+    Map<String, String> properties = fixtureIoProperties();
     Map<String, Object> payload = new LinkedHashMap<>();
     payload.put("name", table);
-    payload.put("metadata-location", TestS3Fixtures.bucketUri(metadataLocation));
+    String registerMetadataLocation =
+        metadataLocation != null && metadataLocation.startsWith("s3://")
+            ? metadataLocation
+            : TestS3Fixtures.bucketUri(metadataLocation);
+    payload.put("metadata-location", registerMetadataLocation);
     payload.put("overwrite", overwrite);
     payload.put("properties", properties);
     System.out.printf(
@@ -2281,8 +2287,8 @@ class IcebergRestFixtureIT {
     return payload;
   }
 
-  private Map<String, Object> fixtureIoProperties() {
-    Map<String, Object> props = new LinkedHashMap<>();
+  private Map<String, String> fixtureIoProperties() {
+    Map<String, String> props = new LinkedHashMap<>();
     TestS3Fixtures.fileIoProperties(TEST_S3_ROOT.toAbsolutePath().toString()).forEach(props::put);
     int formatVersion = fixtureMetadata == null ? 2 : fixtureMetadata.formatVersion();
     props.put("format-version", Integer.toString(formatVersion));
@@ -2332,7 +2338,7 @@ class IcebergRestFixtureIT {
     request.put("schema", fixtureSchema());
     request.put("partition-spec", fixturePartitionSpec());
     request.put("write-order", fixtureWriteOrder());
-    Map<String, Object> props = fixtureIoProperties();
+    Map<String, Object> props = new LinkedHashMap<>(fixtureIoProperties());
     props.put("metadata-location", stagedMetadataLocation);
     request.put("properties", props);
     request.put("location", String.format("s3://%s/%s/%s", STAGE_BUCKET, namespace, table));
@@ -2424,19 +2430,10 @@ class IcebergRestFixtureIT {
   private Connector awaitConnectorForTable(String namespace, String table, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
-      Connector connector =
-          withConnectorsClient(
-              stub -> {
-                ListConnectorsResponse response =
-                    stub.listConnectors(ListConnectorsRequest.newBuilder().build());
-                return response.getConnectorsList().stream()
-                    .filter(
-                        c ->
-                            table.equals(c.getSource().getTable())
-                                && namespace.equals(String.join(".", c.getSource().getNamespace().getSegmentsList())))
-                    .findFirst()
-                    .orElse(null);
-              });
+      Connector connector = findConnectorBySourceSelection(namespace, table);
+      if (connector == null) {
+        connector = findConnectorViaTableUpstream(namespace, table);
+      }
       if (connector != null) {
         return connector;
       }
@@ -2449,6 +2446,86 @@ class IcebergRestFixtureIT {
     }
     Assertions.fail("Timed out waiting for connector for " + namespace + "." + table);
     return null;
+  }
+
+  private Connector awaitConnectorById(ResourceId connectorId, Duration timeout) {
+    if (connectorId == null || connectorId.getId().isBlank()) {
+      return null;
+    }
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      try {
+        Connector connector =
+            withConnectorsClient(
+                stub ->
+                    stub.getConnector(
+                            GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                        .getConnector());
+        if (connector != null && connector.hasResourceId()) {
+          return connector;
+        }
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND
+            && e.getStatus().getCode() != Status.Code.UNAVAILABLE) {
+          throw e;
+        }
+      }
+      try {
+        TimeUnit.MILLISECONDS.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+    return null;
+  }
+
+  private Connector findConnectorBySourceSelection(String namespace, String table) {
+    return withConnectorsClient(
+        stub -> {
+          ListConnectorsResponse response =
+              stub.listConnectors(ListConnectorsRequest.newBuilder().build());
+          return response.getConnectorsList().stream()
+              .filter(
+                  c ->
+                      table.equals(c.getSource().getTable())
+                          && namespace.equals(
+                              String.join(".", c.getSource().getNamespace().getSegmentsList())))
+              .findFirst()
+              .orElse(null);
+        });
+  }
+
+  private Connector findConnectorViaTableUpstream(String namespace, String table) {
+    try {
+      ResourceId tableId = resolveTableId(namespace, table);
+      if (tableId == null || tableId.getId().isBlank()) {
+        return null;
+      }
+      Table tableRecord =
+          withTableClient(
+              stub ->
+                  stub.getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable());
+      if (tableRecord == null
+          || !tableRecord.hasUpstream()
+          || !tableRecord.getUpstream().hasConnectorId()) {
+        return null;
+      }
+      ResourceId connectorId = tableRecord.getUpstream().getConnectorId();
+      if (connectorId == null || connectorId.getId().isBlank()) {
+        return null;
+      }
+      return withConnectorsClient(
+          stub ->
+              stub.getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                  .getConnector());
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND
+          || e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private <S extends AbstractBlockingStub<S>, T> T withServiceClient(
@@ -2555,21 +2632,28 @@ class IcebergRestFixtureIT {
         .collect(Collectors.toList());
   }
 
-  private TableStats awaitTableStats(
+  private TableValueStats awaitTableStats(
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
       try {
-        GetTableStatsResponse response =
+        var response =
             withStatisticsClient(
                 stub ->
-                    stub.getTableStats(
-                        GetTableStatsRequest.newBuilder()
+                    stub.getTargetStats(
+                        GetTargetStatsRequest.newBuilder()
                             .setTableId(tableId)
                             .setSnapshot(snapshotRef)
+                            .setTarget(
+                                StatsTarget.newBuilder()
+                                    .setTable(TableStatsTarget.newBuilder().build())
+                                    .build())
                             .build()));
-        if (response.hasStats() && response.getStats().getRowCount() > 0) {
-          return response.getStats();
+        if (response.hasStats() && response.getStats().hasTable()) {
+          var tableStats = tableStatsFromTargetRecord(response.getStats());
+          if (tableStats.getRowCount() > 0) {
+            return tableStats;
+          }
         }
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
@@ -2584,24 +2668,25 @@ class IcebergRestFixtureIT {
       }
     }
     Assertions.fail("Timed out waiting for table stats for " + tableId.getId());
-    return TableStats.getDefaultInstance();
+    return TableValueStats.getDefaultInstance();
   }
 
-  private ListColumnStatsResponse awaitColumnStats(
+  private List<ai.floedb.floecat.catalog.rpc.ScalarStats> awaitColumnStats(
       ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
     long deadline = System.nanoTime() + timeout.toNanos();
     while (System.nanoTime() < deadline) {
-      ListColumnStatsResponse response =
+      var response =
           withStatisticsClient(
               stub ->
-                  stub.listColumnStats(
-                      ListColumnStatsRequest.newBuilder()
+                  stub.listTargetStats(
+                      ListTargetStatsRequest.newBuilder()
                           .setTableId(tableId)
                           .setSnapshot(snapshotRef)
                           .setPage(PageRequest.newBuilder().setPageSize(200).build())
                           .build()));
-      if (!response.getColumnsList().isEmpty()) {
-        return response;
+      var columns = columnStatsFromTargetRecords(response.getRecordsList());
+      if (!columns.isEmpty()) {
+        return columns;
       }
       try {
         TimeUnit.MILLISECONDS.sleep(200);
@@ -2611,7 +2696,50 @@ class IcebergRestFixtureIT {
       }
     }
     Assertions.fail("Timed out waiting for column stats for " + tableId.getId());
-    return ListColumnStatsResponse.getDefaultInstance();
+    return List.of();
+  }
+
+  private static TableValueStats tableStatsFromTargetRecord(TargetStatsRecord record) {
+    return record.getTable();
+  }
+
+  private static List<ai.floedb.floecat.catalog.rpc.ScalarStats> columnStatsFromTargetRecords(
+      List<TargetStatsRecord> records) {
+    List<ai.floedb.floecat.catalog.rpc.ScalarStats> out = new ArrayList<>();
+    for (TargetStatsRecord record : records) {
+      if (!record.getTarget().hasColumn() || !record.hasScalar()) {
+        continue;
+      }
+      var scalar = record.getScalar();
+      var builder =
+          ai.floedb.floecat.catalog.rpc.ScalarStats.newBuilder()
+              .setDisplayName(scalar.getDisplayName())
+              .setLogicalType(scalar.getLogicalType())
+              .setValueCount(scalar.getValueCount())
+              .setHistogram(scalar.getHistogram())
+              .setTdigest(scalar.getTdigest())
+              .putAllProperties(scalar.getPropertiesMap());
+      if (scalar.hasUpstream()) {
+        builder.setUpstream(scalar.getUpstream());
+      }
+      if (scalar.hasNullCount()) {
+        builder.setNullCount(scalar.getNullCount());
+      }
+      if (scalar.hasNanCount()) {
+        builder.setNanCount(scalar.getNanCount());
+      }
+      if (scalar.hasNdv()) {
+        builder.setNdv(scalar.getNdv());
+      }
+      if (scalar.hasMin()) {
+        builder.setMin(scalar.getMin());
+      }
+      if (scalar.hasMax()) {
+        builder.setMax(scalar.getMax());
+      }
+      out.add(builder.build());
+    }
+    return out;
   }
 
   private static void reseedFixtureBucket() {

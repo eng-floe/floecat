@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.metadata.TableMetadataView;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergMetadata;
 import ai.floedb.floecat.gateway.iceberg.rpc.IcebergRef;
@@ -39,13 +40,18 @@ import org.junit.jupiter.api.Test;
 class TableMetadataBuilderTest {
   private static final ObjectMapper JSON = new ObjectMapper();
 
+  private static ResourceId tableId(String id) {
+    return ResourceId.newBuilder()
+        .setKind(ResourceKind.RK_TABLE)
+        .setAccountId("acct")
+        .setId(id)
+        .build();
+  }
+
   @Test
   void currentSnapshotUsesMetadataReference() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
-    Table table =
-        fixture.table().toBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
-            .build();
+    Table table = fixture.table().toBuilder().setResourceId(tableId("catalog:ns:orders")).build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     List<Snapshot> snapshots = fixture.snapshots();
     long earliest = snapshots.stream().mapToLong(Snapshot::getSequenceNumber).min().orElse(0L);
@@ -84,10 +90,7 @@ class TableMetadataBuilderTest {
   @Test
   void snapshotsAlwaysIncludeRequiredSpecFields() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
-    Table table =
-        fixture.table().toBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
-            .build();
+    Table table = fixture.table().toBuilder().setResourceId(tableId("catalog:ns:orders")).build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     IcebergMetadata metadata = fixture.metadata();
     Snapshot sparse = Snapshot.newBuilder().setSnapshotId(11L).build();
@@ -108,7 +111,7 @@ class TableMetadataBuilderTest {
   void zeroSnapshotIdRemainsValidForCurrentRef() {
     Table table =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:delta:call_center"))
+            .setResourceId(tableId("catalog:delta:call_center"))
             .putProperties("data_source_format", "DELTA")
             .build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
@@ -136,10 +139,7 @@ class TableMetadataBuilderTest {
   @Test
   void currentSnapshotFallsBackToMainRefWhenMissing() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
-    Table table =
-        fixture.table().toBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
-            .build();
+    Table table = fixture.table().toBuilder().setResourceId(tableId("catalog:ns:orders")).build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     long current = fixture.metadata().getCurrentSnapshotId();
     IcebergMetadata metadata =
@@ -163,10 +163,7 @@ class TableMetadataBuilderTest {
   @Test
   void refsNormalizeLegacyMaxReferenceAgeKeyFromProperties() {
     TrinoFixtureTestSupport.Fixture fixture = TrinoFixtureTestSupport.simpleFixture();
-    Table table =
-        fixture.table().toBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:ns:orders"))
-            .build();
+    Table table = fixture.table().toBuilder().setResourceId(tableId("catalog:ns:orders")).build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     long currentSnapshotId = fixture.metadata().getCurrentSnapshotId();
     props.put("current-snapshot-id", Long.toString(currentSnapshotId));
@@ -194,7 +191,7 @@ class TableMetadataBuilderTest {
             + "{\"id\":2,\"name\":\"v\",\"type\":\"string\",\"required\":false}],\"last-column-id\":2}";
     Table table =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setId("catalog:delta:dv_demo_delta"))
+            .setResourceId(tableId("catalog:delta:dv_demo_delta"))
             .putProperties("data_source_format", "DELTA")
             .build();
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());

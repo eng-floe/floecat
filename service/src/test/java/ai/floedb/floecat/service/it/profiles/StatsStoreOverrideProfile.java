@@ -14,7 +14,16 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.model;
+package ai.floedb.floecat.service.it.profiles;
 
-public record TableStatsKey(String accountId, String tableId, long snapshotId, String sha256)
-    implements ResourceKey {}
+import io.quarkus.test.junit.QuarkusTestProfile;
+import java.util.Map;
+
+public class StatsStoreOverrideProfile implements QuarkusTestProfile {
+  @Override
+  public Map<String, String> getConfigOverrides() {
+    return Map.of(
+        "quarkus.arc.selected-alternatives",
+        "ai.floedb.floecat.service.it.stats.TestOverrideStatsStore");
+  }
+}
