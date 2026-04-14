@@ -115,7 +115,6 @@ class StatsCaptureBatchTypesTest {
                         Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
             .captureFn(
                 req -> {
