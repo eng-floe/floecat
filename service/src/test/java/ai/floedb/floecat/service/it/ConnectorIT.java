@@ -771,7 +771,12 @@ public class ConnectorIT {
       var outTableId = outTables.get(0).getResourceId();
       assertTrue(snaps.getById(outTableId, 0L).isPresent(), "expected Delta snapshot_id=0");
 
-      var fileStats = listCurrentFileStats(outTableId, 10);
+      var fileStats =
+          awaitFileStats(
+              outTableId,
+              SnapshotRef.newBuilder().setSnapshotId(0L).build(),
+              10,
+              Duration.ofSeconds(30));
       assertFalse(fileStats.isEmpty(), "expected file stats at current snapshot");
     }
   }
@@ -1443,13 +1448,13 @@ public class ConnectorIT {
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
   }
 
-  private List<FileTargetStats> listCurrentFileStats(ResourceId tableId, int pageSize) {
+  private List<FileTargetStats> listFileStats(
+      ResourceId tableId, SnapshotRef snapshot, int pageSize) {
     var response =
         statsService.listTargetStats(
             ListTargetStatsRequest.newBuilder()
                 .setTableId(tableId)
-                .setSnapshot(
-                    SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                .setSnapshot(snapshot)
                 .addTargetKinds(StatsTargetKind.STK_FILE)
                 .setPage(PageRequest.newBuilder().setPageSize(pageSize))
                 .build());
@@ -1457,6 +1462,35 @@ public class ConnectorIT {
         .filter(TargetStatsRecord::hasFile)
         .map(TargetStatsRecord::getFile)
         .toList();
+  }
+
+  private List<FileTargetStats> listCurrentFileStats(ResourceId tableId, int pageSize) {
+    return listFileStats(
+        tableId, SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(), pageSize);
+  }
+
+  private List<FileTargetStats> awaitFileStats(
+      ResourceId tableId, SnapshotRef snapshot, int pageSize, Duration timeout)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    List<FileTargetStats> stats = List.of();
+    while (System.nanoTime() <= deadline) {
+      stats = listFileStats(tableId, snapshot, pageSize);
+      if (!stats.isEmpty()) {
+        return stats;
+      }
+      Thread.sleep(200);
+    }
+    return stats;
+  }
+
+  private List<FileTargetStats> awaitCurrentFileStats(
+      ResourceId tableId, int pageSize, Duration timeout) throws InterruptedException {
+    return awaitFileStats(
+        tableId,
+        SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
+        pageSize,
+        timeout);
   }
 
   private static DestinationTarget dest(String catalogDisplayName) {

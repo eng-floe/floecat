@@ -98,6 +98,12 @@ public class RuntimeSelectedReconcilerBackend implements ReconcilerBackend {
   }
 
   @Override
+  public boolean statsCapturedForColumnSelectors(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
+    return delegate.statsCapturedForColumnSelectors(ctx, tableId, snapshotId, selectors);
+  }
+
+  @Override
   public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
     delegate.putTargetStats(ctx, stats);
   }

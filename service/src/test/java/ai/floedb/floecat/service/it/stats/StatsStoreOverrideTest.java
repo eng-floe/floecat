@@ -23,7 +23,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.it.profiles.StatsStoreOverrideProfile;
-import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
@@ -43,7 +43,7 @@ class StatsStoreOverrideTest {
 
   @Inject StatsStore statsStore;
 
-  @Inject PersistedStatsCaptureEngine persistedEngine;
+  @Inject StatsOrchestrator orchestrator;
 
   @BeforeEach
   void resetCounters() {
@@ -51,7 +51,7 @@ class StatsStoreOverrideTest {
   }
 
   @Test
-  void selectedAlternativeStoreIsUsedByCaptureEngine() {
+  void selectedAlternativeStoreIsUsedByOrchestratorReadPath() {
     assertThat(statsStore).isInstanceOf(TestOverrideStatsStore.class);
 
     ResourceId tableId =
@@ -72,21 +72,17 @@ class StatsStoreOverrideTest {
     statsStore.putTargetStats(columnRecord);
 
     var request =
-        new StatsCaptureRequest(
-            tableId,
-            snapshotId,
-            StatsTargetIdentity.columnTarget(1L),
-            Set.of(),
-            Set.of(StatsKind.NULL_COUNT),
-            StatsExecutionMode.SYNC,
-            "iceberg",
-            "test-corr",
-            false);
+        StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.columnTarget(1L))
+            .requestedKinds(Set.of(StatsKind.NULL_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("iceberg")
+            .correlationId("test-corr")
+            .build();
 
-    var result = persistedEngine.capture(request);
+    var result = orchestrator.resolve(request);
 
     assertThat(result).isPresent();
-    assertThat(result.orElseThrow().record()).isEqualTo(columnRecord);
+    assertThat(result.orElseThrow()).isEqualTo(columnRecord);
     assertThat(TestOverrideStatsStore.putCount()).isEqualTo(1);
     assertThat(TestOverrideStatsStore.getCount()).isGreaterThan(0);
   }

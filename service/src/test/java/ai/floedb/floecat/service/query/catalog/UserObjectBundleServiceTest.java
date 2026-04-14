@@ -41,6 +41,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
@@ -53,10 +54,11 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionResult;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
-import ai.floedb.floecat.service.statistics.engine.impl.PersistedStatsCaptureEngine;
-import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -77,6 +79,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 class UserObjectBundleServiceTest {
 
@@ -163,11 +166,15 @@ class UserObjectBundleServiceTest {
     overlay.registerCatalog(DEFAULT_CATALOG, "cat");
     queryStore.seed(ctx);
     statsRepository = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    statsFactory =
-        new StatsProviderFactory(
-            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(statsRepository))),
-            queryStore,
-            new FakeTableRepository());
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsRepository,
+            Mockito.mock(ReconcileJobStore.class),
+            tableRepository,
+            new StatsEngineRegistry(
+                List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
+    statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
     service =
         new UserObjectBundleService(
             overlay,
@@ -263,11 +270,16 @@ class UserObjectBundleServiceTest {
     localStore.seed(noPinCtx);
     StatsRepository localStatsRepository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    TableRepository localTableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator localOrchestrator =
+        new StatsOrchestrator(
+            localStatsRepository,
+            Mockito.mock(ReconcileJobStore.class),
+            localTableRepository,
+            new StatsEngineRegistry(
+                List.of(TestStatsCaptureEngine.builder("noop").fixed(Optional.empty()).build())));
     StatsProviderFactory localStatsFactory =
-        new StatsProviderFactory(
-            new StatsEngineRegistry(List.of(new PersistedStatsCaptureEngine(localStatsRepository))),
-            localStore,
-            new FakeTableRepository());
+        new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
     UserObjectBundleService localService =
         new UserObjectBundleService(
             overlay,

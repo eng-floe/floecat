@@ -1101,6 +1101,12 @@ class ReconcilerServiceTest {
     }
 
     @Override
+    public boolean statsCapturedForColumnSelectors(
+        ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {
       throw new UnsupportedOperationException();
     }

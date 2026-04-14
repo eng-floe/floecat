@@ -57,6 +57,17 @@ public interface ReconcilerBackend {
   boolean statsAlreadyCapturedForTargetKind(
       ReconcileContext ctx, ResourceId tableId, long snapshotId, StatsTargetKind targetKind);
 
+  /**
+   * Returns whether all requested column selectors are covered by persisted column stats.
+   *
+   * <p>Selectors use the same syntax as {@code StatsCaptureRequest.columnSelectors} (for example
+   * {@code #123} for stable column id, or connector-native column name/path strings). Malformed id
+   * selectors (for example {@code #abc}) are treated as unsatisfiable and must return {@code
+   * false}.
+   */
+  boolean statsCapturedForColumnSelectors(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors);
+
   void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats);
 
   /** No-op default; connectors that predate constraints support may omit this. */

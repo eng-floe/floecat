@@ -32,10 +32,24 @@ Module boundaries:
 - `core/stats` defines SPI contracts and capability/request/result models.
 - `service` owns runtime orchestration (`StatsEngineRegistry`) and provider implementations.
 
-Current baseline engine:
+Current runtime engines:
 
-- `PersistedStatsCaptureEngine` (capture SPI fallback reading persisted target stats from store)
-- configured as a lowest-priority fallback so specialized providers win when available
+- `IcebergNativeStatsCaptureEngine` (source-native capture for Iceberg/Glue connectors)
+- `DeltaNativeStatsCaptureEngine` (source-native capture for Delta/Unity connectors)
+
+Current target support in native engines:
+
+- `TABLE`
+- `COLUMN`
+- `FILE`
+
+`EXPRESSION` capture engines are future work.
+
+`StatsCaptureRequest.columnSelectors`:
+
+- optional connector-native selector hints for scoped table/column/file capture
+- used to preserve selector-scoped reconcile behavior while routing through orchestrator/control
+  plane
 
 Default store:
 
@@ -43,9 +57,12 @@ Default store:
 
 Service wiring:
 
-- `StatsEngineRegistry` is internal capture orchestration for provider routing.
-- Public read/list RPCs resolve through `StatsStore`.
-- Planner/query reads resolve through `StatsStore`.
+- `StatsOrchestrator` is the internal resolution entrypoint for planner/query reads.
+- `StatsEngineRegistry` handles capability/priority engine selection for compute capture.
+- `StatsCaptureControlPlane` is the explicit capture entrypoint for control-plane callers
+  (for example reconciler `STATS_ONLY` routing); current service implementation delegates to
+  `StatsOrchestrator.capture(request)`.
+- Public read/list RPCs remain `StatsStore` authoritative reads.
 
 Authoritative model:
 
@@ -59,13 +76,12 @@ Authoritative model:
 This SPI does **not** implement by itself:
 
 - target-native planner payload evolution
-- source-native Iceberg/Delta engines
 - compute expression engines
 - sync budget orchestration
 - async reconcile policy
 - multi-provider field-level composition
 
-This is intentionally a thin orchestration layer with one baseline engine.
+This is intentionally a thin orchestration layer; engine quality/policy evolves independently.
 
 ## Capability model
 
@@ -94,15 +110,35 @@ Snapshot-awareness rule:
 
 ## Routing behavior
 
+`StatsOrchestrator.resolve(request)`:
+
+1. checks `StatsStore` for an existing record
+2. for `SYNC`, calls `StatsEngineRegistry.capture(request)` on miss
+3. if still missing, enqueues table-scoped `STATS_ONLY` capture for the requested snapshot and
+   returns empty
+
+Current enqueue policy:
+
+- enqueue fallback is currently miss-based
+- enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
+  candidate for the requested target
+- async enqueue scope is currently table+snapshot (not target-granular follow-up yet)
+- target-level async follow-up reasons/scopes are planned in later PRs
+
 `StatsEngineRegistry.capture(request)`:
 
 1. filters engines by `supports(request)` / capabilities
 2. sorts by `priority()` then `id()`
 3. calls each engine until one returns a non-empty result
-4. if no engine supports the request, returns a clear `NON_IMPLEMENTED` error
+4. throws `StatsUnsupportedTargetException` when no engine supports the request
 
-The registry is responsible for discovery, ordering, and selection only. It is not a merge
-framework and does not assemble a final user-facing response.
+The registry is selection-only and does not merge multi-engine outputs.
+
+`StatsCaptureControlPlane.capture(request)`:
+
+1. serves as the explicit capture control-plane entrypoint (non-query callers)
+2. in service runtime, delegates to `StatsOrchestrator.capture(request)`
+3. executes one registry-routed capture attempt (no store-read short-circuit, no enqueue fallback)
 
 Result model:
 
@@ -138,10 +174,9 @@ Guidelines:
 
 ## Existing baseline behavior
 
-`PersistedStatsCaptureEngine` supports store-backed table, column, expression, and file targets
-for `SYNC` capture mode.
 `StatsRepository` is the default OSS authoritative `StatsStore` implementation.
-This ensures no regression while keeping reads/writes aligned to one store contract.
+Both native engines persist captured records back into `StatsStore` before returning.
+This keeps reads and writes aligned to one authoritative store contract.
 
 ## Plugging your own StatsStore
 
@@ -164,7 +199,5 @@ CDI guidance:
 
 ## Typical extensions
 
-- Add source-native engines (Iceberg/Delta) through this SPI.
 - Add compute-backed expression engines through this SPI.
-- Move service/planner payload handling to target-native request/response models.
 - Add budgeted sync orchestration and async follow-up on partial outcomes.

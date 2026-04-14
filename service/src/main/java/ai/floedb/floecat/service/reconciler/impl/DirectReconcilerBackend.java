@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
@@ -57,6 +58,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Typed;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -359,6 +361,38 @@ public class DirectReconcilerBackend extends BaseServiceImpl implements Reconcil
           case UNRECOGNIZED -> Optional.empty();
         };
     return statsStore.countTargetStats(tableId, snapshotId, targetType) > 0;
+  }
+
+  @Override
+  public boolean statsCapturedForColumnSelectors(
+      ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
+    ColumnSelectorCoverage.SelectorCoverage required = ColumnSelectorCoverage.parse(selectors);
+    if (required.isUnsatisfiable()) {
+      return false;
+    }
+    if (required.isEmpty()) {
+      return statsAlreadyCapturedForTargetKind(
+          ctx, tableId, snapshotId, StatsTargetKind.STK_COLUMN);
+    }
+
+    Set<Long> presentIds = new HashSet<>();
+    Set<String> presentNames = new HashSet<>();
+    String pageToken = "";
+    final int pageSize = 256;
+    do {
+      StatsStore.StatsStorePage page =
+          statsStore.listTargetStats(
+              tableId, snapshotId, Optional.of(StatsTargetType.COLUMN), pageSize, pageToken);
+      for (TargetStatsRecord record : page.records()) {
+        ColumnSelectorCoverage.recordColumnCoverage(record, presentIds, presentNames);
+      }
+      if (required.isSatisfiedBy(presentIds, presentNames)) {
+        return true;
+      }
+      pageToken = page.nextPageToken();
+    } while (pageToken != null && !pageToken.isBlank());
+
+    return required.isSatisfiedBy(presentIds, presentNames);
   }
 
   @Override
