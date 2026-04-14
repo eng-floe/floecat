@@ -37,7 +37,6 @@ class StatsCapabilitiesTest {
             .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
             .executionModes(Set.of(StatsExecutionMode.SYNC))
             .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-            .snapshotAware(true)
             .build();
 
     assertThat(caps.connectors()).containsExactlyInAnyOrder("iceberg", "delta");
@@ -52,7 +51,6 @@ class StatsCapabilitiesTest {
             .statisticKindsByTarget(Map.of(StatsTargetType.TABLE, Set.of()))
             .executionModes(Set.of(StatsExecutionMode.SYNC))
             .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-            .snapshotAware(true)
             .build();
 
     StatsCaptureRequest request =
@@ -81,7 +79,6 @@ class StatsCapabilitiesTest {
                     StatsTargetType.COLUMN, Set.of(StatsKind.NDV)))
             .executionModes(Set.of(StatsExecutionMode.SYNC))
             .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-            .snapshotAware(true)
             .build();
 
     StatsCaptureRequest tableNdvRequest =
@@ -108,7 +105,6 @@ class StatsCapabilitiesTest {
                         Map.of(StatsTargetType.TABLE, Set.of(StatsKind.ROW_COUNT)))
                     .executionModes(Set.of(StatsExecutionMode.SYNC))
                     .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .snapshotAware(true)
                     .build())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must declare supported kinds");

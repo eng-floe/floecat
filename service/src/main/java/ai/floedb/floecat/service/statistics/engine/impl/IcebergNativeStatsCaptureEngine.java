@@ -56,7 +56,6 @@ public class IcebergNativeStatsCaptureEngine extends AbstractNativeStatsCaptureE
                   Set.of(StatsKind.ROW_COUNT, StatsKind.NULL_COUNT, StatsKind.MIN_MAX)))
           .executionModes(Set.of(StatsExecutionMode.SYNC, StatsExecutionMode.ASYNC))
           .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-          .snapshotAware(true)
           .build();
 
   @Inject

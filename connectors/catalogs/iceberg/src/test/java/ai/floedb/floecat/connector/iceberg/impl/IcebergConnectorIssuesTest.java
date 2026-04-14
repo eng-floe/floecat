@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -50,10 +51,10 @@ class IcebergConnectorIssuesTest {
     try (FloecatConnector connector =
         IcebergConnectorFactory.create(
             metadataLocation, props, "none", new HashMap<>(), new HashMap<>())) {
-      var snapshots =
+      List<FloecatConnector.SnapshotBundle> snapshots =
           assertDoesNotThrow(
               () ->
-                  connector.enumerateSnapshotsWithStats(
+                  connector.enumerateSnapshots(
                       "tpcds_sfone",
                       "catalog_returns",
                       ResourceId.newBuilder()
@@ -61,15 +62,30 @@ class IcebergConnectorIssuesTest {
                           .setId("test-table")
                           .setKind(ResourceKind.RK_TABLE)
                           .build(),
-                      Set.of()));
+                      FloecatConnector.SnapshotEnumerationOptions.full(true)));
 
       assertNotNull(snapshots);
       assertFalse(snapshots.isEmpty(), "expected snapshots from tpcds_sfone fixture");
+
+      long snapshotId = snapshots.get(0).snapshotId();
+      var targetStats =
+          assertDoesNotThrow(
+              () ->
+                  connector.captureSnapshotTargetStats(
+                      "tpcds_sfone",
+                      "catalog_returns",
+                      ResourceId.newBuilder()
+                          .setAccountId("test-account")
+                          .setId("test-table")
+                          .setKind(ResourceKind.RK_TABLE)
+                          .build(),
+                      snapshotId,
+                      Set.of()));
       assertTrue(
-          snapshots.get(0).targetStats().stream().anyMatch(r -> r.hasTable()),
+          targetStats.stream().anyMatch(r -> r.hasTable()),
           "expected table stats to still be produced");
       assertTrue(
-          snapshots.get(0).targetStats().stream()
+          targetStats.stream()
               .filter(r -> r.hasFile())
               .anyMatch(r -> !r.getFile().getColumnsList().isEmpty()),
           "expected file-level stats to still be produced");

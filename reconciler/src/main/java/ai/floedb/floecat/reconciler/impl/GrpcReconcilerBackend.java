@@ -362,6 +362,35 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return hasAnyCapturedStats(ctx, tableId, snapshotId);
     }
     try {
+      if (targetKind == StatsTargetKind.STK_TABLE) {
+        var tableStatsResponse =
+            statistics(ctx)
+                .listTargetStats(
+                    buildStatsAlreadyCapturedRequest(tableId, snapshotId).toBuilder()
+                        .addTargetKinds(StatsTargetKind.STK_TABLE)
+                        .build());
+        if (tableStatsResponse == null || tableStatsResponse.getRecordsList().isEmpty()) {
+          return false;
+        }
+        var tableRecord = tableStatsResponse.getRecords(0);
+        if (!tableRecord.hasTable()) {
+          return false;
+        }
+        if (tableRecord.getTable().getDataFileCount() <= 0) {
+          return true;
+        }
+        var fileStatsResponse =
+            statistics(ctx)
+                .listTargetStats(
+                    ListTargetStatsRequest.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                        .setPage(PageRequest.newBuilder().setPageSize(1).build())
+                        .addTargetKinds(StatsTargetKind.STK_FILE)
+                        .build());
+        return fileStatsResponse != null && !fileStatsResponse.getRecordsList().isEmpty();
+      }
+
       var response =
           statistics(ctx)
               .listTargetStats(

@@ -44,6 +44,7 @@ import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.util.Timestamps;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -120,34 +121,36 @@ abstract class AbstractNativeStatsCaptureEngine implements StatsCaptureEngine {
               upstream.getConnectorId());
 
       try (FloecatConnector floecatConnector = connectorOpener.open(resolved)) {
-        // Connector SPI expects namespace as fully-qualified string.
-        List<FloecatConnector.SnapshotBundle> bundles =
-            floecatConnector.enumerateSnapshotsWithStats(
-                String.join(".", upstream.getNamespacePathList()),
+        String namespaceFq = String.join(".", upstream.getNamespacePathList());
+        List<TargetStatsRecord> capturedRecords =
+            floecatConnector.captureSnapshotTargetStats(
+                namespaceFq,
                 upstream.getTableDisplayName(),
                 request.tableId(),
-                request.columnSelectors(),
-                new FloecatConnector.SnapshotEnumerationOptions(true, false, Set.of()));
-        Optional<FloecatConnector.SnapshotBundle> bundle =
-            bundles.stream().filter(b -> b.snapshotId() == request.snapshotId()).findFirst();
-        if (bundle.isEmpty()) {
+                request.snapshotId(),
+                request.columnSelectors());
+        if (capturedRecords == null || capturedRecords.isEmpty()) {
           return Optional.empty();
         }
-        Optional<TargetStatsRecord> record =
-            findMatchingRecord(bundle.get().targetStats(), request);
+        Optional<TargetStatsRecord> record = findMatchingRecord(capturedRecords, request);
         if (record.isEmpty()) {
           return Optional.empty();
         }
         TargetStatsRecord canonicalRecord = withCanonicalMetadata(record.get(), request);
         if (request.target().hasTable()) {
-          // Table-target capture persists the full bundle so later column/file lookups hit store
-          // without additional capture. Replace the table entry with the matched canonical record.
-          for (TargetStatsRecord bundleRecord : bundle.get().targetStats()) {
+          // Table-target capture persists the full snapshot capture so later column/file lookups
+          // hit store without additional capture. Replace the table entry with the matched
+          // canonical record.
+          Set<String> seenTargets = new LinkedHashSet<>();
+          for (TargetStatsRecord bundleRecord : capturedRecords) {
             TargetStatsRecord toPersist =
                 bundleRecord.hasTable()
                     ? canonicalRecord
                     : withCanonicalMetadata(bundleRecord, request);
-            persistRecord(toPersist);
+            String storageId = StatsTargetIdentity.storageId(toPersist.getTarget());
+            if (seenTargets.add(storageId)) {
+              persistRecord(toPersist);
+            }
           }
         } else {
           persistRecord(canonicalRecord);

@@ -42,6 +42,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -54,6 +55,7 @@ import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
+import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -79,6 +81,7 @@ import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -108,6 +111,7 @@ public class ReconcilerService {
   @Inject LogicalSchemaMapper schemaMapper;
   @Inject CredentialResolver credentialResolver;
   @Inject Instance<StatsCaptureControlPlane> statsCaptureControlPlane;
+  @Inject Instance<ReconcileJobStore> reconcileJobStore;
 
   /** Opens a connector from a resolved configuration. */
   @FunctionalInterface
@@ -184,6 +188,7 @@ public class ReconcilerService {
     String corr = ctx.correlationId();
 
     final ArrayList<String> errSummaries = new ArrayList<>();
+    final ArrayList<String> degradedSummaries = new ArrayList<>();
     final BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     final ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -340,17 +345,18 @@ public class ReconcilerService {
           boolean includeCoreMetadata =
               captureMode == CaptureMode.METADATA_ONLY
                   || captureMode == CaptureMode.METADATA_AND_STATS;
-          boolean includeStats =
-              captureMode == CaptureMode.STATS_ONLY
-                  || captureMode == CaptureMode.METADATA_AND_STATS;
+          boolean includeStats = captureMode == CaptureMode.STATS_ONLY;
           Set<Long> targetSnapshotIds = Set.of();
           Set<Long> knownSnapshotIds =
               fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
-          Predicate<Long> statsCompleteForSnapshot =
-              snapshotCompletenessChecker(ctx, destTableId, includeSelectors);
           Set<Long> enumerationKnownSnapshotIds =
               knownSnapshotIdsForEnumeration(
-                  fullRescan, includeStats, knownSnapshotIds, statsCompleteForSnapshot);
+                  fullRescan,
+                  includeStats,
+                  knownSnapshotIds,
+                  snapshotId ->
+                      isStatsCaptureCompleteForScope(
+                          ctx, destTableId, snapshotId, includeSelectors));
           if (captureMode == CaptureMode.STATS_ONLY) {
             IngestCounts ingestCounts =
                 captureStatsOnlyViaControlPlane(
@@ -363,7 +369,6 @@ public class ReconcilerService {
                     knownSnapshotIds,
                     enumerationKnownSnapshotIds,
                     targetSnapshotIds,
-                    statsCompleteForSnapshot,
                     includeSelectors,
                     cancelCheck,
                     progressOut,
@@ -385,42 +390,35 @@ public class ReconcilerService {
             continue;
           }
           var upstreamBundles =
-              connector.enumerateSnapshotsWithStats(
-                  sourceNsFq,
-                  srcTable,
-                  destTableId,
-                  includeSelectors,
-                  fullRescan
-                      ? FloecatConnector.SnapshotEnumerationOptions.full(includeStats)
-                      : FloecatConnector.SnapshotEnumerationOptions.incremental(
-                          includeStats, enumerationKnownSnapshotIds));
-          var bundles =
-              filterBundlesForMode(
-                  upstreamBundles, fullRescan, includeStats, knownSnapshotIds, progressOut);
-          IngestCounts ingestCounts =
-              ingestAllSnapshotsAndStatsFiltered(
+              processMetadataPass(
                   ctx,
+                  connectorId,
                   destTableId,
                   connector,
                   resolved.kind(),
-                  bundles,
-                  includeCoreMetadata,
-                  includeStats,
-                  fullRescan,
-                  statsCompleteForSnapshot,
-                  includeSelectors,
-                  cancelCheck,
-                  progressOut,
                   sourceNsFq,
                   srcTable,
+                  scopeNamespaceFq,
+                  destTableDisplay,
+                  fullRescan,
+                  includeCoreMetadata,
+                  includeStats,
+                  includeSelectors,
+                  knownSnapshotIds,
+                  enumerationKnownSnapshotIds,
+                  targetSnapshotIds,
+                  cancelCheck,
+                  progressOut,
                   scanned,
                   changed,
                   errors,
                   snapshotsProcessed,
-                  statsProcessed);
-          snapshotsProcessed += ingestCounts.snapshotsProcessed;
-          statsProcessed += ingestCounts.statsProcessed;
-          if (tableChanged(bundles)) {
+                  statsProcessed,
+                  captureMode);
+          snapshotsProcessed += upstreamBundles.ingestCounts().snapshotsProcessed;
+          statsProcessed += upstreamBundles.ingestCounts().statsProcessed;
+          upstreamBundles.degradedReason().ifPresent(degradedSummaries::add);
+          if (upstreamBundles.tableChanged()) {
             changed++;
           }
           progressOut.onProgress(
@@ -542,7 +540,14 @@ public class ReconcilerService {
       }
 
       if (errors == 0) {
-        return new Result(scanned, changed, 0, snapshotsProcessed, statsProcessed, null);
+        return new Result(
+            scanned,
+            changed,
+            0,
+            snapshotsProcessed,
+            statsProcessed,
+            null,
+            List.copyOf(degradedSummaries));
       } else {
         var summary = new StringBuilder();
         summary.append("Partial failure (errors=").append(errors).append("):");
@@ -555,7 +560,8 @@ public class ReconcilerService {
             errors,
             snapshotsProcessed,
             statsProcessed,
-            new RuntimeException(summary.toString()));
+            new RuntimeException(summary.toString()),
+            List.copyOf(degradedSummaries));
       }
 
     } catch (Exception e) {
@@ -655,7 +661,7 @@ public class ReconcilerService {
     NameRef tableRef =
         NameRef.newBuilder()
             .setCatalog(catalogName)
-            .addAllPath(List.of(namespaceFq.split("\\.")))
+            .addAllPath(namespacePath(namespaceFq))
             .setName(tableDisplay)
             .build();
     Optional<ResourceId> tableId = backend.lookupTable(ctx, NameRefNormalizer.normalize(tableRef));
@@ -810,6 +816,40 @@ public class ReconcilerService {
     return filtered;
   }
 
+  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
+      List<FloecatConnector.SnapshotBundle> bundles,
+      Set<Long> targetSnapshotIds,
+      ProgressListener progress) {
+    if (bundles == null
+        || bundles.isEmpty()
+        || targetSnapshotIds == null
+        || targetSnapshotIds.isEmpty()) {
+      return bundles == null ? List.of() : bundles;
+    }
+    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
+    int skipped = 0;
+    for (FloecatConnector.SnapshotBundle bundle : bundles) {
+      if (bundle == null) {
+        continue;
+      }
+      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
+        skipped++;
+        continue;
+      }
+      filtered.add(bundle);
+    }
+    if (skipped > 0) {
+      progress.onProgress(
+          0,
+          0,
+          0,
+          0,
+          0,
+          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
+    }
+    return filtered;
+  }
+
   static Set<Long> knownSnapshotIdsForEnumeration(
       boolean fullRescan,
       boolean includeStats,
@@ -884,7 +924,6 @@ public class ReconcilerService {
       boolean includeCoreMetadata,
       boolean includeStats,
       boolean fullRescan,
-      Predicate<Long> statsCompleteForSnapshot,
       Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
@@ -921,6 +960,8 @@ public class ReconcilerService {
 
       if (includeCoreMetadata) {
         ensureSnapshot(ctx, tableId, snapshotBundle);
+        maybeIngestSnapshotConstraints(
+            ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
       }
 
       if (!includeStats) {
@@ -928,12 +969,8 @@ public class ReconcilerService {
       }
 
       boolean statsCaptured =
-          !fullRescan
-              && statsCompleteForSnapshot != null
-              && statsCompleteForSnapshot.test(snapshotId);
+          !fullRescan && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors);
       if (statsCaptured) {
-        maybeIngestSnapshotConstraints(
-            ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
         continue;
       }
 
@@ -951,9 +988,6 @@ public class ReconcilerService {
         // target records.
         statsProcessed++;
       }
-
-      maybeIngestSnapshotConstraints(
-          ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed);
   }
@@ -968,7 +1002,6 @@ public class ReconcilerService {
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
-      Predicate<Long> statsCompleteForSnapshot,
       Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
@@ -986,8 +1019,7 @@ public class ReconcilerService {
             tableId,
             fullRescan,
             enumerationKnownSnapshotIds,
-            targetSnapshotIds,
-            includeSelectors);
+            targetSnapshotIds);
     if (snapshotIds.isEmpty()) {
       return new IngestCounts(0L, 0L);
     }
@@ -1009,8 +1041,7 @@ public class ReconcilerService {
       if (!fullRescan
           && knownSnapshotIds != null
           && knownSnapshotIds.contains(snapshotId)
-          && statsCompleteForSnapshot != null
-          && statsCompleteForSnapshot.test(snapshotId)) {
+          && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors)) {
         continue;
       }
 
@@ -1039,19 +1070,19 @@ public class ReconcilerService {
       ResourceId tableId,
       boolean fullRescan,
       Set<Long> enumerationKnownSnapshotIds,
-      Set<Long> targetSnapshotIds,
-      Set<String> includeSelectors) {
+      Set<Long> targetSnapshotIds) {
     if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
       return new LinkedHashSet<>(targetSnapshotIds);
     }
     List<FloecatConnector.SnapshotBundle> discovered =
-        connector.enumerateSnapshotsWithStats(
+        connector.enumerateSnapshots(
             sourceNs,
             sourceTable,
             tableId,
-            includeSelectors == null ? Set.of() : includeSelectors,
-            new FloecatConnector.SnapshotEnumerationOptions(
-                false, fullRescan, enumerationKnownSnapshotIds));
+            fullRescan
+                ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
+                : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                    enumerationKnownSnapshotIds, targetSnapshotIds));
     Set<Long> snapshotIds = new LinkedHashSet<>();
     if (discovered == null) {
       return snapshotIds;
@@ -1070,7 +1101,8 @@ public class ReconcilerService {
       return Optional.empty();
     }
     try {
-      return statsCaptureControlPlane.get().capture(request);
+      StatsTriggerResult result = statsCaptureControlPlane.get().trigger(request);
+      return result.captureResult();
     } catch (RuntimeException e) {
       LOG.warnf(
           e,
@@ -1079,6 +1111,152 @@ public class ReconcilerService {
           request.snapshotId());
       return Optional.empty();
     }
+  }
+
+  private Optional<String> enqueueStatsOnlyCapture(
+      ResourceId connectorId,
+      String namespaceFq,
+      String tableDisplayName,
+      Set<String> includeSelectors,
+      Set<Long> snapshotIds) {
+    if (reconcileJobStore == null || reconcileJobStore.isUnsatisfied()) {
+      String reason =
+          "stats_followup_unavailable connector="
+              + (connectorId != null ? connectorId.getId() : "")
+              + " table="
+              + (namespaceFq == null ? "" : namespaceFq)
+              + "."
+              + (tableDisplayName == null ? "" : tableDisplayName);
+      LOG.warnf(
+          "Skipping follow-up STATS_ONLY enqueue: reconcile job store unavailable for connector=%s table=%s.%s",
+          connectorId != null ? connectorId.getId() : "",
+          namespaceFq == null ? "" : namespaceFq,
+          tableDisplayName == null ? "" : tableDisplayName);
+      return Optional.of(reason);
+    }
+    if (connectorId == null
+        || connectorId.getAccountId().isBlank()
+        || connectorId.getId().isBlank()) {
+      LOG.warn("Skipping follow-up STATS_ONLY enqueue: connector identity is incomplete");
+      return Optional.of("stats_followup_unavailable connector_identity_incomplete");
+    }
+    if (namespaceFq == null
+        || namespaceFq.isBlank()
+        || tableDisplayName == null
+        || tableDisplayName.isBlank()) {
+      LOG.warnf(
+          "Skipping follow-up STATS_ONLY enqueue: scope identity missing for connector=%s",
+          connectorId.getId());
+      return Optional.of(
+          "stats_followup_unavailable scope_identity_missing connector=" + connectorId.getId());
+    }
+    List<List<String>> namespacePaths = List.of(namespacePath(namespaceFq));
+    List<String> columns =
+        includeSelectors == null ? List.of() : includeSelectors.stream().sorted().toList();
+    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, columns);
+    String jobId =
+        reconcileJobStore
+            .get()
+            .enqueue(
+                connectorId.getAccountId(),
+                connectorId.getId(),
+                false,
+                CaptureMode.STATS_ONLY,
+                scope);
+    LOG.infof(
+        "Enqueued follow-up STATS_ONLY capture job=%s connector=%s table=%s.%s snapshots=%s",
+        jobId, connectorId.getId(), namespaceFq, tableDisplayName, snapshotIds);
+    return Optional.empty();
+  }
+
+  private Set<Long> snapshotIdsFromBundles(List<FloecatConnector.SnapshotBundle> bundles) {
+    if (bundles == null || bundles.isEmpty()) {
+      return Set.of();
+    }
+    return bundles.stream()
+        .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
+        .map(FloecatConnector.SnapshotBundle::snapshotId)
+        .collect(Collectors.toCollection(LinkedHashSet::new));
+  }
+
+  private MetadataPassOutcome processMetadataPass(
+      ReconcileContext ctx,
+      ResourceId connectorId,
+      ResourceId tableId,
+      FloecatConnector connector,
+      ConnectorConfig.Kind connectorKind,
+      String sourceNs,
+      String sourceTable,
+      String scopeNamespaceFq,
+      String destTableDisplay,
+      boolean fullRescan,
+      boolean includeCoreMetadata,
+      boolean includeStats,
+      Set<String> includeSelectors,
+      Set<Long> knownSnapshotIds,
+      Set<Long> enumerationKnownSnapshotIds,
+      Set<Long> targetSnapshotIds,
+      BooleanSupplier cancelRequested,
+      ProgressListener progress,
+      long scanned,
+      long changed,
+      long errors,
+      long snapshotsProcessedBase,
+      long statsProcessedBase,
+      CaptureMode captureMode) {
+    List<FloecatConnector.SnapshotBundle> upstreamBundles =
+        connector.enumerateSnapshots(
+            sourceNs,
+            sourceTable,
+            tableId,
+            fullRescan
+                ? FloecatConnector.SnapshotEnumerationOptions.full(true, targetSnapshotIds)
+                : FloecatConnector.SnapshotEnumerationOptions.incremental(
+                    enumerationKnownSnapshotIds, targetSnapshotIds));
+    List<FloecatConnector.SnapshotBundle> bundles =
+        filterBundlesForMode(upstreamBundles, fullRescan, includeStats, knownSnapshotIds, progress);
+    IngestCounts ingestCounts =
+        ingestAllSnapshotsAndStatsFiltered(
+            ctx,
+            tableId,
+            connector,
+            connectorKind,
+            bundles,
+            includeCoreMetadata,
+            includeStats,
+            fullRescan,
+            includeSelectors,
+            cancelRequested,
+            progress,
+            sourceNs,
+            sourceTable,
+            scanned,
+            changed,
+            errors,
+            snapshotsProcessedBase,
+            statsProcessedBase);
+    Optional<String> degradedReason = Optional.empty();
+    if (captureMode == CaptureMode.METADATA_AND_STATS) {
+      degradedReason =
+          enqueueStatsOnlyCapture(
+              connectorId,
+              scopeNamespaceFq,
+              destTableDisplay,
+              includeSelectors,
+              snapshotIdsFromBundles(bundles));
+    }
+    return new MetadataPassOutcome(ingestCounts, tableChanged(bundles), degradedReason);
+  }
+
+  private List<String> namespacePath(String namespaceFq) {
+    var parts = split(namespaceFq);
+    if (parts.parents.isEmpty()) {
+      return List.of(parts.leaf);
+    }
+    List<String> path = new ArrayList<>(parts.parents.size() + 1);
+    path.addAll(parts.parents);
+    path.add(parts.leaf);
+    return path;
   }
 
   private static String connectorTypeFor(ConnectorConfig.Kind kind) {
@@ -1125,18 +1303,6 @@ public class ReconcilerService {
             ctx, tableId, snapshotId, StatsTargetKind.STK_FILE)
         || backend.statsAlreadyCapturedForTargetKind(
             ctx, tableId, snapshotId, StatsTargetKind.STK_EXPRESSION);
-  }
-
-  /**
-   * Builds a memoized snapshot completeness checker so repeated lookups in one table reconcile pass
-   * do not issue duplicate backend calls for the same snapshot.
-   */
-  private Predicate<Long> snapshotCompletenessChecker(
-      ReconcileContext ctx, ResourceId tableId, Set<String> includeSelectors) {
-    Map<Long, Boolean> completenessBySnapshot = new LinkedHashMap<>();
-    return snapshotId ->
-        completenessBySnapshot.computeIfAbsent(
-            snapshotId, id -> isStatsCaptureCompleteForScope(ctx, tableId, id, includeSelectors));
   }
 
   private static TableFormat toTableFormat(ConnectorFormat format) {
@@ -1304,6 +1470,7 @@ public class ReconcilerService {
     // target records for a single successful capture attempt.
     public final long scanned, changed, errors, snapshotsProcessed, statsProcessed;
     public final Exception error;
+    public final List<String> degradedReasons;
 
     public Result(
         long scanned,
@@ -1312,12 +1479,27 @@ public class ReconcilerService {
         long snapshotsProcessed,
         long statsProcessed,
         Exception error) {
+      this(scanned, changed, errors, snapshotsProcessed, statsProcessed, error, List.of());
+    }
+
+    public Result(
+        long scanned,
+        long changed,
+        long errors,
+        long snapshotsProcessed,
+        long statsProcessed,
+        Exception error,
+        List<String> degradedReasons) {
       this.scanned = scanned;
       this.changed = changed;
       this.errors = errors;
       this.snapshotsProcessed = snapshotsProcessed;
       this.statsProcessed = statsProcessed;
       this.error = error;
+      this.degradedReasons =
+          degradedReasons == null || degradedReasons.isEmpty()
+              ? List.of()
+              : List.copyOf(degradedReasons);
     }
 
     public boolean ok() {
@@ -1328,8 +1510,15 @@ public class ReconcilerService {
       return error instanceof ReconcileCancelledException;
     }
 
+    public boolean degraded() {
+      return !degradedReasons.isEmpty();
+    }
+
     public String message() {
-      return ok() ? "OK" : rootCauseMessage(error);
+      if (!ok()) {
+        return rootCauseMessage(error);
+      }
+      return degraded() ? "DEGRADED: " + String.join("; ", degradedReasons) : "OK";
     }
   }
 
@@ -1360,4 +1549,7 @@ public class ReconcilerService {
       this.statsProcessed = statsProcessed;
     }
   }
+
+  private record MetadataPassOutcome(
+      IngestCounts ingestCounts, boolean tableChanged, Optional<String> degradedReason) {}
 }

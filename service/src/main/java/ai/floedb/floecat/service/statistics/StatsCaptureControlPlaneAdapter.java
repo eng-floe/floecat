@@ -18,10 +18,9 @@ package ai.floedb.floecat.service.statistics;
 
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.StatsCaptureResult;
+import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.Optional;
 
 /**
  * Service-layer adapter exposing {@link StatsOrchestrator} through reconciler's control-plane SPI.
@@ -37,7 +36,7 @@ public class StatsCaptureControlPlaneAdapter implements StatsCaptureControlPlane
   }
 
   @Override
-  public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    return orchestrator.capture(request);
+  public StatsTriggerResult trigger(StatsCaptureRequest request) {
+    return orchestrator.trigger(request);
   }
 }

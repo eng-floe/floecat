@@ -140,8 +140,8 @@ populates demo data when `floecat.seed.enabled=true`.
 For connector-backed fixture tables, seeding now runs a combined reconcile pass per fixture scope
 using `METADATA_AND_STATS`.
 
-This ensures query scan bundles and Delta-compat manifest materialization have required file stats
-available immediately after startup.
+This ingests metadata/snapshots first and enqueues scoped `STATS_ONLY` follow-up capture for stats.
+Query scan bundles remain available immediately; stats availability follows queued capture completion.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to

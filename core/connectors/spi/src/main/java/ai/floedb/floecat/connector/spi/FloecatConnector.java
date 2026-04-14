@@ -44,31 +44,36 @@ public interface FloecatConnector extends Closeable {
 
   TableDescriptor describe(String namespaceFq, String tableName);
 
-  List<SnapshotBundle> enumerateSnapshotsWithStats(
+  List<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
+      SnapshotEnumerationOptions options);
+
+  default List<SnapshotBundle> enumerateSnapshots(
+      String namespaceFq, String tableName, ResourceId destinationTableId, boolean fullRescan) {
+    return enumerateSnapshots(
+        namespaceFq, tableName, destinationTableId, SnapshotEnumerationOptions.full(fullRescan));
+  }
+
+  /**
+   * Captures target stats for one snapshot and optional selector scope.
+   *
+   * <p>Selector semantics are best-effort and connector-native:
+   *
+   * <ul>
+   *   <li>`#<id>` selectors target stable destination column ids when available.
+   *   <li>name/path selectors are interpreted as connector-specific display or physical paths.
+   *   <li>unknown selectors are ignored; connectors may return a strict subset of requested
+   *       targets.
+   * </ul>
+   */
+  List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
       Set<String> includeColumns);
-
-  default List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
-      SnapshotEnumerationOptions options) {
-    boolean includeStatistics = options == null || options.includeStatistics();
-    return enumerateSnapshotsWithStats(
-        namespaceFq, tableName, destinationTableId, includeColumns, includeStatistics);
-  }
-
-  default List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
-      boolean includeStatistics) {
-    return enumerateSnapshotsWithStats(namespaceFq, tableName, destinationTableId, includeColumns);
-  }
 
   /**
    * Returns per-snapshot constraints for a table snapshot, if available.
@@ -98,19 +103,27 @@ public interface FloecatConnector extends Closeable {
   }
 
   record SnapshotEnumerationOptions(
-      boolean includeStatistics, boolean fullRescan, Set<Long> knownSnapshotIds) {
+      boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
     public SnapshotEnumerationOptions {
       knownSnapshotIds =
           knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
     }
 
-    public static SnapshotEnumerationOptions full(boolean includeStatistics) {
-      return new SnapshotEnumerationOptions(includeStatistics, true, Set.of());
+    public static SnapshotEnumerationOptions full(boolean fullRescan) {
+      return new SnapshotEnumerationOptions(fullRescan, Set.of(), Set.of());
+    }
+
+    public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
+      return new SnapshotEnumerationOptions(fullRescan, Set.of(), targetSnapshotIds);
+    }
+
+    public static SnapshotEnumerationOptions incremental(Set<Long> knownSnapshotIds) {
+      return new SnapshotEnumerationOptions(false, knownSnapshotIds, Set.of());
     }
 
     public static SnapshotEnumerationOptions incremental(
-        boolean includeStatistics, Set<Long> knownSnapshotIds) {
-      return new SnapshotEnumerationOptions(includeStatistics, false, knownSnapshotIds);
+        Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
+      return new SnapshotEnumerationOptions(false, knownSnapshotIds, targetSnapshotIds);
     }
   }
 
@@ -168,7 +181,6 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       long parentId,
       long upstreamCreatedAtMs,
-      List<TargetStatsRecord> targetStats,
       String schemaJson,
       PartitionSpecInfo partitionSpec,
       long sequenceNumber,

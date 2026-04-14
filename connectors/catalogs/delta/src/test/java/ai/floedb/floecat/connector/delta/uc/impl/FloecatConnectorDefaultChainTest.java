@@ -65,10 +65,20 @@ class FloecatConnectorDefaultChainTest {
     }
 
     @Override
-    public List<SnapshotBundle> enumerateSnapshotsWithStats(
+    public List<SnapshotBundle> enumerateSnapshots(
         String namespaceFq,
         String tableName,
         ResourceId destinationTableId,
+        SnapshotEnumerationOptions options) {
+      return List.of();
+    }
+
+    @Override
+    public List<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> captureSnapshotTargetStats(
+        String namespaceFq,
+        String tableName,
+        ResourceId destinationTableId,
+        long snapshotId,
         Set<String> includeColumns) {
       return List.of();
     }

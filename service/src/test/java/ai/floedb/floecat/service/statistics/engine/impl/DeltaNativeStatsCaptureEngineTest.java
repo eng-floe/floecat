@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.statistics.engine.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -108,21 +110,8 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(columnTarget)
             .setScalar(ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
             .build();
-    when(floecatConnector.enumerateSnapshotsWithStats(any(), any(), any(), any(), any()))
-        .thenReturn(
-            List.of(
-                new FloecatConnector.SnapshotBundle(
-                    0L,
-                    0L,
-                    0L,
-                    List.of(tableRecord, columnRecord),
-                    "",
-                    null,
-                    0L,
-                    "",
-                    java.util.Map.of(),
-                    0,
-                    java.util.Map.of())));
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of(tableRecord, columnRecord));
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(tableId, 0L, tableTarget)
@@ -197,21 +186,8 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(requested)
             .setScalar(ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
             .build();
-    when(floecatConnector.enumerateSnapshotsWithStats(any(), any(), any(), any(), any()))
-        .thenReturn(
-            List.of(
-                new FloecatConnector.SnapshotBundle(
-                    77L,
-                    0L,
-                    0L,
-                    List.of(columnRecord),
-                    "",
-                    null,
-                    0L,
-                    "",
-                    java.util.Map.of(),
-                    0,
-                    java.util.Map.of())));
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of(columnRecord));
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(tableId, 77L, requested)
@@ -240,12 +216,12 @@ class DeltaNativeStatsCaptureEngineTest {
         .containsEntry("method", "connector_native")
         .containsEntry("engine_id", DeltaNativeStatsCaptureEngine.ENGINE_ID);
     verify(floecatConnector)
-        .enumerateSnapshotsWithStats(
+        .captureSnapshotTargetStats(
             any(),
             any(),
             any(),
-            org.mockito.ArgumentMatchers.argThat(selectors -> selectors.contains("c9")),
-            any());
+            anyLong(),
+            org.mockito.ArgumentMatchers.argThat(selectors -> selectors.contains("c9")));
     verify(statsStore)
         .putTargetStats(
             org.mockito.ArgumentMatchers.argThat(
@@ -338,21 +314,8 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(fileTarget)
             .setFile(fileStats)
             .build();
-    when(floecatConnector.enumerateSnapshotsWithStats(any(), any(), any(), any(), any()))
-        .thenReturn(
-            List.of(
-                new FloecatConnector.SnapshotBundle(
-                    77L,
-                    0L,
-                    0L,
-                    List.of(fileRecord),
-                    "",
-                    null,
-                    0L,
-                    "",
-                    java.util.Map.of(),
-                    0,
-                    java.util.Map.of())));
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of(fileRecord));
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(tableId, 77L, fileTarget)
@@ -370,5 +333,60 @@ class DeltaNativeStatsCaptureEngineTest {
         .putTargetStats(
             org.mockito.ArgumentMatchers.argThat(
                 r -> r.hasFile() && "/delta/file-1.parquet".equals(r.getFile().getFilePath())));
+  }
+
+  @Test
+  void returnsEmptyWhenSnapshotNotFoundInConnectorCapture() {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    CredentialResolver credentialResolver = Mockito.mock(CredentialResolver.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    FloecatConnector floecatConnector = Mockito.mock(FloecatConnector.class);
+
+    DeltaNativeStatsCaptureEngine engine =
+        new DeltaNativeStatsCaptureEngine(
+            tableRepository, connectorRepository, credentialResolver, statsStore);
+    engine.connectorOpener = config -> floecatConnector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
+    when(tableRepository.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(connectorId)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+    when(connectorRepository.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("delta-main")
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .setUri("s3://delta")
+                    .build()));
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+        .thenReturn(List.of());
+
+    StatsCaptureRequest request =
+        StatsCaptureRequest.builder(
+                tableId,
+                999999L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .executionMode(StatsExecutionMode.SYNC)
+            .connectorType("delta")
+            .correlationId("corr")
+            .build();
+
+    assertThat(engine.capture(request)).isEmpty();
+    verify(floecatConnector).captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+    verify(statsStore, never()).putTargetStats(any());
   }
 }

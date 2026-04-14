@@ -133,12 +133,27 @@ public final class DummyConnector implements FloecatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespace, String table, ResourceId destinationTableId, Set<String> includeColumns) {
-
+  public List<SnapshotBundle> enumerateSnapshots(
+      String namespace,
+      String table,
+      ResourceId destinationTableId,
+      SnapshotEnumerationOptions options) {
     long snapshotId = 42L;
     long createdAt = 1_700_000_000_000L;
+    String schemaJson = describe(namespace, table).schemaJson();
+    return List.of(
+        new SnapshotBundle(
+            snapshotId, 0L, createdAt, schemaJson, null, 0L, null, Map.of(), 0, Map.of()));
+  }
 
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespace,
+      String table,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns) {
+    long createdAt = 1_700_000_000_000L;
     var tStats =
         TableValueStats.newBuilder()
             .setRowCount(100)
@@ -251,8 +266,6 @@ public final class DummyConnector implements FloecatConnector {
 
     List<FileColumnStatsView> fileStats = List.of(f1, f2, f3);
 
-    String schemaJson = describe(namespace, table).schemaJson();
-
     List<TargetStatsRecord> materialized = new ArrayList<>();
     materialized.add(
         StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
@@ -262,20 +275,7 @@ public final class DummyConnector implements FloecatConnector {
     materialized.addAll(
         StatsProtoEmitter.toTargetFileStatsFromViews(
             destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, fileStats));
-
-    return List.of(
-        new SnapshotBundle(
-            snapshotId,
-            0L,
-            createdAt,
-            List.copyOf(materialized),
-            schemaJson,
-            null,
-            0L,
-            null,
-            Map.of(),
-            0,
-            Map.of()));
+    return List.copyOf(materialized);
   }
 
   @Override

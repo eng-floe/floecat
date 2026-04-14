@@ -26,8 +26,8 @@ import java.util.Set;
 /**
  * Canonical request envelope used by stats engine routing.
  *
- * <p>{@code snapshotId} accepts non-negative values. A value of {@code 0} is reserved for
- * unresolved/current-snapshot flows and may be resolved upstream before execution.
+ * <p>{@code snapshotId} accepts non-negative values. A value of {@code 0} is a valid concrete
+ * snapshot identifier for connectors that use zero-based snapshot/version numbering.
  *
  * <p>{@code columnSelectors} allows scoped capture requests to declare the set of relevant columns
  * in one request (for example destination column IDs or source column names).

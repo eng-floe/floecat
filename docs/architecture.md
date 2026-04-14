@@ -57,8 +57,8 @@ The following modules compose the system (see linked docs for deep dives):
    repository APIs, and records incremental NDV, histograms, and scan manifests. Reconcile execution
    is mode-split:
    - `METADATA_ONLY` for table/snapshot state
-   - `STATS_ONLY` for stats enrichment only
-   - `METADATA_AND_STATS` for combined capture
+   - `STATS_ONLY` for stats enrichment only (via stats control-plane / engine registry)
+   - `METADATA_AND_STATS` for metadata ingest plus queued `STATS_ONLY` follow-up capture
 3. The **Service** exposes CRUD RPCs for catalogs/namespaces/tables/views, plus query-lifecycle and
    statistics APIs. Requests traverse interceptors that inject `PrincipalContext`, correlation IDs,
    and optional query leases before hitting service implementations.

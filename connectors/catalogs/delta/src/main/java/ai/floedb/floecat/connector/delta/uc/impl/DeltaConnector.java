@@ -96,30 +96,14 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+  public List<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
-      Set<String> includeColumns) {
-    return enumerateSnapshotsWithStats(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        includeColumns,
-        FloecatConnector.SnapshotEnumerationOptions.full(true));
-  }
-
-  @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
       FloecatConnector.SnapshotEnumerationOptions options) {
 
     final String tableRoot = storageLocation(namespaceFq, tableName);
     final Table table = loadTable(tableRoot);
-    boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
     final Snapshot latestSnapshot = table.getLatestSnapshot(engine);
@@ -141,11 +125,28 @@ abstract class DeltaConnector implements FloecatConnector {
       if (snapshot == null) {
         continue;
       }
-      bundles.add(
-          buildSnapshotBundle(
-              tableRoot, destinationTableId, includeColumns, includeStatistics, version, snapshot));
+      bundles.add(buildSnapshotBundle(tableRoot, version, snapshot));
     }
     return List.copyOf(bundles);
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns) {
+    if (snapshotId < 0) {
+      return List.of();
+    }
+    final String tableRoot = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(tableRoot);
+    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
+    if (snapshot == null) {
+      return List.of();
+    }
+    return buildTargetStats(tableRoot, destinationTableId, includeColumns, snapshotId, snapshot);
   }
 
   @Override
@@ -343,21 +344,26 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(out);
   }
 
-  private SnapshotBundle buildSnapshotBundle(
-      String tableRoot,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
-      boolean includeStatistics,
-      long version,
-      Snapshot snapshot) {
+  private SnapshotBundle buildSnapshotBundle(String tableRoot, long version, Snapshot snapshot) {
     final long createdMs = snapshot.getTimestamp(engine);
     final long parent = Math.max(0L, version - 1L);
 
     final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
     final String schemaJson = kernelSchema.toJson();
     final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
+    return new SnapshotBundle(
+        version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, Map.of());
+  }
 
+  private List<TargetStatsRecord> buildTargetStats(
+      String tableRoot,
+      ResourceId destinationTableId,
+      Set<String> includeColumns,
+      long version,
+      Snapshot snapshot) {
+    final StructType kernelSchema = snapshot.getSchema();
+    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final String schemaJson = kernelSchema.toJson();
     final Set<String> includeNames =
         (includeColumns == null || includeColumns.isEmpty())
             ? new LinkedHashSet<>(nameToType.keySet())
@@ -366,97 +372,80 @@ abstract class DeltaConnector implements FloecatConnector {
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-    List<TargetStatsRecord> targetStats = List.of();
+    EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
+    if (engineOut.hasInlineDeletionVectors()) {
+      throw new UnsupportedOperationException(
+          "Delta table uses inline deletion vectors; not supported for snapshot " + version);
+    }
+    var result = engineOut.result();
+    var logicalTypes = engineOut.logicalTypes();
 
-    if (includeStatistics) {
-      EngineOut engineOut = runEngine(tableRoot, version, includeNames, nameToType);
-      if (engineOut.hasInlineDeletionVectors()) {
-        throw new UnsupportedOperationException(
-            "Delta table uses inline deletion vectors; not supported for snapshot " + version);
-      }
-      var result = engineOut.result();
-      var logicalTypes = engineOut.logicalTypes();
+    var tStats =
+        ConnectorStatsViewBuilder.toTableValueStats(
+            version, snapshot.getTimestamp(engine), TableFormat.TF_DELTA, result);
 
-      var tStats =
-          ConnectorStatsViewBuilder.toTableValueStats(
-              version, createdMs, TableFormat.TF_DELTA, result);
+    var positions =
+        LogicalSchemaMapper.buildColumnOrdinals(
+            ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
 
-      var positions =
-          LogicalSchemaMapper.buildColumnOrdinals(
-              ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
+    var cStats =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            result.columns(),
+            name -> name,
+            name -> name,
+            name -> positions.getOrDefault(name, 0),
+            name -> 0,
+            name -> {
+              var lt = logicalTypes.get(name);
+              return (lt != null) ? lt : nameToType.get(name);
+            },
+            result.totalRowCount());
 
-      var cStats =
-          ConnectorStatsViewBuilder.toColumnStatsView(
-              result.columns(),
-              name -> name,
-              name -> name,
-              name -> positions.getOrDefault(name, 0),
-              name -> 0,
-              name -> {
-                var lt = logicalTypes.get(name);
-                return (lt != null) ? lt : nameToType.get(name);
-              },
-              result.totalRowCount());
+    var mutableFiles =
+        new ArrayList<FloecatConnector.FileColumnStatsView>(
+            ConnectorStatsViewBuilder.toFileColumnStatsView(
+                result.files(),
+                name -> name,
+                name -> name,
+                name -> positions.getOrDefault(name, 0),
+                name -> 0,
+                name -> {
+                  var lt = logicalTypes.get(name);
+                  return (lt != null) ? lt : nameToType.get(name);
+                }));
 
-      var mutableFiles =
-          new ArrayList<FloecatConnector.FileColumnStatsView>(
-              ConnectorStatsViewBuilder.toFileColumnStatsView(
-                  result.files(),
-                  name -> name,
-                  name -> name,
-                  name -> positions.getOrDefault(name, 0),
-                  name -> 0,
-                  name -> {
-                    var lt = logicalTypes.get(name);
-                    return (lt != null) ? lt : nameToType.get(name);
-                  }));
-
-      for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
-        String dvPath =
-            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
-        long rowCount = dv.getCardinality();
-        long sizeBytes = dv.getSizeInBytes();
-        mutableFiles.add(
-            new FloecatConnector.FileColumnStatsView(
-                dvPath,
-                "",
-                rowCount,
-                sizeBytes,
-                FileContent.FC_POSITION_DELETES,
-                "",
-                0,
-                List.of(),
-                null,
-                List.of()));
-      }
-
-      List<TargetStatsRecord> materialized = new ArrayList<>();
-      materialized.add(
-          StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, version, tStats));
-      materialized.addAll(
-          StatsProtoEmitter.toTargetColumnStatsFromViews(
-              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
-      materialized.addAll(
-          StatsProtoEmitter.toTargetFileStatsFromViews(
-              destinationTableId,
-              version,
-              ColumnIdAlgorithm.CID_PATH_ORDINAL,
-              List.copyOf(mutableFiles)));
-      targetStats = List.copyOf(materialized);
+    for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
+      String dvPath =
+          (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+      long rowCount = dv.getCardinality();
+      long sizeBytes = dv.getSizeInBytes();
+      mutableFiles.add(
+          new FloecatConnector.FileColumnStatsView(
+              dvPath,
+              "",
+              rowCount,
+              sizeBytes,
+              FileContent.FC_POSITION_DELETES,
+              "",
+              0,
+              List.of(),
+              null,
+              List.of()));
     }
 
-    return new SnapshotBundle(
-        version,
-        parent,
-        createdMs,
-        targetStats,
-        schemaJson,
-        partitionSpec,
-        0L,
-        null,
-        Map.of(),
-        0,
-        Map.of());
+    List<TargetStatsRecord> materialized = new ArrayList<>();
+    materialized.add(
+        StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, version, tStats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetColumnStatsFromViews(
+            destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetFileStatsFromViews(
+            destinationTableId,
+            version,
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            List.copyOf(mutableFiles)));
+    return List.copyOf(materialized);
   }
 
   protected Snapshot resolveSnapshot(Table table, long snapshotId, long asOfTime) {

@@ -255,7 +255,7 @@ public class ConnectorIT {
             .get(0)
             .getResourceId();
 
-    var fileStats = listCurrentFileStats(tbl, 100);
+    var fileStats = awaitCurrentFileStats(tbl, 100, Duration.ofSeconds(30));
 
     assertEquals(3, fileStats.size(), "expected 3 files");
 
@@ -326,12 +326,80 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
             .orElseThrow();
 
-    var fileStats = listCurrentFileStats(table.getResourceId(), 200);
+    var fileStats = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
 
     assertTrue(fileStats.size() > 0, "expected file stats for iceberg fixture");
     boolean hasSeq =
         fileStats.stream().anyMatch(f -> f.hasSequenceNumber() && f.getSequenceNumber() > 0);
     assertTrue(hasSeq, "expected at least one file with sequence_number");
+  }
+
+  @Test
+  void metadataAndStatsReturnsBeforeFollowUpStatsAreVisible() throws Exception {
+    TestS3Fixtures.seedFixturesOnce();
+
+    var accountId = seedAccountId;
+    TestSupport.createCatalog(catalogService, "cat-iceberg-deferred-contract", "");
+
+    var dest =
+        DestinationTarget.newBuilder()
+            .setCatalogDisplayName("cat-iceberg-deferred-contract")
+            .setNamespace(NamespacePath.newBuilder().addSegments("iceberg").build())
+            .setTableDisplayName("trino_test")
+            .build();
+
+    var props = new HashMap<String, String>();
+    props.putAll(
+        TestS3Fixtures.fileIoProperties(
+            TestS3Fixtures.bucketPath().getParent().toAbsolutePath().toString()));
+    props.put("external.namespace", "fixtures.simple");
+    props.put("external.table-name", "trino_test");
+    props.put("stats.ndv.enabled", "false");
+    props.put("iceberg.source", "filesystem");
+    String metadataLocation =
+        TestS3Fixtures.bucketUri(
+            "metadata/00002-503f4508-3824-4cb6-bdf1-4bd6bf5a0ade.metadata.json");
+
+    var conn =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("fixture-iceberg-deferred-contract")
+                .setKind(ConnectorKind.CK_ICEBERG)
+                .setUri(metadataLocation)
+                .setSource(source(List.of("fixtures", "simple")))
+                .setDestination(dest)
+                .setAuth(AuthConfig.newBuilder().setScheme("none").build())
+                .putAllProperties(props)
+                .build());
+
+    var metadataJob = runReconcile(conn.getResourceId(), true);
+    assertNotNull(metadataJob);
+    assertEquals("JS_SUCCEEDED", metadataJob.state, () -> "job failed: " + metadataJob.message);
+    assertEquals(
+        0L,
+        metadataJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
+
+    var catId =
+        catalogs
+            .getByName(accountId.getId(), "cat-iceberg-deferred-contract")
+            .orElseThrow()
+            .getResourceId();
+    var ns =
+        namespaces.getByPath(accountId.getId(), catId.getId(), List.of("iceberg")).orElseThrow();
+    var table =
+        tables
+            .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_test")
+            .orElseThrow();
+
+    var immediate = listCurrentFileStats(table.getResourceId(), 200);
+    assertTrue(
+        immediate.isEmpty(),
+        "metadata+stats should complete before follow-up STATS_ONLY capture makes stats visible");
+
+    var eventual = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
+    assertFalse(eventual.isEmpty(), "expected follow-up STATS_ONLY job to materialize file stats");
   }
 
   @Test
@@ -378,7 +446,10 @@ public class ConnectorIT {
     assertEquals("JS_SUCCEEDED", fullJob.state, () -> "job failed: " + fullJob.message);
     assertTrue(fullJob.fullRescan);
     assertTrue(fullJob.snapshotsProcessed > 0, "expected full reconcile to process snapshots");
-    assertTrue(fullJob.statsProcessed > 0, "expected full reconcile to process stats");
+    assertEquals(
+        0L,
+        fullJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
 
     var catId =
         catalogs
@@ -481,14 +552,16 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one new snapshot");
-    assertTrue(
-        incrementalJob.statsProcessed > 0, "incremental should capture stats for the new snapshot");
+    assertEquals(
+        0L,
+        incrementalJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
     assertEquals(
         2,
         snaps.count(table.getResourceId()),
         "expected second snapshot after incremental reconcile");
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
         fileResp.size() > 0, "expected current snapshot file stats after incremental reconcile");
   }
@@ -569,15 +642,16 @@ public class ConnectorIT {
     assertFalse(incrementalJob.fullRescan);
     assertEquals(
         1L, incrementalJob.snapshotsProcessed, "incremental should ingest one delete snapshot");
-    assertTrue(
-        incrementalJob.statsProcessed > 0,
-        "incremental should capture stats for the delete snapshot");
+    assertEquals(
+        0L,
+        incrementalJob.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
     assertEquals(
         3,
         snaps.count(table.getResourceId()),
         "expected third snapshot after incremental reconcile");
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
     assertTrue(
         fileResp.stream().anyMatch(f -> f.getFileContent() == FileContent.FC_POSITION_DELETES),
         "expected current snapshot to expose a position delete file");
@@ -630,7 +704,10 @@ public class ConnectorIT {
         job.tablesChanged > 0, "expected complex fixture reconcile to persist table updates");
     assertTrue(
         job.snapshotsProcessed > 0, "expected complex fixture reconcile to process snapshots");
-    assertTrue(job.statsProcessed > 0, "expected complex fixture reconcile to generate stats");
+    assertEquals(
+        0L,
+        job.statsProcessed,
+        "metadata+stats reconcile enqueues follow-up stats jobs; it does not inline stats");
 
     var catId =
         catalogs.getByName(accountId.getId(), "cat-iceberg-complex").orElseThrow().getResourceId();
@@ -643,7 +720,7 @@ public class ConnectorIT {
             .getByName(accountId.getId(), catId.getId(), ns.getResourceId().getId(), "trino_types")
             .orElseThrow();
 
-    var fileResp = listCurrentFileStats(table.getResourceId(), 200);
+    var fileResp = awaitCurrentFileStats(table.getResourceId(), 200, Duration.ofSeconds(30));
 
     assertFalse(fileResp.isEmpty(), "expected file stats for complex iceberg fixture");
 
@@ -953,19 +1030,17 @@ public class ConnectorIT {
       assertTrue(td.schemaJson().contains("\"items\""));
       assertTrue(td.schemaJson().contains("\"attrs\""));
 
-      var onlyIds =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("#1", "#4", "#9"));
+      ResourceId tableId =
+          ResourceId.newBuilder()
+              .setAccountId("t")
+              .setId("tbl")
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
 
       var cs1 =
-          onlyIds.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats("db", "events", tableId, 1L, Set.of("#1", "#4", "#9"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -985,19 +1060,11 @@ public class ConnectorIT {
       assertEquals(Set.of(1L, 4L, 9L), ids1);
       assertEquals(Set.of("id", "user.id", "items.element.qty"), names1);
 
-      var onlyNames =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("user.name", "attrs.value"));
-
       var cs2 =
-          onlyNames.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats(
+                  "db", "events", tableId, 1L, Set.of("user.name", "attrs.value"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -1017,19 +1084,11 @@ public class ConnectorIT {
       assertEquals(Set.of(5L, 12L), ids2);
       assertEquals(Set.of("user.name", "attrs.value"), names2);
 
-      var mixed =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Set.of("#2", "items.element.sku"));
-
       var cs3 =
-          mixed.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats(
+                  "db", "events", tableId, 1L, Set.of("#2", "items.element.sku"))
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()
@@ -1049,19 +1108,10 @@ public class ConnectorIT {
       assertEquals(Set.of(2L, 8L), ids3);
       assertEquals(Set.of("ts", "items.element.sku"), names3);
 
-      var allCols =
-          conn.enumerateSnapshotsWithStats(
-              "db",
-              "events",
-              ResourceId.newBuilder()
-                  .setAccountId("t")
-                  .setId("tbl")
-                  .setKind(ResourceKind.RK_TABLE)
-                  .build(),
-              Collections.emptySet());
-
       long allColsCount =
-          allCols.get(0).targetStats().stream()
+          conn
+              .captureSnapshotTargetStats("db", "events", tableId, 1L, Collections.emptySet())
+              .stream()
               .filter(
                   r ->
                       r.hasTarget()

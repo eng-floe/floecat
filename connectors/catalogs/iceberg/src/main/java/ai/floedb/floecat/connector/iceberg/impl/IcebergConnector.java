@@ -150,65 +150,27 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
+  public List<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
-      Set<String> includeColumns) {
-    return enumerateSnapshotsWithStats(
-        namespaceFq, tableName, destinationTableId, includeColumns, true);
-  }
-
-  @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
-      boolean includeStatistics) {
-    return enumerateSnapshotsWithStats(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        includeColumns,
-        FloecatConnector.SnapshotEnumerationOptions.full(includeStatistics));
-  }
-
-  @Override
-  public List<SnapshotBundle> enumerateSnapshotsWithStats(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      Set<String> includeColumns,
       FloecatConnector.SnapshotEnumerationOptions options) {
     Table table = loadTable(namespaceFq, tableName);
-    boolean includeStatistics = options == null || options.includeStatistics();
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
-    List<Snapshot> snapshots = snapshotsToEnumerate(table, fullRescan, knownSnapshotIds);
-    if (shouldRetryEmptyIncrementalEnumeration(
-        table, includeStatistics, fullRescan, knownSnapshotIds, snapshots)) {
+    Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
+    List<Snapshot> snapshots =
+        snapshotsToEnumerate(table, fullRescan, knownSnapshotIds, targetSnapshotIds);
+    if (shouldRetryEmptyIncrementalEnumeration(table, fullRescan, knownSnapshotIds, snapshots)) {
       throw new ConnectorNotReadyException(
           "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
     }
     IcebergMetadata icebergMetadata = buildIcebergMetadata(namespaceFq, tableName, table);
 
-    final Set<Integer> includeIds;
-    if (!includeStatistics) {
-      includeIds = Set.of();
-    } else if (includeColumns == null || includeColumns.isEmpty()) {
-      includeIds =
-          table.schema().columns().stream()
-              .map(Types.NestedField::fieldId)
-              .collect(Collectors.toCollection(LinkedHashSet::new));
-    } else {
-      includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
-    }
-
     List<SnapshotBundle> out = new ArrayList<>();
     for (Snapshot snapshot : snapshots) {
       long snapshotId = snapshot.snapshotId();
-      long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : 0;
+      long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : -1L;
       long createdMs = snapshot.timestampMillis();
 
       Integer snapshotSchemaId = snapshot != null ? snapshot.schemaId() : null;
@@ -218,136 +180,6 @@ public abstract class IcebergConnector implements FloecatConnector {
               : table.schema().schemaId();
       Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
       String schemaJson = SchemaParser.toJson(schema);
-
-      List<TargetStatsRecord> targetStats = List.of();
-      if (includeStatistics) {
-        EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
-
-        var columnNames = engineOutput.columnNames();
-        var logicalTypes = engineOutput.logicalTypes();
-
-        var tStats =
-            ConnectorStatsViewBuilder.toTableValueStats(
-                snapshotId, createdMs, TableFormat.TF_ICEBERG, engineOutput.result());
-        // Build per-field metadata so ColumnRef can carry field_id + physical_path (+ optional
-        // ordinal); single traversal for efficiency
-        var fieldMaps = fieldIdMaps(schema);
-        Map<Integer, String> idToPath = fieldMaps.getKey();
-        Map<Integer, Integer> idToOrdinal = fieldMaps.getValue();
-
-        // Extract snapshot's total-records as primary source for NDV rowsTotal
-        long snapshotRowCount = 0;
-        Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
-        String totalRecordsStr = summary.get("total-records");
-        if (totalRecordsStr != null && !totalRecordsStr.isBlank()) {
-          try {
-            snapshotRowCount = Long.parseLong(totalRecordsStr);
-          } catch (NumberFormatException ignore) {
-            // keep snapshotRowCount as 0
-          }
-        }
-
-        // Fallback to engineOutput.result().totalRowCount() if snapshot summary doesn't have it
-        if (snapshotRowCount <= 0) {
-          snapshotRowCount = engineOutput.result().totalRowCount();
-        }
-
-        var cStats =
-            ConnectorStatsViewBuilder.toColumnStatsView(
-                engineOutput.result().columns(),
-                id -> {
-                  String name = columnNames.get(id);
-                  if (name != null && !name.isBlank()) {
-                    return name;
-                  }
-                  var f = schema.findField(id);
-                  return f == null ? "" : f.name();
-                },
-                id -> idToPath.getOrDefault(id, ""),
-                id -> idToOrdinal.getOrDefault(id, 0),
-                id -> id,
-                id -> {
-                  LogicalType lt = logicalTypes.get(id);
-                  if (lt != null) {
-                    return lt;
-                  }
-                  var f = schema.findField(id);
-                  return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-                },
-                snapshotRowCount);
-
-        // Consolidate file stats conversion using ProtoStatsBuilder for format-agnostic handling
-        var baseFiles =
-            ConnectorStatsViewBuilder.toFileColumnStatsView(
-                engineOutput.result().files(),
-                id -> {
-                  String name = columnNames.get(id);
-                  if (name != null && !name.isBlank()) {
-                    return name;
-                  }
-                  var f = schema.findField(id);
-                  return f == null ? "" : f.name();
-                },
-                id -> idToPath.getOrDefault(id, ""),
-                id -> idToOrdinal.getOrDefault(id, 0),
-                id -> id,
-                id -> {
-                  LogicalType lt = logicalTypes.get(id);
-                  if (lt != null) {
-                    return lt;
-                  }
-                  var f = schema.findField(id);
-                  return f == null ? null : IcebergTypeMapper.toLogical(f.type());
-                });
-
-        List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
-        TableScan scan = table.newScan().useSnapshot(snapshotId);
-        try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
-          for (FileScanTask task : tasks) {
-            for (var df : task.deletes()) {
-              List<Integer> eqIds =
-                  df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                      ? df.equalityFieldIds()
-                      : List.of();
-
-              FileContent fc =
-                  df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
-                      ? FileContent.FC_EQUALITY_DELETES
-                      : FileContent.FC_POSITION_DELETES;
-
-              deleteStats.add(
-                  new FloecatConnector.FileColumnStatsView(
-                      df.location(),
-                      "", // format often unknown for deletes; leave blank
-                      df.recordCount(),
-                      df.fileSizeInBytes(),
-                      fc,
-                      "", // partition json not needed for deletes
-                      0,
-                      eqIds,
-                      df.fileSequenceNumber(),
-                      List.of() // no per-column stats for deletes
-                      ));
-            }
-          }
-        } catch (Exception e) {
-          throw new RuntimeException(
-              "Failed to enumerate delete files for snapshot " + snapshotId, e);
-        }
-
-        List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
-        allFiles.addAll(deleteStats);
-        List<TargetStatsRecord> materialized = new ArrayList<>();
-        materialized.add(
-            StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
-        materialized.addAll(
-            StatsProtoEmitter.toTargetColumnStatsFromViews(
-                destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cStats));
-        materialized.addAll(
-            StatsProtoEmitter.toTargetFileStatsFromViews(
-                destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, allFiles));
-        targetStats = List.copyOf(materialized);
-      }
 
       Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
       Map<String, String> summaryWithOperation =
@@ -367,7 +199,6 @@ public abstract class IcebergConnector implements FloecatConnector {
               snapshotId,
               parentId,
               createdMs,
-              targetStats,
               schemaJson,
               toPartitionSpecInfo(table, snapshot),
               sequenceNumber,
@@ -377,6 +208,167 @@ public abstract class IcebergConnector implements FloecatConnector {
               metadataAttachments));
     }
     return out;
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns) {
+    if (snapshotId < 0) {
+      return List.of();
+    }
+    Table table = loadTable(namespaceFq, tableName);
+    Snapshot snapshot = table.snapshot(snapshotId);
+    if (snapshot == null) {
+      return List.of();
+    }
+    return buildTargetStats(table, destinationTableId, snapshot, includeColumns);
+  }
+
+  private List<TargetStatsRecord> buildTargetStats(
+      Table table, ResourceId destinationTableId, Snapshot snapshot, Set<String> includeColumns) {
+    long snapshotId = snapshot.snapshotId();
+    long createdMs = snapshot.timestampMillis();
+    Integer snapshotSchemaId = snapshot.schemaId();
+    int schemaId =
+        snapshotSchemaId != null && snapshotSchemaId > 0
+            ? snapshotSchemaId
+            : table.schema().schemaId();
+    Schema schema = Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+
+    final Set<Integer> includeIds;
+    if (includeColumns == null || includeColumns.isEmpty()) {
+      includeIds =
+          table.schema().columns().stream()
+              .map(Types.NestedField::fieldId)
+              .collect(Collectors.toCollection(LinkedHashSet::new));
+    } else {
+      includeIds = resolveFieldIdsNested(table.schema(), includeColumns);
+    }
+
+    EngineOut engineOutput = runEngine(table, snapshotId, includeIds);
+    var columnNames = engineOutput.columnNames();
+    var logicalTypes = engineOutput.logicalTypes();
+    var tStats =
+        ConnectorStatsViewBuilder.toTableValueStats(
+            snapshotId, createdMs, TableFormat.TF_ICEBERG, engineOutput.result());
+
+    // Build per-field metadata so ColumnRef can carry field_id + physical_path (+ optional
+    // ordinal); single traversal for efficiency.
+    var fieldMaps = fieldIdMaps(schema);
+    Map<Integer, String> idToPath = fieldMaps.getKey();
+    Map<Integer, Integer> idToOrdinal = fieldMaps.getValue();
+
+    long snapshotRowCount = 0;
+    Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+    String totalRecordsStr = summary.get("total-records");
+    if (totalRecordsStr != null && !totalRecordsStr.isBlank()) {
+      try {
+        snapshotRowCount = Long.parseLong(totalRecordsStr);
+      } catch (NumberFormatException ignore) {
+        // keep snapshotRowCount as 0
+      }
+    }
+    if (snapshotRowCount <= 0) {
+      snapshotRowCount = engineOutput.result().totalRowCount();
+    }
+
+    var cStats =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            engineOutput.result().columns(),
+            id -> {
+              String name = columnNames.get(id);
+              if (name != null && !name.isBlank()) {
+                return name;
+              }
+              var f = schema.findField(id);
+              return f == null ? "" : f.name();
+            },
+            id -> idToPath.getOrDefault(id, ""),
+            id -> idToOrdinal.getOrDefault(id, 0),
+            id -> id,
+            id -> {
+              LogicalType lt = logicalTypes.get(id);
+              if (lt != null) {
+                return lt;
+              }
+              var f = schema.findField(id);
+              return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+            },
+            snapshotRowCount);
+
+    var baseFiles =
+        ConnectorStatsViewBuilder.toFileColumnStatsView(
+            engineOutput.result().files(),
+            id -> {
+              String name = columnNames.get(id);
+              if (name != null && !name.isBlank()) {
+                return name;
+              }
+              var f = schema.findField(id);
+              return f == null ? "" : f.name();
+            },
+            id -> idToPath.getOrDefault(id, ""),
+            id -> idToOrdinal.getOrDefault(id, 0),
+            id -> id,
+            id -> {
+              LogicalType lt = logicalTypes.get(id);
+              if (lt != null) {
+                return lt;
+              }
+              var f = schema.findField(id);
+              return f == null ? null : IcebergTypeMapper.toLogical(f.type());
+            });
+
+    List<FloecatConnector.FileColumnStatsView> deleteStats = new ArrayList<>();
+    TableScan scan = table.newScan().useSnapshot(snapshotId);
+    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+      for (FileScanTask task : tasks) {
+        for (var df : task.deletes()) {
+          List<Integer> eqIds =
+              df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                  ? df.equalityFieldIds()
+                  : List.of();
+
+          FileContent fc =
+              df.content() == org.apache.iceberg.FileContent.EQUALITY_DELETES
+                  ? FileContent.FC_EQUALITY_DELETES
+                  : FileContent.FC_POSITION_DELETES;
+
+          deleteStats.add(
+              new FloecatConnector.FileColumnStatsView(
+                  df.location(),
+                  "", // format often unknown for deletes; leave blank
+                  df.recordCount(),
+                  df.fileSizeInBytes(),
+                  fc,
+                  "", // partition json not needed for deletes
+                  0,
+                  eqIds,
+                  df.fileSequenceNumber(),
+                  List.of() // no per-column stats for deletes
+                  ));
+        }
+      }
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to enumerate delete files for snapshot " + snapshotId, e);
+    }
+
+    List<FileColumnStatsView> allFiles = new ArrayList<>(baseFiles);
+    allFiles.addAll(deleteStats);
+    List<TargetStatsRecord> materialized = new ArrayList<>();
+    materialized.add(
+        StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, snapshotId, tStats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetColumnStatsFromViews(
+            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, cStats));
+    materialized.addAll(
+        StatsProtoEmitter.toTargetFileStatsFromViews(
+            destinationTableId, snapshotId, ColumnIdAlgorithm.CID_FIELD_ID, allFiles));
+    return List.copyOf(materialized);
   }
 
   @Override
@@ -469,10 +461,18 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private List<Snapshot> snapshotsToEnumerate(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds) {
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       List<Snapshot> snapshots = new ArrayList<>();
       for (Snapshot snapshot : table.snapshots()) {
+        if (snapshot == null) {
+          continue;
+        }
+        if (targetSnapshotIds != null
+            && !targetSnapshotIds.isEmpty()
+            && !targetSnapshotIds.contains(snapshot.snapshotId())) {
+          continue;
+        }
         snapshots.add(snapshot);
       }
       return snapshots;
@@ -486,6 +486,11 @@ public abstract class IcebergConnector implements FloecatConnector {
       if (!fullRescan && knownSnapshotIds.contains(snapshotId)) {
         continue;
       }
+      if (targetSnapshotIds != null
+          && !targetSnapshotIds.isEmpty()
+          && !targetSnapshotIds.contains(snapshotId)) {
+        continue;
+      }
       incremental.add(snapshot);
     }
     incremental.sort(
@@ -496,12 +501,8 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   private static boolean shouldRetryEmptyIncrementalEnumeration(
-      Table table,
-      boolean includeStatistics,
-      boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      List<Snapshot> snapshots) {
-    if (!includeStatistics || fullRescan) {
+      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, List<Snapshot> snapshots) {
+    if (fullRescan) {
       return false;
     }
     if (knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
