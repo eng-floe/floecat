@@ -114,7 +114,7 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(columnTarget)
             .setScalar(ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
             .build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(tableRecord, columnRecord));
 
     StatsCaptureRequest request =
@@ -190,7 +190,7 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(requested)
             .setScalar(ScalarStats.newBuilder().setDisplayName("c9").setLogicalType("BIGINT"))
             .build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(columnRecord));
 
     StatsCaptureRequest request =
@@ -225,7 +225,8 @@ class DeltaNativeStatsCaptureEngineTest {
             any(),
             any(),
             anyLong(),
-            org.mockito.ArgumentMatchers.argThat(selectors -> selectors.contains("c9")));
+            org.mockito.ArgumentMatchers.argThat(selectors -> selectors.contains("c9")),
+            any());
     verify(statsStore)
         .putTargetStats(
             org.mockito.ArgumentMatchers.argThat(
@@ -318,7 +319,7 @@ class DeltaNativeStatsCaptureEngineTest {
             .setTarget(fileTarget)
             .setFile(fileStats)
             .build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(fileRecord));
 
     StatsCaptureRequest request =
@@ -376,7 +377,7 @@ class DeltaNativeStatsCaptureEngineTest {
                     .setKind(ConnectorKind.CK_DELTA)
                     .setUri("s3://delta")
                     .build()));
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of());
 
     StatsCaptureRequest request =
@@ -390,7 +391,8 @@ class DeltaNativeStatsCaptureEngineTest {
             .build();
 
     assertThat(engine.capture(request)).isEmpty();
-    verify(floecatConnector).captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+    verify(floecatConnector)
+        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(statsStore, never()).putTargetStats(any());
   }
 
@@ -441,7 +443,7 @@ class DeltaNativeStatsCaptureEngineTest {
         StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
     StatsTarget col9 =
         StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(9L)).build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(
             List.of(
                 TargetStatsRecord.newBuilder()
@@ -478,7 +480,7 @@ class DeltaNativeStatsCaptureEngineTest {
     assertThat(out.results()).allMatch(item -> item.outcome() == StatsTriggerOutcome.CAPTURED);
     assertThat(openCount.get()).isEqualTo(1);
     verify(floecatConnector, Mockito.times(1))
-        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(statsStore, Mockito.times(2)).putTargetStats(any(TargetStatsRecord.class));
   }
 }

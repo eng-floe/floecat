@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
@@ -137,6 +138,27 @@ abstract class DeltaConnector implements FloecatConnector {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns) {
+    return captureSnapshotTargetStats(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        Set.of(
+            StatsTargetKind.TABLE,
+            StatsTargetKind.COLUMN,
+            StatsTargetKind.FILE,
+            StatsTargetKind.EXPRESSION));
+  }
+
+  @Override
+  public List<TargetStatsRecord> captureSnapshotTargetStats(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
     if (snapshotId < 0) {
       return List.of();
     }
@@ -146,7 +168,8 @@ abstract class DeltaConnector implements FloecatConnector {
     if (snapshot == null) {
       return List.of();
     }
-    return buildTargetStats(tableRoot, destinationTableId, includeColumns, snapshotId, snapshot);
+    return buildTargetStats(
+        tableRoot, destinationTableId, includeColumns, snapshotId, snapshot, includeTargetKinds);
   }
 
   @Override
@@ -360,7 +383,15 @@ abstract class DeltaConnector implements FloecatConnector {
       ResourceId destinationTableId,
       Set<String> includeColumns,
       long version,
-      Snapshot snapshot) {
+      Snapshot snapshot,
+      Set<StatsTargetKind> includeTargetKinds) {
+    boolean emitTable = includeTargetKinds.contains(StatsTargetKind.TABLE);
+    boolean emitColumns = includeTargetKinds.contains(StatsTargetKind.COLUMN);
+    boolean emitFiles = includeTargetKinds.contains(StatsTargetKind.FILE);
+    if (!emitTable && !emitColumns && !emitFiles) {
+      return List.of();
+    }
+
     final StructType kernelSchema = snapshot.getSchema();
     final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
     final String schemaJson = kernelSchema.toJson();
@@ -388,23 +419,10 @@ abstract class DeltaConnector implements FloecatConnector {
         LogicalSchemaMapper.buildColumnOrdinals(
             ColumnIdAlgorithm.CID_PATH_ORDINAL, TableFormat.TF_DELTA, schemaJson);
 
-    var cStats =
-        ConnectorStatsViewBuilder.toColumnStatsView(
-            result.columns(),
-            name -> name,
-            name -> name,
-            name -> positions.getOrDefault(name, 0),
-            name -> 0,
-            name -> {
-              var lt = logicalTypes.get(name);
-              return (lt != null) ? lt : nameToType.get(name);
-            },
-            result.totalRowCount());
-
-    var mutableFiles =
-        new ArrayList<FloecatConnector.FileColumnStatsView>(
-            ConnectorStatsViewBuilder.toFileColumnStatsView(
-                result.files(),
+    List<FloecatConnector.ColumnStatsView> cStats =
+        emitColumns
+            ? ConnectorStatsViewBuilder.toColumnStatsView(
+                result.columns(),
                 name -> name,
                 name -> name,
                 name -> positions.getOrDefault(name, 0),
@@ -412,39 +430,61 @@ abstract class DeltaConnector implements FloecatConnector {
                 name -> {
                   var lt = logicalTypes.get(name);
                   return (lt != null) ? lt : nameToType.get(name);
-                }));
+                },
+                result.totalRowCount())
+            : List.of();
 
-    for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
-      String dvPath =
-          (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
-      long rowCount = dv.getCardinality();
-      long sizeBytes = dv.getSizeInBytes();
-      mutableFiles.add(
-          new FloecatConnector.FileColumnStatsView(
-              dvPath,
-              "",
-              rowCount,
-              sizeBytes,
-              FileContent.FC_POSITION_DELETES,
-              "",
-              0,
-              List.of(),
-              null,
-              List.of()));
+    List<FloecatConnector.FileColumnStatsView> files = List.of();
+    if (emitFiles) {
+      var mutableFiles =
+          new ArrayList<FloecatConnector.FileColumnStatsView>(
+              ConnectorStatsViewBuilder.toFileColumnStatsView(
+                  result.files(),
+                  name -> name,
+                  name -> name,
+                  name -> positions.getOrDefault(name, 0),
+                  name -> 0,
+                  name -> {
+                    var lt = logicalTypes.get(name);
+                    return (lt != null) ? lt : nameToType.get(name);
+                  }));
+
+      for (DeletionVectorDescriptor dv : engineOut.deletionVectors()) {
+        String dvPath =
+            (dv.isOnDisk() && dv.getPathOrInlineDv() != null) ? dv.getPathOrInlineDv() : "";
+        long rowCount = dv.getCardinality();
+        long sizeBytes = dv.getSizeInBytes();
+        mutableFiles.add(
+            new FloecatConnector.FileColumnStatsView(
+                dvPath,
+                "",
+                rowCount,
+                sizeBytes,
+                FileContent.FC_POSITION_DELETES,
+                "",
+                0,
+                List.of(),
+                null,
+                List.of()));
+      }
+      files = List.copyOf(mutableFiles);
     }
 
     List<TargetStatsRecord> materialized = new ArrayList<>();
-    materialized.add(
-        StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, version, tStats));
-    materialized.addAll(
-        StatsProtoEmitter.toTargetColumnStatsFromViews(
-            destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
-    materialized.addAll(
-        StatsProtoEmitter.toTargetFileStatsFromViews(
-            destinationTableId,
-            version,
-            ColumnIdAlgorithm.CID_PATH_ORDINAL,
-            List.copyOf(mutableFiles)));
+    if (emitTable) {
+      materialized.add(
+          StatsProtoEmitter.tableStatsToTargetRecord(destinationTableId, version, tStats));
+    }
+    if (emitColumns) {
+      materialized.addAll(
+          StatsProtoEmitter.toTargetColumnStatsFromViews(
+              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, cStats));
+    }
+    if (emitFiles) {
+      materialized.addAll(
+          StatsProtoEmitter.toTargetFileStatsFromViews(
+              destinationTableId, version, ColumnIdAlgorithm.CID_PATH_ORDINAL, files));
+    }
     return List.copyOf(materialized);
   }
 

@@ -117,7 +117,7 @@ class IcebergNativeStatsCaptureEngineTest {
             .setScalar(ScalarStats.newBuilder().setDisplayName("c7").setLogicalType("BIGINT"))
             .build();
 
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(tableRecord, columnRecord));
 
     StatsCaptureRequest request =
@@ -148,7 +148,7 @@ class IcebergNativeStatsCaptureEngineTest {
         .containsEntry("engine_id", IcebergNativeStatsCaptureEngine.ENGINE_ID);
     verify(floecatConnector)
         .captureSnapshotTargetStats(
-            any(), any(), any(), anyLong(), argThat(selectors -> selectors.contains("c7")));
+            any(), any(), any(), anyLong(), argThat(selectors -> selectors.contains("c7")), any());
     verify(statsStore, times(1))
         .putTargetStats(argThat(r -> r.hasTable() && r.getSnapshotId() == 101L));
     verify(statsStore, times(1))
@@ -220,7 +220,7 @@ class IcebergNativeStatsCaptureEngineTest {
             .setFile(fileStats)
             .build();
 
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of(fileRecord));
 
     StatsCaptureRequest request =
@@ -277,7 +277,7 @@ class IcebergNativeStatsCaptureEngineTest {
                     .setKind(ConnectorKind.CK_ICEBERG)
                     .setUri("s3://warehouse")
                     .build()));
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(List.of());
 
     StatsCaptureRequest request =
@@ -291,7 +291,8 @@ class IcebergNativeStatsCaptureEngineTest {
             .build();
 
     assertThat(engine.capture(request)).isEmpty();
-    verify(floecatConnector).captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+    verify(floecatConnector)
+        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(statsStore, never()).putTargetStats(any());
   }
 
@@ -344,7 +345,7 @@ class IcebergNativeStatsCaptureEngineTest {
         StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(7L)).build();
     StatsTarget col9 =
         StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(9L)).build();
-    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any()))
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
         .thenReturn(
             List.of(
                 TargetStatsRecord.newBuilder()
@@ -394,7 +395,7 @@ class IcebergNativeStatsCaptureEngineTest {
     assertThat(out.results()).allMatch(item -> item.outcome() == StatsTriggerOutcome.CAPTURED);
     assertThat(openCount.get()).isEqualTo(1);
     verify(floecatConnector, times(1))
-        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any());
+        .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(statsStore, times(3)).putTargetStats(any(TargetStatsRecord.class));
   }
 }
