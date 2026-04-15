@@ -46,6 +46,8 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.reconciler.rpc.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.rpc.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
@@ -315,6 +317,32 @@ class ConnectorCliSupportTest {
   @Test
   void connectorJobsCallsListAndPrintsOutput() throws Exception {
     try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsResponse =
+          ListReconcileJobsResponse.newBuilder()
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-plan-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+                      .build())
+              .addJobs(
+                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                      .setJobId("job-table-1")
+                      .setConnectorId(CONNECTOR_UUID)
+                      .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
+                      .setParentJobId("job-plan-1")
+                      .setExecutorId("remote-executor-a")
+                      .setTableTask(
+                          ReconcileTableTask.newBuilder()
+                              .setSourceNamespace("sales")
+                              .setSourceTable("orders")
+                              .setDestinationTableDisplayName("orders_curated")
+                              .build())
+                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_QUEUED)
+                      .build())
+              .build();
+
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ConnectorCliSupport.handle(
           "connector",
@@ -326,6 +354,46 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
+      assertTrue(buf.toString().contains("kind=plan_connector"));
+      assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
+      assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
+    }
+  }
+
+  @Test
+  void connectorJobPrintsSplitJobDetails() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.getJobResponse =
+          ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+              .setJobId("job-table-1")
+              .setConnectorId(CONNECTOR_UUID)
+              .setKind(ReconcileJobKind.RJK_EXEC_TABLE)
+              .setParentJobId("job-plan-1")
+              .setExecutorId("remote-executor-a")
+              .setTableTask(
+                  ReconcileTableTask.newBuilder()
+                      .setSourceNamespace("sales")
+                      .setSourceTable("orders")
+                      .setDestinationTableDisplayName("orders_curated")
+                      .build())
+              .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+              .build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("job", "job-table-1"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertEquals(1, h.reconcileControlService.getReconcileJobCalls.get());
+      assertTrue(buf.toString().contains("kind=exec_table"));
+      assertTrue(buf.toString().contains("routing: parent=job-plan-1 executor=remote-executor-a"));
+      assertTrue(buf.toString().contains("table=sales.orders->orders_curated"));
     }
   }
 
@@ -518,11 +586,15 @@ class ConnectorCliSupportTest {
       extends ReconcileControlGrpc.ReconcileControlImplBase {
 
     final AtomicInteger startCaptureCalls = new AtomicInteger();
+    final AtomicInteger getReconcileJobCalls = new AtomicInteger();
     final AtomicInteger listReconcileJobsCalls = new AtomicInteger();
     final AtomicInteger cancelReconcileJobCalls = new AtomicInteger();
     final AtomicInteger getReconcilerSettingsCalls = new AtomicInteger();
     final AtomicInteger updateReconcilerSettingsCalls = new AtomicInteger();
     CancelReconcileJobRequest lastCancelRequest;
+    ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse getJobResponse =
+        ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.getDefaultInstance();
+    ListReconcileJobsResponse listJobsResponse = ListReconcileJobsResponse.getDefaultInstance();
 
     @Override
     public void startCapture(
@@ -533,11 +605,20 @@ class ConnectorCliSupportTest {
     }
 
     @Override
+    public void getReconcileJob(
+        ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest request,
+        StreamObserver<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> responseObserver) {
+      getReconcileJobCalls.incrementAndGet();
+      responseObserver.onNext(getJobResponse);
+      responseObserver.onCompleted();
+    }
+
+    @Override
     public void listReconcileJobs(
         ListReconcileJobsRequest request,
         StreamObserver<ListReconcileJobsResponse> responseObserver) {
       listReconcileJobsCalls.incrementAndGet();
-      responseObserver.onNext(ListReconcileJobsResponse.getDefaultInstance());
+      responseObserver.onNext(listJobsResponse);
       responseObserver.onCompleted();
     }
 

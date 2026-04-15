@@ -38,8 +38,11 @@ message CaptureScope {
 // Controls whether reconcile should refresh metadata, persisted statistics, or both.
 enum CaptureMode {
   CM_UNSPECIFIED = 0;
+  // Reconcile metadata only; do not capture stats.
   CM_METADATA_ONLY = 1;
+  // Reconcile metadata now, then capture stats as part of the same logical reconcile flow.
   CM_METADATA_AND_STATS = 2;
+  // Capture stats only for already-known destination tables/snapshots.
   CM_STATS_ONLY = 3;
 }
 
@@ -56,6 +59,27 @@ enum ExecutionClass {
   EC_HEAVY = 4;
 }
 
+// Logical reconcile job type.
+//
+// The current model is split:
+// - PLAN_CONNECTOR is the top-level connector job that enumerates child work.
+// - EXEC_TABLE is a child job that executes one planned table task.
+enum ReconcileJobKind {
+  RJK_UNSPECIFIED = 0;
+  RJK_PLAN_CONNECTOR = 1;
+  RJK_EXEC_TABLE = 2;
+}
+
+// One table-scoped unit of reconcile work emitted by a planner job.
+message ReconcileTableTask {
+  // Fully qualified upstream source namespace.
+  string source_namespace = 1;
+  // Upstream source table name.
+  string source_table = 2;
+  // Destination display name to persist/use for this table execution.
+  string destination_table_display_name = 3;
+}
+
 // Scheduler hints that influence where and how a reconcile job should run.
 message ExecutionPolicy {
   // Broad execution category used for matching jobs to executors.
@@ -70,7 +94,6 @@ message ExecutionPolicy {
 message CaptureNowRequest {
   CaptureScope scope = 1;
   CaptureMode mode = 2;
-  // When true, ignore incremental optimization and rescan the selected scope from scratch.
   bool full_rescan = 3;
   // Optional caller-supplied maximum wait for the synchronous RPC.
   // The server may clamp this to a smaller configured maximum and may also stop earlier if the
@@ -113,6 +136,11 @@ message LeasedReconcileJob {
   string pinned_executor_id = 8;
   // Executor currently holding the lease, if any.
   string executor_id = 9;
+  ReconcileJobKind kind = 10;
+  // Present for EXEC_TABLE jobs; empty for PLAN_CONNECTOR jobs.
+  ReconcileTableTask table_task = 11;
+  // Parent job id for child execution jobs.
+  string parent_job_id = 12;
 }
 
 // Request from an executor asking the scheduler for work it is willing to run.
@@ -123,6 +151,8 @@ message LeaseReconcileJobRequest {
   repeated ExecutionClass execution_classes = 2;
   // Optional lane filters. Empty means the executor accepts jobs from any lane.
   repeated string lanes = 3;
+  // Job kinds this worker accepts.
+  repeated ReconcileJobKind job_kinds = 4;
 }
 
 message LeaseReconcileJobResponse {
@@ -132,6 +162,7 @@ message LeaseReconcileJobResponse {
   LeasedReconcileJob job = 2;
 }
 
+// Renews an existing job lease.
 message RenewReconcileLeaseRequest {
   string job_id = 1;
   // Current lease token previously returned by LeaseReconcileJob.
@@ -170,6 +201,7 @@ message ReportReconcileProgressRequest {
 message ReportReconcileProgressResponse {
   // False when the caller no longer owns a valid lease for this job.
   bool lease_valid = 1;
+  // True means the worker should stop as soon as possible and complete the job as cancelled.
   bool cancellation_requested = 2;
 }
 
@@ -200,6 +232,7 @@ message CompleteLeasedReconcileJobResponse {
   bool accepted = 1;
 }
 
+// Lightweight polling API for remote executors that need only cancellation state.
 message GetReconcileCancellationRequest {
   string job_id = 1;
 }
@@ -213,6 +246,9 @@ message GetReconcileJobRequest {
 }
 
 // Durable job status returned to clients and operators.
+//
+// For PLAN_CONNECTOR jobs, the service may return an aggregated state/counter view derived from the
+// parent plan job plus its child EXEC_TABLE jobs.
 message GetReconcileJobResponse {
   string job_id = 1;
   // Connector id as a plain string for lightweight display and filtering.
@@ -235,8 +271,14 @@ message GetReconcileJobResponse {
   ExecutionPolicy execution_policy = 14;
   // Executor that most recently ran or is currently running the job.
   string executor_id = 15;
+  ReconcileJobKind kind = 16;
+  // Parent job id for child execution jobs; empty for top-level plan jobs.
+  string parent_job_id = 17;
+  // Planned table task carried by an EXEC_TABLE job.
+  ReconcileTableTask table_task = 18;
 }
 
+// Lists reconcile jobs visible to the caller.
 message ListReconcileJobsRequest {
   // Standard pagination request.
   ai.floedb.floecat.common.PageRequest page = 1;
@@ -251,6 +293,7 @@ message ListReconcileJobsResponse {
   ai.floedb.floecat.common.PageResponse page = 2;
 }
 
+// Requests cancellation of a top-level or child reconcile job.
 message CancelReconcileJobRequest {
   string job_id = 1;
   // Optional operator-supplied reason recorded with the job.
@@ -305,26 +348,39 @@ message UpdateReconcilerSettingsResponse {
 
 // Client-facing control plane for synchronous and asynchronous reconcile operations.
 service ReconcileControl {
+  // Starts a reconcile and waits for its aggregated result up to max_wait.
   rpc CaptureNow(CaptureNowRequest) returns (CaptureNowResponse);
+  // Enqueues a top-level reconcile job and returns immediately.
   rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
+  // Returns one reconcile job by id.
   rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
+  // Lists reconcile jobs visible to the caller.
   rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
+  // Requests cancellation for a reconcile job.
   rpc CancelReconcileJob(CancelReconcileJobRequest) returns (CancelReconcileJobResponse);
+  // Reads current automatic reconcile settings.
   rpc GetReconcilerSettings(GetReconcilerSettingsRequest) returns (GetReconcilerSettingsResponse);
+  // Updates automatic reconcile settings.
   rpc UpdateReconcilerSettings(UpdateReconcilerSettingsRequest)
       returns (UpdateReconcilerSettingsResponse);
 }
 
 // Executor-facing lease protocol used by remote workers to pull and report reconcile jobs.
 service ReconcileExecutorControl {
+  // Attempts to lease one eligible reconcile job.
   rpc LeaseReconcileJob(LeaseReconcileJobRequest) returns (LeaseReconcileJobResponse);
+  // Renews a previously leased job.
   rpc RenewReconcileLease(RenewReconcileLeaseRequest) returns (RenewReconcileLeaseResponse);
+  // Optional notification that execution has started.
   rpc StartLeasedReconcileJob(StartLeasedReconcileJobRequest)
       returns (StartLeasedReconcileJobResponse);
+  // Reports progress for a leased job.
   rpc ReportReconcileProgress(ReportReconcileProgressRequest)
       returns (ReportReconcileProgressResponse);
+  // Completes a leased job with a terminal state.
   rpc CompleteLeasedReconcileJob(CompleteLeasedReconcileJobRequest)
       returns (CompleteLeasedReconcileJobResponse);
+  // Reads current cancellation state for a job.
   rpc GetReconcileCancellation(GetReconcileCancellationRequest)
       returns (GetReconcileCancellationResponse);
 }

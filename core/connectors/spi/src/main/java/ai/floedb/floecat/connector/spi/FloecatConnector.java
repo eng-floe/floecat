@@ -57,6 +57,52 @@ public interface FloecatConnector extends Closeable {
   }
 
   /**
+   * Plans table-scoped reconcile work for this connector.
+   *
+   * <p>Default behavior derives tasks from {@link #listTables(String)} and applies an optional
+   * source table filter. Connectors can override this when they need more specialized planning.
+   */
+  default List<PlannedTableTask> planTableTasks(TablePlanningRequest request) {
+    if (request == null
+        || request.sourceNamespaceFq() == null
+        || request.sourceNamespaceFq().isBlank()) {
+      return List.of();
+    }
+
+    List<String> sourceTables = listTables(request.sourceNamespaceFq());
+    if (sourceTables == null || sourceTables.isEmpty()) {
+      return List.of();
+    }
+
+    String requestedSourceTable = request.sourceTable() == null ? "" : request.sourceTable().trim();
+    String requestedDestinationTable =
+        request.destinationTableDisplayName() == null
+            ? ""
+            : request.destinationTableDisplayName().trim();
+    String destinationTableDisplayHint =
+        request.destinationTableDisplayHint() == null
+            ? ""
+            : request.destinationTableDisplayHint().trim();
+
+    return sourceTables.stream()
+        .filter(table -> requestedSourceTable.isBlank() || requestedSourceTable.equals(table))
+        .filter(
+            table -> {
+              String destinationTableDisplay =
+                  destinationTableDisplayHint.isBlank() ? table : destinationTableDisplayHint;
+              return requestedDestinationTable.isBlank()
+                  || requestedDestinationTable.equals(destinationTableDisplay);
+            })
+        .map(
+            table ->
+                new PlannedTableTask(
+                    request.sourceNamespaceFq(),
+                    table,
+                    destinationTableDisplayHint.isBlank() ? table : destinationTableDisplayHint))
+        .toList();
+  }
+
+  /**
    * Captures target stats for one snapshot and optional selector scope.
    *
    * <p>Selector semantics are best-effort and connector-native:
@@ -124,6 +170,38 @@ public interface FloecatConnector extends Closeable {
     public static SnapshotEnumerationOptions incremental(
         Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(false, knownSnapshotIds, targetSnapshotIds);
+    }
+  }
+
+  record TablePlanningRequest(
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationNamespaceFq,
+      String destinationTableDisplayHint,
+      List<List<String>> destinationNamespacePaths,
+      String destinationTableDisplayName) {
+    public TablePlanningRequest {
+      destinationNamespacePaths =
+          destinationNamespacePaths == null
+              ? List.of()
+              : destinationNamespacePaths.stream()
+                  .filter(path -> path != null && !path.isEmpty())
+                  .map(List::copyOf)
+                  .toList();
+    }
+  }
+
+  record PlannedTableTask(
+      String sourceNamespaceFq, String sourceTable, String destinationTableDisplayName) {
+    public PlannedTableTask {
+      sourceNamespaceFq = sourceNamespaceFq == null ? "" : sourceNamespaceFq;
+      sourceTable = sourceTable == null ? "" : sourceTable;
+      destinationTableDisplayName =
+          destinationTableDisplayName == null ? "" : destinationTableDisplayName;
+    }
+
+    public PlannedTableTask(String sourceNamespaceFq, String sourceTable) {
+      this(sourceNamespaceFq, sourceTable, "");
     }
   }
 

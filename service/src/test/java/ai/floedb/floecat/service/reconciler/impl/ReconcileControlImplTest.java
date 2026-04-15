@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
@@ -33,9 +34,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -76,11 +79,13 @@ class ReconcileControlImplTest {
             .build();
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(Connector.newBuilder().setResourceId(connectorId).build()));
+    when(service.jobs.list(anyString(), anyInt(), anyString(), anyString(), any()))
+        .thenReturn(emptyPage());
   }
 
   @Test
   void captureNowEnqueuesAndWaitsForTerminalJob() {
-    when(service.jobs.enqueue(
+    when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(service.jobs.get("acct", "job-1"))
@@ -102,12 +107,12 @@ class ReconcileControlImplTest {
     assertEquals(2L, response.getTablesChanged());
     assertEquals(1L, response.getErrors());
     verify(service.jobs)
-        .enqueue(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test
   void captureNowFailsWhenQueuedJobFails() {
-    when(service.jobs.enqueue(
+    when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(service.jobs.get("acct", "job-1"))
@@ -131,7 +136,7 @@ class ReconcileControlImplTest {
 
   @Test
   void captureNowTimesOutWhenJobDoesNotFinishWithinWaitBudget() {
-    when(service.jobs.enqueue(
+    when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(service.jobs.get("acct", "job-1"))
@@ -162,7 +167,7 @@ class ReconcileControlImplTest {
 
   @Test
   void captureNowDoesNotRequestExecutorCancellationWhenJobAlreadyCancelledInStore() {
-    when(service.jobs.enqueue(
+    when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
         .thenReturn("job-1");
     when(service.jobs.get("acct", "job-1"))
@@ -185,6 +190,29 @@ class ReconcileControlImplTest {
     verify(service.jobs, times(1))
         .cancel("acct", "job-1", "capture_now timed out while waiting for completion");
     verify(service.cancellations, never()).requestCancel(anyString());
+  }
+
+  @Test
+  void getReconcileJobPrefersFailedPlanStateOverQueuedChildren() {
+    when(service.jobs.get("acct", "plan-1"))
+        .thenReturn(Optional.of(job("plan-1", "JS_FAILED", 0, 0, 0, "planning failed")));
+    when(service.jobs.list("acct", 200, "", "connector-1", java.util.Set.of()))
+        .thenReturn(
+            new ReconcileJobStore.ReconcileJobPage(
+                java.util.List.of(
+                    childJob("child-1", "JS_QUEUED", 1, 0, 0, "", "plan-1"),
+                    childJob("child-2", "JS_RUNNING", 2, 0, 0, "", "plan-1")),
+                ""));
+
+    var response =
+        service
+            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(ai.floedb.floecat.reconciler.rpc.JobState.JS_FAILED, response.getState());
+    assertEquals("planning failed", response.getMessage());
+    assertEquals(3L, response.getTablesScanned());
   }
 
   private static ResourceId connectorId() {
@@ -210,6 +238,44 @@ class ReconcileControlImplTest {
         0L,
         null,
         null,
+        "",
+        ReconcileJobKind.PLAN_CONNECTOR,
+        null,
         "");
+  }
+
+  private static ReconcileJobStore.ReconcileJob childJob(
+      String jobId,
+      String state,
+      long scanned,
+      long changed,
+      long errors,
+      String message,
+      String parentJobId) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        "acct",
+        "connector-1",
+        state,
+        message,
+        0L,
+        0L,
+        scanned,
+        changed,
+        errors,
+        false,
+        null,
+        0L,
+        0L,
+        null,
+        null,
+        "executor-1",
+        ReconcileJobKind.EXEC_TABLE,
+        null,
+        parentJobId);
+  }
+
+  private static ReconcileJobStore.ReconcileJobPage emptyPage() {
+    return new ReconcileJobStore.ReconcileJobPage(java.util.List.of(), "");
   }
 }

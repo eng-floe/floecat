@@ -1,0 +1,100 @@
+flowchart LR
+  subgraph Clients["Clients"]
+    QE["Query Engine"]
+    Admin["Admin UI / CLI"]
+  end
+
+  subgraph Boundary["Trust Boundary"]
+    ING["Ingress Auth / Context\nOIDC or dev mode -> PrincipalContext"]
+    GW["Iceberg REST Gateway\nREST -> gRPC"]
+
+    subgraph Query["Query / Planning Services"]
+      QAPI["QueryService\nBeginQuery / RenewQuery / EndQuery / GetQuery"]
+      QSCHEMA["QuerySchemaService\nDescribeInputs"]
+      PSTATS["PlannerStatsService\nGetTargetStats / GetTableConstraints"]
+      QSCAN["QueryScanService\nFetchScanBundle"]
+      QCACHE["QueryContextStore\nCaffeine"]
+      PCACHE["Per-query stats / pin cache"]
+    end
+
+    subgraph Catalog["Catalog / Metadata Services"]
+      DIR["DirectoryService"]
+      CAT["Catalog / Namespace /\nTable / View / Snapshot"]
+      TX["TransactionsService"]
+      TSTAT["TableStatisticsService"]
+      CONSTR["TableConstraintsService"]
+      CONN["Connectors API"]
+    end
+
+    subgraph Workers["Workers"]
+      RCTL["ReconcileControl\nStartCapture"]
+      RSCH["ReconcilePlannerScheduler"]
+      REX["Reconcile Executors"]
+      GC["GC\ntransactions / reconcile-jobs /\nCAS blobs / pointers"]
+      ESTAT["Native Stats Engines\niceberg_native, delta_native"]
+    end
+  end
+
+  KV["Pointer Store / KV"]
+  OBJ["Blob Store / Object Storage"]
+  UP["Upstream Metastores & Data Lakes"]
+
+  QE --> GW
+  Admin --> ING
+
+  ING --> GW
+  ING --> DIR
+  ING --> CAT
+  ING --> TX
+  ING --> TSTAT
+  ING --> CONSTR
+  ING --> CONN
+  ING --> QAPI
+  ING --> QSCHEMA
+  ING --> PSTATS
+  ING --> QSCAN
+  ING --> RCTL
+
+  GW --> QAPI
+  GW --> QSCHEMA
+  GW --> QSCAN
+  GW --> DIR
+  GW --> CAT
+  GW --> TX
+  GW --> CONN
+  GW --> RCTL
+
+  QAPI <--> QCACHE
+  QSCHEMA <--> QCACHE
+  PSTATS <--> QCACHE
+  QSCAN <--> QCACHE
+  PSTATS <--> PCACHE
+
+  QSCHEMA --> DIR
+  QSCHEMA --> CAT
+  PSTATS --> TSTAT
+  PSTATS --> ESTAT
+  QSCAN --> CAT
+
+  CAT <--> KV
+  CAT <--> OBJ
+  TX <--> KV
+  TX <--> OBJ
+  TSTAT <--> KV
+  TSTAT <--> OBJ
+  CONN <--> KV
+  CONN <--> OBJ
+  CONSTR <--> KV
+  CONSTR <--> OBJ
+  DIR <--> KV
+
+  RSCH --> RCTL
+  RCTL --> REX
+  REX --> CONN
+  REX --> CAT
+  REX --> TSTAT
+  REX --> ESTAT
+  GC --> KV
+  GC --> OBJ
+
+  ESTAT --> UP

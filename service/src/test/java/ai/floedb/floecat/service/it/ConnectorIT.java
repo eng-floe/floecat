@@ -41,6 +41,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.ReconcilerScheduler;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
@@ -64,6 +65,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -914,6 +916,18 @@ public class ConnectorIT {
     return runReconcile(rid, true);
   }
 
+  private Connector updateConnectorProperties(
+      ResourceId connectorId, java.util.Map<String, String> properties) {
+    return connectors
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().putAllProperties(properties).build())
+                .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+                .build())
+        .getConnector();
+  }
+
   private Connector updateConnectorUri(ResourceId connectorId, String uri) {
     return connectors
         .updateConnector(
@@ -944,7 +958,7 @@ public class ConnectorIT {
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
       job = jobs.get(jobId).orElse(null);
-      if (job != null && ("JS_SUCCEEDED".equals(job.state) || "JS_FAILED".equals(job.state))) {
+      if (job != null && isTerminal(job.state)) {
         break;
       }
       if (System.nanoTime() > deadline) {
@@ -953,7 +967,142 @@ public class ConnectorIT {
       Thread.sleep(250);
     }
 
-    return job;
+    if (job == null || job.jobKind != ReconcileJobKind.PLAN_CONNECTOR) {
+      return job;
+    }
+
+    return awaitAggregatePlanJob(job, deadline);
+  }
+
+  private ReconcileJobStore.ReconcileJob awaitAggregatePlanJob(
+      ReconcileJobStore.ReconcileJob planJob, long deadlineNanos) throws Exception {
+    List<ReconcileJobStore.ReconcileJob> childJobs = List.of();
+    for (; ; ) {
+      childJobs = childJobsFor(planJob);
+      if (!childJobs.isEmpty() && childJobs.stream().allMatch(job -> isTerminal(job.state))) {
+        break;
+      }
+      if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
+        return planJob;
+      }
+      if (System.nanoTime() > deadlineNanos) {
+        break;
+      }
+      Thread.sleep(250);
+    }
+
+    if (childJobs.isEmpty()) {
+      return planJob;
+    }
+
+    if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
+      long startedAtMs =
+          childJobs.stream()
+              .mapToLong(job -> job.startedAtMs)
+              .filter(v -> v > 0L)
+              .min()
+              .orElse(planJob.startedAtMs);
+      long finishedAtMs =
+          Math.max(
+              planJob.finishedAtMs,
+              childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(0L));
+      long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
+      long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+      long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
+      long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
+      long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+
+      return new ReconcileJobStore.ReconcileJob(
+          planJob.jobId,
+          planJob.accountId,
+          planJob.connectorId,
+          planJob.state,
+          planJob.message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          errors,
+          planJob.fullRescan,
+          planJob.captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          planJob.scope,
+          planJob.executionPolicy,
+          planJob.executorId,
+          planJob.jobKind,
+          planJob.tableTask,
+          planJob.parentJobId);
+    }
+
+    boolean failed = childJobs.stream().anyMatch(job -> "JS_FAILED".equals(job.state));
+    boolean cancelled = childJobs.stream().anyMatch(job -> "JS_CANCELLED".equals(job.state));
+    String state = failed ? "JS_FAILED" : (cancelled ? "JS_CANCELLED" : "JS_SUCCEEDED");
+    String message =
+        childJobs.stream()
+            .filter(job -> job.message != null && !job.message.isBlank())
+            .filter(job -> !"JS_SUCCEEDED".equals(job.state))
+            .map(job -> job.jobId + ": " + job.message)
+            .findFirst()
+            .orElse(planJob.message);
+
+    long startedAtMs =
+        childJobs.stream()
+            .mapToLong(job -> job.startedAtMs)
+            .filter(v -> v > 0L)
+            .min()
+            .orElse(planJob.startedAtMs);
+    long finishedAtMs =
+        childJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(planJob.finishedAtMs);
+    long tablesScanned = childJobs.stream().mapToLong(job -> job.tablesScanned).sum();
+    long tablesChanged = childJobs.stream().mapToLong(job -> job.tablesChanged).sum();
+    long errors = childJobs.stream().mapToLong(job -> job.errors).sum();
+    long snapshotsProcessed = childJobs.stream().mapToLong(job -> job.snapshotsProcessed).sum();
+    long statsProcessed = childJobs.stream().mapToLong(job -> job.statsProcessed).sum();
+
+    return new ReconcileJobStore.ReconcileJob(
+        planJob.jobId,
+        planJob.accountId,
+        planJob.connectorId,
+        state,
+        message,
+        startedAtMs,
+        finishedAtMs,
+        tablesScanned,
+        tablesChanged,
+        errors,
+        planJob.fullRescan,
+        planJob.captureMode,
+        snapshotsProcessed,
+        statsProcessed,
+        planJob.scope,
+        planJob.executionPolicy,
+        planJob.executorId,
+        planJob.jobKind,
+        planJob.tableTask,
+        planJob.parentJobId);
+  }
+
+  private List<ReconcileJobStore.ReconcileJob> childJobsFor(
+      ReconcileJobStore.ReconcileJob planJob) {
+    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    String nextToken = "";
+    do {
+      var page = jobs.list(planJob.accountId, 200, nextToken, planJob.connectorId, Set.of());
+      for (var candidate : page.jobs) {
+        if (planJob.jobId.equals(candidate.parentJobId)) {
+          out.add(candidate);
+        }
+      }
+      nextToken = page.nextPageToken;
+    } while (nextToken != null && !nextToken.isBlank());
+    return out;
+  }
+
+  private static boolean isTerminal(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
   }
 
   private static final class UcStubServer implements AutoCloseable {

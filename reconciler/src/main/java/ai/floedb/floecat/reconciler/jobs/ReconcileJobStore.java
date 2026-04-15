@@ -29,7 +29,7 @@ public interface ReconcileJobStore {
       boolean fullRescan,
       CaptureMode captureMode,
       ReconcileScope scope) {
-    return enqueue(
+    return enqueuePlan(
         accountId,
         connectorId,
         fullRescan,
@@ -45,8 +45,67 @@ public interface ReconcileJobStore {
       boolean fullRescan,
       CaptureMode captureMode,
       ReconcileScope scope,
+      ReconcileJobKind jobKind,
+      ReconcileTableTask tableTask,
       ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
       String pinnedExecutorId);
+
+  default String enqueue(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId) {
+    return enqueuePlan(
+        accountId, connectorId, fullRescan, captureMode, scope, executionPolicy, pinnedExecutorId);
+  }
+
+  default String enqueuePlan(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileExecutionPolicy executionPolicy,
+      String pinnedExecutorId) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileJobKind.PLAN_CONNECTOR,
+        ReconcileTableTask.empty(),
+        executionPolicy,
+        "",
+        pinnedExecutorId);
+  }
+
+  default String enqueueTableExecution(
+      String accountId,
+      String connectorId,
+      boolean fullRescan,
+      CaptureMode captureMode,
+      ReconcileScope scope,
+      ReconcileTableTask tableTask,
+      ReconcileExecutionPolicy executionPolicy,
+      String parentJobId,
+      String pinnedExecutorId) {
+    return enqueue(
+        accountId,
+        connectorId,
+        fullRescan,
+        captureMode,
+        scope,
+        ReconcileJobKind.EXEC_TABLE,
+        tableTask,
+        executionPolicy,
+        parentJobId,
+        pinnedExecutorId);
+  }
 
   Optional<ReconcileJob> get(String accountId, String jobId);
 
@@ -132,6 +191,9 @@ public interface ReconcileJobStore {
     public final ReconcileScope scope;
     public final ReconcileExecutionPolicy executionPolicy;
     public final String executorId;
+    public final ReconcileJobKind jobKind;
+    public final ReconcileTableTask tableTask;
+    public final String parentJobId;
 
     public ReconcileJob(
         String jobId,
@@ -151,6 +213,50 @@ public interface ReconcileJobStore {
         ReconcileScope scope,
         ReconcileExecutionPolicy executionPolicy,
         String executorId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          state,
+          message,
+          startedAtMs,
+          finishedAtMs,
+          tablesScanned,
+          tablesChanged,
+          errors,
+          fullRescan,
+          captureMode,
+          snapshotsProcessed,
+          statsProcessed,
+          scope,
+          executionPolicy,
+          executorId,
+          ReconcileJobKind.PLAN_CONNECTOR,
+          ReconcileTableTask.empty(),
+          "");
+    }
+
+    public ReconcileJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        String state,
+        String message,
+        long startedAtMs,
+        long finishedAtMs,
+        long tablesScanned,
+        long tablesChanged,
+        long errors,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        long snapshotsProcessed,
+        long statsProcessed,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -169,6 +275,9 @@ public interface ReconcileJobStore {
       this.executionPolicy =
           executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
       this.executorId = executorId == null ? "" : executorId;
+      this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
+      this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+      this.parentJobId = parentJobId == null ? "" : parentJobId;
     }
   }
 
@@ -183,6 +292,9 @@ public interface ReconcileJobStore {
     public final String leaseEpoch;
     public final String pinnedExecutorId;
     public final String executorId;
+    public final ReconcileJobKind jobKind;
+    public final ReconcileTableTask tableTask;
+    public final String parentJobId;
 
     public LeasedJob(
         String jobId,
@@ -195,6 +307,36 @@ public interface ReconcileJobStore {
         String leaseEpoch,
         String pinnedExecutorId,
         String executorId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          fullRescan,
+          captureMode,
+          scope,
+          executionPolicy,
+          leaseEpoch,
+          pinnedExecutorId,
+          executorId,
+          ReconcileJobKind.PLAN_CONNECTOR,
+          ReconcileTableTask.empty(),
+          "");
+    }
+
+    public LeasedJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String leaseEpoch,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        String parentJobId) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -206,6 +348,9 @@ public interface ReconcileJobStore {
       this.leaseEpoch = leaseEpoch == null ? "" : leaseEpoch;
       this.pinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId;
       this.executorId = executorId == null ? "" : executorId;
+      this.jobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
+      this.tableTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
+      this.parentJobId = parentJobId == null ? "" : parentJobId;
     }
   }
 
@@ -237,9 +382,13 @@ public interface ReconcileJobStore {
     public final Set<ReconcileExecutionClass> executionClasses;
     public final Set<String> lanes;
     public final Set<String> executorIds;
+    public final Set<ReconcileJobKind> jobKinds;
 
     public LeaseRequest(
-        Set<ReconcileExecutionClass> executionClasses, Set<String> lanes, Set<String> executorIds) {
+        Set<ReconcileExecutionClass> executionClasses,
+        Set<String> lanes,
+        Set<String> executorIds,
+        Set<ReconcileJobKind> jobKinds) {
       this.executionClasses =
           executionClasses == null
               ? Set.of()
@@ -260,34 +409,51 @@ public interface ReconcileJobStore {
                   .map(executorId -> executorId == null ? "" : executorId.trim())
                   .filter(executorId -> !executorId.isEmpty())
                   .collect(java.util.stream.Collectors.toUnmodifiableSet());
+      this.jobKinds =
+          jobKinds == null
+              ? Set.of()
+              : EnumSet.copyOf(
+                  jobKinds.isEmpty() ? EnumSet.noneOf(ReconcileJobKind.class) : jobKinds);
     }
 
     public static LeaseRequest all() {
-      return new LeaseRequest(Set.of(), Set.of(), Set.of());
+      return new LeaseRequest(Set.of(), Set.of(), Set.of(), Set.of());
     }
 
     public static LeaseRequest of(
         Set<ReconcileExecutionClass> executionClasses, Set<String> lanes) {
-      return new LeaseRequest(executionClasses, lanes, Set.of());
+      return new LeaseRequest(executionClasses, lanes, Set.of(), Set.of());
     }
 
     public static LeaseRequest of(
         Set<ReconcileExecutionClass> executionClasses, Set<String> lanes, Set<String> executorIds) {
-      return new LeaseRequest(executionClasses, lanes, executorIds);
+      return new LeaseRequest(executionClasses, lanes, executorIds, Set.of());
     }
 
-    public boolean matches(ReconcileExecutionPolicy policy, String pinnedExecutorId) {
+    public static LeaseRequest of(
+        Set<ReconcileExecutionClass> executionClasses,
+        Set<String> lanes,
+        Set<String> executorIds,
+        Set<ReconcileJobKind> jobKinds) {
+      return new LeaseRequest(executionClasses, lanes, executorIds, jobKinds);
+    }
+
+    public boolean matches(
+        ReconcileExecutionPolicy policy, String pinnedExecutorId, ReconcileJobKind jobKind) {
       ReconcileExecutionPolicy effective =
           policy == null ? ReconcileExecutionPolicy.defaults() : policy;
+      ReconcileJobKind effectiveJobKind =
+          jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
       boolean classMatches =
           executionClasses.isEmpty() || executionClasses.contains(effective.executionClass());
       boolean laneMatches = lanes.isEmpty() || lanes.contains(effective.lane());
+      boolean kindMatches = jobKinds.isEmpty() || jobKinds.contains(effectiveJobKind);
       String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
       boolean executorMatches =
           effectivePinnedExecutorId.isEmpty()
               || executorIds.isEmpty()
               || executorIds.contains(effectivePinnedExecutorId);
-      return classMatches && laneMatches && executorMatches;
+      return classMatches && laneMatches && kindMatches && executorMatches;
     }
   }
 }

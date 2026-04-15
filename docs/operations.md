@@ -68,10 +68,13 @@ Key reconciler mode flags live in `service/src/main/resources/application.proper
 ```properties
 floecat.reconciler.scheduler.enabled
 floecat.reconciler.remote-executor.enabled
+floecat.reconciler.executor.planner.enabled
 floecat.reconciler.executor.default.enabled
 floecat.reconciler.backend
 floecat.reconciler.authorization.header
 floecat.reconciler.authorization.token
+floecat.reconciler.auto.execution-class
+floecat.reconciler.auto.execution-lane
 ```
 
 Recommended split deployment:
@@ -79,6 +82,10 @@ Recommended split deployment:
 - Control plane: `QUARKUS_PROFILE=reconciler-control`
 - Executor plane: `QUARKUS_PROFILE=reconciler-executor`
 - Shared settings: same blob/kv backend, same reconcile auth token, executor nodes pointed at the control-plane gRPC host/port
+
+In the split model, the control plane owns top-level `PLAN_CONNECTOR` jobs and public reconcile
+APIs, while executor-plane nodes primarily run child `EXEC_TABLE` work. `CaptureNow` now follows
+the same plan-plus-child execution path rather than a legacy connector-wide execution mode.
 
 To scale executors horizontally, add more executor-plane instances. They greedily lease eligible jobs from the shared durable queue, so no leader election is required at the executor layer.
 

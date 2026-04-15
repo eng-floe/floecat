@@ -47,8 +47,8 @@ COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNIT
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID:-test}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY:-test}
 COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-true}
-COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES:-45}
-COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS:-2}
+COMPOSE_SMOKE_STATS_RETRIES=${COMPOSE_SMOKE_STATS_RETRIES:-45}
+COMPOSE_SMOKE_STATS_SLEEP_SECONDS=${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}
 
 is_truthy() {
   local raw="${1:-}"
@@ -267,15 +267,6 @@ quit")
   echo "$last_out"
   echo "---- output end ----"
   return 1
-}
-
-maybe_assert_table_stats_available() {
-  local compose_cmd="$1"
-  local label="$2"
-  local table_fqn="$3"
-  local retries="$4"
-  local sleep_seconds="$5"
-  assert_table_stats_available "$compose_cmd" "$label" "$table_fqn" "$retries" "$sleep_seconds"
 }
 
 cleanup_mode() {
@@ -639,16 +630,12 @@ quit")
     assert_contains "$label upstream iceberg imported account" "$out_upstream_iceberg" "account set:"
     assert_contains "$label upstream iceberg imported table" "$out_upstream_iceberg" "table id:"
 
-    local out_upstream_iceberg_stats
-    out_upstream_iceberg_stats=$(run_cli_script "$compose_cmd" "account t-0001
-stats files $COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE --current --limit 5
-quit")
-    echo "$out_upstream_iceberg_stats"
-    if echo "$out_upstream_iceberg_stats" | grep -q "No file stats found."; then
-      echo "[FAIL] $label upstream iceberg file stats missing"
-      return 1
-    fi
-    assert_contains "$label upstream iceberg file stats header" "$out_upstream_iceberg_stats" "PATH"
+    assert_table_stats_available \
+      "$compose_cmd" \
+      "$label upstream iceberg file stats" \
+      "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE" \
+      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
   fi
@@ -736,16 +723,12 @@ quit")
     assert_contains "$label upstream delta unity imported account" "$out_upstream_delta_unity" "account set:"
     assert_contains "$label upstream delta unity imported table" "$out_upstream_delta_unity" "table id:"
 
-    local out_upstream_delta_unity_stats
-    out_upstream_delta_unity_stats=$(run_cli_script "$compose_cmd" "account t-0001
-stats files $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE --current --limit 5
-quit")
-    echo "$out_upstream_delta_unity_stats"
-    if echo "$out_upstream_delta_unity_stats" | grep -q "No file stats found."; then
-      echo "[FAIL] $label upstream delta unity file stats missing"
-      return 1
-    fi
-    assert_contains "$label upstream delta unity file stats header" "$out_upstream_delta_unity_stats" "PATH"
+    assert_table_stats_available \
+      "$compose_cmd" \
+      "$label upstream delta unity file stats" \
+      "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
+      "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
+      "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
   fi
@@ -843,12 +826,12 @@ quit")
     assert_contains "$label duckdb time travel insert snapshot" "$duckdb_tt_out" "mut_tt_after_insert=3,6,a,c"
     assert_contains "$label duckdb time travel delete snapshot" "$duckdb_tt_out" "mut_tt_after_delete=2,4,a,c"
     assert_contains "$label duckdb time travel update snapshot" "$duckdb_tt_out" "mut_tt_after_update=2,4,a,c2"
-    maybe_assert_table_stats_available \
+    assert_table_stats_available \
       "$compose_cmd" \
       "$label duckdb mutation baseline" \
       "examples.iceberg.duckdb_mutation_smoke" \
-      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
-      "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+      "$COMPOSE_SMOKE_STATS_RETRIES" \
+      "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
 
     local alter_out
     if alter_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
@@ -887,18 +870,18 @@ quit")
       echo "$duckdb_fmt_out"
       assert_contains "$label duckdb format v1 queryability" "$duckdb_fmt_out" "duckdb_fmt_v1_count=1,101,duckdb_v1,duckdb_v1"
       assert_contains "$label duckdb format v2 queryability" "$duckdb_fmt_out" "duckdb_fmt_v2_count=1,201,duckdb_v2,duckdb_v2"
-      maybe_assert_table_stats_available \
+      assert_table_stats_available \
         "$compose_cmd" \
         "$label duckdb format v1" \
         "examples.iceberg.duckdb_fmt_v1_smoke" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
-      maybe_assert_table_stats_available \
+        "$COMPOSE_SMOKE_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
+      assert_table_stats_available \
         "$compose_cmd" \
         "$label duckdb format v2" \
         "examples.iceberg.duckdb_fmt_v2_smoke" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+        "$COMPOSE_SMOKE_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
     fi
   fi
 
@@ -1235,18 +1218,18 @@ PY
         assert_contains "$label duckdb format v1 metadata" "$trino_fmt_out" "duckdb_fmt_v1_format=2"
         assert_contains "$label duckdb format v2 metadata" "$trino_fmt_out" "duckdb_fmt_v2_format=2"
       fi
-      maybe_assert_table_stats_available \
+      assert_table_stats_available \
         "$compose_cmd" \
         "$label trino format v1" \
         "examples.iceberg.trino_fmt_v1_smoke" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
-      maybe_assert_table_stats_available \
+        "$COMPOSE_SMOKE_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
+      assert_table_stats_available \
         "$compose_cmd" \
         "$label trino format v2" \
         "examples.iceberg.trino_fmt_v2_smoke" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_RETRIES" \
-        "$COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX_STATS_SLEEP_SECONDS"
+        "$COMPOSE_SMOKE_STATS_RETRIES" \
+        "$COMPOSE_SMOKE_STATS_SLEEP_SECONDS"
     fi
   fi
 

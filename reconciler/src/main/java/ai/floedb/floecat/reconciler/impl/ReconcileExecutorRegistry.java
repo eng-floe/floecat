@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -52,6 +53,7 @@ public class ReconcileExecutorRegistry {
     if (lease != null && lease.pinnedExecutorId != null && !lease.pinnedExecutorId.isBlank()) {
       return executors.stream()
           .filter(executor -> lease.pinnedExecutorId.equals(executor.id()))
+          .filter(executor -> executor.supportsJobKind(lease.jobKind))
           .filter(
               executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
           .filter(executor -> executor.supportsLane(lease.executionPolicy.lane()))
@@ -59,6 +61,7 @@ public class ReconcileExecutorRegistry {
           .findFirst();
     }
     return executors.stream()
+        .filter(executor -> executor.supportsJobKind(lease.jobKind))
         .filter(executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
         .filter(executor -> executor.supportsLane(lease.executionPolicy.lane()))
         .filter(executor -> executor.supports(lease))
@@ -89,6 +92,12 @@ public class ReconcileExecutorRegistry {
             .map(executorId -> executorId == null ? "" : executorId.trim())
             .filter(executorId -> !executorId.isEmpty())
             .collect(java.util.stream.Collectors.toUnmodifiableSet());
-    return ReconcileJobStore.LeaseRequest.of(executionClasses, lanes, executorIds);
+    Set<ReconcileJobKind> jobKinds =
+        executors.stream()
+            .flatMap(executor -> executor.supportedJobKinds().stream())
+            .collect(
+                java.util.stream.Collectors.toCollection(
+                    () -> EnumSet.noneOf(ReconcileJobKind.class)));
+    return ReconcileJobStore.LeaseRequest.of(executionClasses, lanes, executorIds, jobKinds);
   }
 }

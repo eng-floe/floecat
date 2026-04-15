@@ -44,6 +44,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor.ExecutionResult;
@@ -163,10 +164,73 @@ public class ReconcilerService {
         connectorId,
         fullRescan,
         scopeIn,
+        ReconcileTableTask.empty(),
         captureMode,
         bearerToken,
         NO_CANCEL,
         NO_PROGRESS);
+  }
+
+  public List<ReconcileTableTask> planTableTasks(
+      PrincipalContext principal,
+      ResourceId connectorId,
+      ReconcileScope scopeIn,
+      String bearerToken) {
+    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
+    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+
+    Connector stored = backend.lookupConnector(ctx, connectorId);
+    if (stored.getState() != ConnectorState.CS_ACTIVE) {
+      throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
+    }
+
+    SourceSelector source =
+        stored.hasSource() ? stored.getSource() : SourceSelector.getDefaultInstance();
+    DestinationTarget dest =
+        stored.hasDestination() ? stored.getDestination() : DestinationTarget.getDefaultInstance();
+    ConnectorConfig cfg = ConnectorConfigMapper.fromProto(stored);
+    ConnectorConfig resolved = resolveCredentials(cfg, stored.getAuth(), connectorId);
+
+    try (FloecatConnector connector = connectorOpener.open(resolved)) {
+      if (!source.hasNamespace() || source.getNamespace().getSegmentsList().isEmpty()) {
+        throw new IllegalArgumentException("connector.source.namespace is required");
+      }
+
+      String sourceNsFq = fq(source.getNamespace().getSegmentsList());
+      String destNsFq =
+          dest.hasNamespaceId()
+              ? resolveNamespaceFq(ctx, dest.getNamespaceId())
+              : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+                  ? fq(dest.getNamespace().getSegmentsList())
+                  : sourceNsFq;
+      String tableDisplayHint =
+          dest.getTableDisplayName() == null || dest.getTableDisplayName().isBlank()
+              ? null
+              : dest.getTableDisplayName();
+
+      return connector
+          .planTableTasks(
+              new FloecatConnector.TablePlanningRequest(
+                  sourceNsFq,
+                  source.getTable(),
+                  destNsFq,
+                  tableDisplayHint,
+                  scope.destinationNamespacePaths(),
+                  scope.destinationTableDisplayName()))
+          .stream()
+          .map(
+              task ->
+                  ReconcileTableTask.of(
+                      task.sourceNamespaceFq(),
+                      task.sourceTable(),
+                      task.destinationTableDisplayName()))
+          .toList();
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Failed to plan reconcile tasks for connector " + connectorId.getId(), e);
+    }
   }
 
   public Result reconcile(
@@ -174,11 +238,15 @@ public class ReconcilerService {
       ResourceId connectorId,
       boolean fullRescan,
       ReconcileScope scopeIn,
+      ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
+    ReconcileTableTask effectiveTableTask =
+        tableTask == null ? ReconcileTableTask.empty() : tableTask;
+    boolean tableTaskMode = !effectiveTableTask.isEmpty();
     long scanned = 0;
     long changed = 0;
     long errors = 0;
@@ -230,13 +298,17 @@ public class ReconcilerService {
       ensureNotCancelled(cancelCheck);
       final ResourceId destCatalogId = dest.getCatalogId();
 
-      final String sourceNsFq;
+      final String configuredSourceNsFq;
       if (source.hasNamespace() && !source.getNamespace().getSegmentsList().isEmpty()) {
-        sourceNsFq = fq(source.getNamespace().getSegmentsList());
+        configuredSourceNsFq = fq(source.getNamespace().getSegmentsList());
       } else {
         return new Result(
             0, 0, 1, 0, 0, new IllegalArgumentException("connector.source.namespace is required"));
       }
+      final String sourceNsFq =
+          tableTaskMode && !effectiveTableTask.sourceNamespace().isBlank()
+              ? effectiveTableTask.sourceNamespace()
+              : configuredSourceNsFq;
 
       final String destNsFq;
       final ResourceId destNamespaceId;
@@ -273,9 +345,11 @@ public class ReconcilerService {
       }
 
       final List<String> tables =
-          (source.getTable() != null && !source.getTable().isBlank())
-              ? List.of(source.getTable())
-              : connector.listTables(sourceNsFq);
+          tableTaskMode
+              ? List.of(effectiveTableTask.sourceTable())
+              : (source.getTable() != null && !source.getTable().isBlank())
+                  ? List.of(source.getTable())
+                  : connector.listTables(sourceNsFq);
 
       if (tables.isEmpty()) {
         // A views-only namespace is valid; let the view pass proceed.
@@ -287,9 +361,11 @@ public class ReconcilerService {
       final Set<String> includeSelectors = effectiveSelectors(scope, source);
 
       final String tableDisplayHint =
-          (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
-              ? dest.getTableDisplayName()
-              : null;
+          (tableTaskMode && !effectiveTableTask.destinationTableDisplayName().isBlank())
+              ? effectiveTableTask.destinationTableDisplayName()
+              : (dest.getTableDisplayName() != null && !dest.getTableDisplayName().isBlank())
+                  ? dest.getTableDisplayName()
+                  : null;
 
       boolean matchedScope = false;
       for (String srcTable : tables) {
@@ -455,77 +531,77 @@ public class ReconcilerService {
         errSummaries.add("No tables matched scope: " + scope.destinationTableDisplayName());
       }
 
-      // View reconciliation pass — runs after tables; scope filter is table-only so all views sync.
-      // Note: existing views are not updated on re-sync (create-only idempotent operation).
-      List<FloecatConnector.ViewDescriptor> viewDescriptors;
-      try {
-        viewDescriptors = connector.listViewDescriptors(sourceNsFq);
-      } catch (Exception e) {
-        viewDescriptors = List.of();
-        errors++;
-        errSummaries.add("listViewDescriptors(" + sourceNsFq + "): " + rootCauseMessage(e));
-      }
-      for (FloecatConnector.ViewDescriptor view : viewDescriptors) {
+      if (!tableTaskMode) {
+        // View reconciliation remains connector-scoped. Table execution jobs intentionally skip it.
+        List<FloecatConnector.ViewDescriptor> viewDescriptors;
         try {
-          if (view.sql() == null || view.sql().isBlank()) {
-            continue;
-          }
-
-          List<SchemaColumn> outputColumns;
-          if (view.schemaJson() != null && !view.schemaJson().isBlank()) {
-            SchemaDescriptor schema =
-                schemaMapper.mapRaw(
-                    ColumnIdAlgorithm.CID_PATH_ORDINAL,
-                    toTableFormat(connector.format()),
-                    view.schemaJson(),
-                    Set.of());
-            outputColumns =
-                schema.getColumnsList().stream()
-                    .filter(SchemaColumn::getLeaf)
-                    .map(
-                        c ->
-                            SchemaColumn.newBuilder()
-                                .setName(c.getName())
-                                .setNullable(c.getNullable())
-                                .setLogicalType(c.getLogicalType())
-                                .build())
-                    .toList();
-          } else {
-            outputColumns = List.of();
-          }
-          if (outputColumns.isEmpty()) {
-            continue;
-          }
-
-          scanned++;
-          ViewSpec viewSpec =
-              ViewSpec.newBuilder()
-                  .setCatalogId(destCatalogId)
-                  .setNamespaceId(destNamespaceId)
-                  .setDisplayName(view.name())
-                  .setSql(view.sql())
-                  .setDialect(view.dialect() != null ? view.dialect() : "")
-                  .addAllCreationSearchPath(
-                      view.searchPath() != null ? view.searchPath() : List.of())
-                  .addAllOutputColumns(outputColumns)
-                  .build();
-          String idempotencyKey = destNsFq + "." + view.name();
-          ResourceId viewId = backend.ensureView(ctx, viewSpec, idempotencyKey);
-          // Only count genuinely new views; ALREADY_EXISTS returns getDefaultInstance() (empty id).
-          if (!viewId.getId().isEmpty()) {
-            changed++;
-          }
+          viewDescriptors = connector.listViewDescriptors(sourceNsFq);
         } catch (Exception e) {
+          viewDescriptors = List.of();
           errors++;
-          errSummaries.add(
-              "dest-ns="
-                  + scopeNamespaceFq
-                  + " source-view="
-                  + sourceNsFq
-                  + "."
-                  + view.name()
-                  + " : "
-                  + rootCauseMessage(e));
+          errSummaries.add("listViewDescriptors(" + sourceNsFq + "): " + rootCauseMessage(e));
+        }
+        for (FloecatConnector.ViewDescriptor view : viewDescriptors) {
+          try {
+            if (view.sql() == null || view.sql().isBlank()) {
+              continue;
+            }
+
+            List<SchemaColumn> outputColumns;
+            if (view.schemaJson() != null && !view.schemaJson().isBlank()) {
+              SchemaDescriptor schema =
+                  schemaMapper.mapRaw(
+                      ColumnIdAlgorithm.CID_PATH_ORDINAL,
+                      toTableFormat(connector.format()),
+                      view.schemaJson(),
+                      Set.of());
+              outputColumns =
+                  schema.getColumnsList().stream()
+                      .filter(SchemaColumn::getLeaf)
+                      .map(
+                          c ->
+                              SchemaColumn.newBuilder()
+                                  .setName(c.getName())
+                                  .setNullable(c.getNullable())
+                                  .setLogicalType(c.getLogicalType())
+                                  .build())
+                      .toList();
+            } else {
+              outputColumns = List.of();
+            }
+            if (outputColumns.isEmpty()) {
+              continue;
+            }
+
+            scanned++;
+            ViewSpec viewSpec =
+                ViewSpec.newBuilder()
+                    .setCatalogId(destCatalogId)
+                    .setNamespaceId(destNamespaceId)
+                    .setDisplayName(view.name())
+                    .setSql(view.sql())
+                    .setDialect(view.dialect() != null ? view.dialect() : "")
+                    .addAllCreationSearchPath(
+                        view.searchPath() != null ? view.searchPath() : List.of())
+                    .addAllOutputColumns(outputColumns)
+                    .build();
+            String idempotencyKey = destNsFq + "." + view.name();
+            ResourceId viewId = backend.ensureView(ctx, viewSpec, idempotencyKey);
+            if (!viewId.getId().isEmpty()) {
+              changed++;
+            }
+          } catch (Exception e) {
+            errors++;
+            errSummaries.add(
+                "dest-ns="
+                    + scopeNamespaceFq
+                    + " source-view="
+                    + sourceNsFq
+                    + "."
+                    + view.name()
+                    + " : "
+                    + rootCauseMessage(e));
+          }
         }
       }
 

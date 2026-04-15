@@ -25,8 +25,10 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileExecutor;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +49,9 @@ class DefaultReconcileExecutorTest {
             ReconcileExecutionPolicy.defaults(),
             "lease-1",
             "",
+            "",
+            ReconcileJobKind.EXEC_TABLE,
+            ReconcileTableTask.of("sales", "orders", "orders"),
             "");
     var failure =
         new ReconcileFailureException(
@@ -55,7 +60,7 @@ class DefaultReconcileExecutorTest {
             null);
 
     when(reconcilerService.reconcile(
-            any(), any(), anyBoolean(), any(), any(), nullable(String.class), any(), any()))
+            any(), any(), anyBoolean(), any(), any(), any(), nullable(String.class), any(), any()))
         .thenReturn(new ReconcilerService.Result(0, 0, 1, 0, 0, failure));
 
     var result =

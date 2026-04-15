@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.spi;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -48,12 +49,21 @@ public interface ReconcileExecutor {
     return EnumSet.allOf(ReconcileExecutionClass.class);
   }
 
+  default Set<ReconcileJobKind> supportedJobKinds() {
+    return EnumSet.allOf(ReconcileJobKind.class);
+  }
+
   default Set<String> supportedLanes() {
     return Set.of("");
   }
 
   default boolean supportsExecutionClass(ReconcileExecutionClass executionClass) {
     return supportedExecutionClasses().contains(executionClass);
+  }
+
+  default boolean supportsJobKind(ReconcileJobKind jobKind) {
+    return supportedJobKinds()
+        .contains(jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind);
   }
 
   default boolean supportsLane(String lane) {
