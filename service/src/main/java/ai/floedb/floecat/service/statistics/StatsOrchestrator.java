@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.engine.StatsEngineRegistry;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
@@ -34,7 +35,10 @@ import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import ai.floedb.floecat.stats.spi.StatsTriggerResult;
-import io.micrometer.core.instrument.MeterRegistry;
+import ai.floedb.floecat.telemetry.MetricId;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -63,16 +67,14 @@ import org.jboss.logging.Logger;
 public class StatsOrchestrator {
 
   private static final Logger LOG = Logger.getLogger(StatsOrchestrator.class);
-  private static final String METRIC_BATCH_ITEMS_TOTAL = "floecat_stats_batch_items_total";
-  private static final String METRIC_BATCH_GROUPS_TOTAL = "floecat_stats_batch_groups_total";
-  private static final String METRIC_STORE_HITS_TOTAL = "floecat_stats_store_hits_total";
-  private static final String METRIC_STORE_MISSES_TOTAL = "floecat_stats_store_misses_total";
+  private static final String COMPONENT = "service";
+  private static final String OPERATION = "stats_orchestrator";
 
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
   private final TableRepository tableRepository;
   private final StatsEngineRegistry statsEngineRegistry;
-  private final MeterRegistry meterRegistry;
+  private final Observability observability;
 
   @Inject
   public StatsOrchestrator(
@@ -80,13 +82,13 @@ public class StatsOrchestrator {
       ReconcileJobStore reconcileJobStore,
       TableRepository tableRepository,
       StatsEngineRegistry statsEngineRegistry,
-      Instance<MeterRegistry> meterRegistry) {
+      Instance<Observability> observability) {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
     this.statsEngineRegistry = statsEngineRegistry;
-    this.meterRegistry =
-        meterRegistry == null || meterRegistry.isUnsatisfied() ? null : meterRegistry.get();
+    this.observability =
+        observability == null || observability.isUnsatisfied() ? null : observability.get();
   }
 
   public StatsOrchestrator(
@@ -114,7 +116,10 @@ public class StatsOrchestrator {
    */
   public List<Optional<TargetStatsRecord>> resolveBatch(StatsCaptureBatchRequest batchRequest) {
     List<StatsCaptureRequest> requests = batchRequest.requests();
-    incrementCounter(METRIC_BATCH_ITEMS_TOTAL, requests.size());
+    incrementCounter(
+        ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
+        requests.size(),
+        Tag.of(TagKey.SCOPE, "orchestrator"));
     List<Optional<TargetStatsRecord>> resolved = new ArrayList<>(requests.size());
     List<Integer> syncMissingIndexes = new ArrayList<>();
     List<StatsCaptureRequest> syncMissingRequests = new ArrayList<>();
@@ -135,7 +140,11 @@ public class StatsOrchestrator {
     }
 
     if (!syncMissingRequests.isEmpty()) {
-      incrementCounter(METRIC_BATCH_GROUPS_TOTAL, 1, "type", "sync_capture");
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "sync_capture"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
       StatsCaptureBatchResult syncCaptureResult =
           triggerBatch(StatsCaptureBatchRequest.of(syncMissingRequests));
       for (int i = 0; i < syncCaptureResult.results().size(); i++) {
@@ -150,7 +159,11 @@ public class StatsOrchestrator {
     }
 
     if (!unresolvedForAsync.isEmpty()) {
-      incrementCounter(METRIC_BATCH_GROUPS_TOTAL, 1, "type", "async_followup");
+      incrementCounter(
+          ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+          1,
+          Tag.of(TagKey.TRIGGER, "async_followup"),
+          Tag.of(TagKey.SCOPE, "orchestrator"));
       tryEnqueueAsyncCaptureBatch(unresolvedForAsync);
     }
     return List.copyOf(resolved);
@@ -160,7 +173,12 @@ public class StatsOrchestrator {
     // Fast path: authoritative persisted read.
     Optional<TargetStatsRecord> out =
         statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
-    incrementCounter(out.isPresent() ? METRIC_STORE_HITS_TOTAL : METRIC_STORE_MISSES_TOTAL, 1);
+    incrementCounter(
+        out.isPresent()
+            ? ServiceMetrics.Stats.STORE_HITS_TOTAL
+            : ServiceMetrics.Stats.STORE_MISSES_TOTAL,
+        1,
+        Tag.of(TagKey.SCOPE, "orchestrator"));
     return out;
   }
 
@@ -299,7 +317,10 @@ public class StatsOrchestrator {
               StatsTriggerResult triggerResult = toTriggerResult(item);
               outcomeCounts.merge(triggerResult.outcome(), 1, Integer::sum);
               incrementCounter(
-                  METRIC_BATCH_ITEMS_TOTAL, 1, "outcome", triggerResult.outcome().name());
+                  ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
+                  1,
+                  Tag.of(TagKey.RESULT, triggerResult.outcome().name()),
+                  Tag.of(TagKey.SCOPE, "orchestrator"));
               logTriggerOutcome(item.request(), triggerResult);
             });
     LOG.infof(
@@ -333,11 +354,15 @@ public class StatsOrchestrator {
         result.outcome(), request.tableId(), request.snapshotId(), result.detail());
   }
 
-  private void incrementCounter(String metricName, double amount, String... tags) {
-    if (meterRegistry == null) {
+  private void incrementCounter(MetricId metric, double amount, Tag... tags) {
+    if (observability == null) {
       return;
     }
-    meterRegistry.counter(metricName, tags).increment(amount);
+    Tag[] baseTags = {Tag.of(TagKey.COMPONENT, COMPONENT), Tag.of(TagKey.OPERATION, OPERATION)};
+    Tag[] merged = new Tag[baseTags.length + tags.length];
+    System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
+    System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
+    observability.counter(metric, amount, merged);
   }
 
   private record TableKey(String accountId, String tableId) {}

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.statistics.engine;
 
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -24,6 +25,9 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -40,17 +44,27 @@ import org.jboss.logging.Logger;
 public class StatsEngineRegistry {
 
   private static final Logger LOG = Logger.getLogger(StatsEngineRegistry.class);
+  private static final String COMPONENT = "service";
+  private static final String OPERATION = "stats_engine_registry";
 
   private final List<StatsCaptureEngine> captureEngines;
+  private final Observability observability;
 
   /** CDI constructor used in production; discovered engines are sorted by priority then id. */
   @Inject
-  public StatsEngineRegistry(Instance<StatsCaptureEngine> captureEngines) {
-    this(captureEngines == null ? List.of() : captureEngines.stream().toList());
+  public StatsEngineRegistry(
+      Instance<StatsCaptureEngine> captureEngines, Instance<Observability> observability) {
+    this(
+        captureEngines == null ? List.of() : captureEngines.stream().toList(),
+        observability == null || observability.isUnsatisfied() ? null : observability.get());
   }
 
   /** Testing/override constructor; engines are sorted by priority then id. */
   public StatsEngineRegistry(List<StatsCaptureEngine> captureEngines) {
+    this(captureEngines, null);
+  }
+
+  public StatsEngineRegistry(List<StatsCaptureEngine> captureEngines, Observability observability) {
     this.captureEngines =
         (captureEngines == null ? List.<StatsCaptureEngine>of() : captureEngines)
             .stream()
@@ -58,6 +72,7 @@ public class StatsEngineRegistry {
                     Comparator.comparingInt(StatsCaptureEngine::priority)
                         .thenComparing(StatsCaptureEngine::id))
                 .toList();
+    this.observability = observability;
   }
 
   /** Returns all registered engines sorted by priority then id. */
@@ -149,12 +164,18 @@ public class StatsEngineRegistry {
       }
 
       for (Map.Entry<StatsCaptureEngine, List<Integer>> group : stageGroups.entrySet()) {
+        incrementCounter(
+            ServiceMetrics.Stats.BATCH_GROUPS_TOTAL, 1, Tag.of(TagKey.SCOPE, "registry"));
         StatsCaptureEngine engine = group.getKey();
         List<Integer> indexes = group.getValue();
         StatsCaptureBatchRequest engineBatch =
             StatsCaptureBatchRequest.of(indexes.stream().map(requests::get).toList());
         StatsCaptureBatchResult engineResult;
         try {
+          incrementCounter(
+              ServiceMetrics.Stats.ENGINE_BATCH_CALLS_TOTAL,
+              1,
+              Tag.of(TagKey.RESOURCE, engine.id()));
           engineResult = engine.captureBatch(engineBatch);
         } catch (RuntimeException e) {
           for (Integer requestIndex : indexes) {
@@ -182,6 +203,14 @@ public class StatsEngineRegistry {
         for (int i = 0; i < indexes.size(); i++) {
           int requestIndex = indexes.get(i);
           StatsCaptureBatchItemResult item = items.get(i);
+          if (!requests.get(requestIndex).equals(item.request())) {
+            finalResults.set(
+                requestIndex,
+                StatsCaptureBatchItemResult.degraded(
+                    requests.get(requestIndex), "batch item order mismatch"));
+            pending.remove(requestIndex);
+            continue;
+          }
           switch (item.outcome()) {
             case CAPTURED, QUEUED, DEGRADED -> {
               finalResults.set(requestIndex, item);
@@ -196,5 +225,17 @@ public class StatsEngineRegistry {
     }
 
     return StatsCaptureBatchResult.of(finalResults);
+  }
+
+  private void incrementCounter(
+      ai.floedb.floecat.telemetry.MetricId metric, double amount, Tag... tags) {
+    if (observability == null) {
+      return;
+    }
+    Tag[] baseTags = {Tag.of(TagKey.COMPONENT, COMPONENT), Tag.of(TagKey.OPERATION, OPERATION)};
+    Tag[] merged = new Tag[baseTags.length + tags.length];
+    System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
+    System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
+    observability.counter(metric, amount, merged);
   }
 }

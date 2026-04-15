@@ -51,6 +51,17 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
     Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> statsAllowed =
+        Set.of(
+            TagKey.COMPONENT,
+            TagKey.OPERATION,
+            TagKey.RESULT,
+            TagKey.TRIGGER,
+            TagKey.MODE,
+            TagKey.REASON,
+            TagKey.RESOURCE,
+            TagKey.SCOPE);
 
     add(
         defs,
@@ -220,6 +231,38 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         reconcileExecutionRequired,
         reconcileExecutionAllowed,
         "Automatic reconcile planner enqueue decisions by mode.");
+    add(
+        defs,
+        ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Stats batch item counters (untagged series tracks submitted items; tagged series with"
+            + " result=* tracks per-outcome items; query with result tag filters to avoid"
+            + " double-counting).");
+    add(
+        defs,
+        ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Stats batch request groups processed.");
+    add(
+        defs,
+        ServiceMetrics.Stats.ENGINE_BATCH_CALLS_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Stats engine batch capture calls.");
+    add(
+        defs,
+        ServiceMetrics.Stats.STORE_HITS_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Stats store hit count for batch resolution.");
+    add(
+        defs,
+        ServiceMetrics.Stats.STORE_MISSES_TOTAL,
+        statsRequired,
+        statsAllowed,
+        "Stats store miss count for batch resolution.");
     return Collections.unmodifiableMap(defs);
   }
 

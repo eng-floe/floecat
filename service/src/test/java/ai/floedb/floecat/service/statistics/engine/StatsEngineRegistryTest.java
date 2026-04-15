@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.statistics.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
@@ -25,7 +27,9 @@ import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.spi.StatsCapabilities;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
@@ -38,11 +42,14 @@ import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
 import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 class StatsEngineRegistryTest {
 
@@ -232,6 +239,88 @@ class StatsEngineRegistryTest {
     assertThat(result.results().get(1).outcome()).isEqualTo(StatsTriggerOutcome.UNCAPTURABLE);
     assertThat(result.results().get(2).outcome()).isEqualTo(StatsTriggerOutcome.DEGRADED);
   }
+
+  @Test
+  void captureBatchEmitsBatchMetrics() {
+    StatsCaptureRequest tableRequest = sampleRequest();
+    StatsCaptureEngine tableEngine =
+        TestStatsCaptureEngine.builder("table-engine")
+            .priority(1)
+            .capabilities(tableOnlyCaps())
+            .fixed(Optional.empty())
+            .build();
+    Observability observability = Mockito.mock(Observability.class);
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(tableEngine), observability);
+
+    registry.captureBatch(StatsCaptureBatchRequest.of(List.of(tableRequest)));
+
+    verify(observability, atLeastOnce())
+        .counter(
+            Mockito.eq(ServiceMetrics.Stats.BATCH_GROUPS_TOTAL),
+            Mockito.anyDouble(),
+            Mockito.any(Tag[].class));
+    verify(observability, atLeastOnce())
+        .counter(
+            Mockito.eq(ServiceMetrics.Stats.ENGINE_BATCH_CALLS_TOTAL),
+            Mockito.anyDouble(),
+            Mockito.any(Tag[].class));
+  }
+
+  @Test
+  void captureBatchMarksOrderMismatchesAsDegraded() {
+    StatsCaptureRequest req1 = sampleRequest();
+    StatsCaptureRequest req2 =
+        StatsCaptureRequest.builder(
+                ResourceId.newBuilder().setAccountId("a").setId("t").build(),
+                101L,
+                StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build())
+            .requestedKinds(Set.of(StatsKind.ROW_COUNT))
+            .executionMode(StatsExecutionMode.SYNC)
+            .correlationId("test-corr-2")
+            .build();
+
+    StatsCaptureEngine misorderedEngine =
+        new StatsCaptureEngine() {
+          @Override
+          public String id() {
+            return "misordered";
+          }
+
+          @Override
+          public int priority() {
+            return 1;
+          }
+
+          @Override
+          public StatsCapabilities capabilities() {
+            return tableOnlyCaps();
+          }
+
+          @Override
+          public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
+            return Optional.empty();
+          }
+
+          @Override
+          public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
+            return StatsCaptureBatchResult.of(
+                List.of(
+                    StatsCaptureBatchItemResult.uncapturable(req2, "no capture result"),
+                    StatsCaptureBatchItemResult.uncapturable(req1, "no capture result")));
+          }
+        };
+
+    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(misorderedEngine));
+    StatsCaptureBatchResult result =
+        registry.captureBatch(StatsCaptureBatchRequest.of(List.of(req1, req2)));
+
+    assertThat(result.results()).hasSize(2);
+    assertThat(result.results().get(0).outcome()).isEqualTo(StatsTriggerOutcome.DEGRADED);
+    assertThat(result.results().get(0).detail()).contains("order mismatch");
+    assertThat(result.results().get(1).outcome()).isEqualTo(StatsTriggerOutcome.DEGRADED);
+    assertThat(result.results().get(1).detail()).contains("order mismatch");
+  }
+
   private static StatsCaptureRequest sampleRequest() {
     return StatsCaptureRequest.builder(
             ResourceId.newBuilder().setAccountId("a").setId("t").build(),
