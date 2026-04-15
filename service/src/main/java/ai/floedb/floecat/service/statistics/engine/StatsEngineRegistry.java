@@ -22,9 +22,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureEngine;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.StatsCaptureResult;
-import ai.floedb.floecat.stats.spi.StatsTargetType;
-import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -36,14 +33,10 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import org.jboss.logging.Logger;
 
 /** Registry and routing layer for available stats capture engines. */
 @ApplicationScoped
 public class StatsEngineRegistry {
-
-  private static final Logger LOG = Logger.getLogger(StatsEngineRegistry.class);
   private static final String COMPONENT = "service";
   private static final String OPERATION = "stats_engine_registry";
 
@@ -85,40 +78,7 @@ public class StatsEngineRegistry {
     return captureEngines.stream().filter(e -> e.supports(request)).toList();
   }
 
-  /**
-   * Routes the request by capability and priority. The first engine returning a result wins.
-   * Engines may return empty when data is unavailable for the request.
-   */
-  public Optional<StatsCaptureResult> capture(StatsCaptureRequest request) {
-    List<StatsCaptureEngine> candidates = candidates(request);
-    if (candidates.isEmpty()) {
-      throw new StatsUnsupportedTargetException(StatsTargetType.from(request.target()), request);
-    }
-    if (LOG.isDebugEnabled()) {
-      LOG.debugf(
-          "Stats capture routed corr=%s target=%s candidates=%s",
-          request.correlationId(),
-          StatsTargetType.from(request.target()),
-          candidates.stream().map(StatsCaptureEngine::id).toList());
-    }
-    for (StatsCaptureEngine engine : candidates) {
-      Optional<StatsCaptureResult> out = engine.capture(request);
-      if (out.isPresent()) {
-        return out;
-      }
-      if (LOG.isTraceEnabled()) {
-        LOG.tracef(
-            "Stats engine %s returned empty corr=%s target=%s",
-            engine.id(), request.correlationId(), request.target());
-      }
-    }
-    return Optional.empty();
-  }
-
-  /**
-   * Routes each request in the batch independently using the same capability + priority policy as
-   * {@link #capture(StatsCaptureRequest)}.
-   */
+  /** Routes each request in the batch independently using capability + priority policy. */
   public StatsCaptureBatchResult captureBatch(StatsCaptureBatchRequest batchRequest) {
     List<StatsCaptureRequest> requests = batchRequest.requests();
     List<StatsCaptureBatchItemResult> finalResults = new ArrayList<>(requests.size());

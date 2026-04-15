@@ -24,20 +24,6 @@ package ai.floedb.floecat.stats.spi;
  */
 public interface StatsCaptureControlPlane {
 
-  /**
-   * Executes one capture trigger attempt for the provided request.
-   *
-   * <p>Implementations should return:
-   *
-   * <ul>
-   *   <li>{@code CAPTURED} when a capture payload was produced
-   *   <li>{@code QUEUED} when work was accepted for deferred execution
-   *   <li>{@code UNCAPTURABLE} when request/engine capabilities do not match
-   *   <li>{@code DEGRADED} for runtime/transient failures
-   * </ul>
-   */
-  StatsTriggerResult trigger(StatsCaptureRequest request);
-
   /** Executes multiple explicit trigger attempts in order. */
   StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest);
 }
