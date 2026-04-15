@@ -283,17 +283,26 @@ public class UserObjectBundleService {
     }
   }
 
-  private SnapshotSet collectSnapshotPins(
-      String correlationId, QueryContext ctx, ResolvedRelation relation) {
-    QueryInput input = buildCanonicalQueryInput(relation);
-    if (input == null) {
+  private SnapshotSet collectChunkPins(
+      String correlationId, QueryContext ctx, List<ResolvedRelation> relations) {
+    if (relations == null || relations.isEmpty()) {
+      return SnapshotSet.getDefaultInstance();
+    }
+    List<QueryInput> inputs = new ArrayList<>(relations.size());
+    for (ResolvedRelation relation : relations) {
+      QueryInput input = buildCanonicalQueryInput(relation);
+      if (input != null) {
+        inputs.add(input);
+      }
+    }
+    if (inputs.isEmpty()) {
       return SnapshotSet.getDefaultInstance();
     }
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
     var resolution =
         inputResolver.resolveInputs(
             correlationId,
-            List.of(input),
+            inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()));
     SnapshotSet incoming = resolution.snapshotSet();
@@ -1090,14 +1099,23 @@ public class UserObjectBundleService {
     }
 
     private void fillPending() {
+      List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
         PendingItem item = resolveNextResolution();
         pending.add(item);
         if (item instanceof PendingFound found) {
-          collectPinsFor(found.relation());
+          toPin.add(found.relation());
           if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
-            injectEagerBaseTables(view);
+            injectEagerBaseTables(view, toPin);
           }
+        }
+      }
+      if (!toPin.isEmpty()) {
+        long pinStartNs = System.nanoTime();
+        try {
+          accumulateChunkPins(collectChunkPins(correlationId, ctx, toPin));
+        } finally {
+          pinCollectNanos += System.nanoTime() - pinStartNs;
         }
       }
     }
@@ -1109,7 +1127,7 @@ public class UserObjectBundleService {
      * Failures to resolve a NameRef are silently skipped (base_relations is a performance hint).
      * Duplicate base-table IDs are deduplicated.
      */
-    private void injectEagerBaseTables(ViewNode view) {
+    private void injectEagerBaseTables(ViewNode view, List<ResolvedRelation> toPin) {
       Set<String> seen = new HashSet<>();
       for (NameRef baseRef : view.baseRelations()) {
         long resolveStartNs = System.nanoTime();
@@ -1131,21 +1149,13 @@ public class UserObjectBundleService {
           ResolvedRelation syntheticRelation =
               new ResolvedRelation(
                   TableReferenceCandidate.getDefaultInstance(), baseId, rel, syntheticInput);
-          collectPinsFor(syntheticRelation);
+          // Base-table pins are already derived from the parent view candidate (including AS-OF
+          // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
+          // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
           resolveNanos += System.nanoTime() - resolveStartNs;
         }
-      }
-    }
-
-    private void collectPinsFor(ResolvedRelation relation) {
-      long pinStartNs = System.nanoTime();
-      try {
-        SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
-        accumulateChunkPins(pins);
-      } finally {
-        pinCollectNanos += System.nanoTime() - pinStartNs;
       }
     }
 

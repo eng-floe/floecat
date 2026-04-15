@@ -207,7 +207,23 @@ public final class UserObjectBundleTestSupport {
         ResourceId tableId,
         ai.floedb.floecat.common.rpc.SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
-      throw unsupported();
+      SnapshotPin.Builder pin = SnapshotPin.newBuilder().setTableId(tableId);
+      if (override != null) {
+        if (override.hasSnapshotId()) {
+          pin.setSnapshotId(override.getSnapshotId());
+          return pin.build();
+        }
+        if (override.hasAsOf()) {
+          pin.setAsOf(override.getAsOf());
+          return pin.build();
+        }
+      }
+      if (asOfDefault.isPresent()) {
+        pin.setAsOf(asOfDefault.get());
+      } else {
+        pin.setSnapshotId(1L);
+      }
+      return pin.build();
     }
 
     @Override

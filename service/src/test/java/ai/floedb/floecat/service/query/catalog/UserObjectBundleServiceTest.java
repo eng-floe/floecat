@@ -68,6 +68,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -188,6 +189,13 @@ class UserObjectBundleServiceTest {
             47470,
             false,
             "test");
+  }
+
+  private static void injectOverlay(QueryInputResolver resolver, FakeCatalogOverlay overlay)
+      throws Exception {
+    Field metadataGraph = QueryInputResolver.class.getDeclaredField("metadataGraph");
+    metadataGraph.setAccessible(true);
+    metadataGraph.set(resolver, overlay);
   }
 
   @Test
@@ -1422,7 +1430,107 @@ class UserObjectBundleServiceTest {
     assertThat(chunks.get(2).getEnd().getResolutionCount()).isEqualTo(1);
     assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
 
-    // Resolver was called twice: once for the view pin, once for the base table pin
-    assertThat(resolver.recordedInputs()).hasSize(2);
+    // Resolver is called once for the view; base-table pins are derived from that view input.
+    assertThat(resolver.recordedInputs()).hasSize(1);
+  }
+
+  @Test
+  void viewAsOfOverrideKeepsAsOfPinForEagerBaseTable() throws Exception {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_AS_OF")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId baseId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("BASE_AS_OF")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("base_as_of").build();
+    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            1L,
+            Instant.EPOCH,
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_as_of",
+            "SELECT base_col FROM cat.base_as_of",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(baseNameRef),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_as_of").build());
+
+    QueryContext asOfCtx =
+        QueryContext.builder()
+            .queryId("q-view-asof")
+            .principal(ctx.getPrincipal())
+            .snapshotSet(SnapshotSet.getDefaultInstance().toByteArray())
+            .createdAtMs(ctx.getCreatedAtMs())
+            .expiresAtMs(ctx.getExpiresAtMs())
+            .state(QueryContext.State.ACTIVE)
+            .version(1)
+            .queryDefaultCatalogId(DEFAULT_CATALOG)
+            .build();
+    queryStore.seed(asOfCtx);
+
+    QueryInputResolver realResolver = new QueryInputResolver();
+    injectOverlay(realResolver, overlay);
+    UserObjectBundleService realService =
+        new UserObjectBundleService(
+            overlay,
+            realResolver,
+            queryStore,
+            statsFactory,
+            decoratorProvider,
+            engineContextProvider,
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    Timestamp asOf = Timestamp.newBuilder().setSeconds(1_700_000_000L).build();
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(
+                QueryInput.newBuilder()
+                    .setViewId(viewId)
+                    .setSnapshot(SnapshotRef.newBuilder().setAsOf(asOf).build()))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        realService.stream("cid", asOfCtx, List.of(candidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    assertThat(chunks.get(1).getResolutions().getItemsCount()).isEqualTo(2);
+    QueryContext updatedCtx = queryStore.get(asOfCtx.getQueryId()).orElseThrow();
+    SnapshotSet snapshotSet = SnapshotSet.parseFrom(updatedCtx.getSnapshotSet());
+    SnapshotPin basePin =
+        snapshotSet.getPinsList().stream()
+            .filter(pin -> pin.getTableId().equals(baseId))
+            .findFirst()
+            .orElseThrow();
+    assertThat(basePin.hasAsOf()).isTrue();
+    assertThat(basePin.getAsOf()).isEqualTo(asOf);
+    assertThat(basePin.hasSnapshotId()).isFalse();
   }
 }
