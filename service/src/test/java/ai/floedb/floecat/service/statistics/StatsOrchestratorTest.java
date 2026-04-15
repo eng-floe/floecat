@@ -43,8 +43,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import com.google.protobuf.ByteString;
 import java.util.List;
 import java.util.Optional;
@@ -71,7 +69,6 @@ class StatsOrchestratorTest {
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).contains(record);
-    verify(registry, never()).capture(any());
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
   }
 
@@ -153,7 +150,6 @@ class StatsOrchestratorTest {
     Optional<TargetStatsRecord> resolved = orchestrator.resolve(request);
 
     assertThat(resolved).isEmpty();
-    verify(registry, never()).capture(any());
     ArgumentCaptor<ai.floedb.floecat.reconciler.jobs.ReconcileScope> scopeCaptor =
         ArgumentCaptor.forClass(ai.floedb.floecat.reconciler.jobs.ReconcileScope.class);
     verify(jobStore)
@@ -238,7 +234,6 @@ class StatsOrchestratorTest {
 
     assertThat(resolved).isEmpty();
     verify(jobStore, never()).enqueue(any(), any(), any(Boolean.class), any(), any());
-    verify(registry, never()).capture(any());
   }
 
   @Test
@@ -415,32 +410,6 @@ class StatsOrchestratorTest {
             Mockito.eq(false),
             Mockito.eq(ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.STATS_ONLY),
             any());
-  }
-
-  @Test
-  void triggerDelegatesThroughBatchRouting() {
-    StatsStore statsStore = Mockito.mock(StatsStore.class);
-    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsEngineRegistry registry = Mockito.mock(StatsEngineRegistry.class);
-    StatsOrchestrator orchestrator =
-        new StatsOrchestrator(statsStore, jobStore, tableRepository, registry);
-
-    StatsCaptureRequest request = request(StatsExecutionMode.SYNC);
-    TargetStatsRecord record = tableRecord(request);
-    StatsCaptureResult captureResult =
-        StatsCaptureResult.forRecord("native", record, java.util.Map.of());
-    when(registry.captureBatch(any()))
-        .thenReturn(
-            StatsCaptureBatchResult.of(
-                List.of(StatsCaptureBatchItemResult.captured(request, captureResult))));
-
-    StatsTriggerResult result = orchestrator.trigger(request);
-
-    assertThat(result.outcome()).isEqualTo(StatsTriggerOutcome.CAPTURED);
-    assertThat(result.captureResult()).contains(captureResult);
-    verify(registry, never()).capture(any());
-    verify(registry).captureBatch(any(StatsCaptureBatchRequest.class));
   }
 
   @Test

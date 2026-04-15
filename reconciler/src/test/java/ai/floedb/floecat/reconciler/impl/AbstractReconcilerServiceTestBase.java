@@ -44,7 +44,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -101,48 +100,31 @@ abstract class AbstractReconcilerServiceTestBase {
       AtomicInteger captureCalls, AtomicReference<StatsCaptureRequest> capturedRequest) {
     return new StatsCaptureControlPlane() {
       @Override
-      public StatsTriggerResult trigger(StatsCaptureRequest request) {
-        if (capturedRequest != null) {
-          capturedRequest.set(request);
-        }
-        captureCalls.incrementAndGet();
-        return capturedResult(request);
-      }
-
-      @Override
       public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
         List<StatsCaptureBatchItemResult> items = new ArrayList<>();
         for (StatsCaptureRequest request : batchRequest.requests()) {
-          StatsTriggerResult result = trigger(request);
-          items.add(
-              StatsCaptureBatchItemResult.captured(
-                  request,
-                  result
-                      .captureResult()
-                      .orElseThrow(
-                          () ->
-                              new IllegalStateException(
-                                  "captured trigger missing capture result"))));
+          if (capturedRequest != null) {
+            capturedRequest.set(request);
+          }
+          captureCalls.incrementAndGet();
+          items.add(StatsCaptureBatchItemResult.captured(request, capturedResult(request)));
         }
         return StatsCaptureBatchResult.of(items);
       }
     };
   }
 
-  private static StatsTriggerResult capturedResult(StatsCaptureRequest request) {
-    return StatsTriggerResult.captured(
-        StatsCaptureResult.forRecord(
-            "test-engine",
-            TargetStatsRecord.newBuilder()
-                .setTableId(request.tableId())
-                .setSnapshotId(request.snapshotId())
-                .setTarget(StatsTargetIdentity.tableTarget())
-                .setTable(
-                    ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder()
-                        .setRowCount(1L)
-                        .build())
-                .build(),
-            Map.of()));
+  private static StatsCaptureResult capturedResult(StatsCaptureRequest request) {
+    return StatsCaptureResult.forRecord(
+        "test-engine",
+        TargetStatsRecord.newBuilder()
+            .setTableId(request.tableId())
+            .setSnapshotId(request.snapshotId())
+            .setTarget(StatsTargetIdentity.tableTarget())
+            .setTable(
+                ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build())
+            .build(),
+        Map.of());
   }
 
   protected static final class ThrowingBackend extends DefaultBackend {

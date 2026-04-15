@@ -61,7 +61,7 @@ Service wiring:
 - `StatsEngineRegistry` handles capability/priority engine selection for compute capture.
 - `StatsCaptureControlPlane` is the explicit capture entrypoint for control-plane callers
   (for example reconciler `STATS_ONLY` routing); current service implementation delegates to
-  `StatsOrchestrator.trigger(request)` / `triggerBatch(batchRequest)`.
+  `StatsOrchestrator.triggerBatch(batchRequest)`.
 - Public read/list RPCs remain `StatsStore` authoritative reads.
 
 Authoritative model:
@@ -120,19 +120,19 @@ Current enqueue policy:
 - async enqueue scope is table-scoped with explicit unresolved target payload:
   `destination_snapshot_ids` + `destination_stats_targets`
 
-`StatsEngineRegistry.capture(request)`:
+`StatsEngineRegistry.captureBatch(batchRequest)`:
 
-1. filters engines by `supports(request)` / capabilities
-2. sorts by `priority()` then `id()`
-3. calls each engine until one returns a non-empty result
-4. throws `StatsUnsupportedTargetException` when no engine supports the request
+1. filters candidates per request by `supports(request)` / capabilities
+2. applies deterministic priority ordering (`priority()` then `id()`)
+3. routes batched stage groups per engine and preserves request order in results
+4. returns per-item outcomes (`CAPTURED`, `UNCAPTURABLE`, `DEGRADED`, `QUEUED`)
 
 The registry is selection-only and does not merge multi-engine outputs.
 
-`StatsCaptureControlPlane.trigger(request)` / `triggerBatch(batchRequest)`:
+`StatsCaptureControlPlane.triggerBatch(batchRequest)`:
 
 1. serves as the explicit capture control-plane entrypoint (non-query callers)
-2. in service runtime, delegates to `StatsOrchestrator.trigger*`
+2. in service runtime, delegates to `StatsOrchestrator.triggerBatch(...)`
 3. executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)
 
 Result model:

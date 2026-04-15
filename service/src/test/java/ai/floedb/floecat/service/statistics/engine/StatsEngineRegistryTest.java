@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.statistics.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 
@@ -40,7 +39,6 @@ import ai.floedb.floecat.stats.spi.StatsKind;
 import ai.floedb.floecat.stats.spi.StatsSamplingSupport;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsUnsupportedTargetException;
 import ai.floedb.floecat.stats.spi.testing.TestStatsCaptureEngine;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -52,39 +50,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 class StatsEngineRegistryTest {
-
-  @Test
-  void routesByPriorityAndReturnsFirstNonEmptyResult() {
-    StatsCaptureRequest request = sampleRequest();
-    StatsCaptureEngine emptyHighPriority =
-        TestStatsCaptureEngine.builder("empty-first")
-            .priority(1)
-            .capabilities(tableOnlyCaps())
-            .fixed(Optional.empty())
-            .build();
-    TargetStatsRecord expected =
-        TargetStatsRecord.newBuilder()
-            .setTableId(request.tableId())
-            .setSnapshotId(request.snapshotId())
-            .setTarget(request.target())
-            .setTable(TableValueStats.newBuilder().setRowCount(10L).build())
-            .build();
-    StatsCaptureEngine hitSecond =
-        TestStatsCaptureEngine.builder("hit-second")
-            .priority(2)
-            .capabilities(tableOnlyCaps())
-            .fixed(
-                Optional.of(
-                    StatsCaptureResult.forRecord("hit-second", expected, Map.of("path", "unit"))))
-            .build();
-
-    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(hitSecond, emptyHighPriority));
-
-    Optional<StatsCaptureResult> out = registry.capture(request);
-    assertThat(out).isPresent();
-    assertThat(out.get().engineId()).isEqualTo("hit-second");
-    assertThat(out.get().record()).isEqualTo(expected);
-  }
 
   @Test
   void candidatesFilterUnsupportedEngines() {
@@ -112,29 +77,6 @@ class StatsEngineRegistryTest {
     assertThat(registry.candidates(request))
         .extracting(StatsCaptureEngine::id)
         .containsExactly("supported");
-  }
-
-  @Test
-  void captureThrowsNonImplementedWhenNoSelectedEngineSupportsRequest() {
-    StatsCaptureRequest request = sampleRequest();
-    StatsCaptureEngine columnOnly =
-        TestStatsCaptureEngine.builder("column-only")
-            .priority(1)
-            .capabilities(
-                StatsCapabilities.builder()
-                    .targetTypes(Set.of(StatsTargetType.COLUMN))
-                    .statisticKindsByTarget(
-                        Map.of(StatsTargetType.COLUMN, Set.of(StatsKind.ROW_COUNT)))
-                    .executionModes(Set.of(StatsExecutionMode.SYNC))
-                    .samplingSupport(Set.of(StatsSamplingSupport.NONE))
-                    .build())
-            .fixed(Optional.empty())
-            .build();
-    StatsEngineRegistry registry = new StatsEngineRegistry(List.of(columnOnly));
-
-    assertThatThrownBy(() -> registry.capture(request))
-        .isInstanceOf(StatsUnsupportedTargetException.class)
-        .hasMessageContaining("target type TABLE");
   }
 
   @Test

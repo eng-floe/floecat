@@ -34,7 +34,6 @@ import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -57,7 +56,7 @@ import org.jboss.logging.Logger;
  *
  * <ul>
  *   <li>query-time resolution policy via {@link #resolve(StatsCaptureRequest)}
- *   <li>explicit capture execution via {@link #trigger(StatsCaptureRequest)}
+ *   <li>explicit capture execution via {@link #triggerBatch(StatsCaptureBatchRequest)}
  * </ul>
  *
  * <p>Resolution is store-first, then optional synchronous capture, then async enqueue fallback when
@@ -291,17 +290,6 @@ public class StatsOrchestrator {
   }
 
   /**
-   * Executes one explicit trigger attempt through the registry.
-   *
-   * <p>This path does not perform store-read short-circuiting and does not enqueue fallback work.
-   * It is intended for control-plane callers that explicitly request capture now.
-   */
-  public StatsTriggerResult trigger(StatsCaptureRequest request) {
-    StatsCaptureBatchResult batchResult = triggerBatch(StatsCaptureBatchRequest.of(request));
-    return toTriggerResult(batchResult.results().getFirst());
-  }
-
-  /**
    * Executes explicit capture trigger attempts for each request in the batch.
    *
    * <p>Each item is routed independently using registry capability + priority policy. Results are
@@ -314,14 +302,13 @@ public class StatsOrchestrator {
         .results()
         .forEach(
             item -> {
-              StatsTriggerResult triggerResult = toTriggerResult(item);
-              outcomeCounts.merge(triggerResult.outcome(), 1, Integer::sum);
+              outcomeCounts.merge(item.outcome(), 1, Integer::sum);
               incrementCounter(
                   ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
                   1,
-                  Tag.of(TagKey.RESULT, triggerResult.outcome().name()),
+                  Tag.of(TagKey.RESULT, item.outcome().name()),
                   Tag.of(TagKey.SCOPE, "orchestrator"));
-              logTriggerOutcome(item.request(), triggerResult);
+              logTriggerOutcome(item);
             });
     LOG.infof(
         "stats_trigger_batch outcome=%s group_size=%d",
@@ -329,29 +316,17 @@ public class StatsOrchestrator {
     return registryResult;
   }
 
-  private static StatsTriggerResult toTriggerResult(StatsCaptureBatchItemResult item) {
-    return switch (item.outcome()) {
-      case CAPTURED ->
-          StatsTriggerResult.captured(
-              item.captureResult()
-                  .orElseThrow(
-                      () -> new IllegalStateException("captured outcome missing payload")));
-      case QUEUED -> StatsTriggerResult.queued(item.detail());
-      case UNCAPTURABLE -> StatsTriggerResult.uncapturable(item.detail());
-      case DEGRADED -> StatsTriggerResult.degraded(item.detail());
-    };
-  }
-
-  private void logTriggerOutcome(StatsCaptureRequest request, StatsTriggerResult result) {
-    if (result.outcome() == StatsTriggerOutcome.CAPTURED) {
+  private void logTriggerOutcome(StatsCaptureBatchItemResult item) {
+    StatsCaptureRequest request = item.request();
+    if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
       LOG.debugf(
           "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
-          result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+          item.outcome(), request.tableId(), request.snapshotId(), item.detail());
       return;
     }
     LOG.warnf(
         "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
-        result.outcome(), request.tableId(), request.snapshotId(), result.detail());
+        item.outcome(), request.tableId(), request.snapshotId(), item.detail());
   }
 
   private void incrementCounter(MetricId metric, double amount, Tag... tags) {
