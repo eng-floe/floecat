@@ -17,10 +17,13 @@
 package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
+import com.google.protobuf.Message;
 import com.google.rpc.Status;
 import io.grpc.ForwardingServerCall;
+import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
@@ -29,6 +32,8 @@ import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.lang.reflect.Method;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 import org.jboss.logging.Logger;
 
@@ -46,15 +51,28 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
     final String method = call.getMethodDescriptor().getFullMethodName();
 
     String contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
+    String contextQueryId = InboundContextInterceptor.QUERY_KEY.get();
     String headerCorrelationId = headers.get(CORRELATION_ID_KEY);
+    String headerQueryId = headers.get(QUERY_ID_KEY);
     final String correlationId =
         nonBlank(contextCorrelationId)
             ? contextCorrelationId
             : nonBlank(headerCorrelationId) ? headerCorrelationId : "";
     final String logCorrelationId = nonBlank(correlationId) ? correlationId : MISSING;
+    final AtomicReference<String> logQueryIdRef =
+        new AtomicReference<>(chooseFirstNonBlank(contextQueryId, headerQueryId, MISSING));
 
     ServerCall<ReqT, RespT> forwarding =
         new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
+          @Override
+          public void sendMessage(RespT message) {
+            String queryIdFromResponse = extractQueryId(message);
+            if (nonBlank(queryIdFromResponse)) {
+              logQueryIdRef.set(queryIdFromResponse);
+            }
+            super.sendMessage(message);
+          }
+
           @Override
           public void close(io.grpc.Status status, Metadata trailers) {
             long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
@@ -63,23 +81,36 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
             if (nonBlank(correlationId)) {
               nextTrailers.put(CORRELATION_ID_KEY, correlationId);
             }
-            logCall(status, nextTrailers, method, durationMs, logCorrelationId);
+            logCall(status, nextTrailers, method, durationMs, logCorrelationId, logQueryIdRef.get());
             super.close(status, nextTrailers);
           }
         };
 
-    return next.startCall(forwarding, headers);
+    var delegate = next.startCall(forwarding, headers);
+    return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(delegate) {
+      @Override
+      public void onMessage(ReqT message) {
+        String queryIdFromMessage = extractQueryId(message);
+        if (nonBlank(queryIdFromMessage)) {
+          logQueryIdRef.set(queryIdFromMessage);
+        }
+        super.onMessage(message);
+      }
+    };
   }
 
   private static final Metadata.Key<String> CORRELATION_ID_KEY =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> QUERY_ID_KEY =
+      Metadata.Key.of(InboundCallContextHelper.HEADER_QUERY_ID, Metadata.ASCII_STRING_MARSHALLER);
 
-  private void logCall(
+  void logCall(
       io.grpc.Status status,
       Metadata trailers,
       String method,
       long durationMs,
-      String logCorrelationId) {
+      String logCorrelationId,
+      String logQueryId) {
 
     Status statusProto = StatusProto.fromStatusAndTrailers(status, trailers);
     Error floecatError = extractFloecatError(statusProto);
@@ -105,6 +136,8 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
             + appCode
             + " message_key="
             + messageKey
+            + " query_id="
+            + logQueryId
             + " correlation_id="
             + logCorrelationId
             + " duration_ms="
@@ -151,5 +184,39 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
 
   private static boolean nonBlank(String value) {
     return value != null && !value.isBlank();
+  }
+
+  static String extractQueryId(Object message) {
+    if (message == null) {
+      return "";
+    }
+    if (message instanceof Message protoMessage) {
+      var queryField = protoMessage.getDescriptorForType().findFieldByName("query_id");
+      if (queryField != null) {
+        Object value = protoMessage.getField(queryField);
+        if (value instanceof String queryId && nonBlank(queryId)) {
+          return queryId;
+        }
+      }
+    }
+    try {
+      Method getter = message.getClass().getMethod("getQueryId");
+      Object value = getter.invoke(message);
+      if (value instanceof String queryId && nonBlank(queryId)) {
+        return queryId;
+      }
+    } catch (ReflectiveOperationException ignored) {
+      // Request does not expose a query_id field; keep existing value.
+    }
+    return "";
+  }
+
+  private static String chooseFirstNonBlank(String... values) {
+    for (String value : values) {
+      if (nonBlank(value)) {
+        return value;
+      }
+    }
+    return "";
   }
 }

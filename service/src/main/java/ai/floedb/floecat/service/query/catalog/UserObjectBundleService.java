@@ -104,6 +104,8 @@ public class UserObjectBundleService {
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
   private final FlightEndpointRef floecatFlightEndpoint;
+  private final long slowLogMs;
+  private final boolean logTimingBreakdown;
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -142,7 +144,11 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80") int flightPort,
       @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
           boolean grpcPlainText,
-      @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile) {
+      @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile,
+      @ConfigProperty(name = "floedb.catalog.bundle.slow-log-ms", defaultValue = "1000")
+          long slowLogMs,
+      @ConfigProperty(name = "floedb.catalog.bundle.log-timings", defaultValue = "false")
+          boolean logTimingBreakdown) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
@@ -156,7 +162,38 @@ public class UserObjectBundleService {
             .setPort(flightPort)
             .setTls(!grpcPlainText)
             .build();
+    this.slowLogMs = slowLogMs;
+    this.logTimingBreakdown = logTimingBreakdown;
     warnFlightHost(flightHost, quarkusProfile);
+  }
+
+  // Convenience constructor for tests that instantiate the service directly.
+  public UserObjectBundleService(
+      CatalogOverlay overlay,
+      QueryInputResolver inputResolver,
+      QueryContextStore queryStore,
+      StatsProviderFactory statsFactory,
+      EngineMetadataDecoratorProvider decoratorProvider,
+      EngineContextProvider engineContext,
+      boolean engineSpecificEnabled,
+      String flightHost,
+      int flightPort,
+      boolean grpcPlainText,
+      String quarkusProfile) {
+    this(
+        overlay,
+        inputResolver,
+        queryStore,
+        statsFactory,
+        decoratorProvider,
+        engineContext,
+        engineSpecificEnabled,
+        flightHost,
+        flightPort,
+        grpcPlainText,
+        quarkusProfile,
+        1_000L,
+        false);
   }
 
   public Multi<UserObjectsBundleChunk> stream(
@@ -166,7 +203,8 @@ public class UserObjectBundleService {
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
-          "GetUserObjects stream start query=%s correlation=%s candidates=%d default_catalog=%s",
+          "GetUserObjects stream start query_id=%s correlation_id=%s candidates=%d"
+              + " default_catalog=%s",
           ctx.getQueryId(), correlationId, candidates.size(), defaultCatalog);
     }
     return Multi.createFrom()
@@ -292,14 +330,27 @@ public class UserObjectBundleService {
     return UserObjectsBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
 
+  private static final class TimingAccumulator {
+    private long statsLookupNanos;
+
+    private void addStatsLookupNanos(long nanos) {
+      statsLookupNanos += nanos;
+    }
+
+    private long statsLookupNanos() {
+      return statsLookupNanos;
+    }
+  }
+
   private RelationInfo buildRelation(
       String correlationId,
       ResolvedRelation relation,
       QueryContext queryContext,
-      StatsProvider statsProvider) {
+      StatsProvider statsProvider,
+      TimingAccumulator timings) {
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
-          "Building relation bundle query=%s relation=%s kind=%s origin=%s",
+          "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
           queryContext.getQueryId(),
           relation.relationId(),
           relation.node().kind(),
@@ -353,10 +404,12 @@ public class UserObjectBundleService {
       }
     }
 
+    long statsLookupStartNs = System.nanoTime();
     statsProvider
         .tableStats(relation.relationId())
         .map(StatsProviderFactory::toRelationStats)
         .ifPresent(builder::setStats);
+    timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
     // If this is a view, keep a mutable builder around for decoration.
     ViewDefinition.Builder viewBuilder = null;
@@ -736,6 +789,10 @@ public class UserObjectBundleService {
     return value == null ? "" : value;
   }
 
+  private static double nanosToMs(long nanos) {
+    return nanos / 1_000_000.0;
+  }
+
   private static void addEngineDetails(ColumnFailure.Builder failure, EngineContext ctx) {
     if (ctx == null) {
       return;
@@ -960,14 +1017,21 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+    private final TimingAccumulator timings = new TimingAccumulator();
+    private final long streamStartNs = System.nanoTime();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
 
     private int seq = 1;
     private int nextInputIndex = 0;
     private int foundCount = 0;
     private int notFoundCount = 0;
+    private int emittedResolutionChunks = 0;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
+    private long resolveNanos = 0L;
+    private long pinCollectNanos = 0L;
+    private long pinCommitNanos = 0L;
+    private long relationBuildNanos = 0L;
 
     UserObjectBundleIterator(
         String correlationId,
@@ -982,7 +1046,7 @@ public class UserObjectBundleService {
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
-            "Initialized bundle iterator query=%s correlation=%s resolution_count=%d"
+            "Initialized bundle iterator query_id=%s correlation_id=%s resolution_count=%d"
                 + " default_catalog=%s",
             ctx.getQueryId(), correlationId, resolutionCount, defaultCatalog);
       }
@@ -998,7 +1062,7 @@ public class UserObjectBundleService {
       if (!headerEmitted) {
         headerEmitted = true;
         if (LOG.isDebugEnabled()) {
-          LOG.debugf("Emitting header chunk query=%s seq=%d", ctx.getQueryId(), seq);
+          LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
         }
         return headerChunk(ctx.getQueryId(), seq++);
       }
@@ -1013,9 +1077,10 @@ public class UserObjectBundleService {
 
       if (!endEmitted) {
         endEmitted = true;
+        logStreamTiming();
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
-              "Emitting end chunk query=%s seq=%d resolutions=%d found=%d not_found=%d",
+              "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
               ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
         }
         return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
@@ -1028,10 +1093,11 @@ public class UserObjectBundleService {
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
         PendingItem item = resolveNextResolution();
         pending.add(item);
-        if (item instanceof PendingFound found
-            && found.relation().node() instanceof ViewNode view
-            && !view.baseRelations().isEmpty()) {
-          injectEagerBaseTables(view);
+        if (item instanceof PendingFound found) {
+          collectPinsFor(found.relation());
+          if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
+            injectEagerBaseTables(view);
+          }
         }
       }
     }
@@ -1046,97 +1112,115 @@ public class UserObjectBundleService {
     private void injectEagerBaseTables(ViewNode view) {
       Set<String> seen = new HashSet<>();
       for (NameRef baseRef : view.baseRelations()) {
-        NameRef enriched = ViewContextUtils.enrichForViewContext(baseRef, view, defaultCatalog);
-        Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, enriched);
-        if (baseIdOpt.isEmpty()) {
-          continue;
+        long resolveStartNs = System.nanoTime();
+        try {
+          NameRef enriched = ViewContextUtils.enrichForViewContext(baseRef, view, defaultCatalog);
+          Optional<ResourceId> baseIdOpt = overlay.resolveName(correlationId, enriched);
+          if (baseIdOpt.isEmpty()) {
+            continue;
+          }
+          ResourceId baseId = baseIdOpt.get();
+          if (!seen.add(baseId.getId())) {
+            continue; // deduplicate
+          }
+          Optional<GraphNode> nodeOpt = overlay.resolve(baseId);
+          if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
+            continue;
+          }
+          QueryInput syntheticInput = QueryInput.newBuilder().setTableId(baseId).build();
+          ResolvedRelation syntheticRelation =
+              new ResolvedRelation(
+                  TableReferenceCandidate.getDefaultInstance(), baseId, rel, syntheticInput);
+          collectPinsFor(syntheticRelation);
+          pending.add(new PendingFound(-1, syntheticRelation));
+        } finally {
+          resolveNanos += System.nanoTime() - resolveStartNs;
         }
-        ResourceId baseId = baseIdOpt.get();
-        if (!seen.add(baseId.getId())) {
-          continue; // deduplicate
-        }
-        Optional<GraphNode> nodeOpt = overlay.resolve(baseId);
-        if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
-          continue;
-        }
-        QueryInput syntheticInput = QueryInput.newBuilder().setTableId(baseId).build();
-        ResolvedRelation syntheticRelation =
-            new ResolvedRelation(
-                TableReferenceCandidate.getDefaultInstance(), baseId, rel, syntheticInput);
-        accumulateChunkPins(collectSnapshotPins(correlationId, ctx, syntheticRelation));
-        pending.add(new PendingFound(-1, syntheticRelation));
+      }
+    }
+
+    private void collectPinsFor(ResolvedRelation relation) {
+      long pinStartNs = System.nanoTime();
+      try {
+        SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
+        accumulateChunkPins(pins);
+      } finally {
+        pinCollectNanos += System.nanoTime() - pinStartNs;
       }
     }
 
     private PendingItem resolveNextResolution() {
-      TableReferenceCandidate candidate = tables.get(nextInputIndex);
-      int inputIndex = nextInputIndex;
-      nextInputIndex++;
-      if (LOG.isTraceEnabled()) {
-        LOG.tracef(
-            "Resolving candidate query=%s input_index=%d candidate_count=%d",
-            ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
-      }
-      List<QueryInput> normalized = normalizeCandidates(correlationId, candidate, defaultCatalog);
+      long resolveStartNs = System.nanoTime();
       try {
-        Optional<ResolvedRelation> resolved =
-            selectResolvedRelation(correlationId, candidate, normalized);
-        if (resolved.isPresent()) {
-          ResolvedRelation relation = resolved.get();
-          SnapshotSet pins = collectSnapshotPins(correlationId, ctx, relation);
-          accumulateChunkPins(pins);
-          foundCount++;
-          if (LOG.isTraceEnabled()) {
-            LOG.tracef(
-                "Resolved candidate query=%s input_index=%d relation=%s pins=%d",
+        TableReferenceCandidate candidate = tables.get(nextInputIndex);
+        int inputIndex = nextInputIndex;
+        nextInputIndex++;
+        if (LOG.isTraceEnabled()) {
+          LOG.tracef(
+              "Resolving candidate query_id=%s input_index=%d candidate_count=%d",
+              ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
+        }
+        List<QueryInput> normalized = normalizeCandidates(correlationId, candidate, defaultCatalog);
+        try {
+          Optional<ResolvedRelation> resolved =
+              selectResolvedRelation(correlationId, candidate, normalized);
+          if (resolved.isPresent()) {
+            foundCount++;
+            if (LOG.isTraceEnabled()) {
+              LOG.tracef(
+                  "Resolved candidate query_id=%s input_index=%d relation=%s",
+                  ctx.getQueryId(),
+                  inputIndex,
+                  resolved.get().relationId());
+            }
+            return new PendingFound(inputIndex, resolved.get());
+          }
+        } catch (GraphNodeMissingException e) {
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf(
+                "Resolved candidate missing graph node query_id=%s input_index=%d resource_id=%s",
                 ctx.getQueryId(),
                 inputIndex,
-                relation.relationId(),
-                pins == null ? 0 : pins.getPinsCount());
+                e.relationId() == null ? "" : e.relationId().getId());
           }
-          return new PendingFound(inputIndex, relation);
+          ResolutionFailure failure =
+              ResolutionFailure.newBuilder()
+                  .setCode("catalog_bundle.graph.missing_node")
+                  .setMessage("relation resolved but missing from graph")
+                  .putDetails("resource_id", e.relationId().getId())
+                  .putDetails("default_catalog", defaultCatalog)
+                  .addAllAttempted(normalized)
+                  .build();
+          return new PendingResolved(
+              RelationResolution.newBuilder()
+                  .setInputIndex(inputIndex)
+                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+                  .setFailure(failure)
+                  .build());
         }
-      } catch (GraphNodeMissingException e) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf(
-              "Resolved candidate missing graph node query=%s input_index=%d resource_id=%s",
-              ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
+        notFoundCount++;
+        if (LOG.isTraceEnabled()) {
+          LOG.tracef(
+              "Candidate not found query_id=%s input_index=%d attempted=%d",
+              ctx.getQueryId(), inputIndex, normalized.size());
         }
         ResolutionFailure failure =
             ResolutionFailure.newBuilder()
-                .setCode("catalog_bundle.graph.missing_node")
-                .setMessage("relation resolved but missing from graph")
-                .putDetails("resource_id", e.relationId().getId())
+                .setCode("catalog_bundle.relation_not_found")
+                .setMessage("relation not found")
+                .putDetails("candidate_count", Integer.toString(normalized.size()))
                 .putDetails("default_catalog", defaultCatalog)
                 .addAllAttempted(normalized)
                 .build();
         return new PendingResolved(
             RelationResolution.newBuilder()
                 .setInputIndex(inputIndex)
-                .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+                .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
                 .setFailure(failure)
                 .build());
+      } finally {
+        resolveNanos += System.nanoTime() - resolveStartNs;
       }
-      notFoundCount++;
-      if (LOG.isTraceEnabled()) {
-        LOG.tracef(
-            "Candidate not found query=%s input_index=%d attempted=%d",
-            ctx.getQueryId(), inputIndex, normalized.size());
-      }
-      ResolutionFailure failure =
-          ResolutionFailure.newBuilder()
-              .setCode("catalog_bundle.relation_not_found")
-              .setMessage("relation not found")
-              .putDetails("candidate_count", Integer.toString(normalized.size()))
-              .putDetails("default_catalog", defaultCatalog)
-              .addAllAttempted(normalized)
-              .build();
-      return new PendingResolved(
-          RelationResolution.newBuilder()
-              .setInputIndex(inputIndex)
-              .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
-              .setFailure(failure)
-              .build());
     }
 
     private UserObjectsBundleChunk flushResolutionChunk() {
@@ -1144,12 +1228,14 @@ public class UserObjectBundleService {
       pending.clear();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
-            "Flushing resolution chunk query=%s seq=%d pending_items=%d pending_pins=%d",
+            "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
             ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPins.getPinsCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
+      long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
+      pinCommitNanos += System.nanoTime() - pinCommitStartNs;
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
       List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
       for (PendingItem item : chunkItems) {
@@ -1158,7 +1244,13 @@ public class UserObjectBundleService {
           continue;
         }
         PendingFound found = (PendingFound) item;
-        RelationInfo info = buildRelation(correlationId, found.relation(), liveCtx, statsProvider);
+        long statsBeforeNanos = timings.statsLookupNanos();
+        long buildStartNs = System.nanoTime();
+        RelationInfo info =
+            buildRelation(correlationId, found.relation(), liveCtx, statsProvider, timings);
+        long buildNanos = System.nanoTime() - buildStartNs;
+        long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
+        relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
         resolutions.add(
             RelationResolution.newBuilder()
                 .setInputIndex(found.inputIndex())
@@ -1166,6 +1258,7 @@ public class UserObjectBundleService {
                 .setRelation(info)
                 .build());
       }
+      emittedResolutionChunks++;
       if (LOG.isDebugEnabled()) {
         int chunkFound = 0;
         int chunkNotFound = 0;
@@ -1179,10 +1272,42 @@ public class UserObjectBundleService {
           }
         }
         LOG.debugf(
-            "Resolved chunk query=%s seq=%d items=%d found=%d not_found=%d error=%d",
+            "Resolved chunk query_id=%s seq=%d items=%d found=%d not_found=%d error=%d",
             ctx.getQueryId(), seq, resolutions.size(), chunkFound, chunkNotFound, chunkError);
       }
       return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
+    }
+
+    private void logStreamTiming() {
+      long totalNanos = System.nanoTime() - streamStartNs;
+      double totalMs = nanosToMs(totalNanos);
+      boolean slow = totalMs >= slowLogMs;
+      if (!slow && !logTimingBreakdown) {
+        return;
+      }
+      String message =
+          String.format(
+              Locale.ROOT,
+              "GetUserObjects timings query_id=%s correlation_id=%s totalMs=%.1f candidates=%d"
+                  + " chunks=%d found=%d notFound=%d resolveMs=%.1f pinCollectMs=%.1f"
+                  + " pinCommitMs=%.1f relationBuildMs=%.1f statsLookupMs=%.1f",
+              ctx.getQueryId(),
+              correlationId,
+              totalMs,
+              resolutionCount,
+              emittedResolutionChunks,
+              foundCount,
+              notFoundCount,
+              nanosToMs(resolveNanos),
+              nanosToMs(pinCollectNanos),
+              nanosToMs(pinCommitNanos),
+              nanosToMs(relationBuildNanos),
+              nanosToMs(timings.statsLookupNanos()));
+      if (slow) {
+        LOG.warn(message);
+      } else {
+        LOG.debug(message);
+      }
     }
 
     /**
@@ -1243,7 +1368,7 @@ public class UserObjectBundleService {
       }
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
-            "Committing chunk pins query=%s pin_count=%d",
+            "Committing chunk pins query_id=%s pin_count=%d",
             ctx.getQueryId(), pendingChunkPins.getPinsCount());
       }
       var updated =
@@ -1254,13 +1379,13 @@ public class UserObjectBundleService {
       if (updated.isEmpty()) {
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
-              "Failed to commit chunk pins query=%s query context missing", ctx.getQueryId());
+              "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
         }
         throw GrpcErrors.notFound(
             correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
       }
       if (LOG.isDebugEnabled()) {
-        LOG.debugf("Committed chunk pins query=%s", ctx.getQueryId());
+        LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
       }
     }
   }
