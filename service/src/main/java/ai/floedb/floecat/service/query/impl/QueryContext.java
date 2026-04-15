@@ -101,6 +101,12 @@ public final class QueryContext {
   /** Cached parsed SnapshotSet for this immutable context instance (lazy). */
   private final transient AtomicReference<SnapshotSet> parsedSnapshotSet = new AtomicReference<>();
 
+  /**
+   * Cached parsed BeginQuery as-of default timestamp for this immutable context instance (lazy).
+   */
+  private final transient AtomicReference<java.util.Optional<Timestamp>> parsedAsOfDefault =
+      new AtomicReference<>();
+
   // ----------------------------------------------------------------------
   //  Construction
   // ----------------------------------------------------------------------
@@ -337,12 +343,21 @@ public final class QueryContext {
    * default.
    */
   public java.util.Optional<Timestamp> parseAsOfDefault(String correlationId) {
+    java.util.Optional<Timestamp> cached = parsedAsOfDefault.get();
+    if (cached != null) {
+      return cached;
+    }
     if (asOfDefault == null || asOfDefault.length == 0) {
-      return java.util.Optional.empty();
+      java.util.Optional<Timestamp> empty = java.util.Optional.empty();
+      parsedAsOfDefault.compareAndSet(null, empty);
+      return empty;
     }
 
     try {
-      return java.util.Optional.of(Timestamp.parseFrom(asOfDefault));
+      java.util.Optional<Timestamp> parsed =
+          java.util.Optional.of(Timestamp.parseFrom(asOfDefault));
+      parsedAsOfDefault.compareAndSet(null, parsed);
+      return parsed;
     } catch (InvalidProtocolBufferException e) {
       throw GrpcErrors.internal(
           correlationId, QUERY_AS_OF_DEFAULT_PARSE_FAILED, Map.of("query_id", queryId));

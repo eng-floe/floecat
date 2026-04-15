@@ -45,8 +45,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.UnaryOperator;
@@ -131,7 +131,8 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<GraphNode> resolve(ResourceId id) {
-      resolveCalls.merge(id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 1, Integer::sum);
+      resolveCalls.merge(
+          id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 1, Integer::sum);
       if (hidden.contains(id.getId())) {
         return Optional.empty();
       }
@@ -139,7 +140,8 @@ public final class UserObjectBundleTestSupport {
     }
 
     public int resolveCount(ResourceId id) {
-      return resolveCalls.getOrDefault(id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 0);
+      return resolveCalls.getOrDefault(
+          id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 0);
     }
 
     @Override

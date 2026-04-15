@@ -137,10 +137,7 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
               }
               L.okf(
                   "query_id=%s correlation_id=%s tables=%d dispatchMs=%.1f outcome=completed",
-                  request.getQueryId(),
-                  correlationRef.get(),
-                  request.getTablesCount(),
-                  dispatchMs);
+                  request.getQueryId(), correlationRef.get(), request.getTablesCount(), dispatchMs);
             });
   }
 }

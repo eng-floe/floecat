@@ -51,7 +51,10 @@ public class GraphCacheManager {
   private final Cache<ResourceId, MutationMeta> metaCache;
 
   public GraphCacheManager(
-      boolean cacheEnabled, long cacheMaxSize, long metaCacheTtlSeconds, Observability observability) {
+      boolean cacheEnabled,
+      long cacheMaxSize,
+      long metaCacheTtlSeconds,
+      Observability observability) {
     this.graphCacheEnabled = cacheEnabled;
     this.metaCacheEnabled = metaCacheTtlSeconds > 0;
     this.cacheMaxSize = cacheMaxSize;

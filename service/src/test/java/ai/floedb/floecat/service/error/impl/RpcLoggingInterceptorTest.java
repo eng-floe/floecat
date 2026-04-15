@@ -147,7 +147,8 @@ class RpcLoggingInterceptorTest {
 
   @Test
   void extractQueryIdSupportsNonProtobufGetter() {
-    assertEquals("getter-query-id", RpcLoggingInterceptor.extractQueryId(new GetterOnly("getter-query-id")));
+    assertEquals(
+        "getter-query-id", RpcLoggingInterceptor.extractQueryId(new GetterOnly("getter-query-id")));
     assertEquals("", RpcLoggingInterceptor.extractQueryId(new Object()));
   }
 

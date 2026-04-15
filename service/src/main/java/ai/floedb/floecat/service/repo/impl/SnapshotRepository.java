@@ -111,9 +111,6 @@ public class SnapshotRepository {
 
     String token = "";
     StringBuilder next = new StringBuilder();
-    Snapshot best = null;
-    boolean haveBest = false;
-    long bestCreatedMs = Long.MIN_VALUE;
     do {
       List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
       for (Snapshot snapshot : batch) {
@@ -126,7 +123,7 @@ public class SnapshotRepository {
       next.setLength(0);
     } while (!token.isEmpty());
 
-    return Optional.ofNullable(best);
+    return Optional.empty();
   }
 
   public List<Snapshot> list(

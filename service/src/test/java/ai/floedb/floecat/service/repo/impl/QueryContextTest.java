@@ -25,6 +25,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.util.TestSupport;
+import com.google.protobuf.Timestamp;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Clock;
@@ -214,5 +215,29 @@ class QueryContextTest {
         assertThrows(
             StatusRuntimeException.class, () -> ctx.requireSnapshotPin(other, "corr-missing"));
     assertEquals(Status.Code.NOT_FOUND, err.getStatus().getCode());
+  }
+
+  @Test
+  void parseAsOfDefaultMemoized() {
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p-asof");
+    Timestamp asOf = Timestamp.newBuilder().setSeconds(1_701_000_000L).setNanos(123).build();
+    var ctx =
+        QueryContext.newActive(
+            "p-asof",
+            pc,
+            null,
+            SnapshotSet.getDefaultInstance().toByteArray(),
+            null,
+            asOf.toByteArray(),
+            500,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
+
+    Timestamp first = ctx.parseAsOfDefault("corr-asof").orElseThrow();
+    Timestamp second = ctx.parseAsOfDefault("corr-asof").orElseThrow();
+
+    assertEquals(asOf, first);
+    assertSame(first, second);
   }
 }

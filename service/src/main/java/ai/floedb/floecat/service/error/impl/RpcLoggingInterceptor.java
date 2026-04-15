@@ -33,8 +33,8 @@ import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.lang.reflect.Method;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -81,7 +81,8 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
             if (nonBlank(correlationId)) {
               nextTrailers.put(CORRELATION_ID_KEY, correlationId);
             }
-            logCall(status, nextTrailers, method, durationMs, logCorrelationId, logQueryIdRef.get());
+            logCall(
+                status, nextTrailers, method, durationMs, logCorrelationId, logQueryIdRef.get());
             super.close(status, nextTrailers);
           }
         };

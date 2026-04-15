@@ -294,7 +294,10 @@ public class UserObjectBundleService {
   }
 
   private SnapshotSet collectChunkPins(
-      String correlationId, QueryContext ctx, List<ResolvedRelation> relations) {
+      String correlationId,
+      QueryContext ctx,
+      List<ResolvedRelation> relations,
+      Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
     if (relations == null || relations.isEmpty()) {
       return SnapshotSet.getDefaultInstance();
     }
@@ -314,7 +317,8 @@ public class UserObjectBundleService {
             correlationId,
             inputs,
             asOfDefault,
-            Optional.of(ctx.getQueryDefaultCatalogId()));
+            Optional.of(ctx.getQueryDefaultCatalogId()),
+            currentSnapshotPinCache);
     SnapshotSet incoming = resolution.snapshotSet();
     return incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
   }
@@ -385,7 +389,7 @@ public class UserObjectBundleService {
             ? view.outputColumns()
             : relation.node() instanceof UserTableNode userTable
                 ? logicalSchemaMapper.map(userTable).getColumnsList()
-            : overlay.tableSchema(relation.node().id());
+                : overlay.tableSchema(relation.node().id());
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
@@ -1054,11 +1058,13 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
-    private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache = new HashMap<>();
+    private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache =
+        new HashMap<>();
     private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache = new HashMap<>();
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
+    private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final long streamStartNs = System.nanoTime();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
@@ -1151,7 +1157,7 @@ public class UserObjectBundleService {
       if (!toPin.isEmpty()) {
         long pinStartNs = System.nanoTime();
         try {
-          accumulateChunkPins(collectChunkPins(correlationId, ctx, toPin));
+          accumulateChunkPins(collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache));
         } finally {
           pinCollectNanos += System.nanoTime() - pinStartNs;
         }
@@ -1242,9 +1248,7 @@ public class UserObjectBundleService {
             if (LOG.isTraceEnabled()) {
               LOG.tracef(
                   "Resolved candidate query_id=%s input_index=%d relation=%s",
-                  ctx.getQueryId(),
-                  inputIndex,
-                  resolved.get().relationId());
+                  ctx.getQueryId(), inputIndex, resolved.get().relationId());
             }
             return new PendingFound(inputIndex, resolved.get());
           }
@@ -1252,9 +1256,7 @@ public class UserObjectBundleService {
           if (LOG.isDebugEnabled()) {
             LOG.debugf(
                 "Resolved candidate missing graph node query_id=%s input_index=%d resource_id=%s",
-                ctx.getQueryId(),
-                inputIndex,
-                e.relationId() == null ? "" : e.relationId().getId());
+                ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
           }
           ResolutionFailure failure =
               ResolutionFailure.newBuilder()

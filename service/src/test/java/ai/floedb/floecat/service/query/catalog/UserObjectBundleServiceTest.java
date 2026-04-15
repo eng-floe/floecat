@@ -415,8 +415,7 @@ class UserObjectBundleServiceTest {
     assertThat(resolutionChunks).hasSize(2);
     assertThat(resolutionChunks)
         .allSatisfy(
-            chunk ->
-                assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+            chunk -> assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
     assertThat(
             resolutionChunks.stream()
                 .mapToInt(chunk -> chunk.getResolutions().getItemsCount())

@@ -105,12 +105,18 @@ public class QueryInputResolver {
     final List<ResourceId> resolved = new ArrayList<>();
     // Keep insertion order (matching input order) while deduplicating by table ID.
     final Map<ResourceId, SnapshotPin> pinByTableId = new LinkedHashMap<>();
+    // Request-local cache for current-snapshot table pins (no override, no as-of).
+    final Map<ResourceId, SnapshotPin> currentSnapshotPinCache;
 
     ResolutionState(
-        String correlationId, Optional<Timestamp> asOfDefault, Optional<String> defaultCatalog) {
+        String correlationId,
+        Optional<Timestamp> asOfDefault,
+        Optional<String> defaultCatalog,
+        Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
       this.correlationId = correlationId;
       this.asOfDefault = asOfDefault;
       this.defaultCatalog = defaultCatalog;
+      this.currentSnapshotPinCache = currentSnapshotPinCache;
     }
   }
 
@@ -138,15 +144,27 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId) {
+    return resolveInputs(
+        correlationId, inputs, asOfDefault, defaultCatalogId, new LinkedHashMap<>());
+  }
+
+  public ResolutionResult resolveInputs(
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
 
     // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
     // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
     Optional<String> defaultCatalog =
         metadataGraph == null
             ? Optional.empty()
-            : defaultCatalogId.flatMap(id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
+            : defaultCatalogId.flatMap(
+                id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
 
-    var state = new ResolutionState(correlationId, asOfDefault, defaultCatalog);
+    var state =
+        new ResolutionState(correlationId, asOfDefault, defaultCatalog, currentSnapshotPinCache);
 
     for (QueryInput in : inputs) {
       SnapshotRef override = in.getSnapshot();
@@ -194,23 +212,51 @@ public class QueryInputResolver {
       return;
     }
 
-    mergePin(
-        state.pinByTableId, pinForResource(state.correlationId, rid, override, state.asOfDefault));
+    mergePin(state.pinByTableId, pinForResource(state, rid, override, state.asOfDefault));
   }
 
   private SnapshotPin pinForResource(
-      String correlationId, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
+      ResolutionState state,
+      ResourceId rid,
+      SnapshotRef override,
+      Optional<Timestamp> asOfDefault) {
     return switch (rid.getKind()) {
-      case RK_TABLE -> metadataGraph.snapshotPinFor(correlationId, rid, override, asOfDefault);
+      case RK_TABLE -> pinForTable(state, rid, override, asOfDefault);
       case RK_VIEW -> {
         // Views are not pinned directly. Dependency pinning is handled by the caller.
-        validateViewOverride(correlationId, rid, override);
+        validateViewOverride(state.correlationId, rid, override);
         yield null;
       }
       default ->
           throw GrpcErrors.invalidArgument(
-              correlationId, QUERY_INPUT_INVALID, Map.of("resource_id", rid.getId()));
+              state.correlationId, QUERY_INPUT_INVALID, Map.of("resource_id", rid.getId()));
     };
+  }
+
+  private SnapshotPin pinForTable(
+      ResolutionState state,
+      ResourceId rid,
+      SnapshotRef override,
+      Optional<Timestamp> asOfDefault) {
+    if (usesCurrentSnapshotFallback(override, asOfDefault)) {
+      SnapshotPin cached = state.currentSnapshotPinCache.get(rid);
+      if (cached != null) {
+        return cached;
+      }
+      SnapshotPin resolved =
+          metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+      state.currentSnapshotPinCache.put(rid, resolved);
+      return resolved;
+    }
+    return metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+  }
+
+  private boolean usesCurrentSnapshotFallback(
+      SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (override != null && override.getWhichCase() != SnapshotRef.WhichCase.WHICH_NOT_SET) {
+      return false;
+    }
+    return asOfDefault.isEmpty();
   }
 
   private void validateViewOverride(String correlationId, ResourceId viewId, SnapshotRef override) {
@@ -238,8 +284,7 @@ public class QueryInputResolver {
       return;
     }
     if (relationId.getKind() == ResourceKind.RK_TABLE) {
-      mergePin(
-          state.pinByTableId, pinForResource(state.correlationId, relationId, null, effectiveAsOf));
+      mergePin(state.pinByTableId, pinForResource(state, relationId, null, effectiveAsOf));
       return;
     }
     metadataGraph
