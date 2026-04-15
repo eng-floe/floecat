@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.jobs;
 
-import java.util.Collections;
 import java.util.List;
 
 /** Scope constraints for a reconcile job (namespaces, tables, and optional stats-target hints). */
@@ -161,9 +160,5 @@ public final class ReconcileScope {
 
   public boolean hasStatsTargetFilter() {
     return !destinationStatsTargets.isEmpty();
-  }
-
-  public List<String> columnsOrEmpty() {
-    return destinationTableColumns.isEmpty() ? Collections.emptyList() : destinationTableColumns;
   }
 }

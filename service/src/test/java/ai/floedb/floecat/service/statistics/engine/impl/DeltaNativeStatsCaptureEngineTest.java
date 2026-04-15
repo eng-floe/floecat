@@ -240,7 +240,7 @@ class DeltaNativeStatsCaptureEngineTest {
   }
 
   @Test
-  void returnsEmptyWhenSnapshotIdNotSet() {
+  void returnsEmptyWhenTableLookupReturnsEmpty() {
     DeltaNativeStatsCaptureEngine engine =
         new DeltaNativeStatsCaptureEngine(
             Mockito.mock(TableRepository.class),
@@ -486,5 +486,70 @@ class DeltaNativeStatsCaptureEngineTest {
     verify(floecatConnector, Mockito.times(1))
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(statsStore, Mockito.times(2)).putTargetStats(any(TargetStatsRecord.class));
+  }
+
+  @Test
+  void captureBatchMarksGroupDegradedWhenConnectorThrows() {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    CredentialResolver credentialResolver = Mockito.mock(CredentialResolver.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    FloecatConnector floecatConnector = Mockito.mock(FloecatConnector.class);
+
+    DeltaNativeStatsCaptureEngine engine =
+        new DeltaNativeStatsCaptureEngine(
+            tableRepository, connectorRepository, credentialResolver, statsStore);
+    engine.connectorOpener = config -> floecatConnector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    ResourceId connectorId = ResourceId.newBuilder().setAccountId("acct").setId("conn-2").build();
+    when(tableRepository.getById(tableId))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(tableId)
+                    .setDisplayName("events")
+                    .setUpstream(
+                        ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                            .setConnectorId(connectorId)
+                            .addNamespacePath("db")
+                            .setTableDisplayName("events")
+                            .build())
+                    .build()));
+    when(connectorRepository.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setDisplayName("delta-main")
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .setUri("s3://delta")
+                    .build()));
+    when(floecatConnector.captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any()))
+        .thenThrow(new RuntimeException("connector boom"));
+
+    StatsTarget tableTarget =
+        StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()).build();
+    StatsTarget columnTarget =
+        StatsTarget.newBuilder().setColumn(ColumnStatsTarget.newBuilder().setColumnId(9L)).build();
+    StatsCaptureRequest tableReq =
+        StatsCaptureRequest.builder(tableId, 0L, tableTarget)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("delta")
+            .correlationId("corr")
+            .build();
+    StatsCaptureRequest columnReq =
+        StatsCaptureRequest.builder(tableId, 0L, columnTarget)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("delta")
+            .correlationId("corr")
+            .build();
+
+    StatsCaptureBatchResult out =
+        engine.captureBatch(StatsCaptureBatchRequest.of(List.of(tableReq, columnReq)));
+
+    assertThat(out.results()).hasSize(2);
+    assertThat(out.results()).allMatch(item -> item.outcome() == StatsTriggerOutcome.DEGRADED);
+    verify(statsStore, never()).putTargetStats(any());
   }
 }

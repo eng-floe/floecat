@@ -77,6 +77,17 @@ class StatsCaptureBatchTypesTest {
   }
 
   @Test
+  void capturedOutcomeRequiresNonEmptyCaptureResult() {
+    StatsCaptureRequest request = request("tbl-1", 10L);
+    assertThatThrownBy(
+            () ->
+                new StatsCaptureBatchItemResult(
+                    request, StatsTriggerOutcome.CAPTURED, Optional.empty(), "oops"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("CAPTURED outcome requires a non-empty captureResult");
+  }
+
+  @Test
   void batchResultIsImmutable() {
     StatsCaptureRequest request = request("tbl-1", 10L);
     List<StatsCaptureBatchItemResult> mutable = new ArrayList<>();

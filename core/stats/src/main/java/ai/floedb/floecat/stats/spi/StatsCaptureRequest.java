@@ -37,6 +37,9 @@ import java.util.Set;
  *
  * <p>{@code columnSelectors} carries optional connector-native selector hints (for example column
  * names) for scoped capture in reconciliation/control-plane workflows.
+ *
+ * <p>{@code samplingRequested} is a routing hint that a sampled/approximate path is acceptable.
+ * Engines may ignore this hint and return exact results when sampling is unsupported.
  */
 public record StatsCaptureRequest(
     ResourceId tableId,
@@ -94,6 +97,17 @@ public record StatsCaptureRequest(
         correlationId,
         samplingRequested,
         Optional.empty());
+  }
+
+  /**
+   * Returns whether the caller allows sampled/approximate capture.
+   *
+   * <p>This is a hint for capability routing and engine policy. Engines may still capture exact
+   * stats when sampled capture is unavailable.
+   */
+  @Override
+  public boolean samplingRequested() {
+    return samplingRequested;
   }
 
   /** Builder to avoid fragile positional argument calls. */
