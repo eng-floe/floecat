@@ -142,6 +142,8 @@ using `METADATA_AND_STATS`.
 
 This ingests metadata/snapshots first and enqueues scoped `STATS_ONLY` follow-up capture for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
+Follow-up payloads now include explicit unresolved `snapshot_id + target` sets so background capture
+can stay targeted instead of table-wide recompute.
 
 ### Statistics streaming semantics
 `TableStatisticsServiceImpl` enforces a single `table_id` + `snapshot_id` per streamed call to

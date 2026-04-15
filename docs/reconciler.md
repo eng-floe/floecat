@@ -35,9 +35,9 @@ The current job model is split:
   6. Handles incremental vs full-rescan logic.
   7. Supports explicit capture modes:
      - `METADATA_ONLY`: advances/creates table + snapshot state without writing stats.
-     - `STATS_ONLY`: writes stats only.
+     - `STATS_ONLY`: writes stats only (batched by snapshot/target set via stats control-plane).
      - `METADATA_AND_STATS`: ingests metadata/snapshots/constraints, then enqueues scoped
-       `STATS_ONLY` follow-up jobs for discovered snapshots.
+       `STATS_ONLY` follow-up jobs for discovered snapshots with explicit unresolved targets.
 - **`GrpcClients`** – Provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors).
 - **`NameParts`** – Utility for parsing namespace/table names.
@@ -61,6 +61,7 @@ Internally, the scheduler exposes `pollEvery` via `@Scheduled` (default every se
 - **Statistics ingestion** – Stats persistence is centralized behind the stats control-plane
   (`StatsCaptureControlPlane` / orchestrator). `STATS_ONLY` runs route capture through registry
   engines; `METADATA_AND_STATS` schedules those captures asynchronously via follow-up jobs.
+  Follow-up scope now carries explicit `destination_snapshot_ids` + `destination_stats_targets`.
 - **Snapshot constraints ingestion** – Reconciler ingests snapshot constraints through
   `PutTableConstraints` after snapshot/stats handling.
   - Behavior is intentionally strict (not best-effort): constraint extraction/write failures fail
@@ -127,7 +128,7 @@ Connector StartCapture / CaptureNow → ReconcileJobStore.enqueuePlan
               → ConnectorFactory.create + try-with-resources
                   → describe / enumerateSnapshots
                   → ingest metadata/snapshots/constraints
-                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot
+                  → (for METADATA_AND_STATS) enqueue STATS_ONLY follow-up by snapshot+target set
                   → (for STATS_ONLY) capture via stats control-plane/engine registry
               → Update connector destination IDs if missing
       → if EXEC_VIEW:

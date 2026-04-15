@@ -47,9 +47,9 @@ Current target support in native engines:
 
 `StatsCaptureRequest.columnSelectors`:
 
-- optional connector-native selector hints for scoped table/column/file capture
-- used to preserve selector-scoped reconcile behavior while routing through orchestrator/control
-  plane
+- optional connector-native selector hints
+- explicit target selection uses batch requests (`StatsCaptureBatchRequest`) and per-item
+  `StatsTarget` payloads
 
 Default store:
 
@@ -61,7 +61,7 @@ Service wiring:
 - `StatsEngineRegistry` handles capability/priority engine selection for compute capture.
 - `StatsCaptureControlPlane` is the explicit capture entrypoint for control-plane callers
   (for example reconciler `STATS_ONLY` routing); current service implementation delegates to
-  `StatsOrchestrator.trigger(request)`.
+  `StatsOrchestrator.triggerBatch(batchRequest)`.
 - Public read/list RPCs remain `StatsStore` authoritative reads.
 
 Authoritative model:
@@ -104,46 +104,36 @@ order.
 
 ## Routing behavior
 
-`StatsOrchestrator.resolve(request)`:
+`StatsOrchestrator.resolve(request)` / `resolveBatch(batchRequest)`:
 
 1. checks `StatsStore` for an existing record
-2. for `SYNC`, runs capture through a singleflight key (`table_id + snapshot_id + target +
-   connector_type`) so concurrent identical misses share one capture attempt
-3. `SYNC` callers that did not start capture wait briefly for the in-flight result (bounded by
-   request latency budget, clamped to a small max); timeout/failure returns miss without immediate
-   recapture
-4. if still missing, enqueues table-scoped `STATS_ONLY` capture for the requested snapshot and
-   returns empty
+2. for `SYNC`, calls `StatsEngineRegistry.captureBatch()` on miss (single-item requests are
+   wrapped via `StatsCaptureBatchRequest.of(request)`)
+3. if still missing (UNCAPTURABLE/DEGRADED), enqueues scoped `STATS_ONLY` follow-up carrying the
+   unresolved snapshot + target set and returns empty for unresolved items
 
 Current enqueue policy:
 
 - enqueue fallback is currently miss-based
 - enqueue is capability-driven: orchestrator checks whether the registry has at least one ASYNC
   candidate for the requested target
-- async enqueue scope is currently table+snapshot (not target-granular follow-up yet)
-- target-level async follow-up reasons/scopes are planned in later PRs
+- async enqueue scope is table-scoped with explicit unresolved target payload:
+  `destination_snapshot_ids` + `destination_stats_targets`
 
-Execution mode behavior summary:
+`StatsEngineRegistry.captureBatch(batchRequest)`:
 
-- `SYNC`: attempts to return captured stats in-band; if async persistence queueing fails inside an
-  engine, persistence falls back to caller thread to preserve read-after-write behavior.
-- `ASYNC`: does not block for capture completion in `resolve`; it only schedules follow-up work and
-  returns empty on miss.
-
-`StatsEngineRegistry.capture(request)`:
-
-1. filters engines by `supports(request)` / capabilities
-2. sorts by `priority()` then `id()`
-3. calls each engine until one returns a non-empty result
-4. throws `StatsUnsupportedTargetException` when no engine supports the request
+1. filters candidates per request by `supports(request)` / capabilities
+2. applies deterministic priority ordering (`priority()` then `id()`)
+3. routes batched stage groups per engine and preserves request order in results
+4. returns per-item outcomes (`CAPTURED`, `UNCAPTURABLE`, `DEGRADED`, `QUEUED`)
 
 The registry is selection-only and does not merge multi-engine outputs.
 
-`StatsCaptureControlPlane.trigger(request)`:
+`StatsCaptureControlPlane.triggerBatch(batchRequest)`:
 
 1. serves as the explicit capture control-plane entrypoint (non-query callers)
-2. in service runtime, delegates to `StatsOrchestrator.trigger(request)`
-3. executes one registry-routed capture attempt (no store-read short-circuit, no enqueue fallback)
+2. in service runtime, delegates to `StatsOrchestrator.triggerBatch(...)`
+3. executes registry-routed capture attempt(s) (no store-read short-circuit, no enqueue fallback)
 
 Result model:
 
@@ -156,11 +146,21 @@ Result model:
   - `COLUMN` and `EXPRESSION` targets must carry `scalar` payload
   - `FILE` target must carry `file` payload with matching canonical file path
 - Table targets use `TableValueStats` (value only) with metadata at record level.
-- `StatsCaptureRequest` is intentionally target-native: one request resolves one concrete target.
-  The request also carries `columnSelectors` so one reconcile/capture request can scope work to
-  multiple relevant columns in that target context.
-  Scope-level orchestration may issue multiple requests for a table/snapshot, and engines may still
-  persist additional related records from a single source read when available.
+- Single request API is target-native (`StatsCaptureRequest`).
+- Batch API is first-class (`StatsCaptureBatchRequest`) and is the primary path for reconciler/query
+  orchestration so engines can process multiple targets in one pass.
+
+## Batch contract for engine implementors
+
+Implementations of `StatsCaptureEngine.captureBatch()` must:
+
+1. **Size invariant**: `results().size() == batchRequest.requests().size()` in all cases.
+2. **Order invariant**: `result[i]` must correspond to `requests.get(i)`.
+3. **No throws**: represent failures as per-item outcomes (typically `DEGRADED`) instead of
+   throwing exceptions.
+4. **Item independence**: failure for one item must not prevent attempts for remaining items.
+5. **UNCAPTURABLE semantics**: use `UNCAPTURABLE` only for capability mismatches. Registry routing
+   retries `UNCAPTURABLE` items with the next candidate engine; `DEGRADED` is final.
 
 ## How to add a new engine
 
@@ -180,10 +180,18 @@ Guidelines:
 ## Existing baseline behavior
 
 `StatsRepository` is the default OSS authoritative `StatsStore` implementation.
-Native engines persist captured records into `StatsStore` through an async persistence path with
-in-flight dedupe by target identity. For `SYNC` capture calls, if async queue submission is
-rejected, engines persist on caller thread as a safety fallback. This keeps reads/writes aligned
-to one authoritative store contract while reducing hot-path write blocking in the common case.
+Both native engines persist captured records back into `StatsStore` before returning.
+This keeps reads and writes aligned to one authoritative store contract.
+
+When a TABLE request is included in a native engine batch, the engine may opportunistically persist
+additional COLUMN/FILE records returned in the same connector capture bundle. This is intentional
+to avoid extra source scans for follow-up target requests.
+
+Native connector target-kind expansion:
+
+- when `StatsTargetKind.TABLE` is requested, native engines may also request `COLUMN` and `FILE`
+  from `captureSnapshotTargetStats(...)` so full-bundle persistence can happen in one connector
+  pass
 
 ## Plugging your own StatsStore
 
