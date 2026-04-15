@@ -71,7 +71,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
-import com.google.protobuf.InvalidProtocolBufferException;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -371,8 +370,8 @@ public class UserObjectBundleService {
       QueryContext queryContext,
       StatsProvider statsProvider,
       TimingAccumulator timings) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debugf(
+    if (LOG.isTraceEnabled()) {
+      LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
           queryContext.getQueryId(),
           relation.relationId(),
@@ -965,18 +964,7 @@ public class UserObjectBundleService {
   }
 
   private SnapshotSet parseSnapshotSet(QueryContext ctx, String correlationId) {
-    byte[] payload = ctx.getSnapshotSet();
-    if (payload == null || payload.length == 0) {
-      return SnapshotSet.getDefaultInstance();
-    }
-    try {
-      return SnapshotSet.parseFrom(payload);
-    } catch (InvalidProtocolBufferException e) {
-      throw GrpcErrors.internal(
-          correlationId,
-          CATALOG_BUNDLE_SNAPSHOT_PARSE_FAILED,
-          Map.of("query_id", ctx.getQueryId(), "error", e.getMessage()));
-    }
+    return ctx.parseSnapshotSet(correlationId);
   }
 
   private SnapshotSet mergeSnapshotSets(SnapshotSet existing, SnapshotSet incoming) {
@@ -1077,6 +1065,7 @@ public class UserObjectBundleService {
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
     private long resolveNanos = 0L;
+    private long baseInjectNanos = 0L;
     private long pinCollectNanos = 0L;
     private long pinCommitNanos = 0L;
     private long relationBuildNanos = 0L;
@@ -1217,7 +1206,7 @@ public class UserObjectBundleService {
           // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
-          resolveNanos += System.nanoTime() - resolveStartNs;
+          baseInjectNanos += System.nanoTime() - resolveStartNs;
         }
       }
       return cursor.nextBaseIndex >= baseRelations.size();
@@ -1376,8 +1365,9 @@ public class UserObjectBundleService {
           String.format(
               Locale.ROOT,
               "GetUserObjects timings query_id=%s correlation_id=%s totalMs=%.1f candidates=%d"
-                  + " chunks=%d found=%d notFound=%d resolveMs=%.1f pinCollectMs=%.1f"
-                  + " pinCommitMs=%.1f relationBuildMs=%.1f statsLookupMs=%.1f",
+                  + " chunks=%d found=%d notFound=%d resolveMs=%.1f baseInjectMs=%.1f"
+                  + " pinCollectMs=%.1f pinCommitMs=%.1f relationBuildMs=%.1f"
+                  + " statsLookupMs=%.1f schedulingMs=%.1f",
               ctx.getQueryId(),
               correlationId,
               totalMs,
@@ -1386,10 +1376,21 @@ public class UserObjectBundleService {
               foundCount,
               notFoundCount,
               nanosToMs(resolveNanos),
+              nanosToMs(baseInjectNanos),
               nanosToMs(pinCollectNanos),
               nanosToMs(pinCommitNanos),
               nanosToMs(relationBuildNanos),
-              nanosToMs(timings.statsLookupNanos()));
+              nanosToMs(timings.statsLookupNanos()),
+              nanosToMs(
+                  Math.max(
+                      0L,
+                      totalNanos
+                          - resolveNanos
+                          - baseInjectNanos
+                          - pinCollectNanos
+                          - pinCommitNanos
+                          - relationBuildNanos
+                          - timings.statsLookupNanos())));
       if (slow) {
         LOG.warn(message);
       } else {
@@ -1520,10 +1521,8 @@ public class UserObjectBundleService {
               existing -> mergeSnapshotSet(existing, pendingChunkPins, correlationId));
       pendingChunkPins = SnapshotSet.getDefaultInstance();
       if (updated.isEmpty()) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf(
-              "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
-        }
+        LOG.warnf(
+            "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
         throw GrpcErrors.notFound(
             correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
       }

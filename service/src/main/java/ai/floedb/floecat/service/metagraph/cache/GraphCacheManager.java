@@ -38,6 +38,10 @@ import java.util.concurrent.ConcurrentMap;
  * isolated between accounts while sharing the common configuration knobs (enable flag, max size,
  * TTL). It also exposes global gauges and per-account hit/miss counters so operators can understand
  * cache health across multi-account deployments.
+ *
+ * <p>Consistency model: the optional mutation-meta cache is best-effort and eventually consistent.
+ * After a write, callers may observe a stale pointer version for at most the configured meta cache
+ * TTL window.
  */
 public class GraphCacheManager {
 
@@ -46,6 +50,7 @@ public class GraphCacheManager {
   private final long cacheMaxSize;
   private final Observability observability;
   private final CacheMetrics cacheMetrics;
+  private final CacheMetrics metaCacheMetrics;
   private final ConcurrentMap<String, Cache<GraphCacheKey, GraphNode>> accountCaches =
       new ConcurrentHashMap<>();
   private final Cache<ResourceId, MutationMeta> metaCache;
@@ -68,10 +73,20 @@ public class GraphCacheManager {
             : null;
     this.cacheMetrics =
         new CacheMetrics(this.observability, "service", "graph-cache", "graph-cache");
+    this.metaCacheMetrics =
+        new CacheMetrics(this.observability, "service", "graph-cache", "graph-meta-cache");
     registerGauges();
     cacheMetrics.trackSize(
         () -> accountCaches.values().stream().mapToDouble(Cache::estimatedSize).sum(),
         "Estimated graph cache entries");
+    metaCacheMetrics.trackEnabled(
+        () -> metaCacheEnabled ? 1.0 : 0.0, "Graph metadata cache enabled");
+    metaCacheMetrics.trackMaxEntries(
+        () -> metaCacheEnabled ? (double) cacheMaxSize : 0.0,
+        "Graph metadata cache configured max entries");
+    metaCacheMetrics.trackSize(
+        () -> metaCacheEnabled && metaCache != null ? (double) metaCache.estimatedSize() : 0.0,
+        "Estimated graph metadata cache entries");
   }
 
   public GraphCacheManager(boolean cacheEnabled, long cacheMaxSize, Observability observability) {
@@ -126,7 +141,9 @@ public class GraphCacheManager {
     if (!metaCacheEnabled || metaCache == null) {
       return null;
     }
-    return metaCache.getIfPresent(id);
+    MutationMeta meta = metaCache.getIfPresent(id);
+    incrementMetaCounter(id.getAccountId(), meta != null);
+    return meta;
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {
@@ -158,6 +175,18 @@ public class GraphCacheManager {
       cacheMetrics.recordHit(accountTag);
     } else {
       cacheMetrics.recordMiss(accountTag);
+    }
+  }
+
+  private void incrementMetaCounter(String accountId, boolean hit) {
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    Tag accountTag = Tag.of(TagKey.ACCOUNT, accountId);
+    if (hit) {
+      metaCacheMetrics.recordHit(accountTag);
+    } else {
+      metaCacheMetrics.recordMiss(accountTag);
     }
   }
 

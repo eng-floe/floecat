@@ -48,7 +48,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
@@ -70,9 +69,9 @@ public final class UserGraph {
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
-  private SnapshotHelper snapshots;
-  private EngineHintManager hints;
-  private PrincipalProvider principal;
+  private final SnapshotHelper snapshots;
+  private final EngineHintManager hints;
+  private final PrincipalProvider principal;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -103,12 +102,9 @@ public final class UserGraph {
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
+      @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
+          long metaCacheTtlSeconds,
       EngineHintManager engineHints) {
-
-    long metaCacheTtlSeconds =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.metadata.graph.meta-cache-ttl-seconds", Long.class)
-            .orElse(2L);
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
@@ -120,6 +116,30 @@ public final class UserGraph {
     this.principal = principal;
   }
 
+  /** TEST-ONLY constructor with explicit cache knobs. */
+  public UserGraph(
+      CatalogRepository catalogRepo,
+      NamespaceRepository nsRepo,
+      SnapshotRepository snapshotRepo,
+      TableRepository tableRepo,
+      ViewRepository viewRepo,
+      Observability observability,
+      PrincipalProvider principal,
+      long cacheMaxSize,
+      EngineHintManager engineHints) {
+    this(
+        catalogRepo,
+        nsRepo,
+        snapshotRepo,
+        tableRepo,
+        viewRepo,
+        observability,
+        principal,
+        cacheMaxSize,
+        2L,
+        engineHints);
+  }
+
   /** TEST-ONLY constructor */
   public UserGraph(
       CatalogRepository catalogRepo,
@@ -128,24 +148,22 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       Observability observability) {
-
-    this.cache = new GraphCacheManager(true, 1024, 2L, observability);
-    this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-
-    // Snapshot helper without gRPC client
-    this.snapshots = new SnapshotHelper(snapshotRepo);
-
-    this.principal =
+    this(
+        catalogRepo,
+        nsRepo,
+        snapshotRepo,
+        tableRepo,
+        viewRepo,
+        observability,
         new PrincipalProvider() {
           @Override
           public PrincipalContext get() {
             return PrincipalContext.newBuilder().setAccountId("account").build();
           }
-        };
-
-    this.hints = null;
+        },
+        1024L,
+        2L,
+        null);
   }
 
   public void invalidate(ResourceId id) {
@@ -621,17 +639,6 @@ public final class UserGraph {
     b.setName(relName);
     b.setResourceId(id);
     return b.build();
-  }
-
-  // ----------------------------------------------------------------------
-  // Dependency setters (for injection/configuration)
-  // ----------------------------------------------------------------------
-  public void setSnapshotHelper(SnapshotHelper helper) {
-    this.snapshots = helper;
-  }
-
-  public void setPrincipalProvider(PrincipalProvider principal) {
-    this.principal = principal;
   }
 
   // ----------------------------------------------------------------------

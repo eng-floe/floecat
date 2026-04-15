@@ -1963,15 +1963,15 @@ class UserObjectBundleServiceTest {
     assertThat(resolutionChunks).hasSize(2);
     assertThat(resolutionChunks)
         .allSatisfy(
-            chunk ->
-                assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+            chunk -> assertThat(chunk.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
 
     List<RelationResolution> allResolutions =
         resolutionChunks.stream().flatMap(c -> c.getResolutions().getItemsList().stream()).toList();
     assertThat(allResolutions).hasSize(31); // 1 requested view + 30 eager bases
     assertThat(
             allResolutions.stream()
-                .filter(r -> r.getInputIndex() == 0 && r.getRelation().getRelationId().equals(viewId))
+                .filter(
+                    r -> r.getInputIndex() == 0 && r.getRelation().getRelationId().equals(viewId))
                 .count())
         .isEqualTo(1);
     assertThat(allResolutions.stream().filter(r -> r.getInputIndex() == -1).count()).isEqualTo(30);

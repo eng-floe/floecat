@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.service.testsupport.TestNodes;
+import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
@@ -108,6 +109,28 @@ class GraphCacheManagerTest {
     manager.putMeta(tableId, mutationMeta(1L));
 
     assertThat(manager.getMeta(tableId)).isNull();
+  }
+
+  @Test
+  void metaCacheRecordsHitAndMissCounters() {
+    TestObservability metrics = new TestObservability();
+    GraphCacheManager manager = new GraphCacheManager(true, 10, 2L, metrics);
+    ResourceId tableId = rid("account", "tbl");
+
+    assertThat(manager.getMeta(tableId)).isNull();
+    manager.putMeta(tableId, mutationMeta(2L));
+    assertThat(manager.getMeta(tableId)).isNotNull();
+
+    assertThat(metrics.counterValue(Telemetry.Metrics.CACHE_MISSES)).isGreaterThan(0);
+    assertThat(metrics.counterValue(Telemetry.Metrics.CACHE_HITS)).isGreaterThan(0);
+    assertThat(metrics.counterTagHistory(Telemetry.Metrics.CACHE_HITS))
+        .anySatisfy(
+            tags ->
+                assertThat(tags)
+                    .anyMatch(
+                        tag ->
+                            Telemetry.TagKey.CACHE_NAME.equals(tag.key())
+                                && "graph-meta-cache".equals(tag.value())));
   }
 
   private UserTableNode tableNode(ResourceId tableId) {

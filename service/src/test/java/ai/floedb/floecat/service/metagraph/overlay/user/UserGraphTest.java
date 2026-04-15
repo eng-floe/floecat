@@ -37,7 +37,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
@@ -76,8 +75,8 @@ class UserGraphTest {
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
 
-    // Use the lightweight test-only constructor; it wires up a minimal graph
     observability = new TestObservability();
+    principalProvider = new FakePrincipalProvider("account");
     graph =
         new UserGraph(
             catalogRepository,
@@ -85,12 +84,10 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
-            observability);
-
-    graph.setSnapshotHelper(new SnapshotHelper(snapshotRepository));
-
-    principalProvider = new FakePrincipalProvider("account");
-    graph.setPrincipalProvider(principalProvider);
+            observability,
+            principalProvider,
+            1024L,
+            null);
   }
 
   @Test

@@ -314,7 +314,10 @@ public final class QueryContext {
         .findFirst();
   }
 
-  private SnapshotSet parseSnapshotSet(String correlationId) {
+  public SnapshotSet parseSnapshotSet(String correlationId) {
+    if (snapshotSet == null || snapshotSet.length == 0) {
+      return SnapshotSet.getDefaultInstance();
+    }
     // Memoize parsing: QueryContext is immutable, so caching is safe for the life of the instance.
     SnapshotSet cached = parsedSnapshotSet.get();
     if (cached != null) {
@@ -477,13 +480,18 @@ public final class QueryContext {
 
   private boolean tableIdMatches(ResourceId a, ResourceId b) {
     if (a == null || b == null) return false;
-
-    if (!isBlank(a.getAccountId())
-        && !isBlank(b.getAccountId())
-        && !Objects.equals(a.getAccountId(), b.getAccountId())) {
+    if (!Objects.equals(a.getId(), b.getId())) {
       return false;
     }
-    return Objects.equals(a.getId(), b.getId());
+    boolean aBlank = isBlank(a.getAccountId());
+    boolean bBlank = isBlank(b.getAccountId());
+    if (aBlank && bBlank) {
+      return true;
+    }
+    if (aBlank || bBlank) {
+      return false;
+    }
+    return Objects.equals(a.getAccountId(), b.getAccountId());
   }
 
   private static String requireNonEmpty(String v, String field) {

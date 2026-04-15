@@ -240,4 +240,66 @@ class QueryContextTest {
     assertEquals(asOf, first);
     assertSame(first, second);
   }
+
+  @Test
+  void parseSnapshotSetMemoized() {
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p-snapshot");
+    ResourceId tableId = TestSupport.rid(accountId.getId(), "tbl-snapshot", ResourceKind.RK_TABLE);
+    SnapshotSet snapshotSet =
+        SnapshotSet.newBuilder()
+            .addPins(SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(33).build())
+            .build();
+
+    var ctx =
+        QueryContext.newActive(
+            "p-snapshot",
+            pc,
+            null,
+            snapshotSet.toByteArray(),
+            null,
+            null,
+            500,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
+
+    SnapshotSet first = ctx.parseSnapshotSet("corr-snapshot");
+    SnapshotSet second = ctx.parseSnapshotSet("corr-snapshot");
+
+    assertEquals(snapshotSet, first);
+    assertSame(first, second);
+  }
+
+  @Test
+  void requireSnapshotPinDoesNotMatchWhenAccountIsMissingOnOneSide() {
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", "p-account");
+    ResourceId pinnedWithAccount =
+        TestSupport.rid(accountId.getId(), "tbl-account", ResourceKind.RK_TABLE);
+    ResourceId lookupWithoutAccount =
+        ResourceId.newBuilder().setId("tbl-account").setKind(ResourceKind.RK_TABLE).build();
+
+    SnapshotSet snapshots =
+        SnapshotSet.newBuilder()
+            .addPins(
+                SnapshotPin.newBuilder().setTableId(pinnedWithAccount).setSnapshotId(11).build())
+            .build();
+    var ctx =
+        QueryContext.newActive(
+            "p-account",
+            pc,
+            null,
+            snapshots.toByteArray(),
+            null,
+            null,
+            500,
+            1,
+            ResourceId.newBuilder().setId("cat-it").build());
+
+    StatusRuntimeException err =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> ctx.requireSnapshotPin(lookupWithoutAccount, "corr-account"));
+    assertEquals(Status.Code.NOT_FOUND, err.getStatus().getCode());
+  }
 }
