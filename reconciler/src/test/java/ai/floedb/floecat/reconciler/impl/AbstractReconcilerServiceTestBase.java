@@ -38,6 +38,9 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
+import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureResult;
@@ -96,12 +99,33 @@ abstract class AbstractReconcilerServiceTestBase {
 
   protected static StatsCaptureControlPlane capturedControlPlane(
       AtomicInteger captureCalls, AtomicReference<StatsCaptureRequest> capturedRequest) {
-    return request -> {
-      if (capturedRequest != null) {
-        capturedRequest.set(request);
+    return new StatsCaptureControlPlane() {
+      @Override
+      public StatsTriggerResult trigger(StatsCaptureRequest request) {
+        if (capturedRequest != null) {
+          capturedRequest.set(request);
+        }
+        captureCalls.incrementAndGet();
+        return capturedResult(request);
       }
-      captureCalls.incrementAndGet();
-      return capturedResult(request);
+
+      @Override
+      public StatsCaptureBatchResult triggerBatch(StatsCaptureBatchRequest batchRequest) {
+        List<StatsCaptureBatchItemResult> items = new ArrayList<>();
+        for (StatsCaptureRequest request : batchRequest.requests()) {
+          StatsTriggerResult result = trigger(request);
+          items.add(
+              StatsCaptureBatchItemResult.captured(
+                  request,
+                  result
+                      .captureResult()
+                      .orElseThrow(
+                          () ->
+                              new IllegalStateException(
+                                  "captured trigger missing capture result"))));
+        }
+        return StatsCaptureBatchResult.of(items);
+      }
     };
   }
 

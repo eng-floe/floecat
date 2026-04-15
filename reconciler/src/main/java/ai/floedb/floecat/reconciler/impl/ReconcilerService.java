@@ -59,10 +59,8 @@ import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureControlPlane;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
-import ai.floedb.floecat.stats.spi.StatsCaptureResult;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsTriggerOutcome;
-import ai.floedb.floecat.stats.spi.StatsTriggerResult;
 import ai.floedb.floecat.storage.kv.Keys;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -608,6 +606,7 @@ public class ReconcilerService {
 
       final boolean singleTableMode = executeTables && tables.size() == 1;
       final Set<String> includeSelectors = effectiveSelectors(scope, source);
+      final Set<String> targetSpecs = effectiveTargetSpecs(scope);
 
       final String tableDisplayHint =
           (tableTaskMode && !effectiveTableTask.destinationTableDisplayName().isBlank())
@@ -643,7 +642,6 @@ public class ReconcilerService {
                 "Processing table " + sourceNsFq + "." + srcTable + " (metadata)");
 
             var effective = overrideDisplay(upstream, destNsFq, destTableDisplay);
-
             var destTableIdOpt =
                 resolveDestinationTableId(
                     ctx,
@@ -674,7 +672,10 @@ public class ReconcilerService {
                 captureMode == CaptureMode.METADATA_ONLY
                     || captureMode == CaptureMode.METADATA_AND_STATS;
             boolean includeStats = captureMode == CaptureMode.STATS_ONLY;
-            Set<Long> targetSnapshotIds = Set.of();
+            Set<Long> targetSnapshotIds =
+                scope.hasSnapshotFilter()
+                    ? new LinkedHashSet<>(scope.destinationSnapshotIds())
+                    : Set.of();
             Set<Long> knownSnapshotIds =
                 fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, destTableId);
             Set<Long> enumerationKnownSnapshotIds =
@@ -698,6 +699,7 @@ public class ReconcilerService {
                       enumerationKnownSnapshotIds,
                       targetSnapshotIds,
                       includeSelectors,
+                      targetSpecs,
                       cancelCheck,
                       progressOut,
                       scanned,
@@ -725,7 +727,6 @@ public class ReconcilerService {
                     connectorId,
                     destTableId,
                     connector,
-                    resolved.kind(),
                     sourceNsFq,
                     srcTable,
                     scopeNamespaceFq,
@@ -733,7 +734,7 @@ public class ReconcilerService {
                     fullRescan,
                     includeCoreMetadata,
                     includeStats,
-                    includeSelectors,
+                    targetSpecs,
                     knownSnapshotIds,
                     enumerationKnownSnapshotIds,
                     targetSnapshotIds,
@@ -1260,16 +1261,12 @@ public class ReconcilerService {
     }
   }
 
-  private IngestCounts ingestAllSnapshotsAndStatsFiltered(
+  private IngestCounts ingestMetadataSnapshots(
       ReconcileContext ctx,
       ResourceId tableId,
       FloecatConnector connector,
-      ConnectorConfig.Kind connectorKind,
       List<FloecatConnector.SnapshotBundle> bundles,
       boolean includeCoreMetadata,
-      boolean includeStats,
-      boolean fullRescan,
-      Set<String> includeSelectors,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
       String sourceNs,
@@ -1310,31 +1307,6 @@ public class ReconcilerService {
         maybeIngestSnapshotConstraints(
             ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
       }
-
-      if (!includeStats) {
-        continue;
-      }
-
-      boolean statsCaptured =
-          !fullRescan && isStatsCaptureCompleteForScope(ctx, tableId, snapshotId, includeSelectors);
-      if (statsCaptured) {
-        continue;
-      }
-
-      StatsCaptureRequest request =
-          StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
-              .columnSelectors(includeSelectors)
-              .requestedKinds(Set.of())
-              .executionMode(StatsExecutionMode.ASYNC)
-              .connectorType(connectorTypeFor(connectorKind))
-              .correlationId(ctx.correlationId())
-              .build();
-      Optional<StatsCaptureResult> captured = captureViaControlPlane(request);
-      if (captured.isPresent()) {
-        // statsProcessed counts successful capture attempts per snapshot, not number of persisted
-        // target records.
-        statsProcessed++;
-      }
     }
     return new IngestCounts(snapshotsProcessed, statsProcessed);
   }
@@ -1350,6 +1322,7 @@ public class ReconcilerService {
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
       Set<String> includeSelectors,
+      Set<String> targetSpecs,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
       long scanned,
@@ -1397,12 +1370,37 @@ public class ReconcilerService {
 
       batchRequests.addAll(
           buildStatsCaptureRequestsForSnapshot(
-              tableId, snapshotId, includeSelectors, connectorType, ctx.correlationId()));
+              tableId,
+              snapshotId,
+              includeSelectors,
+              targetSpecs,
+              connectorType,
+              ctx.correlationId()));
     }
 
     if (!batchRequests.isEmpty()) {
       StatsCaptureBatchResult batchResult =
           captureBatchViaControlPlane(StatsCaptureBatchRequest.of(batchRequests));
+      batchResult
+          .results()
+          .forEach(
+              item -> {
+                if (item.outcome() == StatsTriggerOutcome.CAPTURED) {
+                  LOG.debugf(
+                      "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
+                      item.outcome(),
+                      item.request().tableId(),
+                      item.request().snapshotId(),
+                      item.detail());
+                } else {
+                  LOG.warnf(
+                      "stats_trigger outcome=%s table=%s snapshot=%d reason=%s",
+                      item.outcome(),
+                      item.request().tableId(),
+                      item.request().snapshotId(),
+                      item.detail());
+                }
+              });
       Set<Long> capturedSnapshots =
           batchResult.results().stream()
               .filter(item -> item.outcome() == StatsTriggerOutcome.CAPTURED)
@@ -1419,27 +1417,25 @@ public class ReconcilerService {
       ResourceId tableId,
       long snapshotId,
       Set<String> includeSelectors,
+      Set<String> targetSpecs,
       String connectorType,
       String correlationId) {
     List<StatsCaptureRequest> requests = new ArrayList<>();
-    requests.add(
-        StatsCaptureRequest.builder(tableId, snapshotId, StatsTargetIdentity.tableTarget())
-            .columnSelectors(includeSelectors)
-            .requestedKinds(Set.of())
-            .executionMode(StatsExecutionMode.ASYNC)
-            .connectorType(connectorType)
-            .correlationId(correlationId)
-            .build());
-
-    for (String selector : includeSelectors) {
-      long columnId = parseColumnIdSelector(selector);
-      if (columnId <= 0L) {
+    for (String targetSpec : targetSpecs) {
+      Optional<ai.floedb.floecat.catalog.rpc.StatsTarget> decodedTarget =
+          ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(targetSpec);
+      if (decodedTarget.isEmpty()) {
+        LOG.warnf(
+            "Skipping undecodable stats target spec table=%s snapshot=%d spec=%s",
+            tableId, snapshotId, targetSpec);
         continue;
       }
+      boolean tableTarget =
+          decodedTarget.get().getTargetCase()
+              == ai.floedb.floecat.catalog.rpc.StatsTarget.TargetCase.TABLE;
       requests.add(
-          StatsCaptureRequest.builder(
-                  tableId, snapshotId, StatsTargetIdentity.columnTarget(columnId))
-              .columnSelectors(Set.of())
+          StatsCaptureRequest.builder(tableId, snapshotId, decodedTarget.get())
+              .columnSelectors(tableTarget ? includeSelectors : Set.of())
               .requestedKinds(Set.of())
               .executionMode(StatsExecutionMode.ASYNC)
               .connectorType(connectorType)
@@ -1447,17 +1443,6 @@ public class ReconcilerService {
               .build());
     }
     return requests;
-  }
-
-  private static long parseColumnIdSelector(String selector) {
-    if (selector == null || selector.isBlank() || selector.charAt(0) != '#') {
-      return -1L;
-    }
-    try {
-      return Long.parseLong(selector.substring(1));
-    } catch (NumberFormatException ignored) {
-      return -1L;
-    }
   }
 
   private Set<Long> discoverSnapshotIdsForStatsCapture(
@@ -1493,23 +1478,6 @@ public class ReconcilerService {
     return snapshotIds;
   }
 
-  private Optional<StatsCaptureResult> captureViaControlPlane(StatsCaptureRequest request) {
-    if (statsCaptureControlPlane == null || statsCaptureControlPlane.isUnsatisfied()) {
-      return Optional.empty();
-    }
-    try {
-      StatsTriggerResult result = statsCaptureControlPlane.get().trigger(request);
-      return result.captureResult();
-    } catch (RuntimeException e) {
-      LOG.warnf(
-          e,
-          "Stats control-plane capture failed for table=%s snapshot=%s",
-          request.tableId(),
-          request.snapshotId());
-      return Optional.empty();
-    }
-  }
-
   private StatsCaptureBatchResult captureBatchViaControlPlane(
       StatsCaptureBatchRequest batchRequest) {
     if (statsCaptureControlPlane == null || statsCaptureControlPlane.isUnsatisfied()) {
@@ -1538,7 +1506,7 @@ public class ReconcilerService {
       ResourceId connectorId,
       String namespaceFq,
       String tableDisplayName,
-      Set<String> includeSelectors,
+      Set<String> targetSpecs,
       Set<Long> snapshotIds) {
     if (reconcileJobStore == null || reconcileJobStore.isUnsatisfied()) {
       String reason =
@@ -1549,7 +1517,8 @@ public class ReconcilerService {
               + "."
               + (tableDisplayName == null ? "" : tableDisplayName);
       LOG.warnf(
-          "Skipping follow-up STATS_ONLY enqueue: reconcile job store unavailable for connector=%s table=%s.%s",
+          "Skipping follow-up STATS_ONLY enqueue: reconcile job store unavailable for connector=%s"
+              + " table=%s.%s",
           connectorId != null ? connectorId.getId() : "",
           namespaceFq == null ? "" : namespaceFq,
           tableDisplayName == null ? "" : tableDisplayName);
@@ -1572,9 +1541,16 @@ public class ReconcilerService {
           "stats_followup_unavailable scope_identity_missing connector=" + connectorId.getId());
     }
     List<List<String>> namespacePaths = List.of(namespacePath(namespaceFq));
-    List<String> columns =
-        includeSelectors == null ? List.of() : includeSelectors.stream().sorted().toList();
-    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, columns);
+    List<Long> sortedSnapshotIds =
+        snapshotIds == null ? List.of() : snapshotIds.stream().sorted().toList();
+    List<String> sortedTargets =
+        targetSpecs == null ? List.of() : targetSpecs.stream().sorted().toList();
+    ReconcileScope scope = ReconcileScope.of(namespacePaths, tableDisplayName, List.of());
+    if (!sortedSnapshotIds.isEmpty() || !sortedTargets.isEmpty()) {
+      scope =
+          ReconcileScope.of(
+              namespacePaths, tableDisplayName, List.of(), sortedSnapshotIds, sortedTargets);
+    }
     String jobId =
         reconcileJobStore
             .get()
@@ -1605,7 +1581,6 @@ public class ReconcilerService {
       ResourceId connectorId,
       ResourceId tableId,
       FloecatConnector connector,
-      ConnectorConfig.Kind connectorKind,
       String sourceNs,
       String sourceTable,
       String scopeNamespaceFq,
@@ -1613,7 +1588,7 @@ public class ReconcilerService {
       boolean fullRescan,
       boolean includeCoreMetadata,
       boolean includeStats,
-      Set<String> includeSelectors,
+      Set<String> targetSpecs,
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
@@ -1637,16 +1612,12 @@ public class ReconcilerService {
     List<FloecatConnector.SnapshotBundle> bundles =
         filterBundlesForMode(upstreamBundles, fullRescan, includeStats, knownSnapshotIds, progress);
     IngestCounts ingestCounts =
-        ingestAllSnapshotsAndStatsFiltered(
+        ingestMetadataSnapshots(
             ctx,
             tableId,
             connector,
-            connectorKind,
             bundles,
             includeCoreMetadata,
-            includeStats,
-            fullRescan,
-            includeSelectors,
             cancelRequested,
             progress,
             sourceNs,
@@ -1663,7 +1634,7 @@ public class ReconcilerService {
               connectorId,
               scopeNamespaceFq,
               destTableDisplay,
-              includeSelectors,
+              targetSpecs,
               snapshotIdsFromBundles(bundles));
     }
     return new MetadataPassOutcome(ingestCounts, tableChanged(bundles), degradedReason);
@@ -1866,6 +1837,17 @@ public class ReconcilerService {
       return Set.of();
     }
     return normalizeSelectors(source.getColumnsList());
+  }
+
+  private static Set<String> effectiveTargetSpecs(ReconcileScope scope) {
+    if (scope != null && scope.hasStatsTargetFilter()) {
+      return new LinkedHashSet<>(scope.destinationStatsTargets());
+    }
+    LinkedHashSet<String> targets = new LinkedHashSet<>();
+    targets.add(
+        ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.encode(
+            StatsTargetIdentity.tableTarget()));
+    return targets;
   }
 
   private ConnectorConfig resolveCredentials(

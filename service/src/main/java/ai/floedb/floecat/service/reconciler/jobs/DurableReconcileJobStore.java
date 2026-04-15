@@ -1645,6 +1645,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         scope.destinationTableDisplayName() == null ? "*" : scope.destinationTableDisplayName();
     String columns =
         scope.destinationTableColumns().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
+    String snapshotIds =
+        scope.destinationSnapshotIds().stream()
+            .sorted()
+            .map(String::valueOf)
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
+    String statsTargets =
+        scope.destinationStatsTargets().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
     ReconcileExecutionPolicy policy =
         executionPolicy == null ? ReconcileExecutionPolicy.defaults() : executionPolicy;
     Canonicalizer canonicalizer = new Canonicalizer();
@@ -1673,6 +1681,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         .scalar("scope.namespaces", namespaces)
         .scalar("scope.table", table)
         .scalar("scope.columns", columns)
+        .scalar("scope.snapshot_ids", snapshotIds)
+        .scalar("scope.stats_targets", statsTargets)
         .scalar("policy.execution_class", policy.executionClass().name())
         .scalar("policy.lane", policy.lane())
         .map("policy.attributes", policy.attributes())
@@ -1783,6 +1793,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public String destinationTableDisplayName;
     public List<List<String>> destinationNamespacePaths = List.of();
     public List<String> destinationTableColumns = List.of();
+    public List<Long> destinationSnapshotIds = List.of();
+    public List<String> destinationStatsTargets = List.of();
     public String state;
     public String message;
     public long startedAtMs;
@@ -1857,6 +1869,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       rec.destinationNamespacePaths = scope.destinationNamespacePaths();
       rec.destinationTableDisplayName = scope.destinationTableDisplayName();
       rec.destinationTableColumns = scope.destinationTableColumns();
+      rec.destinationSnapshotIds = scope.destinationSnapshotIds();
+      rec.destinationStatsTargets = scope.destinationStatsTargets();
       rec.state = "JS_QUEUED";
       rec.message = fullRescan ? "Queued (full)" : "Queued";
       rec.nextAttemptAtMs = now;
@@ -1882,7 +1896,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
     ReconcileScope toScope() {
       return ReconcileScope.of(
-          destinationNamespacePaths, destinationTableDisplayName, destinationTableColumns);
+          destinationNamespacePaths,
+          destinationTableDisplayName,
+          destinationTableColumns,
+          destinationSnapshotIds,
+          destinationStatsTargets);
     }
 
     ReconcileJobKind jobKind() {

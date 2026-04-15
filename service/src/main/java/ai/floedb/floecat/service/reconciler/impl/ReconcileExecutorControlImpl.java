@@ -382,6 +382,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
           NamespacePath.newBuilder().addAllSegments(namespacePath).build());
     }
     builder.addAllDestinationTableColumns(scope.destinationTableColumns());
+    builder.addAllDestinationSnapshotIds(scope.destinationSnapshotIds());
+    builder.addAllDestinationStatsTargets(scope.destinationStatsTargets());
     return builder.build();
   }
 }
